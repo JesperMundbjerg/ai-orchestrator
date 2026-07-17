@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(herdr:*)",
+      "Read(~/.claude/projects/**)",
+      "Read(./**)",
+      "Glob",
+      "Grep",
+      "Write(./fleet/**)",
+      "Edit(./fleet/**)"
+    ]
+  }
+}

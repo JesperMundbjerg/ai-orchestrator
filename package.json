@@ -1,0 +1,13 @@
+{
+  "name": "ai-orchestrator",
+  "version": "0.1.0",
+  "description": "Voice-driven fleet orchestrator for AI coding agents in herdr",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
