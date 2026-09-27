@@ -1,87 +1,88 @@
-# AI Orchestrator
+# Review Inbox
 
-A single voice-driven "first mate" over a fleet of AI coding agents. You talk, it watches the fleet (running in [herdr](https://herdr.dev) panes) and dispatches work — you never touch a terminal.
+A local inbox for long-running agent projects. Agents in Pi, Claude Code or Codex post the moments that need you: a **decision**, something to **try**, or a **milestone** to review. You work through one queue, and each reply goes back to the conversation that asked.
 
-Inspired by [firstmate](https://github.com/kunchenguid/firstmate), but built natively on herdr's socket API and Claude Code's headless mode instead of a separate agent runtime.
+- It runs on your machine and binds `127.0.0.1` only. It makes no model API calls; the agents run on your own subscriptions.
+- There is no reasoning agent in the middle. The service stores, routes and shows. Your agents do the thinking.
+- It is vendor-neutral. The UI never talks to an agent. It talks to the service, and the service knows each agent only by harness, session id and what that harness has shown it can do.
 
-## What it is
+Design and the reasons behind it: [docs/DESIGN.md](docs/DESIGN.md). Instructions for agents working in this repo: [AGENTS.md](AGENTS.md).
 
-One persistent Claude Code session (the "orchestrator" persona, defined in `CLAUDE.md`) sits between a browser voice console and a fleet of coding agents. You ask it things like "what's the status of the fleet" or "make an agent fix the login bug in fysiklab" by voice; it reads the fleet over the `herdr` CLI, reads full agent transcripts from disk, and dispatches or relays work — logging every dispatch to `fleet/ledger.md`. It is read-only unless you explicitly ask it to act.
+## Run it
 
-## Architecture
+Needs Node 24+ (built-in SQLite and TypeScript type stripping).
 
-```
- Browser (voice console)                Node server                  Fleet
-┌───────────────────────┐   SSE/POST   ┌───────────────┐   stdin/out ┌──────────────────────┐
-│ Web Speech API (STT)  │ ───────────▶ │  server.mjs    │ ───────────▶│ claude -p             │
-│ speechSynthesis (TTS) │ ◀─────────── │ (zero deps)    │ ◀───────────│  --input-format       │
-└───────────────────────┘              └───────┬────────┘  stream    │  stream-json           │
-                                                │           -json     │  --output-format       │
-                                                │                     │  stream-json           │
-                                                │                     │ cwd = this repo         │
-                                                │                     │ (CLAUDE.md = persona,   │
-                                                │                     │  .claude/settings.json  │
-                                                │                     │  = permission allowlist)│
-                                                │                     └──────────┬──────────────┘
-                                                │                                │ herdr CLI
-                                                │                                ▼
-                                                │                     ┌──────────────────────┐
-                                                │                     │ herdr panes (agents)  │
-                                                │                     │ one Claude session    │
-                                                │                     │ per pane              │
-                                                │                     └──────────┬───────────┘
-                                                │                                │
-                                                ▼                                ▼
-                                    fleet/projects.md, fleet/ledger.md   ~/.claude/projects/*/*.jsonl
-                                    (read/write by the orchestrator)     (full transcripts, read-only)
+```sh
+npm install
+npm run build      # the UI, into dist/
+npm start          # http://127.0.0.1:4870, data in ~/.review-inbox
 ```
 
-The browser never talks to `claude` or `herdr` directly — everything goes through `server.mjs`, which keeps one long-lived orchestrator subprocess alive across the whole session (spawned once with `cwd` set to this repo, so this `CLAUDE.md` becomes its system context and `.claude/settings.json` its tool permissions) and streams its output back to the browser over SSE as it talks and acts.
+Try it with sample data: run `npm run demo` in a second terminal. It posts three projects through the agent protocol, the same way real agents do. It then stays running as the first project's Pi agent: answer its decision in the browser and the reply prints in that terminal.
 
-## Quickstart
+For UI work, `npm run dev` starts the service with `--watch` and the Vite UI on http://127.0.0.1:4871.
 
-**Prerequisites**
-
-- Node 18+
-- [herdr](https://herdr.dev) running, with at least one agent pane open
-- Claude Code installed and logged in via subscription (no API key needed)
-- Chrome or Edge, for microphone access (Web Speech API)
-
-**One-time trust step (required)**
-
-Claude Code silently ignores the permission allowlist in `.claude/settings.json` for a repo it hasn't trusted yet — the orchestrator will then prompt for every tool call and hang headless. Before first run, do ONE of:
-
-- Run `claude` interactively once inside this repo and accept the trust dialog, or
-- Add `"hasTrustDialogAccepted": true` under `projects["C:/projects/ai-orchestrator"]` in `~/.claude.json`
-
-**Run**
-
-```
-npm start
-```
-
-Open http://localhost:4870 and grant microphone access.
-
-## Configuration
-
-Environment variables:
-
-| Var | Default | Notes |
+| Variable | Default | |
 |---|---|---|
-| `PORT` | `4870` | HTTP/SSE port |
-| `ORCHESTRATOR_MODEL` | `opus` | `opus` or `sonnet` only — do not point this at premium/high-cost tiers |
+| `INBOX_PORT` | `4870` | service port |
+| `INBOX_DATA_DIR` | `~/.review-inbox` | SQLite database and copied evidence, outside every worktree |
+| `INBOX_URL` | `http://127.0.0.1:$INBOX_PORT` | where agent-side tools find the service |
 
-## Usage examples
+## Connect an agent
 
-- "What's the status of the fleet?"
-- "What did I ask einstein and what did it do?"
-- "Make an agent fix the login redirect bug in fysiklab."
-- "Any agents stuck?"
+Every harness can use the `inbox` CLI (`npm link` puts it on `PATH`):
 
-## Roadmap
+```sh
+inbox decide "Where should the open tutor sit?" \
+  --option "Overlay: covers the right third while open" --option "Docked: the stage narrows instead" \
+  --recommend "Docked keeps the slider visible" --screenshot shots/open.png --context "Seen in the isotope step"
+inbox try "Try the receipt import" --preview http://localhost:3000/import --check "Drop three receipts"
+inbox milestone "Lead scene done" --screenshot out/en.png --screenshot out/da.png
+inbox activity "Tuning the travel rules" --next "October import end to end"
+inbox replies --ack          # replies for this session, marked received
+```
 
-- Blocked-agent watcher wired to herdr notifications (proactive nudge instead of poll-on-ask)
-- Phone mic support (needs HTTPS — tailscale or a self-signed cert)
-- Fleet status strip in the console UI (no need to ask just to see who's idle)
-- Per-task brief files + durable dispatch state, firstmate-style (survive a server restart)
-- `/afk` supervision mode (orchestrator watches and only pages you on blocked/done)
+Only files named with `--screenshot` are copied: png, jpg, webp, gif, pdf, md and txt files up to 20 MB, never dotfiles.
+
+The CLI finds the calling session from `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID` or `HERDR_PANE_ID`, or from `--harness` and `--session`. Posting the same `--key` again revises that item; it does not add a duplicate.
+
+### Pi: live delivery
+
+Add the extension's absolute path to `extensions` in `~/.pi/agent/settings.json`:
+
+```json
+{ "extensions": ["/path/to/review-inbox/integrations/pi/review-inbox.ts"] }
+```
+
+It gives the agent `review_submit` and `review_activity` tools. It also delivers replies into the running session: straight away when Pi is idle, and as a follow-up when Pi is busy. Each reply is acknowledged once Pi has taken it.
+
+### Claude Code: delivery at turn boundaries
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Stop": [{ "hooks": [{ "type": "command", "command": "inbox hook claude" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "inbox hook claude" }] }],
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "inbox hook claude" }] }]
+  }
+}
+```
+
+Replies arrive when Claude finishes a turn (the hook keeps it going with the reply), when you send a prompt, or when the session starts. If the service is down, the hook does nothing.
+
+### Codex: pull, for now
+
+Codex agents post with the CLI and collect answers with `inbox replies --ack`. The UI tells you that replies wait until the agent asks for them. Two faster routes are candidates but not yet verified: Codex hooks and `codex queue`. See [docs/DESIGN.md](docs/DESIGN.md#codex).
+
+## herdr
+
+If [herdr](https://herdr.dev) is running, the inbox polls `herdr agent list`. It shows each agent's live status and offers **Open conversation**, which focuses that pane. herdr is never the delivery path: without it, everything still works except those two.
+
+## Develop
+
+```sh
+npm run typecheck
+npm test           # node:test, runs the .ts sources directly
+```

@@ -1,0 +1,74 @@
+import { useEffect, useMemo, useState } from "react";
+import { ItemDetailView } from "./components/ItemDetail.tsx";
+import { Queue } from "./components/Queue.tsx";
+import { Sidebar } from "./components/Sidebar.tsx";
+import { TaskBoard } from "./components/TaskBoard.tsx";
+import { useChangeSignal, useInboxState, useItemDetail, useRoute } from "./hooks.ts";
+import { needsYou, nextNeeding, type Filter } from "./queue.ts";
+
+export function App() {
+  const tick = useChangeSignal();
+  const { state, error } = useInboxState(tick);
+  const [route, navigate] = useRoute();
+  const [filter, setFilter] = useState<Filter>("all");
+  const detail = useItemDetail(route.itemId, tick);
+  const queue = useMemo(() => (state ? needsYou(state, filter, route.projectId) : []), [state, filter, route.projectId]);
+
+  const openNext = () => {
+    const id = nextNeeding(queue, route.itemId);
+    if (id) navigate({ view: "needs", itemId: id });
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
+      if (e.key === "n") openNext();
+      if ((e.key === "j" || e.key === "k") && queue.length) {
+        const at = queue.findIndex((q) => q.item.id === route.itemId);
+        const next = queue[Math.min(queue.length - 1, Math.max(0, at + (e.key === "j" ? 1 : -1)))];
+        if (next) navigate({ view: "needs", itemId: next.item.id });
+      }
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  });
+
+  if (!state) {
+    return <div className="empty-page">{error ? `The inbox service is not answering (${error}). Start it with npm start.` : "Loading…"}</div>;
+  }
+
+  return (
+    <div className="app">
+      <Sidebar state={state} route={route} navigate={navigate} />
+      {route.view === "needs" ? (
+        <>
+          <Queue
+            state={state}
+            entries={queue}
+            filter={filter}
+            onFilter={setFilter}
+            selectedId={route.itemId}
+            projectId={route.projectId}
+            onSelect={(itemId) => navigate({ itemId })}
+            onNext={openNext}
+          />
+          <main className="detail">
+            {detail ? (
+              <ItemDetailView key={detail.item.id} detail={detail} onNext={queue.length > 1 ? openNext : null} />
+            ) : (
+              <div className="empty-detail">
+                {queue.length ? (
+                  <button className="primary" onClick={openNext}>Open the next item needing you <kbd>n</kbd></button>
+                ) : (
+                  <p>Nothing needs you right now. Agents keep working; new results will appear here.</p>
+                )}
+              </div>
+            )}
+          </main>
+        </>
+      ) : (
+        <TaskBoard state={state} parked={route.view === "parked"} projectId={route.projectId} onOpenItem={(itemId) => navigate({ view: "needs", itemId })} />
+      )}
+    </div>
+  );
+}
