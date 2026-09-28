@@ -157,7 +157,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
       ) : null}
       <Legend />
       <p className="world-hint">
-        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · <kbd>Shift</kbd> run · drag to look · click someone
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · <kbd>Shift</kbd> run · drag to turn · scroll or <kbd>+</kbd><kbd>−</kbd> to zoom · click someone
       </p>
       {detail ? (
         <AnswerModal

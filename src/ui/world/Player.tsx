@@ -1,10 +1,14 @@
 import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
+import type { PerspectiveCamera } from "three";
 import type { Vec2 } from "./layout.ts";
 
 const EYE = 1.62;
 const WALK = 4.2;
 const RUN = 9;
+const FOV = 62;
+const FOV_MIN = 18;
+const FOV_MAX = 80;
 
 export interface FlyTarget {
   pos: Vec2;
@@ -14,12 +18,13 @@ export interface FlyTarget {
 }
 
 /**
- * You, in first person: WASD or the arrow keys walk, Shift runs, dragging looks around.
- * The pointer stays free, so a click still reaches the person under it.
+ * You, in first person: WASD or the arrow keys walk, Shift runs, dragging turns the view
+ * and scrolling (or pinching, or + and -) zooms. The pointer stays free, so a click still
+ * reaches the person under it.
  */
 export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: number; minZ: number; maxZ: number }; start: FlyTarget; fly: FlyTarget | null }) {
   const { camera, gl } = useThree();
-  const view = useRef({ yaw: start.yaw, pitch: -0.12, x: start.pos[0], z: start.pos[1] });
+  const view = useRef({ yaw: start.yaw, pitch: -0.12, x: start.pos[0], z: start.pos[1], fov: FOV });
   const keys = useRef(new Set<string>());
   const flight = useRef<{ from: { x: number; z: number; yaw: number }; to: FlyTarget; t: number } | null>(null);
 
@@ -32,22 +37,36 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
     const move = (e: PointerEvent) => {
       if (!drag || !(e.buttons & 1)) return;
       const v = view.current;
-      // Like a game camera: drag right to look right, drag up to look up.
-      v.yaw += (e.clientX - drag.x) * 0.004;
-      v.pitch = Math.max(-1.2, Math.min(1.0, v.pitch - (e.clientY - drag.y) * 0.003));
+      // Grab the office and pull it: drag right to turn left, drag up to look down. Zoomed
+      // in, the same drag turns less, so what is under the pointer keeps up with it.
+      const gain = v.fov / FOV;
+      v.yaw -= (e.clientX - drag.x) * 0.004 * gain;
+      v.pitch = Math.max(-1.2, Math.min(1.0, v.pitch + (e.clientY - drag.y) * 0.003 * gain));
       drag = { x: e.clientX, y: e.clientY };
       flight.current = null;
     };
     const up = () => void (drag = null);
+    const zoom = (factor: number) => {
+      const v = view.current;
+      v.fov = Math.max(FOV_MIN, Math.min(FOV_MAX, v.fov * factor));
+    };
+    // A trackpad pinch arrives as a wheel event with ctrlKey and small deltas.
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      zoom(Math.exp(e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)));
+    };
     const typing = (e: KeyboardEvent) => (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]");
     const keydown = (e: KeyboardEvent) => {
       if (typing(e) || e.metaKey || e.ctrlKey) return;
       keys.current.add(e.code);
+      if (e.code === "Equal" || e.code === "NumpadAdd") zoom(1 / 1.2);
+      if (e.code === "Minus" || e.code === "NumpadSubtract") zoom(1.2);
       if (e.code.startsWith("Arrow")) e.preventDefault();
     };
     const keyup = (e: KeyboardEvent) => keys.current.delete(e.code);
     const blur = () => keys.current.clear();
     el.addEventListener("pointerdown", down);
+    el.addEventListener("wheel", wheel, { passive: false });
     addEventListener("pointermove", move);
     addEventListener("pointerup", up);
     addEventListener("keydown", keydown);
@@ -55,6 +74,7 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
     addEventListener("blur", blur);
     return () => {
       el.removeEventListener("pointerdown", down);
+      el.removeEventListener("wheel", wheel);
       removeEventListener("pointermove", move);
       removeEventListener("pointerup", up);
       removeEventListener("keydown", keydown);
@@ -102,6 +122,11 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
     v.z = Math.max(bounds.minZ + 0.6, Math.min(bounds.maxZ - 0.6, v.z));
     camera.position.set(v.x, EYE, v.z);
     camera.rotation.set(v.pitch, -v.yaw, 0, "YXZ");
+    const lens = camera as PerspectiveCamera;
+    if (Math.abs(lens.fov - v.fov) > 0.01) {
+      lens.fov += (v.fov - lens.fov) * Math.min(1, step * 12);
+      lens.updateProjectionMatrix();
+    }
   });
 
   return null;

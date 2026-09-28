@@ -40,7 +40,7 @@ For UI work, `npm run dev` starts the service with `--watch` and the Vite UI on 
 - A team is **blocked** when its lead is stuck (at a prompt, or waiting on your answer), or when someone is and nobody else is still working. It turns red, and herdr shows you a notification once, when it happens. A single crew member stuck while the lead works is the lead's to handle.
 - When an agent has something for you, they walk to **your desk** and queue there holding a card: purple for a decision, green to try something, orange for a milestone. Click them to answer. The line keeps the inbox's order, so an agent blocked on you is let to the front. Once answered, they walk back to their desk.
 
-WASD or the arrow keys walk, Shift runs, and dragging looks around.
+WASD or the arrow keys walk, Shift runs, dragging pulls the view round (drag right to turn left), and scrolling, pinching or + and − zoom.
 
 The service talks to the herdr session it was started in (`HERDR_SOCKET_PATH`), or herdr's default session when started outside herdr. Start it from a pane in the session your agents run in.
 

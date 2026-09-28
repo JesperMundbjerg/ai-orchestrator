@@ -9,9 +9,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { projectRoot } from "../shared/project.ts";
 import {
   TEAM_STRUCTURES,
-  type AgentRole, type AgentScreen, type Harness, type InboxState, type Presence, type SessionInput, type Team, type TeamBrief,
+  type ActivityEvent, type AgentRole, type AgentScreen, type Harness, type InboxState, type Presence, type SessionInput, type Team, type TeamBrief,
   type TeamStatus, type TeamStructure, type WorldAgent, type WorldState,
 } from "../shared/types.ts";
+import { Activity } from "./activity.ts";
 import { InboxError } from "./inbox.ts";
 import { Messages } from "./messages.ts";
 
@@ -61,6 +62,8 @@ export class World {
   /** The last status seen per team, so a team is announced when it becomes blocked, not while it stays so. */
   private announced: Map<string, TeamStatus> | null = null;
   readonly messages: Messages;
+  private activity = new Activity();
+  private activityTimer: NodeJS.Timeout | null = null;
   onChange: (reason: string) => void = () => {};
 
   constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date()) {
@@ -97,8 +100,7 @@ export class World {
         teamId: row.team_id ? str(row.team_id) : null,
         role: str(row.role) as AgentRole,
         waitingOnYou: a.taskIds.some((t) => waitedOn.has(t)),
-        doing: null,
-        helpers: [],
+        ...this.activityOf(str(row.id), a.status),
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
     return {
@@ -108,6 +110,39 @@ export class World {
       work: this.messages.work(),
       herdr: this.source?.available() ? "connected" : "unavailable",
     };
+  }
+
+  /**
+   * What an agent's harness reports it doing. An unknown session is ignored rather than an
+   * error, since a hook must never get in an agent's way.
+   */
+  report(session: SessionInput, events: ActivityEvent[], helperId: string | null = null): { ok: boolean } {
+    if (!events.length && !helperId) return { ok: true };
+    let agent: WorldAgent;
+    try {
+      agent = this.resolve(session);
+    } catch {
+      return { ok: false };
+    }
+    const now = this.now().getTime();
+    if (helperId) this.activity.touchHelper(agent.id, helperId, now);
+    let changed = false;
+    for (const e of events) changed = this.activity.record(agent.id, e, now) || changed;
+    // Tool calls come several a second; the office redraws at most a few times a second.
+    if (changed && !this.activityTimer) {
+      this.activityTimer = setTimeout(() => {
+        this.activityTimer = null;
+        this.onChange("activity");
+      }, 400);
+      this.activityTimer.unref?.();
+    }
+    return { ok: true };
+  }
+
+  private activityOf(agentId: string, status: WorldAgent["status"]): Pick<WorldAgent, "doing" | "helpers"> {
+    const { doing, helpers } = this.activity.of(agentId, this.now().getTime());
+    // A tool line is only true while the agent works; herdr knows when it stopped.
+    return { doing: status === "working" || status === "unknown" ? doing : null, helpers };
   }
 
   /**

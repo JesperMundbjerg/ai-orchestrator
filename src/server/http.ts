@@ -5,7 +5,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
-import type { ActivityInput, SessionInput, SubmitInput } from "../shared/types.ts";
+import type { ActivityEvent, ActivityInput, SessionInput, SubmitInput } from "../shared/types.ts";
+import { claudeHookEvents } from "./activity.ts";
 import { Inbox, InboxError } from "./inbox.ts";
 import type { Herdr } from "./herdr.ts";
 import type { World } from "./world.ts";
@@ -30,7 +31,13 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     broadcast(reason);
     react();
   };
-  if (world) world.onChange = broadcast;
+  // A new message, a lead picked or a delivery done may each free the next delivery.
+  if (world) {
+    world.onChange = (reason) => {
+      broadcast(reason);
+      if (reason !== "activity") react();
+    };
+  }
   if (herdr) {
     herdr.onChange = () => {
       broadcast("presence");
@@ -72,6 +79,15 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     // Agent protocol: the office
     ["POST", /^\/api\/agent\/team$/, (_r, b: { session: SessionInput }) => needWorld().brief(b.session)],
     ["POST", /^\/api\/agent\/say$/, (_r, b) => needWorld().messages.say(needWorld().resolve(b.session), b)],
+    ["POST", /^\/api\/agent\/events$/, (_r, b: { session: SessionInput; events?: ActivityEvent[] }) => needWorld().report(b.session, Array.isArray(b.events) ? b.events : [])],
+    // Claude Code's HTTP hook posts its hook input as is. Always answers {}: no decision, never in the way.
+    ["POST", /^\/api\/hooks\/claude$/, (_r, b: Record<string, unknown>) => {
+      if (world && typeof b.session_id === "string") {
+        const { events, helperId } = claudeHookEvents(b);
+        world.report({ harness: "claude", sessionId: b.session_id, cwd: typeof b.cwd === "string" ? b.cwd : undefined }, events, helperId);
+      }
+      return {};
+    }],
     ["POST", /^\/api\/agent\/handoff$/, (_r, b) => needWorld().messages.handoff(needWorld().resolve(b.session), b)],
     ["POST", /^\/api\/agent\/review$/, (_r, b) => needWorld().messages.review(needWorld().resolve(b.session), b)],
     ["POST", /^\/api\/agent\/ack$/, (_r, b: { session: SessionInput; deliveryId: string; error?: string }) => inbox.acknowledge(b.session, b.deliveryId, b.error)],

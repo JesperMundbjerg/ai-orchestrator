@@ -290,6 +290,17 @@ export interface WorldAgent {
   helpers: Helper[];
 }
 
+/** Reported by an agent's harness to POST /api/agent/events. */
+export interface ActivityEvent {
+  kind: "tool" | "tool_end" | "idle" | "helper_start" | "helper_stop";
+  tool?: string;
+  input?: Record<string, unknown>;
+  /** The harness's id for one tool call, so its end can be matched to its start. */
+  callId?: string;
+  helperId?: string;
+  helperType?: string;
+}
+
 /** A sub-agent working for an agent while it runs. */
 export interface Helper {
   id: string;

@@ -1,11 +1,12 @@
-// Review Inbox for Pi: gives the agent `review_submit` / `review_activity` tools and delivers
-// the user's replies into this running session, acknowledging each one once Pi has taken it.
+// Review Inbox for Pi: gives the agent `review_submit` / `review_activity` tools, delivers
+// the user's replies into this running session (acknowledging each one once Pi has taken it),
+// and tells the office which tool the agent is using and which helpers it has running.
 // Install: add this file's absolute path to `extensions` in ~/.pi/agent/settings.json.
 
 import { Type } from "typebox";
 import { acknowledge, call, fetchReplies, formatReply } from "../../src/shared/agent-client.ts";
 import { projectRoot } from "../../src/shared/project.ts";
-import type { ItemType, SessionInput, SubmitResult } from "../../src/shared/types.ts";
+import type { ActivityEvent, ItemType, SessionInput, SubmitResult } from "../../src/shared/types.ts";
 
 // The slice of Pi's extension API this uses (the full types ship with @earendil-works/pi-coding-agent).
 interface PiContext {
@@ -14,7 +15,9 @@ interface PiContext {
   isIdle(): boolean;
 }
 interface PiApi {
-  on(event: "session_start" | "session_shutdown", handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: "session_start" | "session_shutdown" | "agent_end", handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: "tool_call", handler: (event: { toolName: string; toolCallId: string; input: unknown }, ctx: PiContext) => void): void;
+  on(event: "tool_execution_end", handler: (event: { toolName: string; toolCallId: string }, ctx: PiContext) => void): void;
   registerTool(tool: {
     name: string;
     label: string;
@@ -31,6 +34,13 @@ const BACKOFF_MS = 10_000;
 function sessionOf(ctx: PiContext): SessionInput | null {
   const file = ctx.sessionManager.getSessionFile();
   return file ? { harness: "pi", sessionId: file, cwd: ctx.cwd } : null;
+}
+
+/** Fire and forget: the office is a view, and a tool call never waits for it. */
+function report(ctx: PiContext, event: ActivityEvent): void {
+  const session = sessionOf(ctx);
+  // herdr's pane id finds this agent in the office however herdr names the session.
+  if (session) call("/api/agent/events", { session: { ...session, paneId: process.env.HERDR_PANE_ID }, events: [event] }, 1500).catch(() => {});
 }
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
@@ -133,6 +143,10 @@ export default function reviewInbox(pi: PiApi): void {
     };
     void poll();
   });
+
+  pi.on("tool_call", (e, ctx) => report(ctx, { kind: "tool", tool: e.toolName, callId: e.toolCallId, input: (e.input ?? {}) as Record<string, unknown> }));
+  pi.on("tool_execution_end", (e, ctx) => report(ctx, { kind: "tool_end", tool: e.toolName, callId: e.toolCallId }));
+  pi.on("agent_end", (_e, ctx) => report(ctx, { kind: "idle" }));
 
   pi.on("session_shutdown", () => {
     if (timer) clearTimeout(timer);

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { claudeHookEvents, describeTool } from "../src/server/activity.ts";
 import { openDatabase } from "../src/server/db.ts";
 import { Inbox, type PresenceSource } from "../src/server/inbox.ts";
 import { World, type AgentSource, type LiveAgent } from "../src/server/world.ts";
@@ -315,4 +316,31 @@ test("team names are unique, since agents address teams by name", () => {
   assert.throws(() => world.createTeam({ name: "qa" }), /already a team called/);
   const other = world.createTeam({ name: "Dev" });
   assert.throws(() => world.updateTeam(other.id, { handsTo: other.id }), /itself/);
+});
+
+test("the office shows what an agent is doing and the helpers it has running", () => {
+  const { world, setLive } = setup();
+  setLive([lane("p1", "/lead", "s1", "working")]);
+  const me = { harness: "pi" as const, sessionId: "s1", paneId: "p1" };
+  const agent = () => world.state().agents[0]!;
+  world.report(me, [{ kind: "tool", tool: "edit", input: { path: "/lead/src/login.ts" }, callId: "c1" }]);
+  assert.equal(agent().doing, "Editing login.ts");
+  world.report(me, [{ kind: "tool", tool: "agents", callId: "c2", input: { calls: [{ name: "architecture-reviewer" }, { name: "physics-accuracy-reviewer" }] } }]);
+  assert.deepEqual(agent().helpers.map((h) => h.type), ["architecture-reviewer", "physics-accuracy-reviewer"]);
+  assert.equal(agent().doing, "Briefing 2 helpers");
+  world.report(me, [{ kind: "tool_end", callId: "c2" }]);
+  assert.deepEqual(agent().helpers, []);
+  setLive([lane("p1", "/lead", "s1", "idle")]);
+  assert.equal(agent().doing, null, "an idle agent is doing nothing, whatever it last reported");
+  assert.deepEqual(world.report({ harness: "pi", sessionId: "gone" }, [{ kind: "idle" }]), { ok: false }, "an unknown session is ignored");
+});
+
+test("a Claude Code hook call becomes activity, with a sub-agent's own tools kept apart", () => {
+  const hook = (event: string, extra: Record<string, unknown> = {}) => claudeHookEvents({ hook_event_name: event, session_id: "s", ...extra });
+  assert.deepEqual(hook("SubagentStart", { agent_id: "h1", agent_type: "architecture-reviewer" }).events, [{ kind: "helper_start", helperId: "h1", helperType: "architecture-reviewer" }]);
+  assert.deepEqual(hook("PreToolUse", { agent_id: "h1", tool_name: "Read", tool_input: {} }), { events: [], helperId: "h1" });
+  assert.deepEqual(hook("PreToolUse", { tool_name: "Bash", tool_input: { command: "npm test", description: "Run the tests" } }).events, [{ kind: "tool", tool: "Bash", input: { command: "npm test", description: "Run the tests" } }]);
+  assert.deepEqual(hook("Stop").events, [{ kind: "idle" }]);
+  assert.equal(describeTool("Bash", { command: "npm test" }), "Running npm test");
+  assert.equal(describeTool("Grep", { pattern: "useFrame" }), "Searching for useFrame");
 });

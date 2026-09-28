@@ -12,11 +12,11 @@ import { World, type LiveAgent } from "../src/server/world.ts";
 
 let nextPort = 48_000 + Math.floor(Math.random() * 1000);
 
-async function withServer(fn: (base: string) => Promise<void>, live: LiveAgent[] = []) {
+async function withServer(fn: (base: string) => Promise<void>, live: LiveAgent[] = [], typed: string[] = []) {
   const dir = mkdtempSync(join(tmpdir(), "inbox-http-"));
   const db = openDatabase(":memory:");
   const inbox = new Inbox(db, join(dir, "files"), { available: () => false, forSession: () => null, resolvePane: () => null });
-  const world = new World(db, { available: () => true, live: () => live, read: async () => "", focus: async () => {}, prompt: async () => {}, notify: async () => {} }, () => inbox.state());
+  const world = new World(db, { available: () => true, live: () => live, read: async () => "", focus: async () => {}, prompt: async (pane, text) => void typed.push(`${pane}: ${text}`), notify: async () => {} }, () => inbox.state());
   const port = nextPort++;
   const server = createInboxServer(inbox, null, { port, staticDir: null, world });
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
@@ -73,6 +73,7 @@ test("an agent finds its team and talks to another agent by name", async () => {
     { paneId: "p1", harness: "pi", sessionId: "s1", cwd: "/a", status: "idle", title: null },
     { paneId: "p2", harness: "claude", sessionId: "s2", cwd: "/b", status: "idle", title: null },
   ];
+  const typed: string[] = [];
   await withServer(async (base) => {
     const post = (path: string, body: unknown) => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const brief = await post("/api/agent/team", { session: { harness: "pi", sessionId: "s1", paneId: "p1" } });
@@ -87,5 +88,16 @@ test("an agent finds its team and talks to another agent by name", async () => {
     assert.equal((await again.json()).id, (await said.json()).id, "a retried request sends nothing twice");
     const unknown = await post("/api/agent/team", { session: { harness: "pi", sessionId: "nope" } });
     assert.equal(unknown.status, 404);
-  }, live);
+    for (let i = 0; i < 50 && !typed.length; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(typed.length, 1, "the message is typed as soon as it is sent, since the other agent is free");
+    assert.match(typed[0]!, /^p2: \[Message from/);
+  }, live, typed);
+});
+
+test("the Claude Code hook endpoint never gets in an agent's way", async () => {
+  await withServer(async (base) => {
+    const res = await fetch(`${base}/api/hooks/claude`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hook_event_name: "PreToolUse", session_id: "unknown", tool_name: "Bash", tool_input: {} }) });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), {});
+  });
 });
