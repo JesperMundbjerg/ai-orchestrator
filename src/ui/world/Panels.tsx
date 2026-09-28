@@ -184,7 +184,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
               <button className="member" onClick={() => onAgent(m.id)}>
                 <span className="lamp" style={{ background: LAMP[m.status].color }} title={LAMP[m.status].label} />
                 <span className="member-name">{m.name}{m.role === "lead" ? <span className="muted"> · lead</span> : null}</span>
-                <span className="muted member-doing">{doing(m) || LAMP[m.status].label}</span>
+                <span className="muted member-doing">{doing(m) || LAMP[m.status].label}{m.helpers.length ? ` · ${m.helpers.length} ${m.helpers.length === 1 ? "helper" : "helpers"}` : ""}</span>
               </button>
             </li>
           ))}
@@ -280,6 +280,12 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
         <span className="muted"> · {HARNESS_INFO[agent.harness].label}{agent.project ? ` · ${agent.project}` : ""}</span>
       </div>
       {agent.cwd ? <code className="agent-cwd" title={agent.cwd}>{agent.cwd}</code> : null}
+      {agent.doing ? <div className="agent-doing">{agent.doing}</div> : null}
+      {agent.helpers.length ? (
+        <div className="agent-helpers">
+          <span className="muted">Helpers running:</span> {agent.helpers.map((h) => `${h.type}, started ${ago(h.startedAt)}`).join(", ")}
+        </div>
+      ) : null}
 
       {items.length ? (
         <div className="agent-waiting">

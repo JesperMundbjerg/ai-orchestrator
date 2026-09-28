@@ -1,13 +1,14 @@
-import { useEffect, useMemo } from "react";
-import type { Texture } from "three";
-import type { WorldAgent, WorldTeam } from "../../shared/types.ts";
+import { useEffect, useMemo, useRef } from "react";
+import { useFrame } from "@react-three/fiber";
+import type { Group, Texture } from "three";
+import type { Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
 import { textTexture, type Line } from "./label.ts";
 import { lookFor } from "./look.ts";
 import { teamLine } from "./team.ts";
-import { CORRIDOR_Z, DESK, LOUNGE_CENTER, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, type Corner, type Desk, type OfficePlan } from "./layout.ts";
+import { CORRIDOR_Z, DESK, LOUNGE_CENTER, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, type Corner, type Desk, type OfficePlan, type Vec2 } from "./layout.ts";
 
 /** The room and its furniture. Nothing here moves on its own; it follows the plan. */
-export function Office({ plan, agents, teams, queueLength }: { plan: OfficePlan; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; queueLength: number }) {
+export function Office({ plan, agents, teams, work, queueLength }: { plan: OfficePlan; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; queueLength: number }) {
   const { minX, maxX, minZ, maxZ } = plan.bounds;
   const w = maxX - minX;
   const d = maxZ - minZ;
@@ -29,7 +30,10 @@ export function Office({ plan, agents, teams, queueLength }: { plan: OfficePlan;
       <YourDesk queueLength={queueLength} />
       <Lounge />
       {plan.corners.map((c) => (
-        <TeamCorner key={c.team.id} corner={c} agents={agents} team={teams.get(c.team.id) ?? null} />
+        <TeamCorner key={c.team.id} corner={c} agents={agents} teams={teams} work={work} />
+      ))}
+      {pipelines(plan).map((p) => (
+        <Pipeline key={p.fromTeamId} path={p.path} busy={work.some((w) => w.fromTeamId === p.fromTeamId && w.toTeamId === p.toTeamId && w.state === "in_review")} />
       ))}
       {[[-20, 12.5], [20, 12.5], [-20, -2], [20, -2], [7, 12.8], [-8.5, 3]].map(([x, z]) => (
         <Plant key={`${x},${z}`} x={x!} z={z!} />
@@ -164,8 +168,12 @@ function Lounge() {
   );
 }
 
-function TeamCorner({ corner, agents, team: live }: { corner: Corner; agents: Map<string, WorldAgent>; team: WorldTeam | null }) {
+function TeamCorner({ corner, agents, teams, work }: { corner: Corner; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[] }) {
   const { team, center, desks, members } = corner;
+  const live = teams.get(team.id) ?? null;
+  const toReview = work.filter((w) => w.toTeamId === team.id && w.state === "in_review").length;
+  const handsTo = team.handsTo ? teams.get(team.handsTo)?.name : null;
+  const flow = [toReview ? `${toReview} to review` : "", handsTo ? `hands its work to ${handsTo}` : ""].filter(Boolean).join(" · ");
   const [cx, cz] = center;
   const tint = useMemo(() => lookFor(team.id).shirt, [team.id]);
   const status = live ? teamLine(live, agents) : { text: "", color: "#8b95a3" };
@@ -173,6 +181,7 @@ function TeamCorner({ corner, agents, team: live }: { corner: Corner; agents: Ma
     { text: team.name, size: 72, color: "#ffffff", weight: 800 },
     { text: `${team.structure === "dispatch" ? "Lead + crew" : "Peers around one table"} · ${members.length} ${members.length === 1 ? "agent" : "agents"}`, size: 34, color: "#b8c2cc", weight: 500 },
     { text: status.text, size: 34, color: status.color, weight: 600 },
+    ...(flow ? [{ text: flow, size: 30, color: toReview ? "#8fb8ff" : "#b8c2cc", weight: 600 }] : []),
   ];
   const board = useTexture(() => textTexture(lines, { width: 1024, height: 360, background: "#141a22", radius: 28 }), [JSON.stringify(lines)]);
   return (
@@ -183,18 +192,18 @@ function TeamCorner({ corner, agents, team: live }: { corner: Corner; agents: Ma
       </mesh>
       {team.structure === "dispatch" ? (
         <group position={[cx, 0, cz - 4]}>
-          {/* The big wall screen the crew faces, high enough to read over their heads */}
-          <mesh position={[0, 3.3, 0]} castShadow>
+          {/* The big wall screen the crew faces, high enough to read over their heads and name tags */}
+          <mesh position={[0, 3.9, 0]} castShadow>
             <boxGeometry args={[7.2, 2.7, 0.12]} />
             <meshStandardMaterial color="#0e1116" />
           </mesh>
-          <mesh position={[0, 3.3, 0.07]}>
+          <mesh position={[0, 3.9, 0.07]}>
             <planeGeometry args={[6.9, 2.43]} />
             <meshBasicMaterial map={board} toneMapped={false} />
           </mesh>
           {[-3, 3].map((dx) => (
-            <mesh key={dx} position={[dx, 1, 0]}>
-              <boxGeometry args={[0.12, 2, 0.12]} />
+            <mesh key={dx} position={[dx, 1.3, 0]}>
+              <boxGeometry args={[0.12, 2.6, 0.12]} />
               <meshStandardMaterial color="#2c3440" />
             </mesh>
           ))}
@@ -299,6 +308,50 @@ function Plant({ x, z }: { x: number; z: number }) {
           <icosahedronGeometry args={[r!, 1]} />
           <meshStandardMaterial color="#3f7d4e" roughness={0.9} flatShading />
         </mesh>
+      ))}
+    </group>
+  );
+}
+
+const CHEVRON_GAP = 0.9;
+
+/** Arrows on the floor flowing from one team to the team it hands its work to; brighter while work is in review. */
+function Pipeline({ path, busy }: { path: Vec2[]; busy: boolean }) {
+  const segments = useMemo(() => path.slice(1).map((p, i) => {
+    const a = path[i]!;
+    return { a, dx: p[0] - a[0], dz: p[1] - a[1], len: Math.hypot(p[0] - a[0], p[1] - a[1]) };
+  }), [path]);
+  const total = segments.reduce((s, x) => s + x.len, 0);
+  const count = Math.max(1, Math.floor(total / CHEVRON_GAP));
+  const chevrons = useRef<Array<Group | null>>([]);
+
+  useFrame((state) => {
+    const shift = (state.clock.elapsedTime * (busy ? 1.2 : 0.5)) % CHEVRON_GAP;
+    for (let i = 0; i < count; i++) {
+      const g = chevrons.current[i];
+      if (!g) continue;
+      let d = i * CHEVRON_GAP + shift;
+      let seg = segments[0]!;
+      for (const s of segments) {
+        seg = s;
+        if (d <= s.len) break;
+        d -= s.len;
+      }
+      const t = Math.min(1, d / seg.len);
+      g.position.set(seg.a[0] + seg.dx * t, 0.012, seg.a[1] + seg.dz * t);
+      g.rotation.y = Math.atan2(-seg.dz, seg.dx);
+    }
+  });
+
+  return (
+    <group>
+      {Array.from({ length: count }, (_, i) => (
+        <group key={i} ref={(g) => void (chevrons.current[i] = g)}>
+          <mesh rotation-x={-Math.PI / 2}>
+            <circleGeometry args={[0.2, 3]} />
+            <meshBasicMaterial color={busy ? "#3b6fe0" : "#7d8fa8"} transparent opacity={busy ? 0.85 : 0.5} toneMapped={false} />
+          </mesh>
+        </group>
       ))}
     </group>
   );

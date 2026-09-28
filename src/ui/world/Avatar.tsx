@@ -34,15 +34,20 @@ interface Props {
   waiting: { count: number; type: ItemType } | null;
   selected: boolean;
   onSelect: (id: string) => void;
+  /** What they are saying; shown once they stand still, so a visitor says it on arrival. */
+  bubble: string | null;
+  /** A folder in hand, for work being handed over. */
+  carrying: boolean;
 }
 
-export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect }: Props) {
+export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bubble, carrying }: Props) {
   const look = useMemo(() => lookFor(agent.id), [agent.id]);
   const root = useRef<Group>(null);
   const legs = useRef<[Group | null, Group | null]>([null, null]);
   const arms = useRef<[Group | null, Group | null]>([null, null]);
   const lamp = useRef<Mesh>(null);
   const halo = useRef<Mesh>(null);
+  const speech = useRef<Group>(null);
   const motion = useRef({
     pos: [...(enterFrom ?? spot.pos)] as Vec2,
     yaw: spot.facing,
@@ -85,6 +90,14 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect }: 
   );
   useEffect(() => () => card?.dispose(), [card]);
 
+  // The bubble is as wide as what is said, up to a limit.
+  const saidWidth = bubble ? Math.min(1024, 120 + bubble.length * 15) : 0;
+  const said = useMemo(
+    () => (bubble ? textTexture([{ text: bubble, size: 30, color: "#16202c", weight: 600 }], { width: saidWidth, height: 96, background: "rgba(255,255,255,0.94)", radius: 44 }) : null),
+    [bubble],
+  );
+  useEffect(() => () => said?.dispose(), [said]);
+
   useFrame((state, dt) => {
     const m = motion.current;
     const g = root.current;
@@ -115,7 +128,8 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect }: 
 
     const t = state.clock.elapsedTime + m.phase;
     const typing = !walking && m.spot.zone === "team" && agent.status === "working";
-    const holding = m.spot.zone === "queue";
+    const holding = m.spot.zone === "queue" || carrying;
+    if (speech.current) speech.current.visible = !walking;
     const swing = walking ? Math.sin(t * 9) * 0.55 : 0;
     const [ll, lr] = legs.current;
     const [al, ar] = arms.current;
@@ -162,7 +176,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect }: 
       onPointerOut={() => setHovered(false)}
     >
       <group scale={look.height}>
-        <Body look={look} legs={legs} arms={arms} card={card} />
+        <Body look={look} legs={legs} arms={arms} card={card} folder={carrying} />
       </group>
       <mesh ref={lamp} position={[0, 2.18, 0]}>
         <sphereGeometry args={[0.08, 20, 16]} />
@@ -175,6 +189,13 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect }: 
       <sprite position={[0, 2.68, 0]} scale={[1.5, 0.375, 1]}>
         <spriteMaterial map={tag} transparent depthWrite={false} />
       </sprite>
+      {said ? (
+        <group ref={speech} position={[0, 3.12, 0]}>
+          <sprite scale={[(saidWidth / 96) * 0.36, 0.36, 1]}>
+            <spriteMaterial map={said} transparent depthWrite={false} />
+          </sprite>
+        </group>
+      ) : null}
       {selected || hovered ? (
         <mesh rotation-x={-Math.PI / 2} position={[0, 0.015, 0]}>
           <ringGeometry args={[0.42, 0.52, 40]} />
@@ -192,11 +213,12 @@ function turn(from: number, to: number, max: number): number {
   return from + Math.max(-max, Math.min(max, d));
 }
 
-function Body({ look, legs, arms, card }: {
+export function Body({ look, legs, arms, card, folder = false }: {
   look: Look;
   legs: RefObject<[Group | null, Group | null]>;
   arms: RefObject<[Group | null, Group | null]>;
   card: Texture | null;
+  folder?: boolean;
 }) {
   const skin = <meshStandardMaterial color={look.skin} roughness={0.7} />;
   const shirt = <meshStandardMaterial color={look.shirt} roughness={0.8} />;
@@ -234,7 +256,12 @@ function Body({ look, legs, arms, card }: {
             <sphereGeometry args={[0.066, 12, 10]} />
             {skin}
           </mesh>
-          {side === 1 && card ? (
+          {side === 1 && folder ? (
+            <mesh position={[0, -0.6, 0.14]} rotation={[Math.PI / 2 - 0.9, 0, 0]} castShadow>
+              <boxGeometry args={[0.3, 0.38, 0.04]} />
+              <meshStandardMaterial color="#e3b95f" roughness={0.8} />
+            </mesh>
+          ) : side === 1 && card ? (
             <mesh position={[0, -0.6, 0.12]} rotation={[Math.PI / 2 - 0.9, 0, 0]}>
               <planeGeometry args={[0.26, 0.26]} />
               <meshBasicMaterial map={card} toneMapped={false} side={2} />

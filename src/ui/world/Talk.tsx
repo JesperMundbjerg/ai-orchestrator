@@ -8,7 +8,8 @@ import { ago } from "../format.ts";
 
 const DELIVERY_LABEL = { queued: "waiting until free", sending: "typing…", delivered: "took it up", failed: "not delivered" } as const;
 
-const KIND_LABEL: Record<MessageKind, string> = { instruction: "You", message: "Says", handoff: "Hands over", review: "Review" };
+/** Between the sender and the people it went to: "Karl hands over to Agnes". */
+const VERB: Record<MessageKind, string> = { instruction: "to", message: "to", handoff: "hands over to", review: "reviewed the work of" };
 
 export const WORK_LABEL: Record<WorkState, string> = { in_review: "in review", accepted: "accepted", changes_requested: "changes requested" };
 
@@ -32,7 +33,7 @@ export function MessageRow({ message, agents }: { message: Message; agents: Map<
     <li className={`order ${message.kind}`}>
       <div className="order-head">
         <strong>{from}</strong>
-        <span className="muted"> {message.kind === "instruction" ? "→" : KIND_LABEL[message.kind].toLowerCase()} {to}</span>
+        <span className="muted"> {VERB[message.kind]} {to}</span>
         <span className="muted"> · {ago(message.createdAt)}</span>
       </div>
       <div className="order-text">{message.text}</div>

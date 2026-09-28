@@ -165,6 +165,25 @@ export function route(from: Vec2, fromSpot: Spot | null, to: Spot): Vec2[] {
   return [...leave, [exit[0], CORRIDOR_Z], [entry[0], CORRIDOR_Z], ...to.approach, to.pos];
 }
 
+/**
+ * The floor path each team's finished work takes to the team it hands to: out of its corner,
+ * along the corridor, and into the other corner.
+ */
+export function pipelines(plan: OfficePlan): Array<{ fromTeamId: string; toTeamId: string; path: Vec2[] }> {
+  const at = new Map(plan.corners.map((c) => [c.team.id, c.center]));
+  return plan.corners.flatMap(({ team, center: [cx, cz] }) => {
+    const to = team.handsTo ? at.get(team.handsTo) : undefined;
+    if (!team.handsTo || !to) return [];
+    const [tx, tz] = to;
+    // Beside each corner's aisle, so the arrows do not run under people walking in.
+    const lane = CORRIDOR_Z - 0.55;
+    const out = cx + (tx > cx ? 1.2 : -1.2);
+    const into = tx + (tx > cx ? -1.2 : 1.2);
+    const path: Vec2[] = [[out, cz + CORNER_HALF_DEPTH], [out, lane], [into, lane], [into, tz + CORNER_HALF_DEPTH]];
+    return [{ fromTeamId: team.id, toTeamId: team.handsTo, path }];
+  });
+}
+
 /** Agent ids in queue order, one place per agent however many items it waits with. */
 export function queueOrder(agents: WorldAgent[], taskIdsInQueueOrder: string[]): string[] {
   const byTask = new Map(agents.flatMap((a) => a.taskIds.map((t) => [t, a.id] as const)));

@@ -372,3 +372,5 @@ h1, h2, h3 { margin: 0; }
 .work-state.accepted { background: rgba(61, 220, 132, 0.18); }
 .work-state.changes_requested { background: rgba(229, 72, 77, 0.16); }
 .work-notes { font-size: 13px; white-space: pre-wrap; }
+.agent-doing { font-size: 13px; padding: 4px 8px; border-radius: 6px; background: rgba(61, 220, 132, 0.12); }
+.agent-helpers { font-size: 12.5px; }

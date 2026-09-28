@@ -8,7 +8,9 @@ import { Avatar } from "./Avatar.tsx";
 import { ENTRANCE, planOffice, queueOrder, SPAWN, type OfficePlan, type Vec2 } from "./layout.ts";
 import { Office } from "./Office.tsx";
 import { AgentPanel, AnswerModal, Legend, TeamPanel, TeamsPanel } from "./Panels.tsx";
+import { Helpers } from "./Helpers.tsx";
 import { Player, type FlyTarget } from "./Player.tsx";
+import { plan as planTalk, type Bubble, type Visit } from "./visits.ts";
 
 export interface Waiting {
   count: number;
@@ -65,6 +67,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
     return out;
   }, [world]);
 
+  const talk = useTalk(world, plan);
   const agents = useMemo(() => new Map((world?.agents ?? []).map((a) => [a.id, a])), [world]);
   const teams = useMemo(() => new Map((world?.teams ?? []).map((t) => [t.id, t])), [world]);
   const selectedAgent = selected ? agents.get(selected) ?? null : null;
@@ -96,7 +99,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
   return (
     <div className="world">
       <Canvas shadows camera={{ fov: 62, near: 0.1, far: 160 }} onPointerMissed={() => setSelected(null)}>
-        <Scene plan={plan} world={world} agents={agents} teams={teams} waiting={waiting} arrivals={arrivals} selected={selected} onSelect={select} fly={fly} />
+        <Scene plan={plan} world={world} agents={agents} teams={teams} waiting={waiting} arrivals={arrivals} talk={talk} selected={selected} onSelect={select} fly={fly} />
       </Canvas>
 
       <header className="world-top">
@@ -172,13 +175,48 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
   );
 }
 
-function Scene({ plan, world, agents, teams, waiting, arrivals, selected, onSelect, fly }: {
+/**
+ * Who is walking over to whom and what is being said, from the messages that arrive while the
+ * office is open. Messages already there when it opens are history, not a scene.
+ */
+function useTalk(world: WorldState | null, office: OfficePlan | null): { visits: Visit[]; bubbles: Bubble[] } {
+  const seen = useRef<Set<string> | null>(null);
+  const [talk, setTalk] = useState<{ visits: Visit[]; bubbles: Bubble[] }>({ visits: [], bubbles: [] });
+  useEffect(() => {
+    if (!world || !office) return;
+    const ids = world.messages.map((m) => m.id);
+    if (!seen.current) {
+      seen.current = new Set(ids);
+      return;
+    }
+    const fresh = world.messages.filter((m) => !seen.current!.has(m.id)).reverse();
+    if (!fresh.length) return;
+    for (const id of ids) seen.current.add(id);
+    const now = Date.now();
+    const next = planTalk(fresh, office, now);
+    setTalk((t) => ({ visits: [...t.visits.filter((v) => v.until > now), ...next.visits], bubbles: [...t.bubbles.filter((b) => b.until > now), ...next.bubbles] }));
+  }, [world, office]);
+  // Clear what has been said once its time is up.
+  useEffect(() => {
+    const ends = [...talk.visits, ...talk.bubbles].map((x) => x.until);
+    if (!ends.length) return;
+    const timer = setTimeout(() => {
+      const now = Date.now();
+      setTalk((t) => ({ visits: t.visits.filter((v) => v.until > now), bubbles: t.bubbles.filter((b) => b.until > now) }));
+    }, Math.max(0, Math.min(...ends) - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [talk]);
+  return talk;
+}
+
+function Scene({ plan, world, agents, teams, waiting, arrivals, talk, selected, onSelect, fly }: {
   plan: OfficePlan;
   world: WorldState;
   agents: Map<string, WorldState["agents"][number]>;
   teams: Map<string, WorldTeam>;
   waiting: Map<string, Waiting>;
   arrivals: Set<string>;
+  talk: { visits: Visit[]; bubbles: Bubble[] };
   selected: string | null;
   onSelect: (id: string) => void;
   fly: FlyTarget | null;
@@ -204,19 +242,26 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, selected, onSele
         shadow-camera-far={120}
         shadow-bias={-0.0005}
       />
-      <Office plan={plan} agents={agents} teams={teams} queueLength={plan.queue.length} />
+      <Office plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
       {world.agents.map((a) => {
         const w = waiting.get(a.id);
+        // The latest visit wins: someone asked twice walks to the second person.
+        const visit = talk.visits.findLast((v) => v.fromId === a.id);
+        const home = plan.spots.get(a.id)!;
         return (
-          <Avatar
-            key={a.id}
-            agent={a}
-            spot={plan.spots.get(a.id)!}
-            enterFrom={arrivals.has(a.id) ? ENTRANCE : null}
-            waiting={w ? { count: w.count, type: w.type } : null}
-            selected={selected === a.id}
-            onSelect={onSelect}
-          />
+          <group key={a.id}>
+            <Avatar
+              agent={a}
+              spot={visit?.spot ?? home}
+              enterFrom={arrivals.has(a.id) ? ENTRANCE : null}
+              waiting={w ? { count: w.count, type: w.type } : null}
+              selected={selected === a.id}
+              onSelect={onSelect}
+              bubble={visit?.text ?? talk.bubbles.findLast((b) => b.agentId === a.id)?.text ?? null}
+              carrying={visit?.kind === "handoff"}
+            />
+            {a.helpers.length ? <Helpers helpers={a.helpers} spot={home} /> : null}
+          </group>
         );
       })}
       <Player bounds={plan.bounds} start={START} fly={fly} />
