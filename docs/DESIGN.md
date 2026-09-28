@@ -21,7 +21,9 @@ The reply route is **learned, not configured**:
 
 The UI shows the route as one sentence under the answer area, so you know what "sent" means before you send.
 
-**herdr is a presence provider, not a bus.** The service polls `herdr agent list` for status (working / idle / blocked / done) and uses `herdr agent focus` for **Open conversation**. Delivery never goes through a terminal: typing into panes cannot be acknowledged, races the agent's own input, and would tie the inbox to one multiplexer. When herdr is missing, presence shows "unknown" and nothing else changes.
+**herdr is a presence provider, not a bus.** The service reads `herdr agent list` for status (working / idle / blocked / done) again whenever herdr's socket reports a status change or a pane coming or going, with polling as the fallback. It uses `herdr agent focus` for **Open conversation**. Replies never go through a terminal: typing into panes cannot be acknowledged, races the agent's own input, and would tie the inbox to one multiplexer. When herdr is missing, presence shows "unknown" and nothing else changes.
+
+The one exception is a **team instruction** (below). It is a new prompt, not an answer to anything the agent asked, and an idle agent has no turn boundary where a hook could hand it over. So it is typed with `herdr agent prompt`, under three guards: it is sent only when herdr reports the agent idle or done, herdr itself refuses an agent that is asking something, and herdr must see the agent start working within seconds for the delivery to count.
 
 ## The three item types
 
@@ -54,6 +56,19 @@ The **task brief** is project memory for you rather than for the model. It is ed
 - **Loopback only.** The service binds 127.0.0.1 and checks the Host header (against DNS rebinding). Writes require `application/json` and a same-origin `Origin`.
 - **Only explicit attachments.** Evidence is copied from paths the agent names, by type allowlist and size limit, never dotfiles. It is served with a sandbox CSP. The preview check fetches only that item's own http(s) URL.
 - **State lives outside worktrees** (`~/.review-inbox`), so branch switches and worktree deletion never lose it. A project is a repository's git common dir, so all its worktrees are one project.
+
+## The office
+
+The office is a second view of the same state, not a second system. It adds two things the inbox did not keep:
+
+- **Agent identity** is harness plus checkout (`pi:/…/space-shuttle-einstein`), not the session. A lane restarted in its worktree is the same person with the same name, face and desk. Two agents in one checkout get separate identities. The face is derived from the identity alone, so it never needs storing.
+- **Teams** (`teams`, `world_agents`): a name, a structure (`dispatch` or `circle`) and at most one lead. A team member who is not running keeps an empty desk; an agent in the lounge who stops running leaves.
+
+Agents come from herdr (all of them, including those that never posted) and from inbox tasks, joined on the session.
+
+**Team status** is derived, never stored. A team is `blocked` when its lead is stuck, or when someone is stuck and nobody in it is still working; stuck means waiting at a prompt in herdr or waiting on a blocking inbox item. A crew member stuck while the lead works is the lead's to handle, so it does not reach you. Otherwise the team is `working`, `idle` or `offline`. The service announces a team through herdr's notifications once, on the change to blocked; on start it only takes note of how things stand.
+
+**Team instructions** (`team_orders`, `order_deliveries`) are kept like replies: never deleted, one delivery row per agent, and a client id so a retried request is not a second order. The agents an order goes to are fixed when it is given: the lead of a dispatch team, or every running peer of a circle. A delivery is `queued` until its agent is free, then claimed as `sending` by a conditional update, so two reactions never type it twice, and ends `delivered` or `failed` (with herdr's reason, and a Retry). Each agent takes one order at a time, oldest first. The text is prefixed with who is asking, the team and the agent's part in it: the lead is told to divide the work among its named crew, a peer to settle it with the named others. The queue at your desk is `needsYou` from the inbox, one place per agent. The terminal is `herdr agent read`, only while a panel is open, and only on loopback like everything else.
 
 ## Codex
 

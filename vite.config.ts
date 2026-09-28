@@ -15,6 +15,7 @@ const proxy = {
 export default defineConfig({
   root: "src/ui",
   plugins: [react()],
-  build: { outDir: "../../dist", emptyOutDir: true },
+  // The office view carries three.js in its own lazily loaded chunk of about 1 MB.
+  build: { outDir: "../../dist", emptyOutDir: true, chunkSizeWarningLimit: 1200 },
   server: { port: 4871, proxy: { "/api": proxy, "/files": proxy } },
 });

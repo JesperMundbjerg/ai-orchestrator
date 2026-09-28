@@ -240,3 +240,82 @@ export interface PendingReply {
   text: string;
   createdAt: string;
 }
+
+// ── The office world ─────────────────────────────────────────────────────────────────────
+
+/** How a team works, which is also how its corner of the office is furnished:
+ * `dispatch` has a lead at the back handing work to a row of crew consoles;
+ * `circle` is peers around one table who settle things between them. */
+export const TEAM_STRUCTURES = ["dispatch", "circle"] as const;
+export type TeamStructure = (typeof TEAM_STRUCTURES)[number];
+
+export interface Team {
+  id: string;
+  name: string;
+  structure: TeamStructure;
+  createdAt: string;
+}
+
+export type AgentRole = "lead" | "member";
+
+/**
+ * One agent as the office shows it. Its identity is the harness plus the checkout it works in,
+ * not the session, so a lane keeps its name, face and desk when its session is restarted.
+ */
+export interface WorldAgent {
+  /** Short stable id derived from the identity, safe in URLs. */
+  id: string;
+  identity: string;
+  name: string;
+  harness: Harness;
+  cwd: string | null;
+  /** The repository the checkout belongs to. */
+  project: string | null;
+  status: Presence["status"] | "offline";
+  title: string | null;
+  paneId: string | null;
+  /** Inbox tasks of this agent: their items are what it queues at your desk with. */
+  taskIds: string[];
+  teamId: string | null;
+  role: AgentRole;
+  /** It has asked you something in the inbox and says it cannot go on until you answer. */
+  waitingOnYou: boolean;
+}
+
+/**
+ * Where a team stands, as one word. `blocked` means the team cannot go on without you: its
+ * lead is stuck, or someone is and nobody else is still working.
+ */
+export type TeamStatus = "blocked" | "working" | "idle" | "offline";
+
+export interface WorldTeam extends Team {
+  status: TeamStatus;
+  /** Who holds the team up, when it is blocked. */
+  blockedBy: string[];
+  /** The repositories its members work in. */
+  projects: string[];
+  orders: TeamOrder[];
+}
+
+export const DELIVERY_STATES = ["queued", "sending", "delivered", "failed"] as const;
+export type DeliveryState = (typeof DELIVERY_STATES)[number];
+
+/** Your instruction to a team, and how it reached each agent it was meant for. */
+export interface TeamOrder {
+  id: string;
+  teamId: string;
+  text: string;
+  createdAt: string;
+  deliveries: Array<{ agentId: string; state: DeliveryState; error: string | null; updatedAt: string }>;
+}
+
+export interface WorldState {
+  agents: WorldAgent[];
+  teams: WorldTeam[];
+  herdr: "connected" | "unavailable";
+}
+
+export interface AgentScreen {
+  text: string;
+  readAt: string;
+}

@@ -1,4 +1,4 @@
-import type { InboxState, Item, ItemDetail, Project, Reply, ReplyAction, Task } from "../shared/types.ts";
+import type { AgentScreen, InboxState, Item, ItemDetail, Project, Reply, ReplyAction, Task, Team, TeamOrder, TeamStructure, WorldAgent, WorldState } from "../shared/types.ts";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -23,4 +23,13 @@ export const api = {
   updateTask: (taskId: string, patch: Partial<Task>) => request<Task>("PATCH", `/api/tasks/${taskId}`, patch),
   openConversation: (taskId: string) => request<{ ok: true }>("POST", `/api/tasks/${taskId}/open`, {}),
   pin: (projectId: string, pinned: boolean) => request<Project>("POST", `/api/projects/${projectId}/pin`, { pinned }),
+  world: () => request<WorldState>("GET", "/api/world"),
+  createTeam: (body: { name: string; structure: TeamStructure }) => request<Team>("POST", "/api/world/teams", body),
+  updateTeam: (teamId: string, patch: { name?: string; structure?: TeamStructure }) => request<Team>("PATCH", `/api/world/teams/${teamId}`, patch),
+  deleteTeam: (teamId: string) => request<{ ok: true }>("DELETE", `/api/world/teams/${teamId}`, {}),
+  updateAgent: (agentId: string, patch: { name?: string; teamId?: string | null; role?: "lead" | "member" }) => request<WorldAgent>("PATCH", `/api/world/agents/${agentId}`, patch),
+  instructTeam: (teamId: string, text: string) => request<TeamOrder>("POST", `/api/world/teams/${teamId}/orders`, { text, clientId: crypto.randomUUID() }),
+  retryDelivery: (orderId: string, agentId: string) => request<TeamOrder>("POST", `/api/world/orders/${orderId}/deliveries/${agentId}/retry`, {}),
+  agentScreen: (agentId: string) => request<AgentScreen>("GET", `/api/world/agents/${agentId}/screen`),
+  openAgent: (agentId: string) => request<{ ok: true }>("POST", `/api/world/agents/${agentId}/open`, {}),
 };

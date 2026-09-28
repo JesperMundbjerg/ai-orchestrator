@@ -108,6 +108,42 @@ CREATE TABLE IF NOT EXISTS events (
   detail TEXT NOT NULL
 );
 
+-- The office world: teams, and every agent it has seen, keyed by harness + checkout.
+CREATE TABLE IF NOT EXISTS teams (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  structure TEXT NOT NULL CHECK (structure IN ('dispatch', 'circle')),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS world_agents (
+  id TEXT PRIMARY KEY,
+  identity TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
+  role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('lead', 'member')),
+  first_seen_at TEXT NOT NULL
+);
+
+-- Your instructions to a team. The agents an order goes to are fixed when it is given (the
+-- lead, or every running peer); each gets its own delivery row, sent once the agent is free.
+CREATE TABLE IF NOT EXISTS team_orders (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  client_id TEXT UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS order_deliveries (
+  order_id TEXT NOT NULL REFERENCES team_orders(id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL REFERENCES world_agents(id),
+  state TEXT NOT NULL CHECK (state IN ('queued', 'sending', 'delivered', 'failed')),
+  error TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (order_id, agent_id)
+);
+
 CREATE INDEX IF NOT EXISTS items_state ON items (state);
 CREATE INDEX IF NOT EXISTS replies_item ON replies (item_id, state);
 CREATE INDEX IF NOT EXISTS events_item ON events (item_id);

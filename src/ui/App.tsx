@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { ItemDetailView } from "./components/ItemDetail.tsx";
 import { Queue } from "./components/Queue.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { TaskBoard } from "./components/TaskBoard.tsx";
 import { useChangeSignal, useInboxState, useItemDetail, useRoute } from "./hooks.ts";
 import { needsYou, nextNeeding, type Filter } from "./queue.ts";
+
+// The 3D office is loaded only when opened, so the inbox stays light.
+const WorldView = lazy(() => import("./world/WorldView.tsx").then((m) => ({ default: m.WorldView })));
 
 export function App() {
   const tick = useChangeSignal();
@@ -21,7 +24,7 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
+      if (route.view === "world" || e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
       if (e.key === "n") openNext();
       if ((e.key === "j" || e.key === "k") && queue.length) {
         const at = queue.findIndex((q) => q.item.id === route.itemId);
@@ -35,6 +38,14 @@ export function App() {
 
   if (!state) {
     return <div className="empty-page">{error ? `The inbox service is not answering (${error}). Start it with npm start.` : "Loading…"}</div>;
+  }
+
+  if (route.view === "world") {
+    return (
+      <Suspense fallback={<div className="empty-page">Opening the office…</div>}>
+        <WorldView state={state} tick={tick} onLeave={() => navigate({ view: "needs", itemId: null })} />
+      </Suspense>
+    );
   }
 
   return (

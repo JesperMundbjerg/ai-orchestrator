@@ -8,6 +8,7 @@ import { extname, join, normalize } from "node:path";
 import type { ActivityInput, SessionInput, SubmitInput } from "../shared/types.ts";
 import { Inbox, InboxError } from "./inbox.ts";
 import type { Herdr } from "./herdr.ts";
+import type { World } from "./world.ts";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
@@ -17,13 +18,25 @@ const TYPES: Record<string, string> = {
 
 type Handler = (req: IncomingMessage, body: any, params: string[]) => unknown | Promise<unknown>;
 
-export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null }): Server {
+export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World }): Server {
   const clients = new Set<ServerResponse>();
   const broadcast = (reason: string) => {
     for (const res of clients) res.write(`event: changed\ndata: ${JSON.stringify({ reason })}\n\n`);
   };
-  inbox.onChange = broadcast;
-  if (herdr) herdr.onChange = () => broadcast("presence");
+  const world = opts.world;
+  // Whatever changes in the inbox or in herdr may free an agent for an instruction or block a team.
+  const react = () => void world?.react().catch((err: Error) => console.error(`office: ${err.message}`));
+  inbox.onChange = (reason) => {
+    broadcast(reason);
+    react();
+  };
+  if (world) world.onChange = broadcast;
+  if (herdr) {
+    herdr.onChange = () => {
+      broadcast("presence");
+      react();
+    };
+  }
 
   const routes: Array<[string, RegExp, Handler]> = [
     // UI
@@ -42,6 +55,16 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
       return { ok: true };
     }],
     ["POST", /^\/api\/projects\/([\w-]+)\/pin$/, (_r, b, [id]) => inbox.setPinned(id!, Boolean(b.pinned))],
+    // The office world
+    ["GET", /^\/api\/world$/, () => needWorld().state()],
+    ["POST", /^\/api\/world\/teams$/, (_r, b) => needWorld().createTeam(b)],
+    ["PATCH", /^\/api\/world\/teams\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateTeam(id!, b)],
+    ["DELETE", /^\/api\/world\/teams\/([\w-]+)$/, (_r, _b, [id]) => needWorld().deleteTeam(id!)],
+    ["POST", /^\/api\/world\/teams\/([\w-]+)\/orders$/, (_r, b, [id]) => needWorld().instruct(id!, b)],
+    ["POST", /^\/api\/world\/orders\/([\w-]+)\/deliveries\/([\w-]+)\/retry$/, (_r, _b, [order, agent]) => needWorld().retry(order!, agent!)],
+    ["PATCH", /^\/api\/world\/agents\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateAgent(id!, b)],
+    ["GET", /^\/api\/world\/agents\/([\w-]+)\/screen$/, (_r, _b, [id]) => needWorld().screen(id!)],
+    ["POST", /^\/api\/world\/agents\/([\w-]+)\/open$/, (_r, _b, [id]) => needWorld().focus(id!)],
     // Agent protocol
     ["POST", /^\/api\/agent\/items$/, (_r, b: SubmitInput) => inbox.submit(b)],
     ["POST", /^\/api\/agent\/activity$/, (_r, b: ActivityInput) => inbox.activity(b)],
@@ -50,6 +73,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/agent\/withdraw$/, (_r, b: { session: SessionInput; item: string }) => inbox.closeItem(b.session, b.item, "withdrawn")],
     ["POST", /^\/api\/agent\/resolve$/, (_r, b: { session: SessionInput; item: string }) => inbox.closeItem(b.session, b.item, "resolved")],
   ];
+
+  function needWorld(): World {
+    if (!world) throw new InboxError(404, "this service runs without the office world");
+    return world;
+  }
 
   const allowedHosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);
 
