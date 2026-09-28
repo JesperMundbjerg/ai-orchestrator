@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
-import { TEAM_STRUCTURES, type AgentScreen, type InboxState, type ItemDetail, type TeamOrder, type TeamStructure, type WorldAgent, type WorldState, type WorldTeam } from "../../shared/types.ts";
+import { TEAM_STRUCTURES, type AgentScreen, type InboxState, type ItemDetail, type TeamStructure, type WorldAgent, type WorldState, type WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ItemDetailView } from "../components/ItemDetail.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
 import { LAMP } from "./Avatar.tsx";
 import type { OfficePlan, Vec2 } from "./layout.ts";
+import { MessageRow, teamMessages, teamWork, WorkRow } from "./Talk.tsx";
 import { TEAM_LAMP, teamLine } from "./team.ts";
 import type { Waiting } from "./WorldView.tsx";
 
@@ -115,11 +116,12 @@ function TeamForm({ initial, submit, onSubmit, extra }: {
 }
 
 /**
- * One team up close: where it stands and who holds it up, what each member is doing, and
- * your instructions to it with how far each one got.
+ * One team up close: where it stands and who holds it up, what each member is doing, the
+ * work it handed over or has to review, and what was said in it with how far each got.
  */
-export function TeamPanel({ team, agents, state, waiting, onAgent, onAnswer, onClose }: {
+export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnswer, onClose }: {
   team: WorldTeam;
+  world: WorldState;
   agents: Map<string, WorldAgent>;
   state: InboxState;
   waiting: Map<string, Waiting>;
@@ -134,7 +136,9 @@ export function TeamPanel({ team, agents, state, waiting, onAgent, onAnswer, onC
   const lead = members.find((m) => m.role === "lead") ?? null;
   const hearers = team.structure === "dispatch" ? (lead ? [lead] : []) : members.filter((m) => m.paneId);
   const line = teamLine(team, agents);
-  const doing = (a: WorldAgent) => state.tasks.find((t) => a.taskIds.includes(t.id) && t.activity)?.activity ?? a.title ?? "";
+  const doing = (a: WorldAgent) => a.doing ?? state.tasks.find((t) => a.taskIds.includes(t.id) && t.activity)?.activity ?? a.title ?? "";
+  const work = teamWork(world, team.id);
+  const talk = teamMessages(world, team.id).slice(0, 15);
   const send = () => {
     setSending(true);
     api.instructTeam(team.id, text).then(
@@ -212,42 +216,24 @@ export function TeamPanel({ team, agents, state, waiting, onAgent, onAnswer, onC
         {error ? <div className="warn">{error}</div> : null}
       </form>
 
-      {team.orders.length ? (
+      {work.length ? (
         <div>
-          <div className="section-label">Your instructions</div>
+          <div className="section-label">Work handed over</div>
           <ul className="order-list">
-            {team.orders.map((o) => <OrderRow key={o.id} order={o} agents={agents} />)}
+            {work.map((w) => <WorkRow key={w.id} work={w} world={world} agents={agents} />)}
+          </ul>
+        </div>
+      ) : null}
+
+      {talk.length ? (
+        <div>
+          <div className="section-label">Said in and to {team.name}</div>
+          <ul className="order-list">
+            {talk.map((m) => <MessageRow key={m.id} message={m} agents={agents} />)}
           </ul>
         </div>
       ) : null}
     </aside>
-  );
-}
-
-const DELIVERY_LABEL = { queued: "waiting until free", sending: "typing…", delivered: "took it up", failed: "not delivered" } as const;
-
-function OrderRow({ order, agents }: { order: TeamOrder; agents: Map<string, WorldAgent> }) {
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <li className="order">
-      <div className="order-text">{order.text}</div>
-      <div className="order-meta">
-        <span className="muted">{ago(order.createdAt)}</span>
-        {order.deliveries.map((d) => {
-          const name = agents.get(d.agentId)?.name ?? "someone";
-          return (
-            <span key={d.agentId} className={`delivery ${d.state}`} title={d.error ?? undefined}>
-              {name}: {DELIVERY_LABEL[d.state]}
-              {d.state === "failed" ? (
-                <button className="ghost small" onClick={() => void api.retryDelivery(order.id, d.agentId).catch((e: Error) => setError(e.message))}>Retry</button>
-              ) : null}
-            </span>
-          );
-        })}
-      </div>
-      {order.deliveries.some((d) => d.error) ? <div className="warn small-note">{order.deliveries.find((d) => d.error)!.error}</div> : null}
-      {error ? <div className="warn small-note">{error}</div> : null}
-    </li>
   );
 }
 

@@ -113,6 +113,8 @@ CREATE TABLE IF NOT EXISTS teams (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   structure TEXT NOT NULL CHECK (structure IN ('dispatch', 'circle')),
+  purpose TEXT NOT NULL DEFAULT '',
+  hands_to TEXT REFERENCES teams(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL
 );
 
@@ -125,25 +127,47 @@ CREATE TABLE IF NOT EXISTS world_agents (
   first_seen_at TEXT NOT NULL
 );
 
--- Your instructions to a team. The agents an order goes to are fixed when it is given (the
--- lead, or every running peer); each gets its own delivery row, sent once the agent is free.
-CREATE TABLE IF NOT EXISTS team_orders (
+-- Everything said in the office: your instructions, agents' messages to each other, handoffs
+-- and review verdicts. Who a message goes to is fixed when it is sent; each of them gets a
+-- delivery row, typed into their terminal once they are free. Nothing is deleted.
+CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
-  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('instruction', 'message', 'handoff', 'review')),
+  from_agent_id TEXT REFERENCES world_agents(id),
+  team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
   text TEXT NOT NULL,
+  work_id TEXT REFERENCES work(id),
   client_id TEXT UNIQUE,
   created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS order_deliveries (
-  order_id TEXT NOT NULL REFERENCES team_orders(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS message_deliveries (
+  message_id TEXT NOT NULL REFERENCES messages(id),
   agent_id TEXT NOT NULL REFERENCES world_agents(id),
   state TEXT NOT NULL CHECK (state IN ('queued', 'sending', 'delivered', 'failed')),
   error TEXT,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (order_id, agent_id)
+  PRIMARY KEY (message_id, agent_id)
 );
 
+-- Finished work handed from one team to another for review.
+CREATE TABLE IF NOT EXISTS work (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  from_agent_id TEXT NOT NULL REFERENCES world_agents(id),
+  from_team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
+  -- Kept when that team is disbanded later, so the record still says where the work went.
+  to_team_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('in_review', 'accepted', 'changes_requested')),
+  round INTEGER NOT NULL DEFAULT 1,
+  reviewer_id TEXT REFERENCES world_agents(id),
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS deliveries_state ON message_deliveries (state);
 CREATE INDEX IF NOT EXISTS items_state ON items (state);
 CREATE INDEX IF NOT EXISTS replies_item ON replies (item_id, state);
 CREATE INDEX IF NOT EXISTS events_item ON events (item_id);
@@ -154,5 +178,33 @@ export function openDatabase(file: string): DatabaseSync {
   const db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+/** Brings a database made by an earlier version up to the schema above. Each step is idempotent. */
+function migrate(db: DatabaseSync): void {
+  const columns = (table: string) => new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name));
+  const teams = columns("teams");
+  if (!teams.has("purpose")) db.exec("ALTER TABLE teams ADD COLUMN purpose TEXT NOT NULL DEFAULT ''");
+  if (!teams.has("hands_to")) db.exec("ALTER TABLE teams ADD COLUMN hands_to TEXT REFERENCES teams(id) ON DELETE SET NULL");
+
+  // Team instructions were their own tables before agents could talk to each other.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'team_orders'").get()) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(`
+        INSERT OR IGNORE INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at)
+          SELECT id, 'instruction', NULL, team_id, text, NULL, client_id, created_at FROM team_orders ORDER BY rowid;
+        INSERT OR IGNORE INTO message_deliveries (message_id, agent_id, state, error, updated_at)
+          SELECT order_id, agent_id, state, error, updated_at FROM order_deliveries;
+        DROP TABLE order_deliveries;
+        DROP TABLE team_orders;
+      `);
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  }
 }

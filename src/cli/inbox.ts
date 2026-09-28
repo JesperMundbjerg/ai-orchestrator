@@ -2,12 +2,13 @@
 // items, report activity and collect replies; the session is identified from the harness's
 // environment (or the herdr pane) so no setup is needed per conversation.
 
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { acknowledge, call, fetchReplies, formatReply } from "../shared/agent-client.ts";
 import { projectRoot } from "../shared/project.ts";
-import type { EvidenceInput, Item, ItemType, SessionInput, SubmitInput, SubmitResult } from "../shared/types.ts";
+import type { EvidenceInput, Item, ItemType, Message, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
 
@@ -23,6 +24,13 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox ack DELIVERY_ID           confirm you have received an answer
   inbox withdraw KEY | inbox resolve KEY
   inbox hook claude               Claude Code hook (Stop / UserPromptSubmit / SessionStart)
+
+  The office (teams of agents):
+  inbox team                      who you are, your team, your part in it, what waits for you
+  inbox say NAME "text"           message an agent or a team by name; it arrives when they are free
+  inbox handoff "Title" --summary "what was done, where, how to check it" [--to TEAM]
+  inbox handoff --work ID --summary "what changed"      hand it over again after changes
+  inbox review ID accept|changes --notes "…"            your team's verdict on work handed to it
 
 The session comes from CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or HERDR_PANE_ID, or --harness/--session.
 The service is INBOX_URL (default http://127.0.0.1:4870).`;
@@ -45,6 +53,10 @@ const OPTIONS = {
   nonblocking: { type: "boolean" },
   json: { type: "string" },
   next: { type: "string" },
+  summary: { type: "string" },
+  to: { type: "string" },
+  work: { type: "string" },
+  notes: { type: "string" },
   ack: { type: "boolean" },
   harness: { type: "string" },
   session: { type: "string" },
@@ -155,6 +167,24 @@ async function main(argv: string[]): Promise<void> {
       if (!arg) throw new Error(`inbox ${command} needs an item key or id`);
       const item = await call<Item>(`/api/agent/${command}`, { session: session(), item: arg });
       return console.log(`"${item.title}" is ${item.state}.`);
+    }
+    case "team":
+      return console.log((await call<TeamBrief>("/api/agent/team", { session: session() })).text);
+    case "say": {
+      const [, to, text] = parsed.positionals;
+      if (!to || !text) throw new Error('inbox say needs a name and the text: inbox say NAME "text"');
+      const message = await call<Message>("/api/agent/say", { session: session(), to, text, clientId: randomUUID() });
+      return console.log(`Sent to ${to}: it is typed into their terminal once they are free (${message.deliveries.length} ${message.deliveries.length === 1 ? "agent" : "agents"}).`);
+    }
+    case "handoff": {
+      const { work } = await call<{ work: Work }>("/api/agent/handoff", { session: session(), title: arg, summary: flags.summary, to: flags.to, work: flags.work, clientId: randomUUID() });
+      return console.log(`Handed over as work ${work.id} (round ${work.round}). The verdict arrives as a message; \`inbox team\` shows where it stands.`);
+    }
+    case "review": {
+      const verdict = parsed.positionals[2];
+      if (!arg || !verdict) throw new Error('inbox review needs the work id and a verdict: inbox review ID accept|changes --notes "…"');
+      const { work } = await call<{ work: Work }>("/api/agent/review", { session: session(), work: arg, verdict, notes: flags.notes });
+      return console.log(`Work ${work.id} is ${work.state === "accepted" ? "accepted" : "sent back with your notes"}; whoever handed it over is told.`);
     }
     case "hook":
       if (arg !== "claude") throw new Error("supported hooks: claude");

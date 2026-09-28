@@ -253,6 +253,10 @@ export interface Team {
   id: string;
   name: string;
   structure: TeamStructure;
+  /** What the team is for, in your words. Every agent in it is told this. */
+  purpose: string;
+  /** The team its finished work goes to, such as a QA team. */
+  handsTo: string | null;
   createdAt: string;
 }
 
@@ -280,6 +284,18 @@ export interface WorldAgent {
   role: AgentRole;
   /** It has asked you something in the inbox and says it cannot go on until you answer. */
   waitingOnYou: boolean;
+  /** What it is doing right now, from its harness's own events: "Bash: npm test". */
+  doing: string | null;
+  /** Sub-agents it has running, such as reviewers. */
+  helpers: Helper[];
+}
+
+/** A sub-agent working for an agent while it runs. */
+export interface Helper {
+  id: string;
+  /** Its kind, such as "architecture-reviewer". */
+  type: string;
+  startedAt: string;
 }
 
 /**
@@ -294,25 +310,74 @@ export interface WorldTeam extends Team {
   blockedBy: string[];
   /** The repositories its members work in. */
   projects: string[];
-  orders: TeamOrder[];
 }
 
 export const DELIVERY_STATES = ["queued", "sending", "delivered", "failed"] as const;
 export type DeliveryState = (typeof DELIVERY_STATES)[number];
 
-/** Your instruction to a team, and how it reached each agent it was meant for. */
-export interface TeamOrder {
+/**
+ * `instruction`: from you to a team. `message`: one agent to another agent or team.
+ * `handoff`: finished work passed to a team to review. `review`: that team's verdict,
+ * back to whoever handed it over.
+ */
+export const MESSAGE_KINDS = ["instruction", "message", "handoff", "review"] as const;
+export type MessageKind = (typeof MESSAGE_KINDS)[number];
+
+export interface Delivery {
+  agentId: string;
+  state: DeliveryState;
+  error: string | null;
+  updatedAt: string;
+}
+
+/** Something said in the office, and how it reached each agent it was meant for. */
+export interface Message {
   id: string;
-  teamId: string;
+  kind: MessageKind;
+  /** null when it is from you. */
+  fromAgentId: string | null;
+  /** The team it was addressed to, when it was addressed to a team. */
+  teamId: string | null;
   text: string;
+  workId: string | null;
   createdAt: string;
-  deliveries: Array<{ agentId: string; state: DeliveryState; error: string | null; updatedAt: string }>;
+  deliveries: Delivery[];
+}
+
+export const WORK_STATES = ["in_review", "accepted", "changes_requested"] as const;
+export type WorkState = (typeof WORK_STATES)[number];
+
+/** A piece of finished work handed from one team to another, and where its review stands. */
+export interface Work {
+  id: string;
+  title: string;
+  summary: string;
+  fromAgentId: string;
+  fromTeamId: string | null;
+  toTeamId: string;
+  state: WorkState;
+  /** How many times it has been handed over; a resubmission after changes adds one. */
+  round: number;
+  reviewerId: string | null;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface WorldState {
   agents: WorldAgent[];
   teams: WorldTeam[];
+  /** The latest messages, newest first. */
+  messages: Message[];
+  /** Work under review, and the latest reviewed. */
+  work: Work[];
   herdr: "connected" | "unavailable";
+}
+
+/** What an agent learns about itself and its team from `inbox team`. */
+export interface TeamBrief {
+  agentId: string;
+  text: string;
 }
 
 export interface AgentScreen {

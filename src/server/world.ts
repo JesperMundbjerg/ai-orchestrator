@@ -2,17 +2,18 @@
 // which team each one sits in, and where each team stands. An agent is whatever herdr sees
 // running plus every inbox task not bound to a running agent; team members stay at their desks
 // when they are offline. Your instructions to a team are kept here and typed into an agent's
-// terminal only once it is free, and a team becoming blocked is announced once.
+// terminal only once it is free (messages.ts), and a team becoming blocked is announced once.
 
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { projectRoot } from "../shared/project.ts";
 import {
   TEAM_STRUCTURES,
-  type AgentRole, type AgentScreen, type DeliveryState, type Harness, type InboxState, type Presence, type Team, type TeamOrder,
-  type TeamStatus, type TeamStructure, type WorldAgent, type WorldState, type WorldTeam,
+  type AgentRole, type AgentScreen, type Harness, type InboxState, type Presence, type SessionInput, type Team, type TeamBrief,
+  type TeamStatus, type TeamStructure, type WorldAgent, type WorldState,
 } from "../shared/types.ts";
 import { InboxError } from "./inbox.ts";
+import { Messages } from "./messages.ts";
 
 /** An agent a terminal multiplexer reports as running. */
 export interface LiveAgent {
@@ -36,9 +37,7 @@ export interface AgentSource {
 }
 
 type Inbox = () => Pick<InboxState, "tasks" | "projects" | "items">;
-const ORDERS_SHOWN = 20;
-/** An agent is free for a new prompt when it has finished its turn and is not asking anything. */
-const FREE: ReadonlySet<WorldAgent["status"]> = new Set(["idle", "done"]);
+type Joined = Omit<WorldAgent, "id" | "name" | "project" | "teamId" | "role" | "waitingOnYou" | "doing" | "helpers"> & { sessionId: string | null };
 
 /** First names handed out in a stable order per identity; a name is kept once given. */
 const NAMES = [
@@ -61,6 +60,7 @@ export class World {
   private projects = new Map<string, string | null>();
   /** The last status seen per team, so a team is announced when it becomes blocked, not while it stays so. */
   private announced: Map<string, TeamStatus> | null = null;
+  readonly messages: Messages;
   onChange: (reason: string) => void = () => {};
 
   constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date()) {
@@ -68,6 +68,7 @@ export class World {
     this.source = source;
     this.inbox = inbox;
     this.now = now;
+    this.messages = new Messages(db, source, () => this.state(), now, () => this.onChange("world"));
   }
 
   state(): WorldState {
@@ -83,10 +84,10 @@ export class World {
     for (const row of rows.values()) {
       if (!row.team_id || seen.has(str(row.identity))) continue;
       const [harness, cwd] = splitIdentity(str(row.identity));
-      agents.push({ identity: str(row.identity), harness, cwd, status: "offline", title: null, paneId: null, taskIds: [] });
+      agents.push({ identity: str(row.identity), harness, cwd, status: "offline", title: null, paneId: null, taskIds: [], sessionId: null });
     }
 
-    const world = agents.map((a): WorldAgent => {
+    const world = agents.map(({ sessionId: _, ...a }): WorldAgent => {
       const row = rows.get(a.identity)!;
       return {
         ...a,
@@ -96,14 +97,69 @@ export class World {
         teamId: row.team_id ? str(row.team_id) : null,
         role: str(row.role) as AgentRole,
         waitingOnYou: a.taskIds.some((t) => waitedOn.has(t)),
+        doing: null,
+        helpers: [],
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
-    const orders = this.orders();
     return {
       agents: world,
-      teams: this.teams().map((team) => ({ ...team, ...teamStatus(world.filter((a) => a.teamId === team.id)), orders: orders.filter((o) => o.teamId === team.id) })),
+      teams: this.teams().map((team) => ({ ...team, ...teamStatus(world.filter((a) => a.teamId === team.id)) })),
+      messages: this.messages.list(),
+      work: this.messages.work(),
       herdr: this.source?.available() ? "connected" : "unavailable",
     };
+  }
+
+  /**
+   * Which agent in the office a calling session is: by its herdr pane, by the session herdr
+   * reports running, by harness and checkout, or by the inbox task it posted from.
+   */
+  resolve(session: SessionInput): WorldAgent {
+    const state = this.state();
+    const live = this.source?.live() ?? [];
+    const pane = session.paneId ?? live.find((a) => a.harness === session.harness && a.sessionId === session.sessionId)?.paneId;
+    const task = this.inbox().tasks.find((t) => t.binding.harness === session.harness && t.binding.sessionId === session.sessionId);
+    const found = (pane ? state.agents.find((a) => a.paneId === pane) : undefined)
+      ?? (session.harness && session.cwd ? state.agents.find((a) => a.identity === identityOf(session.harness!, session.cwd!, "")) : undefined)
+      ?? (task ? state.agents.find((a) => a.taskIds.includes(task.id)) : undefined);
+    if (!found) throw new InboxError(404, "the office does not know this session: run inside herdr, or post to the inbox first");
+    return found;
+  }
+
+  /** What `inbox team` prints: who the agent is, its team and part in it, and what waits for it. */
+  brief(session: SessionInput): TeamBrief {
+    const me = this.resolve(session);
+    const state = this.state();
+    const agents = new Map(state.agents.map((a) => [a.id, a]));
+    const teams = new Map(state.teams.map((t) => [t.id, t]));
+    const team = me.teamId ? teams.get(me.teamId) ?? null : null;
+    const status = (a: WorldAgent) => `${a.name}${a.role === "lead" ? " (lead)" : ""}: ${a.status}${a.doing ? `, ${a.doing}` : ""}`;
+    const lines = [`You are ${me.name} (${me.harness}${me.cwd ? `, ${me.cwd}` : ""}).`];
+    if (!team) {
+      lines.push("You are not in a team: you work straight for the founder.");
+    } else {
+      const lead = state.agents.find((a) => a.teamId === team.id && a.role === "lead");
+      const part = team.structure === "dispatch"
+        ? me.role === "lead" ? "You lead it: divide the work among your crew and keep them moving." : `${lead ? `${lead.name} leads it and` : "Its lead"} divides the work; take yours from them.`
+        : "It is a team of peers: settle between you who does what.";
+      lines.push(`Team: ${team.name}. ${part}`);
+      if (team.purpose) lines.push(`Purpose: ${team.purpose}`);
+      lines.push(`Members: ${state.agents.filter((a) => a.teamId === team.id && a.id !== me.id).map(status).join("; ") || "just you"}.`);
+      const next = team.handsTo ? teams.get(team.handsTo) : null;
+      lines.push(next ? `Finished work goes to ${next.name}: inbox handoff "title" --summary "what was done, where, how to check it"` : "Your team does not hand work to another team.");
+    }
+    const toReview = state.work.filter((w) => w.state === "in_review" && w.toTeamId === me.teamId);
+    for (const w of toReview) {
+      lines.push(`To review: work ${w.id} "${w.title}" from ${agents.get(w.fromAgentId)?.name ?? "someone"}. Verdict: inbox review ${w.id} accept|changes --notes "…"`);
+    }
+    for (const w of state.work.filter((x) => x.fromAgentId === me.id)) {
+      const where = teams.get(w.toTeamId)?.name ?? "a disbanded team";
+      lines.push(`Your handoff ${w.id} "${w.title}" to ${where}: ${w.state === "in_review" ? "under review" : w.state === "accepted" ? "accepted" : `changes requested${w.notes ? ` (${w.notes})` : ""}`}.`);
+    }
+    const others = state.teams.filter((t) => t.id !== team?.id);
+    if (others.length) lines.push(`Other teams: ${others.map((t) => `${t.name}${t.purpose ? ` (${t.purpose})` : ""}`).join("; ")}.`);
+    lines.push('Talk to anyone, agent or team, by name: inbox say NAME "text". Messages arrive in their terminal when they are free.');
+    return { agentId: me.id, text: lines.join("\n") };
   }
 
   /**
@@ -120,126 +176,19 @@ export class World {
     const notices = first ? [] : state.teams.filter((t) => t.status === "blocked" && before.get(t.id) !== "blocked");
     await Promise.all([
       ...notices.map((t) => this.source?.notify(`${t.name} is blocked`, `Waiting on ${t.blockedBy.map((id) => names.get(id) ?? id).join(" and ")}.`).catch(() => {})),
-      ...this.sendable(state).map((d) => this.send(d)),
+      this.messages.deliver(state),
     ]);
   }
 
-  private sendable(state: WorldState): Array<{ orderId: string; agent: WorldAgent; text: string }> {
-    const agents = new Map(state.agents.map((a) => [a.id, a]));
-    const out: Array<{ orderId: string; agent: WorldAgent; text: string }> = [];
-    // One order at a time per agent, oldest first: a later order waits behind an earlier one.
-    const pending = new Set<string>();
-    for (const team of state.teams) {
-      for (const order of [...team.orders].reverse()) {
-        for (const d of order.deliveries) {
-          if (pending.has(d.agentId) || (d.state !== "queued" && d.state !== "sending")) continue;
-          pending.add(d.agentId);
-          const agent = agents.get(d.agentId);
-          if (d.state === "queued" && agent?.paneId && FREE.has(agent.status)) out.push({ orderId: order.id, agent, text: briefing(team, agent, state.agents, order.text) });
-        }
-      }
-    }
-    return out;
-  }
-
-  private async send({ orderId, agent, text }: { orderId: string; agent: WorldAgent; text: string }): Promise<void> {
-    // Claimed before typing, so two reactions never type the same order twice.
-    const claimed = this.db
-      .prepare("UPDATE order_deliveries SET state = 'sending', updated_at = ? WHERE order_id = ? AND agent_id = ? AND state = 'queued'")
-      .run(this.now().toISOString(), orderId, agent.id);
-    if (!claimed.changes || !this.source) return;
-    this.onChange("world");
-    let error: string | null = null;
-    try {
-      await this.source.prompt(agent.paneId!, text);
-    } catch (err) {
-      error = err instanceof Error ? err.message : String(err);
-    }
-    this.db
-      .prepare("UPDATE order_deliveries SET state = ?, error = ?, updated_at = ? WHERE order_id = ? AND agent_id = ?")
-      .run(error ? "failed" : "delivered", error, this.now().toISOString(), orderId, agent.id);
-    this.onChange("world");
-  }
-
-  /**
-   * Gives a team an instruction. A lead-and-crew team hears it through its lead, who divides
-   * the work; peers each hear it and settle it between them. Retrying with the same client id
-   * returns the first order instead of giving a second one.
-   */
-  instruct(teamId: string, input: { text?: string; clientId?: string }): TeamOrder {
-    const team = this.team(teamId);
-    const text = input.text?.trim();
-    if (!text) throw new InboxError(400, "an instruction needs some text");
-    if (input.clientId) {
-      const existing = this.db.prepare("SELECT id FROM team_orders WHERE client_id = ?").get(input.clientId) as Row | undefined;
-      if (existing) return this.order(str(existing.id));
-    }
-    const members = this.state().agents.filter((a) => a.teamId === teamId);
-    const targets = team.structure === "dispatch" ? members.filter((a) => a.role === "lead") : members.filter((a) => a.paneId);
-    if (!targets.length) {
-      throw new InboxError(409, team.structure === "dispatch" ? `${team.name} has no lead to hand the instruction to` : `nobody in ${team.name} is running to hear it`);
-    }
-    const id = randomUUID();
-    const at = this.now().toISOString();
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      this.db.prepare("INSERT INTO team_orders (id, team_id, text, client_id, created_at) VALUES (?, ?, ?, ?, ?)").run(id, teamId, text, input.clientId ?? null, at);
-      for (const a of targets) {
-        this.db.prepare("INSERT INTO order_deliveries (order_id, agent_id, state, updated_at) VALUES (?, ?, 'queued', ?)").run(id, a.id, at);
-      }
-      this.db.exec("COMMIT");
-    } catch (err) {
-      this.db.exec("ROLLBACK");
-      throw err;
-    }
-    this.onChange("world");
-    return this.order(id);
-  }
-
-  /** Puts a failed delivery back in line. */
-  retry(orderId: string, agentId: string): TeamOrder {
-    const done = this.db
-      .prepare("UPDATE order_deliveries SET state = 'queued', error = NULL, updated_at = ? WHERE order_id = ? AND agent_id = ? AND state = 'failed'")
-      .run(this.now().toISOString(), orderId, agentId);
-    if (!done.changes) throw new InboxError(409, "only a failed delivery can be retried");
-    this.onChange("world");
-    return this.order(orderId);
-  }
-
-  private orders(): TeamOrder[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM (SELECT *, rowid AS seq, row_number() OVER (PARTITION BY team_id ORDER BY rowid DESC) AS n FROM team_orders) WHERE n <= ${ORDERS_SHOWN} ORDER BY seq DESC`)
-      .all() as Row[];
-    const deliveries = this.db.prepare("SELECT * FROM order_deliveries").all() as Row[];
-    return rows.map((r) => ({
-      id: str(r.id),
-      teamId: str(r.team_id),
-      text: str(r.text),
-      createdAt: str(r.created_at),
-      deliveries: deliveries.filter((d) => d.order_id === r.id).map((d) => ({
-        agentId: str(d.agent_id),
-        state: str(d.state) as DeliveryState,
-        error: d.error == null ? null : str(d.error),
-        updatedAt: str(d.updated_at),
-      })),
-    }));
-  }
-
-  private order(id: string): TeamOrder {
-    const found = this.orders().find((o) => o.id === id);
-    if (!found) throw new InboxError(404, `no order ${id}`);
-    return found;
-  }
-
   /** Running agents and inbox tasks, joined on their session and merged per identity. */
-  private join(tasks: InboxState["tasks"]): Array<Omit<WorldAgent, "id" | "name" | "project" | "teamId" | "role" | "waitingOnYou">> {
+  private join(tasks: InboxState["tasks"]): Joined[] {
     const live = this.source?.live() ?? [];
-    const out = new Map<string, Omit<WorldAgent, "id" | "name" | "project" | "teamId" | "role" | "waitingOnYou">>();
+    const out = new Map<string, Joined>();
     for (const a of live) {
       let identity = identityOf(a.harness, a.cwd, a.sessionId ?? a.paneId);
       // Two agents in one checkout are two people.
       for (let n = 2; out.has(identity); n++) identity = `${identityOf(a.harness, a.cwd, a.sessionId ?? a.paneId)}#${n}`;
-      out.set(identity, { identity, harness: a.harness, cwd: a.cwd, status: a.status, title: a.title, paneId: a.paneId, taskIds: [] });
+      out.set(identity, { identity, harness: a.harness, cwd: a.cwd, status: a.status, title: a.title, paneId: a.paneId, taskIds: [], sessionId: a.sessionId });
     }
     for (const task of tasks) {
       if (task.parked) continue;
@@ -247,7 +196,7 @@ export class World {
       const identity = byPane?.identity ?? identityOf(task.binding.harness, task.binding.cwd, task.binding.sessionId);
       const agent = out.get(identity);
       if (agent) agent.taskIds.push(task.id);
-      else out.set(identity, { identity, harness: task.binding.harness, cwd: task.binding.cwd, status: "offline", title: null, paneId: null, taskIds: [task.id] });
+      else out.set(identity, { identity, harness: task.binding.harness, cwd: task.binding.cwd, status: "offline", title: null, paneId: null, taskIds: [task.id], sessionId: task.binding.sessionId });
     }
     return [...out.values()];
   }
@@ -278,33 +227,56 @@ export class World {
       id: str(r.id),
       name: str(r.name),
       structure: str(r.structure) as TeamStructure,
+      purpose: str(r.purpose),
+      handsTo: r.hands_to == null ? null : str(r.hands_to),
       createdAt: str(r.created_at),
     }));
   }
 
-  createTeam(input: { name?: string; structure?: string }): Team {
-    const name = input.name?.trim();
-    if (!name) throw new InboxError(400, "a team needs a name");
+  createTeam(input: { name?: string; structure?: string; purpose?: string; handsTo?: string | null }): Team {
+    const name = this.teamName(input.name, null);
     const structure = checkStructure(input.structure ?? "circle");
     const id = randomUUID();
-    this.db.prepare("INSERT INTO teams (id, name, structure, created_at) VALUES (?, ?, ?, ?)").run(id, name, structure, this.now().toISOString());
+    if (input.handsTo) this.team(input.handsTo);
+    this.db
+      .prepare("INSERT INTO teams (id, name, structure, purpose, hands_to, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(id, name, structure, input.purpose?.trim() ?? "", input.handsTo ?? null, this.now().toISOString());
     this.onChange("world");
     return this.team(id);
   }
 
-  updateTeam(id: string, patch: { name?: string; structure?: string }): Team {
-    this.team(id);
-    if (patch.name !== undefined && !patch.name.trim()) throw new InboxError(400, "a team needs a name");
+  updateTeam(id: string, patch: { name?: string; structure?: string; purpose?: string; handsTo?: string | null }): Team {
+    const team = this.team(id);
+    const name = patch.name === undefined ? team.name : this.teamName(patch.name, id);
+    if (patch.handsTo === id) throw new InboxError(400, "a team cannot hand its work to itself");
+    if (patch.handsTo) this.team(patch.handsTo);
     this.db
-      .prepare("UPDATE teams SET name = coalesce(?, name), structure = coalesce(?, structure) WHERE id = ?")
-      .run(patch.name?.trim() ?? null, patch.structure === undefined ? null : checkStructure(patch.structure), id);
+      .prepare("UPDATE teams SET name = ?, structure = ?, purpose = ?, hands_to = ? WHERE id = ?")
+      .run(
+        name,
+        patch.structure === undefined ? team.structure : checkStructure(patch.structure),
+        patch.purpose === undefined ? team.purpose : patch.purpose.trim(),
+        patch.handsTo === undefined ? team.handsTo : patch.handsTo,
+        id,
+      );
     this.onChange("world");
     return this.team(id);
+  }
+
+  /** Agents address teams by name, so two teams never share one. */
+  private teamName(value: string | undefined, id: string | null): string {
+    const name = value?.trim();
+    if (!name) throw new InboxError(400, "a team needs a name");
+    if (this.teams().some((t) => t.id !== id && t.name.toLowerCase() === name.toLowerCase())) throw new InboxError(409, `there is already a team called ${name}`);
+    return name;
   }
 
   /** Removes the team; its members go back to the lounge with their names and faces. */
   deleteTeam(id: string): { ok: true } {
     this.team(id);
+    if (this.db.prepare("SELECT 1 FROM work WHERE to_team_id = ? AND state = 'in_review'").get(id)) {
+      throw new InboxError(409, "this team still has work under review");
+    }
     this.db.prepare("UPDATE world_agents SET team_id = NULL, role = 'member' WHERE team_id = ?").run(id);
     this.db.prepare("DELETE FROM teams WHERE id = ?").run(id);
     this.onChange("world");
@@ -373,16 +345,6 @@ export function teamStatus(members: WorldAgent[]): { status: TeamStatus; blocked
   if (working) return { status: "working", blockedBy: [], projects };
   if (members.some((m) => m.status !== "offline")) return { status: "idle", blockedBy: [], projects };
   return { status: "offline", blockedBy: [], projects };
-}
-
-/** What the agent reads: who is asking, what team it is in and what its part is, then the instruction. */
-function briefing(team: WorldTeam, agent: WorldAgent, agents: WorldAgent[], text: string): string {
-  const others = agents.filter((a) => a.teamId === team.id && a.id !== agent.id);
-  const who = (a: WorldAgent) => `${a.name}${a.cwd ? ` (${a.cwd})` : ""}`;
-  const part = team.structure === "dispatch"
-    ? `You lead ${team.name}. Divide this among your crew${others.length ? ` (${others.map(who).join(", ")})` : ""} and keep them moving.`
-    : `You are one of the peers in ${team.name}${others.length ? `, with ${others.map(who).join(", ")}` : ""}. Settle between you who does what.`;
-  return `[From the founder to the team ${team.name}] ${part} Ask in the review inbox if you need a decision.\n\n${text}`;
 }
 
 function identityOf(harness: Harness, cwd: string | null, fallback: string): string {

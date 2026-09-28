@@ -130,6 +130,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
         <TeamPanel
           key={shownTeam.id}
           team={shownTeam}
+          world={world}
           agents={agents}
           state={state}
           waiting={waiting}

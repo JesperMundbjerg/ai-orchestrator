@@ -363,3 +363,12 @@ h1, h2, h3 { margin: 0; }
   .world-panel.agent { left: 12px; width: auto; }
   .world-hint { display: none; }
 }
+.order-head { font-size: 12.5px; }
+.order.instruction { border-left: 3px solid var(--accent); }
+.order.handoff, .order.review { border-left: 3px solid var(--try); }
+.work { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+.work-state { font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em; border-radius: 5px; padding: 1px 6px; background: var(--line); }
+.work-state.in_review { background: rgba(59, 111, 224, 0.18); }
+.work-state.accepted { background: rgba(61, 220, 132, 0.18); }
+.work-state.changes_requested { background: rgba(229, 72, 77, 0.16); }
+.work-notes { font-size: 13px; white-space: pre-wrap; }

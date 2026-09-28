@@ -8,14 +8,17 @@ import { join } from "node:path";
 import { openDatabase } from "../src/server/db.ts";
 import { createInboxServer } from "../src/server/http.ts";
 import { Inbox } from "../src/server/inbox.ts";
+import { World, type LiveAgent } from "../src/server/world.ts";
 
 let nextPort = 48_000 + Math.floor(Math.random() * 1000);
 
-async function withServer(fn: (base: string) => Promise<void>) {
+async function withServer(fn: (base: string) => Promise<void>, live: LiveAgent[] = []) {
   const dir = mkdtempSync(join(tmpdir(), "inbox-http-"));
-  const inbox = new Inbox(openDatabase(":memory:"), join(dir, "files"), { available: () => false, forSession: () => null, resolvePane: () => null });
+  const db = openDatabase(":memory:");
+  const inbox = new Inbox(db, join(dir, "files"), { available: () => false, forSession: () => null, resolvePane: () => null });
+  const world = new World(db, { available: () => true, live: () => live, read: async () => "", focus: async () => {}, prompt: async () => {}, notify: async () => {} }, () => inbox.state());
   const port = nextPort++;
-  const server = createInboxServer(inbox, null, { port, staticDir: null });
+  const server = createInboxServer(inbox, null, { port, staticDir: null, world });
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
   try {
     await fn(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
@@ -63,4 +66,26 @@ test("a request for another host name is refused (DNS rebinding)", async () => {
     });
     assert.equal(status, 403);
   });
+});
+
+test("an agent finds its team and talks to another agent by name", async () => {
+  const live: LiveAgent[] = [
+    { paneId: "p1", harness: "pi", sessionId: "s1", cwd: "/a", status: "idle", title: null },
+    { paneId: "p2", harness: "claude", sessionId: "s2", cwd: "/b", status: "idle", title: null },
+  ];
+  await withServer(async (base) => {
+    const post = (path: string, body: unknown) => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const brief = await post("/api/agent/team", { session: { harness: "pi", sessionId: "s1", paneId: "p1" } });
+    assert.equal(brief.status, 200);
+    const { text } = await brief.json();
+    assert.match(text, /not in a team/);
+    const world = await (await fetch(`${base}/api/world`)).json();
+    const b = world.agents.find((a: { cwd: string }) => a.cwd === "/b");
+    const said = await post("/api/agent/say", { session: { harness: "pi", sessionId: "s1", paneId: "p1" }, to: b.name, text: "hello", clientId: "k1" });
+    assert.equal(said.status, 200);
+    const again = await post("/api/agent/say", { session: { harness: "pi", sessionId: "s1", paneId: "p1" }, to: b.name, text: "hello", clientId: "k1" });
+    assert.equal((await again.json()).id, (await said.json()).id, "a retried request sends nothing twice");
+    const unknown = await post("/api/agent/team", { session: { harness: "pi", sessionId: "nope" } });
+    assert.equal(unknown.status, 404);
+  }, live);
 });

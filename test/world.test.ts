@@ -46,6 +46,9 @@ function seat(world: World, structure: "dispatch" | "circle", cwds: string[]) {
   return { team, agents };
 }
 
+/** The text of a message as typed, without the header and footer around it. */
+const body = (typed: string) => typed.split("\n\n")[1];
+
 const lane = (paneId: string, cwd: string, sessionId: string, status: LiveAgent["status"] = "idle"): LiveAgent =>
   ({ paneId, harness: "pi", sessionId, cwd, status, title: null });
 
@@ -164,7 +167,7 @@ test("an instruction to a lead-and-crew team goes to the lead once it is free, w
   const { world, prompts, setLive } = setup();
   setLive([lane("p1", "/lead", "s1", "working"), lane("p2", "/crew", "s2", "idle")]);
   const { team, agents } = seat(world, "dispatch", ["/lead", "/crew"]);
-  const order = world.instruct(team.id, { text: "Ship the login page", clientId: "c1" });
+  const order = world.messages.instruct(team.id, { text: "Ship the login page", clientId: "c1" });
   assert.deepEqual(order.deliveries.map((d) => [d.agentId, d.state]), [[agents[0]!.id, "queued"]]);
   await world.react();
   assert.equal(prompts.length, 0, "the lead is busy");
@@ -174,9 +177,9 @@ test("an instruction to a lead-and-crew team goes to the lead once it is free, w
   assert.equal(prompts[0]!.pane, "p1");
   assert.match(prompts[0]!.text, /You lead Mission Control/);
   assert.match(prompts[0]!.text, new RegExp(agents[1]!.name));
-  assert.match(prompts[0]!.text, /Ship the login page$/);
-  assert.equal(world.state().teams[0]!.orders[0]!.deliveries[0]!.state, "delivered");
-  assert.equal(world.instruct(team.id, { text: "Ship the login page", clientId: "c1" }).id, order.id, "a retried request is the same order");
+  assert.equal(body(prompts[0]!.text), "Ship the login page");
+  assert.equal(world.state().messages[0]!.deliveries[0]!.state, "delivered");
+  assert.equal(world.messages.instruct(team.id, { text: "Ship the login page", clientId: "c1" }).id, order.id, "a retried request is the same order");
 });
 
 test("peers each hear an instruction, one order at a time, and a failed delivery can be retried", async () => {
@@ -184,18 +187,18 @@ test("peers each hear an instruction, one order at a time, and a failed delivery
   setLive([lane("p1", "/a", "s1"), lane("p2", "/b", "s2")]);
   const { team, agents } = seat(world, "circle", ["/a", "/b"]);
   refuse("agent_blocked");
-  const first = world.instruct(team.id, { text: "first" });
-  world.instruct(team.id, { text: "second" });
+  const first = world.messages.instruct(team.id, { text: "first" });
+  world.messages.instruct(team.id, { text: "second" });
   await world.react();
-  const failed = world.state().teams[0]!.orders.find((o) => o.id === first.id)!;
+  const failed = world.state().messages.find((m) => m.id === first.id)!;
   assert.deepEqual(failed.deliveries.map((d) => [d.state, d.error]), [["failed", "agent_blocked"], ["failed", "agent_blocked"]]);
   refuse(null);
   await world.react();
-  assert.deepEqual(prompts.map((p) => p.text.split("\n\n")[1]), ["second", "second"], "a failed order does not hold up the next");
-  world.retry(first.id, agents[0]!.id);
+  assert.deepEqual(prompts.map((p) => body(p.text)), ["second", "second"], "a failed order does not hold up the next");
+  world.messages.retry(first.id, agents[0]!.id);
   await world.react();
-  assert.deepEqual(prompts.map((p) => [p.pane, p.text.split("\n\n")[1]]).at(-1), ["p1", "first"]);
-  assert.throws(() => world.retry(first.id, agents[0]!.id), /only a failed delivery/);
+  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]).at(-1), ["p1", "first"]);
+  assert.throws(() => world.messages.retry(first.id, agents[0]!.id), /only a failed delivery/);
 });
 
 test("an instruction needs someone to hear it", () => {
@@ -203,19 +206,113 @@ test("an instruction needs someone to hear it", () => {
   setLive([lane("p1", "/crew", "s1")]);
   const team = world.createTeam({ name: "Crew", structure: "dispatch" });
   world.updateAgent(world.state().agents[0]!.id, { teamId: team.id });
-  assert.throws(() => world.instruct(team.id, { text: "go" }), /no lead/);
-  assert.throws(() => world.instruct(team.id, { text: " " }), /needs some text/);
+  assert.throws(() => world.messages.instruct(team.id, { text: "go" }), /no lead/);
+  assert.throws(() => world.messages.instruct(team.id, { text: " " }), /needs some text/);
 });
 
 test("an agent hears its orders in the order they were given, even while another peer is still being told", async () => {
   const { world, prompts, setLive } = setup();
   setLive([lane("p1", "/a", "s1", "working"), lane("p2", "/b", "s2", "idle")]);
   const { team } = seat(world, "circle", ["/a", "/b"]);
-  world.instruct(team.id, { text: "first" });
-  world.instruct(team.id, { text: "second" });
+  world.messages.instruct(team.id, { text: "first" });
+  world.messages.instruct(team.id, { text: "second" });
   await world.react();
-  assert.deepEqual(prompts.map((p) => [p.pane, p.text.split("\n\n")[1]]), [["p2", "first"]], "p1 is busy; p2 gets only the first order");
+  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]), [["p2", "first"]], "p1 is busy; p2 gets only the first order");
   await world.react();
-  assert.deepEqual(prompts.map((p) => [p.pane, p.text.split("\n\n")[1]]).at(-1), ["p2", "second"]);
+  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]).at(-1), ["p2", "second"]);
   assert.equal(prompts.filter((p) => p.pane === "p1").length, 0);
+});
+
+test("agents talk to each other by name, and a team hears it through its lead", async () => {
+  const { world, prompts, setLive } = setup();
+  setLive([lane("p1", "/lead", "s1"), lane("p2", "/crew", "s2"), lane("p3", "/other", "s3")]);
+  const { agents } = seat(world, "dispatch", ["/lead", "/crew"]);
+  const other = world.state().agents.find((a) => a.cwd === "/other")!;
+  const crew = world.resolve({ harness: "pi", sessionId: "s2" });
+  assert.equal(crew.id, agents[1]!.id, "a session is found through herdr");
+  world.messages.say(other, { to: crew.name.toUpperCase(), text: "Can you look at the login test?" });
+  world.messages.say(other, { to: "mission control", text: "Who owns the tutor?" });
+  await world.react();
+  await world.react();
+  const typed = prompts.map((p) => [p.pane, body(p.text)]);
+  assert.deepEqual(typed, [["p2", "Can you look at the login test?"], ["p1", "Who owns the tutor?"]]);
+  assert.match(prompts[0]!.text, new RegExp(`Message from ${other.name}`));
+  assert.match(prompts[0]!.text, new RegExp(`inbox say "${other.name}"`));
+  assert.throws(() => world.messages.say(other, { to: other.name, text: "hi" }), /that is you/);
+  assert.throws(() => world.messages.say(other, { to: "Nobody", text: "hi" }), /nobody called/);
+});
+
+test("finished work goes to the team a team hands to, and the verdict comes back to whoever handed it over", async () => {
+  const { world, prompts, setLive } = setup();
+  setLive([lane("p1", "/dev", "s1"), lane("p2", "/qa1", "s2"), lane("p3", "/qa2", "s3")]);
+  const qa = seat(world, "circle", ["/qa1", "/qa2"]).team;
+  world.updateTeam(qa.id, { name: "QA", purpose: "Review every handoff for correctness and tests" });
+  const dev = world.createTeam({ name: "Dev", structure: "circle", handsTo: qa.id });
+  const coder = world.state().agents.find((a) => a.cwd === "/dev")!;
+  world.updateAgent(coder.id, { teamId: dev.id });
+  const me = world.resolve({ harness: "pi", sessionId: "s1" });
+
+  const { work } = world.messages.handoff(me, { title: "Login page", summary: "Done in src/login.ts; run npm test" });
+  assert.equal(work.toTeamId, qa.id);
+  await world.react();
+  assert.deepEqual(prompts.map((p) => p.pane).sort(), ["p2", "p3"], "every QA peer hears it");
+  assert.match(prompts[0]!.text, new RegExp(`inbox review ${work.id} accept`));
+  assert.match(prompts[0]!.text, /Review every handoff for correctness/);
+
+  const reviewer = world.resolve({ harness: "pi", sessionId: "s2" });
+  assert.throws(() => world.messages.review(me, { work: work.id, verdict: "accept" }), /only the team/);
+  assert.throws(() => world.messages.review(reviewer, { work: work.id, verdict: "changes" }), /say what needs to change/);
+  world.messages.review(reviewer, { work: work.id, verdict: "changes", notes: "The empty password case is not handled" });
+  await world.react();
+  assert.equal(prompts.at(-1)!.pane, "p1");
+  assert.match(prompts.at(-1)!.text, /Changes requested/);
+  assert.match(prompts.at(-1)!.text, new RegExp(`inbox handoff --work ${work.id}`));
+
+  const again = world.messages.handoff(me, { work: work.id, summary: "Empty passwords are refused now" }).work;
+  assert.deepEqual([again.state, again.round, again.notes], ["in_review", 2, ""]);
+  assert.throws(() => world.messages.handoff(me, { work: work.id, summary: "again" }), /still under review/);
+  assert.throws(() => world.deleteTeam(qa.id), /under review/);
+  world.messages.review(reviewer, { work: work.id, verdict: "accept" });
+  assert.equal(world.state().work[0]!.state, "accepted");
+  assert.match(world.brief({ harness: "pi", sessionId: "s1" }).text, /Your handoff .* accepted/);
+  assert.throws(() => world.messages.handoff(me, { title: "x", summary: "y", to: "Nowhere" }), /no team called/);
+});
+
+test("a handoff needs somewhere to go", () => {
+  const { world, setLive } = setup();
+  setLive([lane("p1", "/dev", "s1")]);
+  const me = world.state().agents[0]!;
+  assert.throws(() => world.messages.handoff(me, { title: "Login", summary: "done" }), /does not hand its work to anyone/);
+  const team = world.createTeam({ name: "Dev" });
+  world.updateAgent(me.id, { teamId: team.id });
+  assert.throws(() => world.messages.handoff(world.agent(me.id), { title: "Login", summary: "done", to: "dev" }), /not your own/);
+});
+
+test("inbox team tells an agent its team, its part and how to reach the others", () => {
+  const { world, setLive } = setup();
+  setLive([lane("p1", "/lead", "s1"), lane("p2", "/crew", "s2", "working")]);
+  const { team, agents } = seat(world, "dispatch", ["/lead", "/crew"]);
+  world.updateTeam(team.id, { purpose: "Fix founder comments in the lessons" });
+  const text = world.brief({ paneId: "p2" }).text;
+  assert.match(text, new RegExp(`You are ${agents[1]!.name}`));
+  assert.match(text, new RegExp(`${agents[0]!.name} leads it`));
+  assert.match(text, /Purpose: Fix founder comments/);
+  assert.match(text, /inbox say NAME/);
+  assert.throws(() => world.brief({ paneId: "nope" }), /does not know this session/);
+});
+
+test("an agent that keeps sending messages is stopped for the hour", () => {
+  const { world, setLive } = setup();
+  setLive([lane("p1", "/a", "s1"), lane("p2", "/b", "s2")]);
+  const [a, b] = world.state().agents;
+  for (let i = 0; i < 30; i++) world.messages.say(a!, { to: b!.name, text: `ping ${i}` });
+  assert.throws(() => world.messages.say(a!, { to: b!.name, text: "one more" }), /in the last hour/);
+});
+
+test("team names are unique, since agents address teams by name", () => {
+  const { world } = setup();
+  world.createTeam({ name: "QA" });
+  assert.throws(() => world.createTeam({ name: "qa" }), /already a team called/);
+  const other = world.createTeam({ name: "Dev" });
+  assert.throws(() => world.updateTeam(other.id, { handsTo: other.id }), /itself/);
 });

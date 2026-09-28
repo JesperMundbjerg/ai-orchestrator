@@ -4,9 +4,9 @@ import type { Team, WorldAgent } from "../src/shared/types.ts";
 import { CORRIDOR_Z, planOffice, QUEUE_SIDE_X, queueOrder, route } from "../src/ui/world/layout.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
-  id, identity: id, name: id, harness: "pi", cwd: null, project: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, ...extra,
+  id, identity: id, name: id, harness: "pi", cwd: null, project: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], ...extra,
 });
-const team = (id: string, structure: Team["structure"]): Team => ({ id, name: id, structure, createdAt: "" });
+const team = (id: string, structure: Team["structure"]): Team => ({ id, name: id, structure, purpose: "", handsTo: null, createdAt: "" });
 
 test("the queue has one place per agent, in the order its items wait", () => {
   const agents = [agent("tom", { taskIds: ["t1", "t3"] }), agent("ada", { taskIds: ["t2"] })];
