@@ -4,7 +4,7 @@ import type { Group, Texture } from "three";
 import type { Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
 import { textTexture, type Line } from "./label.ts";
 import { lookFor } from "./look.ts";
-import { teamLine } from "./team.ts";
+import { teamLine } from "./status.ts";
 import { CORRIDOR_Z, DESK, LOUNGE_CENTER, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, type Corner, type Desk, type OfficePlan, type Vec2 } from "./layout.ts";
 
 /** The room and its furniture. Nothing here moves on its own; it follows the plan. */

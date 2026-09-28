@@ -3,14 +3,14 @@ import { api } from "../api.ts";
 import type { Route, View } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
 
-const VIEWS: Array<{ view: Exclude<View, "world">; label: string }> = [
+const VIEWS: Array<{ view: Exclude<View, "world" | "teams">; label: string }> = [
   { view: "needs", label: "Needs you" },
   { view: "working", label: "Working" },
   { view: "parked", label: "Parked" },
 ];
 
 export function Sidebar({ state, route, navigate }: { state: InboxState; route: Route; navigate: (r: Partial<Route>) => void }) {
-  const counts: Record<Exclude<View, "world">, number> = {
+  const counts: Record<Exclude<View, "world" | "teams">, number> = {
     needs: needsYou(state, "all", route.projectId).length,
     working: state.tasks.filter((t) => !t.parked && (!route.projectId || t.projectId === route.projectId)).length,
     parked: state.tasks.filter((t) => t.parked && (!route.projectId || t.projectId === route.projectId)).length,
@@ -29,6 +29,14 @@ export function Sidebar({ state, route, navigate }: { state: InboxState; route: 
             </button>
           </li>
         ))}
+      </ul>
+
+      <ul className="views">
+        <li>
+          <button className={route.view === "teams" ? "active" : ""} onClick={() => navigate({ view: "teams", itemId: null })}>
+            <span>Teams</span>
+          </button>
+        </li>
       </ul>
 
       <button className="office-link" onClick={() => navigate({ view: "world", itemId: null })}>

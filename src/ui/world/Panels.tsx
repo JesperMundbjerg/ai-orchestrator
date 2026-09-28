@@ -1,19 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
-import { TEAM_STRUCTURES, type AgentScreen, type InboxState, type ItemDetail, type TeamStructure, type WorldAgent, type WorldState, type WorldTeam } from "../../shared/types.ts";
+import type { AgentScreen, InboxState, ItemDetail, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ItemDetailView } from "../components/ItemDetail.tsx";
+import { TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
-import { LAMP } from "./Avatar.tsx";
 import type { OfficePlan, Vec2 } from "./layout.ts";
-import { MessageRow, teamMessages, teamWork, WorkRow } from "./Talk.tsx";
-import { TEAM_LAMP, teamLine } from "./team.ts";
+import { MessageRow, teamMessages, teamWork, TellTeam, WorkRow } from "./Talk.tsx";
+import { LAMP, TEAM_LAMP, teamLine } from "./status.ts";
 import type { Waiting } from "./WorldView.tsx";
-
-const STRUCTURE_LABEL: Record<TeamStructure, string> = {
-  dispatch: "Lead + crew: the lead divides the work",
-  circle: "Peers: they talk it through together",
-};
 
 /** The team list: where each team stands, open one, found a team, rename or disband one. */
 export function TeamsPanel({ world, plan, agents, onOpen }: {
@@ -37,7 +32,8 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
       {adding ? (
         <TeamForm
           submit="Create team"
-          onSubmit={(name, structure) => run(api.createTeam({ name, structure }).then(() => setAdding(false)))}
+          teams={world.teams}
+          onSubmit={(fields) => run(api.createTeam(fields).then(() => setAdding(false)))}
         />
       ) : null}
       <ul className="team-list">
@@ -48,9 +44,10 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
             <li key={team.id}>
               {editing === team.id ? (
                 <TeamForm
-                  initial={{ name: team.name, structure: team.structure }}
+                  initial={team}
+                  teams={world.teams}
                   submit="Save"
-                  onSubmit={(name, structure) => run(api.updateTeam(team.id, { name, structure }).then(() => setEditing(null)))}
+                  onSubmit={(fields) => run(api.updateTeam(team.id, fields).then(() => setEditing(null)))}
                   extra={
                     <button
                       type="button"
@@ -84,37 +81,6 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
   );
 }
 
-function TeamForm({ initial, submit, onSubmit, extra }: {
-  initial?: { name: string; structure: TeamStructure };
-  submit: string;
-  onSubmit: (name: string, structure: TeamStructure) => void;
-  extra?: ReactNode;
-}) {
-  const [name, setName] = useState(initial?.name ?? "");
-  const [structure, setStructure] = useState<TeamStructure>(initial?.structure ?? "dispatch");
-  return (
-    <form
-      className="team-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (name.trim()) onSubmit(name.trim(), structure);
-      }}
-    >
-      <input autoFocus placeholder="Team name, e.g. Mission Control" value={name} onChange={(e) => setName(e.target.value)} />
-      {TEAM_STRUCTURES.map((s) => (
-        <label key={s} className="radio">
-          <input type="radio" name="structure" checked={structure === s} onChange={() => setStructure(s)} />
-          {STRUCTURE_LABEL[s]}
-        </label>
-      ))}
-      <div className="row">
-        <button className="primary small" type="submit" disabled={!name.trim()}>{submit}</button>
-        {extra}
-      </div>
-    </form>
-  );
-}
-
 /**
  * One team up close: where it stands and who holds it up, what each member is doing, the
  * work it handed over or has to review, and what was said in it with how far each got.
@@ -129,23 +95,11 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
   onAnswer: (itemId: string) => void;
   onClose: () => void;
 }) {
-  const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const members = [...agents.values()].filter((a) => a.teamId === team.id).sort((a, b) => Number(b.role === "lead") - Number(a.role === "lead"));
-  const lead = members.find((m) => m.role === "lead") ?? null;
-  const hearers = team.structure === "dispatch" ? (lead ? [lead] : []) : members.filter((m) => m.paneId);
   const line = teamLine(team, agents);
   const doing = (a: WorldAgent) => a.doing ?? state.tasks.find((t) => a.taskIds.includes(t.id) && t.activity)?.activity ?? a.title ?? "";
   const work = teamWork(world, team.id);
   const talk = teamMessages(world, team.id).slice(0, 15);
-  const send = () => {
-    setSending(true);
-    api.instructTeam(team.id, text).then(
-      () => (setText(""), setError(null)),
-      (e: Error) => setError(e.message),
-    ).finally(() => setSending(false));
-  };
 
   return (
     <aside className="world-panel agent">
@@ -158,6 +112,9 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
         <span className={team.status === "blocked" ? "team-blocked" : ""}>{line.text}</span>
         <span className="muted"> · {team.structure === "dispatch" ? "lead + crew" : "peers"}{team.projects.length ? ` · ${team.projects.join(", ")}` : ""}</span>
       </div>
+
+      {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}
+      {team.handsTo ? <div className="muted small-note">Hands its finished work to {world.teams.find((t) => t.id === team.handsTo)?.name ?? "another team"}.</div> : null}
 
       {team.blockedBy.length ? (
         <div className="agent-waiting">
@@ -192,29 +149,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
         </ul>
       </div>
 
-      <form
-        className="instruct"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (text.trim() && !sending) send();
-        }}
-      >
-        <div className="section-label">Tell the team</div>
-        <textarea
-          value={text}
-          rows={3}
-          placeholder={team.structure === "dispatch" ? `What should ${team.name} do? ${lead?.name ?? "The lead"} divides it among the crew.` : `What should ${team.name} do? Every peer hears it.`}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && e.currentTarget.form?.requestSubmit()}
-        />
-        <div className="row">
-          <button className="primary small" type="submit" disabled={!text.trim() || sending || !hearers.length}>Send to {team.name}</button>
-          <span className="muted small-note">
-            {hearers.length ? `Typed into ${hearers.map((h) => h.name).join(" and ")}'s terminal once free.` : team.structure === "dispatch" ? "Pick a lead first." : "Nobody is running."}
-          </span>
-        </div>
-        {error ? <div className="warn">{error}</div> : null}
-      </form>
+      <TellTeam team={team} members={members} />
 
       {work.length ? (
         <div>

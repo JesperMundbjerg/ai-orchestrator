@@ -2,7 +2,7 @@
 // panel and the board both show.
 
 import { useState } from "react";
-import type { Message, MessageKind, WorkState, Work, WorldAgent, WorldState } from "../../shared/types.ts";
+import type { Message, MessageKind, WorkState, Work, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ago } from "../format.ts";
 
@@ -67,5 +67,47 @@ export function WorkRow({ work, world, agents }: { work: Work; world: WorldState
       <div className="order-text">{work.summary}</div>
       {work.notes ? <div className="work-notes"><span className="muted">{reviewer ?? "Reviewer"}:</span> {work.notes}</div> : null}
     </li>
+  );
+}
+
+/** Your instruction to a team: typed into its lead's terminal, or every running peer's, once free. */
+export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAgent[] }) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const lead = members.find((m) => m.role === "lead") ?? null;
+  const running = members.filter((m) => m.paneId);
+  const hearers = team.structure === "dispatch" ? (lead ? [lead] : []) : running.length ? running : members;
+  const send = () => {
+    setSending(true);
+    api.instructTeam(team.id, text).then(
+      () => (setText(""), setError(null)),
+      (e: Error) => setError(e.message),
+    ).finally(() => setSending(false));
+  };
+  return (
+    <form
+      className="instruct"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (text.trim() && !sending) send();
+      }}
+    >
+      <div className="section-label">Tell the team</div>
+      <textarea
+        value={text}
+        rows={3}
+        placeholder={team.structure === "dispatch" ? `What should ${team.name} do? ${lead?.name ?? "The lead"} divides it among the crew.` : `What should ${team.name} do? Every peer hears it.`}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && e.currentTarget.form?.requestSubmit()}
+      />
+      <div className="row">
+        <button className="primary small" type="submit" disabled={!text.trim() || sending || !hearers.length}>Send to {team.name}</button>
+        <span className="muted small-note">
+          {hearers.length ? `Typed into ${hearers.map((h) => h.name).join(" and ")}'s terminal once free.` : team.structure === "dispatch" ? "Pick a lead first." : "Nobody in the team yet."}
+        </span>
+      </div>
+      {error ? <div className="warn">{error}</div> : null}
+    </form>
   );
 }

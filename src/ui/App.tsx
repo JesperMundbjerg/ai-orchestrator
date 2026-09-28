@@ -3,6 +3,7 @@ import { ItemDetailView } from "./components/ItemDetail.tsx";
 import { Queue } from "./components/Queue.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { TaskBoard } from "./components/TaskBoard.tsx";
+import { TeamBoard } from "./components/TeamBoard.tsx";
 import { useChangeSignal, useInboxState, useItemDetail, useRoute } from "./hooks.ts";
 import { needsYou, nextNeeding, type Filter } from "./queue.ts";
 
@@ -24,7 +25,7 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (route.view === "world" || e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
+      if (route.view === "world" || route.view === "teams" || e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
       if (e.key === "n") openNext();
       if ((e.key === "j" || e.key === "k") && queue.length) {
         const at = queue.findIndex((q) => q.item.id === route.itemId);
@@ -77,6 +78,8 @@ export function App() {
             )}
           </main>
         </>
+      ) : route.view === "teams" ? (
+        <TeamBoard state={state} tick={tick} onOffice={() => navigate({ view: "world", itemId: null })} />
       ) : (
         <TaskBoard state={state} parked={route.view === "parked"} projectId={route.projectId} onOpenItem={(itemId) => navigate({ view: "needs", itemId })} />
       )}

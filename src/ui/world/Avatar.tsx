@@ -4,21 +4,12 @@ import type { Group, Mesh, MeshBasicMaterial, Texture } from "three";
 import type { ItemType, WorldAgent } from "../../shared/types.ts";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import { textTexture } from "./label.ts";
+import { LAMP } from "./status.ts";
 import { lookFor, type Look } from "./look.ts";
 import { route, type Spot, type Vec2 } from "./layout.ts";
 
 const WALK_SPEED = 1.9;
 const TURN_RATE = 8;
-
-/** The status lamp above each head. */
-export const LAMP: Record<WorldAgent["status"], { color: string; label: string; glow: number }> = {
-  working: { color: "#3ddc84", label: "working", glow: 1 },
-  blocked: { color: "#ffb020", label: "waiting at a prompt", glow: 1 },
-  done: { color: "#5b9dff", label: "finished a turn", glow: 0.8 },
-  idle: { color: "#d7dde4", label: "idle", glow: 0.35 },
-  unknown: { color: "#6b7280", label: "status unknown", glow: 0.15 },
-  offline: { color: "#3a3f47", label: "offline", glow: 0 },
-};
 
 export const CARD: Record<ItemType, { color: string; glyph: string }> = {
   decide: { color: "#8a4fd8", glyph: "?" },

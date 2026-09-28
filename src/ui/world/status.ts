@@ -1,6 +1,17 @@
-// How a team's status reads, the same on its wall screen and in the panels.
+// How an agent's and a team's status read: the lamps and lines shared by the office, its
+// panels and the team board.
 
 import type { TeamStatus, WorldAgent, WorldTeam } from "../../shared/types.ts";
+
+/** The status lamp above each head. */
+export const LAMP: Record<WorldAgent["status"], { color: string; label: string; glow: number }> = {
+  working: { color: "#3ddc84", label: "working", glow: 1 },
+  blocked: { color: "#ffb020", label: "waiting at a prompt", glow: 1 },
+  done: { color: "#5b9dff", label: "finished a turn", glow: 0.8 },
+  idle: { color: "#d7dde4", label: "idle", glow: 0.35 },
+  unknown: { color: "#6b7280", label: "status unknown", glow: 0.15 },
+  offline: { color: "#3a3f47", label: "offline", glow: 0 },
+};
 
 export const TEAM_LAMP: Record<TeamStatus, { color: string; label: string }> = {
   blocked: { color: "#ff5a4f", label: "blocked" },
