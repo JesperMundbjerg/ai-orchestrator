@@ -9,6 +9,7 @@ import { frameAllowed } from "../shared/pages.ts";
 import type { ActivityEvent, ActivityInput, AgentModel, PageCheck, SessionInput, SubmitInput } from "../shared/types.ts";
 import { claudeHookEvents, claudeModel } from "./activity.ts";
 import { Inbox, InboxError } from "./inbox.ts";
+import { projectQueue } from "./queue.ts";
 import type { Herdr } from "./herdr.ts";
 import type { World } from "./world.ts";
 
@@ -66,6 +67,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/projects\/([\w-]+)\/pin$/, (_r, b, [id]) => inbox.setPinned(id!, Boolean(b.pinned))],
     // The office world
     ["GET", /^\/api\/world$/, () => needWorld().state()],
+    ["GET", /^\/api\/p\/([a-z][a-z0-9-]*)\/queue$/, (_r, _b, [project]) => projectQueue(needWorld().state(), project!)],
     ["POST", /^\/api\/world\/teams$/, (_r, b) => needWorld().createTeam(b)],
     ["PATCH", /^\/api\/world\/teams\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateTeam(id!, b)],
     ["DELETE", /^\/api\/world\/teams\/([\w-]+)$/, (_r, _b, [id]) => needWorld().deleteTeam(id!)],

@@ -1,0 +1,110 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openDatabase } from "../src/server/db.ts";
+import { createInboxServer } from "../src/server/http.ts";
+import { Inbox } from "../src/server/inbox.ts";
+import { herdrName, projectQueue } from "../src/server/queue.ts";
+import { World, type AgentSource, type LiveAgent } from "../src/server/world.ts";
+
+const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, stdio: "ignore" });
+
+/** FysikLab's shape: a main checkout on `dev` with standing lane worktrees under .claude/worktrees, and its adapter. */
+function fysiklab(adapter: object = {
+  project: "fysiklab",
+  lanes: [
+    { name: "einstein", worktree: ".claude/worktrees/einstein", harness: "pi" },
+    { name: "heisenberg", worktree: ".claude/worktrees/heisenberg", model: "openai-codex/gpt-6-astra" },
+    { name: "mission-control", agent: "dispatch-mission-control", role: "router" },
+  ],
+}) {
+  const root = join(realpathSync(mkdtempSync(join(tmpdir(), "queue-"))), "space-shuttle");
+  execFileSync("git", ["init", "-q", "-b", "dev", root]);
+  git(root, "commit", "-q", "--allow-empty", "-m", "init");
+  mkdirSync(join(root, ".claude/worktrees"), { recursive: true });
+  for (const lane of ["einstein", "heisenberg"]) git(root, "worktree", "add", "-q", "-b", `worktree-${lane}`, join(root, ".claude/worktrees", lane));
+  writeFileSync(join(root, "orchestrator.json"), JSON.stringify(adapter));
+  let live: LiveAgent[] = [];
+  const db = openDatabase(":memory:");
+  const inbox = new Inbox(db, join(root, "..", "files"), { available: () => false, forSession: () => null, resolvePane: () => null });
+  const world = new World(db, { available: () => true, live: () => live } as unknown as AgentSource, () => inbox.state());
+  const agent = (pane: string, cwd: string, status: LiveAgent["status"], name: string | null = null, harness: LiveAgent["harness"] = "pi"): LiveAgent =>
+    ({ paneId: pane, harness, sessionId: `s-${pane}`, cwd, status, title: `${pane} title`, name });
+  return { root, world, inbox, agent, setLive: (next: LiveAgent[]) => void (live = next) };
+}
+
+test("herdr's name for an agent is read from the end of its identity", () => {
+  assert.equal(herdrName("claude:/repo@dispatch-einstein"), "dispatch-einstein");
+  assert.equal(herdrName("claude:/repo@tests#2"), "tests");
+  assert.equal(herdrName("pi:/repo/.claude/worktrees/einstein"), null);
+});
+
+test("a project's lanes are its adapter's names joined to the agents in the office", () => {
+  const { root, world, agent, setLive } = fysiklab();
+  const einstein = join(root, ".claude/worktrees/einstein");
+  setLive([
+    agent("p1", einstein, "working"),
+    agent("p2", root, "idle", "dispatch-mission-control", "claude"),
+    agent("p3", root, "idle", null, "claude"), // someone else in the main checkout is not Mission Control
+  ]);
+  const queue = projectQueue(world.state(), "fysiklab");
+  assert.equal(queue.project, "fysiklab");
+  assert.deepEqual(queue.counts, { waiting: 0, assigned: 0, working: 0, held: 0, fixed: 0 });
+  assert.deepEqual(queue.held, []);
+  const [e, h, mc] = queue.lanes;
+  const office = world.state().agents;
+  assert.deepEqual(
+    { name: e!.name, agent: e!.agentName, state: e!.state, doing: e!.doing, branch: e!.branch, harness: e!.harness, carrying: e!.carrying, why: e!.why },
+    { name: "einstein", agent: office.find((a) => a.paneId === "p1")!.name, state: "working", doing: "p1 title", branch: "worktree-einstein", harness: "pi", carrying: [], why: null },
+  );
+  // Nobody runs in heisenberg's worktree: the lane is there, offline, with what the adapter says it runs.
+  assert.deepEqual({ agent: h!.agentId, state: h!.state, model: h!.model, why: h!.why }, { agent: null, state: "offline", model: "openai-codex/gpt-6-astra", why: `nobody runs in ${join(root, ".claude/worktrees/heisenberg")}` });
+  assert.deepEqual({ agent: mc!.agentId, role: mc!.role, state: mc!.state }, { agent: office.find((a) => a.paneId === "p2")!.id, role: "router", state: "idle" });
+});
+
+test("a lane whose agent is stuck at a prompt says who, and one that stopped keeps its name", () => {
+  const { root, world, agent, setLive } = fysiklab();
+  const einstein = join(root, ".claude/worktrees/einstein");
+  setLive([agent("p1", einstein, "blocked")]);
+  const stuck = projectQueue(world.state(), "fysiklab").lanes[0]!;
+  assert.equal(stuck.state, "blocked");
+  assert.match(stuck.why!, /is stuck at a prompt/);
+  setLive([]);
+  // The project's lead keeps a desk while offline, so the lane still names who it was.
+  const lane = projectQueue(world.state(), "fysiklab").lanes[0]!;
+  assert.equal(lane.state, "offline");
+  assert.equal(lane.doing, null);
+  assert.ok(lane.agentName);
+  assert.equal(lane.why, `${lane.agentName} is not running in ${einstein}`);
+});
+
+test("an unknown project is a 404, and a broken adapter says what is wrong", () => {
+  const { root, world, agent, setLive } = fysiklab({ project: "fysiklab", lanes: "einstein" });
+  setLive([agent("p1", root, "idle")]);
+  assert.throws(() => projectQueue(world.state(), "nope"), (e: Error & { status?: number }) => e.status === 404 && /no project "nope"/.test(e.message));
+  assert.throws(() => projectQueue(world.state(), "space-shuttle"), (e: Error & { status?: number }) => e.status === 422 && /lanes must be a list/.test(e.message));
+});
+
+test("GET /api/p/:project/queue answers the same over HTTP", async () => {
+  const { root, world, inbox, agent, setLive } = fysiklab();
+  setLive([agent("p1", join(root, ".claude/worktrees/einstein"), "idle")]);
+  const port = 49_000 + Math.floor(Math.random() * 1000);
+  const server = createInboxServer(inbox, null, { port, staticDir: null, world });
+  await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+  try {
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const ok = await fetch(`${base}/api/p/fysiklab/queue`);
+    assert.equal(ok.status, 200);
+    assert.deepEqual((await ok.json()).lanes.map((l: { name: string; state: string }) => `${l.name}:${l.state}`), ["einstein:idle", "heisenberg:offline", "mission-control:offline"]);
+    const missing = await fetch(`${base}/api/p/nope/queue`);
+    assert.equal(missing.status, 404);
+    assert.match((await missing.json()).error, /no project "nope"/);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});

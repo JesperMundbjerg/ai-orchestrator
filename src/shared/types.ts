@@ -392,6 +392,32 @@ export interface ProjectAdapter {
   lanes: AdapterLane[];
 }
 
+/** One of a project's standing lanes as the office sees it: the adapter's name joined to an agent. */
+export interface Lane {
+  name: string;
+  role: string | null;
+  /** The office agent behind it; null when nobody matching runs or ever ran. */
+  agentId: string | null;
+  agentName: string | null;
+  harness: Harness | null;
+  model: string | null;
+  state: "idle" | "working" | "blocked" | "held" | "conflict" | "offline";
+  doing: string | null;
+  branch: string | null;
+  /** Ids of the comments it holds (filled once comments live here). */
+  carrying: string[];
+  why: string | null;
+}
+
+/** GET /api/p/:project/queue: who works the project's queue, and how the queue stands. */
+export interface ProjectQueue {
+  project: string;
+  lanes: Lane[];
+  counts: { waiting: number; assigned: number; working: number; held: number; fixed: number };
+  held: unknown[];
+  paused: boolean;
+}
+
 export interface AdapterLane {
   name: string;
   /** Absolute path of the checkout it works in (given relative to the main checkout). */
