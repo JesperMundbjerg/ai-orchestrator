@@ -61,7 +61,10 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     return () => void (document.body.style.cursor = "");
   }, [hovered]);
 
+  // Up close at your desk the full board would fill the view, and the card there names them already.
+  const close = spot.zone === "caller";
   const tag = useMemo(() => {
+    if (close) return textTexture([{ text: agent.name, size: 46, color: "#ffffff", weight: 700 }], { width: 320, height: 80, background: "rgba(16,20,28,0.72)", radius: 40 });
     const sub = [agent.project, HARNESS_INFO[agent.harness].label].filter(Boolean).join(" · ");
     return textTexture(
       [
@@ -72,7 +75,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
       ],
       { width: 512, height: 128, background: "rgba(16,20,28,0.72)", radius: 40 },
     );
-  }, [agent.name, agent.project, agent.harness, waiting?.count]);
+  }, [close, agent.name, agent.project, agent.harness, waiting?.count]);
   useEffect(() => () => tag.dispose(), [tag]);
 
   const card = useMemo(
@@ -177,7 +180,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
         <sphereGeometry args={[0.2, 20, 16]} />
         <meshBasicMaterial color={LAMP[agent.status].color} transparent opacity={0.2} depthWrite={false} toneMapped={false} />
       </mesh>
-      <sprite position={[0, 2.68, 0]} scale={[1.5, 0.375, 1]}>
+      <sprite position={close ? [0, 2.42, 0] : [0, 2.68, 0]} scale={close ? [0.56, 0.14, 1] : [1.5, 0.375, 1]}>
         <spriteMaterial map={tag} transparent depthWrite={false} />
       </sprite>
       {said ? (
