@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/server/db.ts";
@@ -92,4 +92,27 @@ test("a Pi agent that never reported its model shows the one its session file re
   assert.deepEqual(world.state().agents[0]!.model, { id: "anthropic/claude-opus-5-5", label: "Opus 5.5" });
   world.report({ harness: "pi", sessionId: file, paneId: "p1" }, [{ kind: "model", model: { id: "openai/gpt-6", label: "GPT-6" } }]);
   assert.equal(world.state().agents[0]!.model?.label, "GPT-6", "what the harness reports wins over the file");
+});
+
+test("a Codex pane herdr gives no session for is found by its folder: the newest rollout that began there", () => {
+  const codex = dir();
+  const day = join(codex, "2026", "09", "29");
+  mkdirSync(day, { recursive: true });
+  // Like a real rollout: the first line is a long session_meta (it carries the instructions), then turns.
+  const meta = (id: string, cwd: string) => ({ type: "session_meta", payload: { session_id: id, id, cwd, originator: "codex-tui", base_instructions: { text: "x".repeat(60_000) } } });
+  const write = (name: string, id: string, cwd: string, model: string, at: number) => {
+    const path = join(day, name);
+    writeFileSync(path, lines(meta(id, cwd), codexTurn(model)));
+    utimesSync(path, at, at);
+  };
+  const lesson = "/Users/jesper/projects/space-shuttle-cosmology-lesson";
+  write("rollout-2026-09-29T20-32-35-a1.jsonl", "a1", lesson, "gpt-6-sol", 1_000);
+  write("rollout-2026-09-29T20-36-37-a2.jsonl", "a2", lesson, "gpt-6-astra", 2_000);
+  write("rollout-2026-09-29T20-40-00-b1.jsonl", "b1", "/Users/jesper/projects/other", "gpt-6", 3_000);
+  const files = new SessionFiles({ claude: dir(), codex });
+  assert.deepEqual(files.modelOf("codex", null, 0, lesson), { id: "gpt-6-astra", label: "GPT-6 Astra" });
+  assert.equal(files.modelOf("codex", null, 0, "/Users/jesper/projects/other")?.label, "GPT-6");
+  assert.equal(files.modelOf("codex", null, 0, "/Users/jesper/projects/nowhere"), null);
+  assert.equal(files.modelOf("codex", null, 0, null), null, "without a session or a folder there is nothing to look for");
+  assert.equal(files.modelOf("claude", null, 0, lesson), null, "only Codex is found this way");
 });

@@ -90,12 +90,16 @@ export class SessionFiles {
     this.roots = roots;
   }
 
-  modelOf(harness: Harness, sessionId: string | null, now: number): AgentModel | null {
-    if (!sessionId || (harness !== "pi" && harness !== "codex" && harness !== "claude")) return null;
-    const key = `${harness}:${sessionId}`;
+  /** herdr reports no session for a Codex pane, so Codex is then found by the folder it runs in. */
+  modelOf(harness: Harness, sessionId: string | null, now: number, cwd: string | null = null): AgentModel | null {
+    if (harness !== "pi" && harness !== "codex" && harness !== "claude") return null;
+    const byFolder = !sessionId && harness === "codex" && Boolean(cwd);
+    if (!sessionId && !byFolder) return null;
+    const key = byFolder ? `codex@${cwd}` : `${harness}:${sessionId}`;
     const before = this.seen.get(key);
     if (before && now - before.checked < RECHECK_MS) return before.model;
-    const path = before?.path ?? this.find(harness, sessionId);
+    // A folder's newest session can change (a new one starts), so it is looked for again each time.
+    const path = byFolder ? this.newestRolloutIn(cwd!) : before?.path ?? this.find(harness, sessionId!);
     let size = -1;
     try {
       if (path) size = statSync(path).size;
@@ -109,6 +113,53 @@ export class SessionFiles {
 
   private read(harness: Harness, path: string): AgentModel | null {
     return harness === "pi" ? piSessionModel(path) : harness === "codex" ? codexRolloutModel(path) : claudeTranscriptModel(path);
+  }
+
+  /** The most recently written Codex rollout that began in `cwd`, among the newest few. */
+  private newestRolloutIn(cwd: string): string | null {
+    const files: { path: string; mtime: number }[] = [];
+    for (const year of list(this.roots.codex).reverse().slice(0, 1)) {
+      for (const month of list(join(this.roots.codex, year)).reverse().slice(0, 2)) {
+        for (const day of list(join(this.roots.codex, year, month)).reverse().slice(0, 3)) {
+          const dir = join(this.roots.codex, year, month, day);
+          for (const f of list(dir)) {
+            if (!f.startsWith("rollout-") || !f.endsWith(".jsonl")) continue;
+            try {
+              files.push({ path: join(dir, f), mtime: statSync(join(dir, f)).mtimeMs });
+            } catch {
+              // gone meanwhile
+            }
+          }
+        }
+      }
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+    return files.slice(0, 40).find((f) => this.rolloutCwd(f.path) === cwd)?.path ?? null;
+  }
+
+  private cwds = new Map<string, string | null>();
+
+  /** Where a rollout began: the first line is its session_meta, which can be long (it holds the instructions). */
+  private rolloutCwd(path: string): string | null {
+    if (this.cwds.has(path)) return this.cwds.get(path)!;
+    let cwd: string | null = null;
+    try {
+      const fd = openSync(path, "r");
+      try {
+        const buffer = Buffer.alloc(1024 * 1024);
+        const text = buffer.toString("utf8", 0, readSync(fd, buffer, 0, buffer.length, 0));
+        const first = text.slice(0, text.indexOf("\n") < 0 ? undefined : text.indexOf("\n"));
+        const entry = JSON.parse(first) as Entry;
+        cwd = entry.type === "session_meta" && typeof entry.payload?.cwd === "string" ? entry.payload.cwd : null;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      // unreadable, or not yet written whole: looked at again next time
+      return null;
+    }
+    this.cwds.set(path, cwd);
+    return cwd;
   }
 
   private find(harness: Harness, sessionId: string): string | null {

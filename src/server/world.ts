@@ -14,6 +14,7 @@ import type {
   ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
 import { Activity } from "./activity.ts";
+import { Adapters } from "./adapter.ts";
 import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
 import { SessionFiles } from "./models.ts";
@@ -103,6 +104,7 @@ export class World {
   /** Session files, for the model of an agent whose harness does not report it. */
   private files: SessionFiles;
   private activityTimer: NodeJS.Timeout | null = null;
+  private adapters = new Adapters();
   onChange: (reason: string) => void = () => {};
 
   constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date(), files = new SessionFiles()) {
@@ -252,16 +254,21 @@ export class World {
     const out = new Map<string, Repository>();
     for (const cwd of [...world.map((a) => a.cwd), ...teams.map((t) => t.path)]) {
       const checkout = cwd ? this.checkout(cwd) : null;
-      if (checkout && !out.has(checkout.repoRoot)) out.set(checkout.repoRoot, { name: checkout.repoName, root: checkout.repoRoot, base: this.checkout(checkout.repoRoot)?.branch ?? null });
+      if (checkout && !out.has(checkout.repoRoot)) out.set(checkout.repoRoot, this.repository(checkout.repoName, checkout.repoRoot, this.checkout(checkout.repoRoot)?.branch ?? null));
     }
     return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private repository(name: string, root: string, base: string | null): Repository {
+    const { adapter, problems } = this.adapters.read(root, name);
+    return { name, root, base, adapter, adapterProblems: problems };
   }
 
   /** A repository nobody works in yet, named by the path of its main checkout. */
   private mainCheckout(path: string | undefined): Repository | undefined {
     const checkout = path && isAbsolute(path) ? checkoutOf(path) : null;
     if (!checkout || checkout.linked || checkout.top !== path) return undefined;
-    return { name: checkout.repoName, root: checkout.repoRoot, base: checkout.branch };
+    return this.repository(checkout.repoName, checkout.repoRoot, checkout.branch);
   }
 
   /** A worktree seen for the first time becomes a project, named after its folder. */

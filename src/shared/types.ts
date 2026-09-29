@@ -364,6 +364,44 @@ export interface Repository {
   root: string;
   /** The branch its main checkout is on, which a new project's branch starts from. */
   base: string | null;
+  /** What the project says about itself in `orchestrator.json` at its main checkout; null without one, or when it is invalid. */
+  adapter: ProjectAdapter | null;
+  /** What is wrong with `orchestrator.json`: why it was not read, or keys it ignored. */
+  adapterProblems: string[];
+}
+
+/**
+ * A project's own description, read from `orchestrator.json` in its main checkout: the boundary
+ * between the orchestration here and the project (docs/ORCHESTRATION.md). No project code runs here;
+ * commands are named for agents' briefs, never run by the service.
+ */
+export interface ProjectAdapter {
+  /** The key in `/api/p/:project`; the repository's folder name when the file does not say. */
+  project: string;
+  /** Where work lands. */
+  integrationBranch: string | null;
+  /** Where the project's pages are served, e.g. "http://localhost:3000". */
+  preview: { base: string } | null;
+  comments: { kinds: string[]; anchor: string[]; charter: string | null; leaseMinutes: number | null } | null;
+  decisions: { maxQuestion: number | null } | null;
+  /** Check commands by tier ("changed", "full", "release"). */
+  checks: Record<string, string>;
+  reviewers: { perSlice: string[]; cap: string | null } | null;
+  land: { mode: string | null; publish: string | null; setup: string | null } | null;
+  /** The project's standing agents, by the names its own tools use. */
+  lanes: AdapterLane[];
+}
+
+export interface AdapterLane {
+  name: string;
+  /** Absolute path of the checkout it works in (given relative to the main checkout). */
+  worktree: string | null;
+  /** The name herdr knows it by, when that differs from `name`. */
+  agent: string | null;
+  harness: Harness | null;
+  model: string | null;
+  /** "router" for the one that routes comments (Mission Control); otherwise a worker. */
+  role: string | null;
 }
 
 export const DELIVERY_STATES = ["queued", "sending", "delivered", "failed"] as const;
