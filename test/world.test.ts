@@ -51,7 +51,7 @@ function setup() {
     removeWorktree: async (repoRoot, path) => void git(repoRoot, "worktree", "remove", path),
   };
   const world = new World(db, source, () => inbox.state());
-  return { inbox, world, prompts, notices, started, closed, setLive: (next: LiveAgent[]) => void (live = next), refuse: (why: string | null) => void (refuse = why), failStart: (why: string | null) => void (startFails = why), whenStarted: (fn: () => void) => void (onStart = fn) };
+  return { db, inbox, world, prompts, notices, started, closed, setLive: (next: LiveAgent[]) => void (live = next), refuse: (why: string | null) => void (refuse = why), failStart: (why: string | null) => void (startFails = why), whenStarted: (fn: () => void) => void (onStart = fn) };
 }
 
 /** A standing team with the given agents on it; the first leads it. */
@@ -348,6 +348,63 @@ test("whoever runs in the first mate's pane leads the project, even after herdr 
   world.updateAgent(other.id, { role: "lead" });
   assert.equal(world.state().agents.find((a) => a.id === other.id)?.role, "lead");
   assert.equal(world.state().agents.find((a) => a.id === lead.id)?.role, "member");
+});
+
+/**
+ * A project from before the office remembered its first mate's pane: the lead record herdr named
+ * is offline, and the same agent runs unnamed beside a crew member, both on the project as crew.
+ */
+async function strandedLead() {
+  const { dir, root } = repository();
+  const t = setup();
+  const path = join(dir, "repo-cosmology");
+  t.setLive([lane("p1", root, "s1")]);
+  t.whenStarted(() => t.setLive([lane("p1", root, "s1"), leadIn(path, "working")]));
+  const team = await t.world.createTeam({ name: "Cosmology", repository: root });
+  const ada = t.world.state().agents.find((a) => a.paneId === "w2:p1")!;
+  t.db.prepare("UPDATE teams SET lead_pane = NULL").run();
+  const told = t.world.messages.tell(ada.id, { text: "Use the new star map" });
+  t.setLive([lane("p1", root, "s1"), { ...leadIn(path, "idle"), name: null }, { ...lane("p3", path, "crew-session", "working"), name: null }]);
+  const onTeam = t.world.state().agents.filter((a) => a.teamId === team.id);
+  const unnamed = onTeam.find((a) => a.paneId === "w2:p1")!;
+  const crew = onTeam.find((a) => a.paneId === "p3")!;
+  assert.deepEqual(onTeam.find((a) => a.id === ada.id)?.status, "offline", "the old lead record is stranded");
+  return { ...t, root, path, team, ada, told, unnamed, crew };
+}
+
+test("someone nobody runs can be removed; the next running member leads, and what they said stays", async () => {
+  const { world, setLive, root, path, team, ada, told, unnamed, crew } = await strandedLead();
+  const said = world.messages.say(ada, { to: crew.name, text: "Crew, start on the stars" });
+  assert.throws(() => world.removeAgent(unnamed.id), (err: Error & { status?: number }) => err.status === 409 && /running in herdr/.test(err.message));
+
+  world.removeAgent(ada.id);
+  const state = world.state();
+  assert.ok(!state.agents.some((a) => a.id === ada.id), "gone from the office");
+  const leads = state.agents.filter((a) => a.teamId === team.id && a.role === "lead");
+  assert.equal(leads.length, 1);
+  assert.ok([unnamed.id, crew.id].includes(leads[0]!.id) && leads[0]!.status !== "offline", "a running member leads");
+  assert.deepEqual(state.withFounder.find((m) => m.id === told.id)?.deliveries, [], "what waited for it is dropped");
+  const kept = state.messages.find((m) => m.id === said.id)!;
+  assert.deepEqual([kept.fromAgentId, kept.text], [ada.id, "Crew, start on the stars"], "what it said keeps its text and sender");
+
+  // Running again under that identity brings it back.
+  setLive([lane("p1", root, "s1"), leadIn(path, "idle")]);
+  assert.equal(world.state().agents.find((a) => a.id === ada.id)?.name, ada.name);
+});
+
+test("a running agent can take over an offline lead, with its name and what was said to it", async () => {
+  const { world, ada, told, unnamed, crew, prompts } = await strandedLead();
+  assert.equal(ada.ran, true);
+  world.updateAgent(unnamed.id, { role: "lead", takeName: true });
+  const state = world.state();
+  const lead = state.agents.find((a) => a.id === unnamed.id)!;
+  assert.deepEqual([lead.role, lead.name], ["lead", ada.name]);
+  assert.ok(!state.agents.some((a) => a.id === ada.id));
+  assert.deepEqual(state.withFounder.find((m) => m.id === told.id)?.deliveries.map((d) => d.agentId), [lead.id]);
+  await world.react();
+  assert.ok(prompts.some((p) => p.pane === "w2:p1" && p.text.includes("Use the new star map")));
+  // A lead who is running keeps their place and name.
+  assert.throws(() => world.updateAgent(crew.id, { role: "lead", takeName: true }), (err: Error & { status?: number }) => err.status === 409 && /is running/.test(err.message));
 });
 
 test("a first mate that did not start at all is reported plainly, with the worktree kept", async () => {

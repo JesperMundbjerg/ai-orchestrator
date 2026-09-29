@@ -313,6 +313,8 @@ export interface WorldAgent {
   helpers: Helper[];
   /** The model its harness last reported for this session; null when it has not said. */
   model: AgentModel | null;
+  /** It has been seen running in herdr; a record that never has is a name with nobody behind it. */
+  ran: boolean;
 }
 
 /** A model as the harness names it: its own id, and a short label to show. */

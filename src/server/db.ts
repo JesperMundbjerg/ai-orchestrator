@@ -130,7 +130,11 @@ CREATE TABLE IF NOT EXISTS world_agents (
   name TEXT NOT NULL,
   team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
   role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('lead', 'member')),
-  first_seen_at TEXT NOT NULL
+  first_seen_at TEXT NOT NULL,
+  -- When it was first seen running in herdr; null for a record nothing ever ran behind.
+  ran_at TEXT,
+  -- Removed by you while nothing ran behind it; kept so what it said still has a sender.
+  removed INTEGER NOT NULL DEFAULT 0
 );
 
 -- Everything said in the office: your instructions, agents' messages to each other, handoffs
@@ -212,6 +216,9 @@ function migrate(db: DatabaseSync): void {
 
   if (!columns("messages").has("to_founder")) db.exec("ALTER TABLE messages ADD COLUMN to_founder INTEGER NOT NULL DEFAULT 0");
   // An item's walkthrough of pages; before it, an item had one preview, which reads as a one-page walkthrough.
+  const agents = columns("world_agents");
+  if (!agents.has("ran_at")) db.exec("ALTER TABLE world_agents ADD COLUMN ran_at TEXT");
+  if (!agents.has("removed")) db.exec("ALTER TABLE world_agents ADD COLUMN removed INTEGER NOT NULL DEFAULT 0");
   if (!columns("items").has("pages")) db.exec("ALTER TABLE items ADD COLUMN pages TEXT");
 
   // Team instructions were their own tables before agents could talk to each other.

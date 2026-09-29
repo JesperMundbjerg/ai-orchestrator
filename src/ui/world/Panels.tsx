@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import type { InboxState, ItemDetail, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
@@ -7,7 +7,7 @@ import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
 import type { OfficePlan, Vec2 } from "./layout.ts";
 import { agentMessages, Conversation, conversation, BetweenAgents, MessageRow, teamMessages, teamWork, TellAgent, TellTeam, WorkRow } from "./Talk.tsx";
-import { LAMP, TEAM_LAMP, teamLine } from "./status.ts";
+import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "./status.ts";
 import type { Waiting } from "./WorldView.tsx";
 
 /** The project list: where each stands, open one, start a project, change or finish one. */
@@ -185,6 +185,8 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
   onTeam: (() => void) | null;
 }) {
   const [name, setName] = useState(agent.name);
+  // A name changed elsewhere, such as by taking over a lead's, shows here too.
+  useEffect(() => setName(agent.name), [agent.name]);
   const [error, setError] = useState<string | null>(null);
   const tasks = state.tasks.filter((t) => agent.taskIds.includes(t.id));
   const team = world.teams.find((t) => t.id === agent.teamId) ?? null;
@@ -194,6 +196,9 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
   const said = agentMessages(world, agent.id).filter((m) => m.fromAgentId && !m.toFounder).slice(0, 30);
   const items = waiting ? waiting.itemIds.map((id) => state.items.find((i) => i.id === id)!).filter(Boolean) : [];
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
+  // A lead record nothing ever ran behind, whose place and name this running agent can take.
+  const lead = team ? world.agents.find((a) => a.teamId === team.id && a.role === "lead") : undefined;
+  const stranded = lead && lead.id !== agent.id && lead.status === "offline" && !lead.ran && agent.status !== "offline" ? lead : null;
   const rename = () => {
     if (name.trim() && name.trim() !== agent.name) void run(api.updateAgent(agent.id, { name: name.trim() }));
     else setName(agent.name);
@@ -264,10 +269,20 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
         {team && agent.role !== "lead" ? (
           <button className="ghost small" onClick={() => void run(api.updateAgent(agent.id, { role: "lead" }))}>Make {agent.name} the {leadTitle(team).toLowerCase()}</button>
         ) : team ? <span className="muted small-note">{leadTitle(team)} of {team.name}</span> : null}
+        {stranded && team ? (
+          <button
+            className="ghost small"
+            title={`${stranded.name} never ran in herdr: ${agent.name} takes over the name and what was said to ${stranded.name}, and that record goes`}
+            onClick={() => void run(api.updateAgent(agent.id, { role: "lead", takeName: true }))}
+          >
+            Make {agent.name} the {leadTitle(team).toLowerCase()} and take {stranded.name}’s name
+          </button>
+        ) : null}
       </div>
 
       <div className="row">
         <button className="ghost small" onClick={onGo}>Walk over</button>
+        {removable(agent) ? <button className="ghost small danger" onClick={() => confirmRemove(agent) && void run(api.removeAgent(agent.id).then(onClose))}>Remove from the office</button> : null}
       </div>
       {error ? <div className="warn">{error}</div> : null}
 

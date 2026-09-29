@@ -72,6 +72,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/world\/teams\/([\w-]+)\/messages$/, (_r, b, [id]) => needWorld().messages.instruct(id!, b)],
     ["POST", /^\/api\/world\/messages\/([\w-]+)\/deliveries\/([\w-]+)\/retry$/, (_r, _b, [message, agent]) => needWorld().messages.retry(message!, agent!)],
     ["PATCH", /^\/api\/world\/agents\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateAgent(id!, b)],
+    ["DELETE", /^\/api\/world\/agents\/([\w-]+)$/, (_r, _b, [id]) => (needWorld().removeAgent(id!), { removed: id })],
     ["POST", /^\/api\/world\/agents\/([\w-]+)\/messages$/, (_r, b, [id]) => needWorld().messages.tell(id!, b)],
     // Agent protocol
     ["POST", /^\/api\/agent\/items$/, (_r, b: SubmitInput) => inbox.submit(b)],

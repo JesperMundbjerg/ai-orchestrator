@@ -30,3 +30,10 @@ export function teamLine(team: WorldTeam, agents: Map<string, WorldAgent>): { te
   if (team.status === "idle") return { text: "Idle · ready for work", color };
   return { text: "Everyone offline", color };
 }
+
+/** Someone with nothing running behind them: the office can let them go. */
+export const removable = (agent: WorldAgent) => agent.status === "offline" && !agent.paneId;
+
+export function confirmRemove(agent: WorldAgent): boolean {
+  return confirm(`Remove ${agent.name} from the office? Nothing runs behind ${agent.name}. What they said stays; messages still waiting for them are dropped.${agent.role === "lead" ? " Their team's longest-standing running member leads it next." : ""}`);
+}

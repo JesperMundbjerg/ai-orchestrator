@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type DragEvent } from "react";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import type { InboxState, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
-import { LAMP, TEAM_LAMP, teamLine } from "../world/status.ts";
+import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "../world/status.ts";
 import { MessageRow, TellTeam, WorkRow } from "../world/Talk.tsx";
 import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
 
@@ -189,6 +189,7 @@ function MemberCard({ agent, team, state, run }: { agent: WorldAgent; team: Worl
         </button>
       )}
       <span className="muted member-doing">
+        {removable(agent) ? <button className="ghost small danger member-remove" title={`Nothing runs behind ${agent.name}`} onClick={() => confirmRemove(agent) && run(api.removeAgent(agent.id))}>Remove</button> : null}
         {doing}
         {agent.helpers.length ? ` · ${agent.helpers.length} ${agent.helpers.length === 1 ? "helper" : "helpers"}` : ""}
         {agent.model ? <span title={agent.model.id}> · {HARNESS_INFO[agent.harness].label} · {agent.model.label}</span> : null}

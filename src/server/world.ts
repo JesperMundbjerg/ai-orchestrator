@@ -51,7 +51,7 @@ export interface AgentSource {
 }
 
 type Inbox = () => Pick<InboxState, "tasks" | "projects" | "items">;
-type Joined = Omit<WorldAgent, "id" | "name" | "project" | "teamId" | "role" | "waitingOnYou" | "doing" | "helpers" | "model"> & { sessionId: string | null };
+type Joined = Omit<WorldAgent, "id" | "name" | "project" | "teamId" | "role" | "waitingOnYou" | "doing" | "helpers" | "model" | "ran"> & { sessionId: string | null };
 
 /** First names handed out in a stable order per identity; a name is kept once given. */
 const NAMES = [
@@ -121,6 +121,17 @@ export class World {
     const waitedOn = new Set(inbox.items.filter((i) => i.state === "needs_attention" && i.blocking).map((i) => i.taskId));
     const rows = new Map((this.db.prepare("SELECT * FROM world_agents").all() as Row[]).map((r) => [str(r.identity), r]));
     for (const a of agents) if (!rows.has(a.identity)) rows.set(a.identity, this.register(a.identity, rows));
+    // Someone you removed stays out while nothing runs behind them; running again brings them back.
+    for (const a of agents) {
+      const row = rows.get(a.identity)!;
+      if (!a.paneId) continue;
+      if (row.removed || !row.ran_at) {
+        row.ran_at ??= this.now().toISOString();
+        row.removed = 0;
+        this.db.prepare("UPDATE world_agents SET ran_at = ?, removed = 0 WHERE id = ?").run(str(row.ran_at), str(row.id));
+      }
+    }
+    for (let i = agents.length - 1; i >= 0; i--) if (!agents[i]!.paneId && rows.get(agents[i]!.identity)!.removed) agents.splice(i, 1);
     const teams = this.teams();
 
     // Working in a project's worktree puts an agent on that project, which is made for a worktree seen for the first time.
@@ -138,7 +149,7 @@ export class World {
     // A standing team keeps its members' desks, and a project its lead's, while they are neither running nor holding a task.
     for (const row of rows.values()) {
       const team = row.team_id ? teams.find((t) => t.id === row.team_id) : undefined;
-      if (!team || seen.has(str(row.identity)) || (!team.standing && row.role !== "lead")) continue;
+      if (!team || row.removed || seen.has(str(row.identity)) || (!team.standing && row.role !== "lead")) continue;
       const [harness, cwd] = splitIdentity(str(row.identity));
       agents.push({ identity: str(row.identity), harness, cwd, status: "offline", title: null, paneId: null, taskIds: [], sessionId: null });
     }
@@ -156,6 +167,7 @@ export class World {
         ...this.activityOf(str(row.id), a.status),
         // What the harness reported wins; its own session file is the fallback, read lazily.
         model: this.activity.modelOf(str(row.id), sessionId) ?? this.files.modelOf(a.harness, sessionId, this.now().getTime()),
+        ran: Boolean(row.ran_at),
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
     this.appointLeads(world, teams, rows);
@@ -186,24 +198,30 @@ export class World {
       if (!row || (row.team_id === teamId && row.role === "lead")) continue;
       const lead = [...rows.values()].find((r) => r.team_id === teamId && r.role === "lead");
       if (lead && seen.has(str(lead.identity))) continue;
-      this.tx(() => {
-        if (lead) {
-          const [from, to] = [str(lead.id), str(row.id)];
-          this.db.prepare("UPDATE OR IGNORE message_deliveries SET agent_id = ? WHERE agent_id = ?").run(to, from);
-          this.db.prepare("DELETE FROM message_deliveries WHERE agent_id = ?").run(from);
-          this.db.prepare("UPDATE messages SET from_agent_id = ? WHERE from_agent_id = ?").run(to, from);
-          this.db.prepare("UPDATE work SET from_agent_id = ? WHERE from_agent_id = ?").run(to, from);
-          this.db.prepare("UPDATE work SET reviewer_id = ? WHERE reviewer_id = ?").run(to, from);
-          this.db.prepare("DELETE FROM world_agents WHERE id = ?").run(from);
-          rows.delete(str(lead.identity));
-          row.name = lead.name;
-        }
-        this.db.prepare("UPDATE world_agents SET role = 'member' WHERE team_id = ? AND id != ?").run(teamId, str(row.id));
-        for (const r of rows.values()) if (r.team_id === teamId) r.role = "member";
-        this.db.prepare("UPDATE world_agents SET name = ?, team_id = ?, role = 'lead' WHERE id = ?").run(str(row.name), teamId, str(row.id));
-        Object.assign(row, { team_id: teamId, role: "lead" });
-      });
+      this.tx(() => this.seat(row, teamId, lead ?? null, rows));
     }
+  }
+
+  /**
+   * Makes `row` the team's lead. With `fold`, the lead record it replaces goes into it: `row`
+   * takes its name, and the messages, deliveries and work that were its. Call inside a transaction.
+   */
+  private seat(row: Row, teamId: string, fold: Row | null, rows?: Map<string, Row>): void {
+    if (fold) {
+      const [from, to] = [str(fold.id), str(row.id)];
+      this.db.prepare("UPDATE OR IGNORE message_deliveries SET agent_id = ? WHERE agent_id = ?").run(to, from);
+      this.db.prepare("DELETE FROM message_deliveries WHERE agent_id = ?").run(from);
+      this.db.prepare("UPDATE messages SET from_agent_id = ? WHERE from_agent_id = ?").run(to, from);
+      this.db.prepare("UPDATE work SET from_agent_id = ? WHERE from_agent_id = ?").run(to, from);
+      this.db.prepare("UPDATE work SET reviewer_id = ? WHERE reviewer_id = ?").run(to, from);
+      this.db.prepare("DELETE FROM world_agents WHERE id = ?").run(from);
+      rows?.delete(str(fold.identity));
+      row.name = fold.name;
+    }
+    this.db.prepare("UPDATE world_agents SET role = 'member' WHERE team_id = ? AND id != ?").run(teamId, str(row.id));
+    for (const r of rows?.values() ?? []) if (r.team_id === teamId) r.role = "member";
+    this.db.prepare("UPDATE world_agents SET name = ?, team_id = ?, role = 'lead' WHERE id = ?").run(str(row.name), teamId, str(row.id));
+    Object.assign(row, { team_id: teamId, role: "lead" });
   }
 
   private tx(fn: () => void): void {
@@ -574,9 +592,14 @@ export class World {
   }
 
   /** Renames an agent, or seats it in a team. A team has at most one lead. */
-  updateAgent(id: string, patch: { name?: string; teamId?: string | null; role?: string }): WorldAgent {
+  /**
+   * `takeName`: making it the lead also folds in the lead it replaces, which must not be running:
+   * it takes that lead's name and what was said to it, and the old record goes.
+   */
+  updateAgent(id: string, patch: { name?: string; teamId?: string | null; role?: string; takeName?: boolean }): WorldAgent {
     const row = this.db.prepare("SELECT * FROM world_agents WHERE id = ?").get(id) as Row | undefined;
     if (!row) throw new InboxError(404, `no agent ${id}`);
+    if (patch.takeName) return this.takeOver(row);
     if (patch.name !== undefined && !patch.name.trim()) throw new InboxError(400, "an agent needs a name");
     if (patch.name?.trim().toLowerCase() === FOUNDER) throw new InboxError(400, `"${FOUNDER}" is how agents address you`);
     if (patch.teamId) this.team(patch.teamId);
@@ -597,6 +620,38 @@ export class World {
     }
     this.onChange("world");
     return this.agent(id);
+  }
+
+  private takeOver(row: Row): WorldAgent {
+    const id = str(row.id);
+    const agents = this.state().agents;
+    const me = agents.find((a) => a.id === id);
+    const teamId = row.team_id ? str(row.team_id) : null;
+    if (!me || !teamId) throw new InboxError(409, "only someone on a project can take over its lead");
+    const lead = agents.find((a) => a.teamId === teamId && a.role === "lead" && a.id !== id);
+    if (!lead) throw new InboxError(409, `${me.name}'s project has no other lead whose name it could take`);
+    if (lead.status !== "offline") throw new InboxError(409, `${lead.name} is running, so ${me.name} cannot take their place and name`);
+    const fold = this.db.prepare("SELECT * FROM world_agents WHERE id = ?").get(lead.id) as Row;
+    this.tx(() => this.seat(row, teamId, fold));
+    this.onChange("world");
+    return this.agent(id);
+  }
+
+  /**
+   * Takes someone nobody runs out of the office. What it said and handed over keeps it as the
+   * sender; messages still waiting for it are dropped. If it led a team, the team's longest-standing
+   * running member leads it next. Refused while it runs, since herdr would bring it straight back.
+   */
+  removeAgent(id: string): void {
+    const agent = this.agent(id);
+    if (agent.paneId || agent.status !== "offline") {
+      throw new InboxError(409, `${agent.name} is running in herdr. Close it there first; only someone nothing runs behind can be removed.`);
+    }
+    this.tx(() => {
+      this.db.prepare("DELETE FROM message_deliveries WHERE agent_id = ? AND state != 'delivered'").run(id);
+      this.db.prepare("UPDATE world_agents SET removed = 1, team_id = NULL, role = 'member' WHERE id = ?").run(id);
+    });
+    this.onChange("world");
   }
 
   agent(id: string): WorldAgent {

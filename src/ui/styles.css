@@ -431,3 +431,4 @@ span.lead-toggle { border-radius: 6px; justify-self: start; }
 .between-title { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: var(--muted); font-size: 11px; }
 .between .order { font-size: 12px; }
 .between .order-text { font-size: 12px; max-height: 3.6em; }
+.member-remove { float: right; margin-left: 6px; padding: 0 6px; font-size: 11.5px; }
