@@ -84,7 +84,7 @@ export default function reviewInbox(pi: PiApi): void {
       preview_url: Type.Optional(Type.String()),
       pages: Type.Optional(Type.Array(
         Type.Object({
-          url: Type.String({ description: "http(s) URL of a live page" }),
+          url: Type.String({ description: "http(s) URL of a live page, e.g. http://localhost:3000/sim/isotopes?step=1. Use localhost: dev servers such as Next only answer on localhost, not 127.0.0.1" }),
           label: Type.Optional(Type.String({ description: "Short name, e.g. \"Step 2\"" })),
           look: Type.Optional(Type.String({ description: "What to look at on this page" })),
         }),

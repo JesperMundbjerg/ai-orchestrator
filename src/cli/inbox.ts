@@ -35,10 +35,11 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
 
   To show what you did in the app itself, line up the pages to go through in order: the founder
   sees each one live in a frame and presses Next. --page works on decide and milestone too.
+  Use http://localhost:…: dev servers such as Next only answer on localhost, not 127.0.0.1.
 
     inbox try "Isotope simulation: new drag hint" \\
-      --page "Step 1=http://127.0.0.1:3000/sim/isotopes?step=1" --look "The hint pulses under the slider" \\
-      --page "Step 2=http://127.0.0.1:3000/sim/isotopes?step=2" --look "It is gone once you have dragged"
+      --page "Step 1=http://localhost:3000/sim/isotopes?step=1" --look "The hint pulses under the slider" \\
+      --page "Step 2=http://localhost:3000/sim/isotopes?step=2" --look "It is gone once you have dragged"
 
   Keep the title near ${SOFT_CAPS.title} characters and the request near ${SOFT_CAPS.request}; longer is accepted with a hint.
 
