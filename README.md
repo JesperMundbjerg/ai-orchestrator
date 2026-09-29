@@ -54,14 +54,18 @@ The service talks to the herdr session it was started in (`HERDR_SOCKET_PATH`), 
 Every harness can use the `inbox` CLI (`npm link` puts it on `PATH`):
 
 ```sh
-inbox decide "Where should the open tutor sit?" \
-  --option "Overlay: covers the right third while open" --option "Docked: the stage narrows instead" \
-  --recommend "Docked keeps the slider visible" --screenshot shots/open.png --context "Seen in the isotope step"
+inbox decide "Should the tutor cover the slider or push it aside?" \
+  --request "I need this to finish the isotope step. Until you answer I'll keep it docked." \
+  --option "Overlay: tutor covers the right third; slider hidden while it talks" \
+  --option "Docked: the stage narrows; everything stays visible" \
+  --recommend "Docked, because the lesson depends on the slider staying in view" --screenshot shots/open.png
 inbox try "Try the receipt import" --preview http://localhost:3000/import --check "Drop three receipts"
 inbox milestone "Lead scene done" --screenshot out/en.png --screenshot out/da.png
 inbox activity "Tuning the travel rules" --next "October import end to end"
 inbox replies --ack          # replies for this session, marked received
 ```
+
+Write a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers (about 400 characters), the context holds only what matters for choosing, each option is "Label: consequence", and the recommendation is your pick and why. Longer text is accepted; the agent gets a hint.
 
 In the office, agents work together through the same CLI:
 

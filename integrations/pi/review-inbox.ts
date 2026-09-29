@@ -5,6 +5,7 @@
 
 import { Type } from "typebox";
 import { acknowledge, call, fetchReplies, formatReply } from "../../src/shared/agent-client.ts";
+import { lengthHints, SOFT_CAPS } from "../../src/shared/decision.ts";
 import { projectRoot } from "../../src/shared/project.ts";
 import type { ActivityEvent, ItemType, SessionInput, SubmitResult } from "../../src/shared/types.ts";
 
@@ -57,14 +58,18 @@ export default function reviewInbox(pi: PiApi): void {
       "Put a result in front of the user in their Review Inbox and get their answer back in this conversation. " +
       "Use at a meaningful point, not for every turn: `decide` for a concrete question with 2-3 options, " +
       "`try` for a preview the user should interact with, `milestone` for an increment to accept or send back. " +
+      "Write a decision the way an engineer asks a colleague, e.g. title \"Should the tutor cover the slider or push it aside?\", " +
+      "request \"I need this to finish the isotope step. Until you answer I'll keep it docked.\", " +
+      "options [\"Overlay: tutor covers the right third; slider hidden while it talks\", \"Docked: the stage narrows; everything stays visible\"], " +
+      "recommendation \"Docked, because the lesson depends on the slider staying in view\". " +
       "Attach screenshots as evidence. Resubmitting the same key revises the item. The answer arrives later as a user message.",
     parameters: Type.Object({
       type: Type.Union([Type.Literal("decide"), Type.Literal("try"), Type.Literal("milestone")]),
-      title: Type.String({ description: "Short, specific: what this is about" }),
-      request: Type.Optional(Type.String({ description: "Exactly what you need from the user" })),
-      context: Type.Optional(Type.String({ description: "What changed and the context needed now; a few sentences" })),
-      recommendation: Type.Optional(Type.String()),
-      options: Type.Optional(Type.Array(Type.String({ description: "\"Label: consequence\"" }), { description: "For decide: 2-3 options" })),
+      title: Type.String({ description: `For decide, the question itself, ending in "?"; otherwise what this is. About ${SOFT_CAPS.title} characters` }),
+      request: Type.Optional(Type.String({ description: `1-2 sentences: what you need from the user and what happens if nobody answers. About ${SOFT_CAPS.request} characters` })),
+      context: Type.Optional(Type.String({ description: "Only what matters for choosing or checking, not a report of what you did; a few sentences" })),
+      recommendation: Type.Optional(Type.String({ description: "Your pick and the reason for it" })),
+      options: Type.Optional(Type.Array(Type.String({ description: "\"Label: consequence in plain words\"" }), { description: "For decide: 2-3 options" })),
       check: Type.Optional(Type.String({ description: "For try: the interaction to perform and the expected behaviour" })),
       preview_url: Type.Optional(Type.String()),
       viewport: Type.Optional(Type.Union([Type.Literal("desktop"), Type.Literal("phone")])),
@@ -95,9 +100,10 @@ export default function reviewInbox(pi: PiApi): void {
           evidence: (p.screenshots ?? []).map((path: string) => ({ path })),
         },
       });
-      return text(result.changed
+      const hints = lengthHints({ title: p.title, request: p.request }).map((h) => `\nHint: ${h}`).join("");
+      return text((result.changed
         ? `In the review inbox (revision ${result.revision}). The user's answer will arrive in this conversation; carry on with other work unless you are blocked on it.`
-        : `Unchanged: the inbox already shows revision ${result.revision} of this item.`);
+        : `Unchanged: the inbox already shows revision ${result.revision} of this item.`) + hints);
     },
   });
 

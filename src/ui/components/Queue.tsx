@@ -1,3 +1,4 @@
+import { firstSentence } from "../../shared/decision.ts";
 import type { InboxState } from "../../shared/types.ts";
 import { ago, TYPE_LABEL } from "../format.ts";
 import { filterCounts, SORT_EXPLANATION, type Entry, type Filter } from "../queue.ts";
@@ -63,7 +64,7 @@ function ItemCard({ entry: { item, task, project }, selected, onSelect }: { entr
       <div className="card-body">
         <div className="card-text">
           <div className="card-title">{item.title}</div>
-          <div className="card-context">{item.request || item.context || task.lastDecision}</div>
+          <div className="card-context">{item.request ? firstSentence(item.request) : item.context || task.lastDecision}</div>
         </div>
         {item.thumbnail ? <img className="thumb" src={item.thumbnail} alt="" loading="lazy" /> : null}
       </div>

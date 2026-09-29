@@ -29,7 +29,7 @@ The one exception is a **message in the office** (below): your instruction to a 
 
 | Type | You get | Primary actions |
 |---|---|---|
-| **Decide** | the question, 2+ options with consequences, the agent's recommendation, screenshots | pick an option (plus an optional note) |
+| **Decide** | the question as the title, what the agent needs and what happens if nobody answers, 2+ options with consequences, the agent's pick and why, screenshots | pick an option (plus an optional note) |
 | **Try it** | what to check, a live preview (checked for reachability, embeddable at desktop or phone width), setup notes | open it, then "Tried it" with a note |
 | **Review milestone** | what was finished, evidence at the exact revision | Accept, or Request changes (text required) |
 

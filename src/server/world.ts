@@ -79,6 +79,7 @@ const FIRST_MATE = [
   'Tell each crew member to report to you with `inbox say <your office name> "…"` when done or stuck, and not to ask the founder; their reports arrive in your terminal.',
   "Close a member's pane when its work is done: `herdr pane close <pane id>`.",
   "Bring the founder only real decisions (`inbox decide`) and finished milestones (`inbox milestone`).",
+  "Ask a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers, options read \"Label: consequence\", and the recommendation gives your pick and why; `inbox --help` has an example.",
 ].join(" ");
 
 export function agentId(identity: string): string {

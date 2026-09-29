@@ -7,17 +7,31 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { acknowledge, call, fetchReplies, formatReply } from "../shared/agent-client.ts";
+import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { projectRoot } from "../shared/project.ts";
 import type { EvidenceInput, Item, ItemType, Message, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
 
-  inbox decide  "Title" --option "Label: consequence" --option "…" [--recommend "…"]
+  inbox decide  "The question?" --request "…" --option "Label: consequence" --option "…" --recommend "…"
   inbox try     "Title" --preview URL [--check "what to do and expect"] [--viewport phone] [--setup "…"]
   inbox milestone "Title" [--context "what changed"] [--limitations "…"]
       common: --request "what you need"  --context "…"  --screenshot FILE (repeat)  --url URL (repeat)
               --key KEY (resubmitting a key revises that item)  --task "task name"  --nonblocking | --blocking
               --json FILE|-   (a full SubmitInput item; flags override)
+
+  Write a decision the way an engineer asks a colleague: the title is the question, the request
+  says what you need and what happens if nobody answers, the context holds only what matters for
+  choosing, and the recommendation is your pick and why. For example:
+
+    inbox decide "Should the tutor cover the slider or push it aside?" \\
+      --request "I need this to finish the isotope step. Until you answer I'll keep it docked." \\
+      --context "On a laptop the overlay hides the slider students are told to drag." \\
+      --option "Overlay: tutor covers the right third; slider hidden while it talks" \\
+      --option "Docked: the stage narrows; everything stays visible" \\
+      --recommend "Docked, because the lesson depends on the slider staying in view"
+
+  Keep the title near ${SOFT_CAPS.title} characters and the request near ${SOFT_CAPS.request}; longer is accepted with a hint.
 
   inbox activity "what you are doing now" [--next "next milestone"]
   inbox replies [--ack]          print answers waiting for this session
@@ -106,6 +120,7 @@ async function submit(type: ItemType, title: string | undefined): Promise<void> 
     task: flags.task ? { title: flags.task } : undefined,
     item,
   });
+  for (const hint of lengthHints(item)) console.error(`inbox: hint: ${hint}`);
   console.log(result.changed ? `Submitted "${itemTitle}" (revision ${result.revision}, item ${result.itemId}).` : `No change: "${itemTitle}" is already in the inbox as revision ${result.revision}.`);
 }
 
