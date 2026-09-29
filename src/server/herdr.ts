@@ -164,12 +164,6 @@ export class Herdr implements PresenceSource, AgentSource {
     });
   }
 
-  /** The last lines of the pane's terminal, as plain text. */
-  async read(paneId: string): Promise<string> {
-    const { stdout } = await run(this.bin, ["agent", "read", paneId, "--lines", "80", "--format", "text"], { timeout: 2500, maxBuffer: 2_000_000 });
-    return stdout;
-  }
-
   /** Brings the pane to the front in herdr. */
   async focus(paneId: string): Promise<void> {
     await run(this.bin, ["agent", "focus", paneId], { timeout: 2500 });
@@ -234,6 +228,12 @@ export class Herdr implements PresenceSource, AgentSource {
 }
 
 /** herdr answers errors as JSON on stdout or stderr; the message is what a person can act on. */
+/** One readable line, never a dump of herdr's output or a stack trace. */
+function firstLine(text: string | undefined): string {
+  const line = (text ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+  return line.replace(/^(fatal|error):\s*/i, "").slice(0, 200);
+}
+
 function herdrError(err: unknown): string {
   const e = err as { stdout?: string; stderr?: string; message?: string };
   for (const out of [e.stdout, e.stderr]) {
@@ -241,10 +241,11 @@ function herdrError(err: unknown): string {
       const message = (JSON.parse(out ?? "") as { error?: { message?: string } }).error?.message;
       if (message) return message;
     } catch {
-      if (out?.trim()) return out.trim();
+      const line = firstLine(out);
+      if (line) return line;
     }
   }
-  return e.message ?? String(err);
+  return firstLine(e.message) || "herdr did not answer";
 }
 
 function fingerprint(a: HerdrAgent): string {

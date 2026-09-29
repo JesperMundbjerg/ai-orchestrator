@@ -18,7 +18,7 @@ async function withServer(fn: (base: string) => Promise<void>, live: LiveAgent[]
   const inbox = new Inbox(db, join(dir, "files"), { available: () => false, forSession: () => null, resolvePane: () => null });
   const none = async () => { throw new Error("not in this test"); };
   const world = new World(db, {
-    available: () => true, live: () => live, read: async () => "", focus: async () => {}, prompt: async (pane, text) => void typed.push(`${pane}: ${text}`), notify: async () => {},
+    available: () => true, live: () => live, prompt: async (pane, text) => void typed.push(`${pane}: ${text}`), notify: async () => {},
     createWorktree: none, startAgent: none, closePane: none, removeWorktree: none,
   }, () => inbox.state());
   const port = nextPort++;

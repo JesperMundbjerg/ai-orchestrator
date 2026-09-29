@@ -78,7 +78,7 @@ Agents come from herdr (all of them, including those that never posted) and from
 
 The office draws all of this from the same state, without storing anything of its own. A message that arrives while you watch becomes a **visit**: the sender walks to the first recipient, says it in a speech bubble (carrying a folder for a handoff) and walks back. Your own instructions are bubbles over the agents that hear them. The `handsTo` links are arrows between team corners. The **board** (`#/teams`) shows the same projects, work and messages as columns and lists.
 
-The queue at your desk is `needsYou` from the inbox, one place per agent. The terminal is `herdr agent read`, only while a panel is open, and only on loopback like everything else.
+The queue at your desk is `needsYou` from the inbox, one place per agent. The office never shows an agent's terminal: you read what they are doing and what was said, and a message to one agent goes through the same deliveries as everything else. herdr's own errors reach the UI as one line.
 
 ## Codex
 

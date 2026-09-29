@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
-import type { AgentScreen, InboxState, ItemDetail, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
+import type { InboxState, ItemDetail, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ItemDetailView } from "../components/ItemDetail.tsx";
 import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
 import type { OfficePlan, Vec2 } from "./layout.ts";
-import { MessageRow, teamMessages, teamWork, TellTeam, WorkRow } from "./Talk.tsx";
+import { agentMessages, MessageRow, teamMessages, teamWork, TellAgent, TellTeam, WorkRow } from "./Talk.tsx";
 import { LAMP, TEAM_LAMP, teamLine } from "./status.ts";
 import type { Waiting } from "./WorldView.tsx";
 
@@ -127,7 +127,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
                 <span className={`type ${w.type}`}>{TYPE_LABEL[w.type]}</span> {a.name} is waiting for your answer
               </button>
             ) : (
-              <button key={id} className="waiting-item" onClick={() => onAgent(id)}>{a.name} is asking something in the terminal: look</button>
+              <button key={id} className="waiting-item" onClick={() => onAgent(id)}>{a.name} is stuck at a question: open them</button>
             );
           })}
         </div>
@@ -172,7 +172,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
   );
 }
 
-/** One agent up close: who they are, what they are doing, their terminal, and their seat. */
+/** One agent up close: who they are, what they are doing, a box to message them, and their seat. */
 export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClose, onTeam }: {
   agent: WorldAgent;
   world: WorldState;
@@ -188,6 +188,8 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
   const [error, setError] = useState<string | null>(null);
   const tasks = state.tasks.filter((t) => agent.taskIds.includes(t.id));
   const team = world.teams.find((t) => t.id === agent.teamId) ?? null;
+  const agents = new Map(world.agents.map((a) => [a.id, a]));
+  const said = agentMessages(world, agent.id).slice(0, 8);
   const items = waiting ? waiting.itemIds.map((id) => state.items.find((i) => i.id === id)!).filter(Boolean) : [];
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
   const rename = () => {
@@ -214,6 +216,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
         {LAMP[agent.status].label}
         <span className="muted"> · {HARNESS_INFO[agent.harness].label}{agent.project ? ` · ${agent.project}` : ""}</span>
       </div>
+      <TellAgent agent={agent} />
       {agent.cwd ? <code className="agent-cwd" title={agent.cwd}>{agent.cwd}</code> : null}
       {agent.doing ? <div className="agent-doing">{agent.doing}</div> : null}
       {agent.helpers.length ? (
@@ -258,58 +261,18 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
 
       <div className="row">
         <button className="ghost small" onClick={onGo}>Walk over</button>
-        {agent.paneId ? <button className="ghost small" onClick={() => void run(api.openAgent(agent.id))}>Open in herdr</button> : null}
       </div>
       {error ? <div className="warn">{error}</div> : null}
 
-      {agent.paneId ? <Terminal agentId={agent.id} title={agent.title} /> : <p className="muted small-note">Not running in herdr, so there is no terminal to show.</p>}
+      {said.length ? (
+        <>
+          <div className="section-label">Said to and by {agent.name}</div>
+          <ul className="order-list">
+            {said.map((m) => <MessageRow key={m.id} message={m} agents={agents} />)}
+          </ul>
+        </>
+      ) : null}
     </aside>
-  );
-}
-
-/** The agent's terminal as it is now, re-read every two seconds while the panel is open. */
-function Terminal({ agentId, title }: { agentId: string; title: string | null }) {
-  const [screen, setScreen] = useState<AgentScreen | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const pre = useRef<HTMLPreElement>(null);
-  const pinned = useRef(true);
-
-  useEffect(() => {
-    let live = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const read = () =>
-      api.agentScreen(agentId).then(
-        (s) => live && (setScreen(s), setError(null)),
-        (e: Error) => live && setError(e.message),
-      ).finally(() => {
-        if (live) timer = setTimeout(read, 2000);
-      });
-    void read();
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
-  }, [agentId]);
-
-  // Follow the bottom like a terminal, unless you have scrolled up to read.
-  useEffect(() => {
-    const el = pre.current;
-    if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [screen?.text]);
-
-  return (
-    <div className="terminal">
-      <div className="terminal-bar">{title ?? "terminal"}</div>
-      <pre
-        ref={pre}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-        }}
-      >
-        {screen ? screen.text.replace(/\s+$/, "") : error ?? "Reading…"}
-      </pre>
-    </div>
   );
 }
 

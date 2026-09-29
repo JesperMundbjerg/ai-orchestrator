@@ -10,13 +10,13 @@ import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import type {
-  ActivityEvent, AgentRole, AgentScreen, Harness, InboxState, Presence, Repository, SessionInput, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
+  ActivityEvent, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
 import { Activity } from "./activity.ts";
 import { InboxError } from "./inbox.ts";
 import { Messages } from "./messages.ts";
 import { whyStuck } from "../shared/stuck.ts";
-import { checkoutOf, deleteMergedBranch, nameFor, placeFor, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
+import { checkoutOf, deleteMergedBranch, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
 
 /** An agent a terminal multiplexer reports as running. */
 export interface LiveAgent {
@@ -33,8 +33,6 @@ export interface LiveAgent {
 export interface AgentSource {
   available(): boolean;
   live(): LiveAgent[];
-  read(paneId: string): Promise<string>;
-  focus(paneId: string): Promise<void>;
   /** Types a prompt into the agent and resolves once it has started on it. */
   prompt(paneId: string, text: string): Promise<void>;
   /** Tells you something, wherever you are working. */
@@ -454,8 +452,13 @@ export class World {
     if (changes) throw new InboxError(409, `${changes} uncommitted ${changes === 1 ? "change" : "changes"} in ${checkout.top}: commit or discard ${changes === 1 ? "it" : "them"} first`);
     if (!this.source?.available()) throw new InboxError(409, "herdr closes the project's agents and removes its worktree, and herdr is not running");
     const inside = (cwd: string | null) => cwd === checkout.top || !!cwd?.startsWith(`${checkout.top}/`);
+    let stopped: string[] = [];
     try {
       for (const a of this.source.live().filter((l) => inside(l.cwd))) await this.source.closePane(a.paneId);
+      // Whatever still runs there (a dev server outlives its pane) would keep writing into the folder being removed.
+      const left = processesIn(checkout.top);
+      await stopProcesses(left);
+      stopped = [...new Set(left.map((p) => p.command))];
       await this.source.removeWorktree(checkout.repoRoot, checkout.top);
     } catch (err) {
       throw new InboxError(502, `herdr could not remove ${checkout.top}: ${(err as Error).message}`);
@@ -466,7 +469,8 @@ export class World {
     this.forget(id);
     const where = this.checkout(checkout.repoRoot)?.branch ?? "the main checkout";
     const about = !branch ? "" : deleted ? ` Branch ${branch} was merged and is deleted.` : ` Branch ${branch} is kept: ${kept} ${kept === 1 ? "commit is" : "commits are"} not in ${where} yet.`;
-    return { ok: true, note: `${team.name} is finished and ${checkout.top} removed.${about}` };
+    const also = stopped.length ? ` Stopped what was still running there: ${stopped.join(", ")}.` : "";
+    return { ok: true, note: `${team.name} is finished and ${checkout.top} removed.${also}${about}` };
   }
 
   /** Removes a team; anyone still on it goes back to the lounge with their name and face. */
@@ -505,20 +509,6 @@ export class World {
     const found = this.state().agents.find((a) => a.id === id);
     if (!found) throw new InboxError(404, `no agent ${id}`);
     return found;
-  }
-
-  /** What the agent's terminal shows now. Only herdr can read a terminal. */
-  async screen(id: string): Promise<AgentScreen> {
-    const agent = this.agent(id);
-    if (!this.source || !agent.paneId) throw new InboxError(409, `${agent.name} is not running in herdr, so there is no terminal to show`);
-    return { text: await this.source.read(agent.paneId), readAt: this.now().toISOString() };
-  }
-
-  async focus(id: string): Promise<{ ok: true }> {
-    const agent = this.agent(id);
-    if (!this.source || !agent.paneId) throw new InboxError(409, `${agent.name} is not running in herdr, so it cannot be brought to the front`);
-    await this.source.focus(agent.paneId);
-    return { ok: true };
   }
 
   private team(id: string): Team {

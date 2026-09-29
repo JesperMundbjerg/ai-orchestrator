@@ -1,4 +1,4 @@
-import type { AgentScreen, InboxState, Item, ItemDetail, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
+import type { InboxState, Item, ItemDetail, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -30,6 +30,5 @@ export const api = {
   updateAgent: (agentId: string, patch: { name?: string; teamId?: string | null; role?: "lead" | "member" }) => request<WorldAgent>("PATCH", `/api/world/agents/${agentId}`, patch),
   instructTeam: (teamId: string, text: string) => request<Message>("POST", `/api/world/teams/${teamId}/messages`, { text, clientId: crypto.randomUUID() }),
   retryDelivery: (messageId: string, agentId: string) => request<Message>("POST", `/api/world/messages/${messageId}/deliveries/${agentId}/retry`, {}),
-  agentScreen: (agentId: string) => request<AgentScreen>("GET", `/api/world/agents/${agentId}/screen`),
-  openAgent: (agentId: string) => request<{ ok: true }>("POST", `/api/world/agents/${agentId}/open`, {}),
+  tellAgent: (agentId: string, text: string) => request<Message>("POST", `/api/world/agents/${agentId}/messages`, { text, clientId: crypto.randomUUID() }),
 };

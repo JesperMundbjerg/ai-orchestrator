@@ -59,6 +59,15 @@ export class Messages {
     return this.store("instruction", null, team.id, text(input.text), null, recipients(state, team, null), input.clientId);
   }
 
+  /** Your message to one agent, typed into its terminal once it is free. */
+  tell(agentId: string, input: { text?: string; clientId?: string }): Message {
+    const repeat = this.byClientId(input.clientId);
+    if (repeat) return repeat;
+    const agent = this.world().agents.find((a) => a.id === agentId);
+    if (!agent) throw new InboxError(404, `no agent ${agentId}`);
+    return this.store("message", null, null, text(input.text), null, [agent.id], input.clientId);
+  }
+
   /** One agent to another agent or a team, named as the office shows it. */
   say(from: WorldAgent, input: { to?: string; text?: string; clientId?: string }): Message {
     const repeat = this.byClientId(input.clientId);
@@ -281,6 +290,7 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
       return `[From the founder to ${team?.name ?? ""}] ${part}${purpose} Ask in the review inbox if you need a decision.\n\n${message.text}\n\n${footer}`;
     }
     case "message": {
+      if (!message.fromAgentId) return `[Message from the founder]\n\n${message.text}\n\nFor a decision you need from the founder, ask in the review inbox (\`inbox decide\`).\n${footer}`;
       const to = team ? ` to ${team.name}` : "";
       return `[Message from ${who(from)}${to}]\n\n${message.text}\n\nAnswer with: inbox say "${from?.name ?? ""}" "…"\n${footer}`;
     }

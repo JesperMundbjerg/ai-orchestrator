@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,8 +31,6 @@ function setup() {
   const source: AgentSource = {
     available: () => true,
     live: () => live,
-    read: async (pane) => `screen of ${pane}`,
-    focus: async () => {},
     prompt: async (pane, text) => {
       if (refuse) throw new Error(refuse);
       prompts.push({ pane, text });
@@ -189,8 +187,13 @@ test("finishing a project closes its agents and removes the worktree, but never 
 
   git(atoms, "add", ".");
   git(atoms, "commit", "-qm", "b");
+  // A dev server left running there outlives its pane.
+  const server = spawn("sleep", ["60"], { cwd: join(atoms), stdio: "ignore" });
+  const exited = new Promise((resolve) => server.once("exit", resolve));
   const { note } = await world.deleteTeam(team.id);
   assert.deepEqual(closed, ["p1"], "only the agents working in it are closed");
+  await exited;
+  assert.match(note, /Stopped what was still running there: sleep\./);
   assert.equal(existsSync(atoms), false);
   assert.match(note, /Branch worktree-atoms-light is kept: 1 commit is not in dev yet/);
   assert.equal(git(root, "branch", "--list", "worktree-atoms-light"), "worktree-atoms-light");
@@ -226,13 +229,19 @@ test("an agent known only from the inbox appears offline with its project and it
   assert.deepEqual(agent?.taskIds, [taskId]);
 });
 
-test("a terminal is read through the agent source, and only for a running agent", async () => {
-  const { inbox, world, setLive } = setup();
-  setLive([lane("w1:p4", "/einstein", "s1")]);
-  inbox.submit({ session: { harness: "manual", sessionId: "m1" }, item: { type: "milestone", title: "Done" } });
-  const [running, offline] = [...world.state().agents].sort((x) => (x.paneId ? -1 : 1));
-  assert.equal((await world.screen(running!.id)).text, "screen of w1:p4");
-  await assert.rejects(world.screen(offline!.id), /not running in herdr/);
+test("your message to one agent is typed into its terminal once it is free, from the founder", async () => {
+  const { world, prompts, setLive } = setup();
+  setLive([lane("p1", "/tom", "s1", "working")]);
+  const tom = world.state().agents[0]!;
+  const sent = world.messages.tell(tom.id, { text: "Rail first, please", clientId: "c1" });
+  assert.equal(world.messages.tell(tom.id, { text: "Rail first, please", clientId: "c1" }).id, sent.id, "a retried send is the same message");
+  await world.react();
+  assert.equal(prompts.length, 0, "not while it works");
+  setLive([lane("p1", "/tom", "s1", "idle")]);
+  await world.react();
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0]!.text, /^\[Message from the founder\]\n\nRail first, please/);
+  assert.throws(() => world.messages.tell("nobody", { text: "hi" }), /no agent/);
 });
 
 test("a team is blocked when its lead is stuck, or when someone is and nobody else is working", async () => {

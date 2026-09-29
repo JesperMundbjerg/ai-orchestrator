@@ -401,7 +401,3 @@ export interface TeamBrief {
   text: string;
 }
 
-export interface AgentScreen {
-  text: string;
-  readAt: string;
-}

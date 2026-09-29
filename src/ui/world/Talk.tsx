@@ -19,6 +19,11 @@ export function teamMessages(world: WorldState, teamId: string): Message[] {
   return world.messages.filter((m) => m.teamId === teamId || (m.fromAgentId && members.has(m.fromAgentId)) || m.deliveries.some((d) => members.has(d.agentId)));
 }
 
+/** The messages an agent sent or was sent, newest first. */
+export function agentMessages(world: WorldState, agentId: string): Message[] {
+  return world.messages.filter((m) => m.fromAgentId === agentId || m.deliveries.some((d) => d.agentId === agentId));
+}
+
 /** Work a team handed over or has to review, open work first. */
 export function teamWork(world: WorldState, teamId: string): Work[] {
   return world.work.filter((w) => w.toTeamId === teamId || w.fromTeamId === teamId);
@@ -102,6 +107,47 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
       <div className="row">
         <button className="primary small" type="submit" disabled={!text.trim() || sending || !lead}>Send to {team.name}</button>
         <span className="muted small-note">{lead ? `Typed into ${lead.name}'s terminal once free.` : "Nobody on it yet."}</span>
+      </div>
+      {error ? <div className="warn">{error}</div> : null}
+    </form>
+  );
+}
+
+/** Your message to one agent: typed into its terminal once it is free. */
+export function TellAgent({ agent }: { agent: WorldAgent }) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const send = () => {
+    setSending(true);
+    api.tellAgent(agent.id, text).then(
+      () => (setText(""), setError(null)),
+      (e: Error) => setError(e.message),
+    ).finally(() => setSending(false));
+  };
+  return (
+    <form
+      className="instruct"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (text.trim() && !sending) send();
+      }}
+    >
+      <textarea
+        value={text}
+        rows={3}
+        autoFocus
+        aria-label={`Message ${agent.name}`}
+        placeholder={`Write to ${agent.name}…`}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) e.currentTarget.form?.requestSubmit();
+          if (e.key === "Escape") e.currentTarget.blur();
+        }}
+      />
+      <div className="row">
+        <button className="primary small" type="submit" disabled={!text.trim() || sending}>Send</button>
+        <span className="muted small-note">{agent.paneId ? `Typed into ${agent.name}'s terminal once free · ⌘↵` : `${agent.name} is not running; it waits until they are.`}</span>
       </div>
       {error ? <div className="warn">{error}</div> : null}
     </form>

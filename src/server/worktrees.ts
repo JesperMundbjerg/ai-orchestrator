@@ -36,6 +36,44 @@ export function uncommitted(path: string): number {
   return git(path, ["status", "--porcelain"]).split("\n").filter(Boolean).length;
 }
 
+/**
+ * Processes running inside a worktree (their working directory is in it), such as a dev server
+ * an agent left behind: closing its panes does not stop them, and they keep writing into it.
+ */
+export function processesIn(path: string): Array<{ pid: number; command: string }> {
+  let out: string;
+  try {
+    out = execFileSync("lsof", ["-a", "-d", "cwd", "-F", "pcn"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000, maxBuffer: 20_000_000 });
+  } catch (err) {
+    // lsof exits 1 when some processes could not be read, but still prints the rest.
+    out = String((err as { stdout?: string }).stdout ?? "");
+  }
+  const found: Array<{ pid: number; command: string }> = [];
+  let pid = 0;
+  let command = "";
+  for (const line of out.split("\n")) {
+    if (line.startsWith("p")) (pid = Number(line.slice(1))), (command = "");
+    else if (line.startsWith("c")) command = line.slice(1);
+    else if (line.startsWith("n") && pid !== process.pid && (line.slice(1) === path || line.slice(1).startsWith(`${path}/`))) found.push({ pid, command });
+  }
+  return found;
+}
+
+/** Asks the processes to stop, and ends those still running after a few seconds. */
+export async function stopProcesses(processes: Array<{ pid: number }>): Promise<void> {
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (const p of processes) if (alive(p.pid)) process.kill(p.pid, "SIGTERM");
+  for (let i = 0; i < 30 && processes.some((p) => alive(p.pid)); i++) await new Promise((r) => setTimeout(r, 100));
+  for (const p of processes) if (alive(p.pid)) process.kill(p.pid, "SIGKILL");
+}
+
 /** Commits on the branch that its repository's main checkout does not have. */
 export function unmerged(repoRoot: string, branch: string): number {
   try {
