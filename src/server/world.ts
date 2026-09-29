@@ -16,6 +16,7 @@ import type {
 import { Activity } from "./activity.ts";
 import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
+import { SessionFiles } from "./models.ts";
 import { whyStuck } from "../shared/stuck.ts";
 import { checkoutOf, deleteMergedBranch, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
 
@@ -97,14 +98,17 @@ export class World {
   private announced: Map<string, TeamStatus> | null = null;
   readonly messages: Messages;
   private activity = new Activity();
+  /** Session files, for the model of an agent whose harness does not report it. */
+  private files: SessionFiles;
   private activityTimer: NodeJS.Timeout | null = null;
   onChange: (reason: string) => void = () => {};
 
-  constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date()) {
+  constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date(), files = new SessionFiles()) {
     this.db = db;
     this.source = source;
     this.inbox = inbox;
     this.now = now;
+    this.files = files;
     this.messages = new Messages(db, source, () => this.state(), now, () => this.onChange("world"));
   }
 
@@ -147,7 +151,8 @@ export class World {
         role: str(row.role) as AgentRole,
         waitingOnYou: a.taskIds.some((t) => waitedOn.has(t)),
         ...this.activityOf(str(row.id), a.status),
-        model: this.activity.modelOf(str(row.id), sessionId),
+        // What the harness reported wins; its own session file is the fallback, read lazily.
+        model: this.activity.modelOf(str(row.id), sessionId) ?? this.files.modelOf(a.harness, sessionId, this.now().getTime()),
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
     this.appointLeads(world, teams, rows);

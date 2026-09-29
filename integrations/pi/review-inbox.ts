@@ -6,11 +6,12 @@
 import { Type } from "typebox";
 import { acknowledge, call, fetchReplies, formatReply } from "../../src/shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../../src/shared/decision.ts";
+import { modelLabel } from "../../src/shared/models.ts";
 import { projectRoot } from "../../src/shared/project.ts";
 import type { ActivityEvent, ItemType, SessionInput, SubmitResult } from "../../src/shared/types.ts";
 
 // The slice of Pi's extension API this uses (the full types ship with @earendil-works/pi-coding-agent).
-interface PiModel { id: string; name?: string; provider: string }
+interface PiModel { id: string; provider: string }
 interface PiContext {
   cwd: string;
   model?: PiModel;
@@ -47,11 +48,10 @@ function report(ctx: PiContext, ...events: ActivityEvent[]): void {
   if (session && events.length) call("/api/agent/events", { session: { ...session, paneId: process.env.HERDR_PANE_ID }, events }, 1500).catch(() => {});
 }
 
-/** The model Pi runs, as Pi names it: "anthropic/claude-opus-5-5", shown as "Claude Opus 5.5". */
+/** The model Pi runs, as Pi names it: "anthropic/claude-opus-5-5", shown as "Opus 5.5" like everywhere in the office. */
 function modelEvent(model: PiModel | undefined): ActivityEvent[] {
   if (!model?.id) return [];
-  const id = `${model.provider}/${model.id}`;
-  return [{ kind: "model", model: { id, label: model.name || id } }];
+  return [{ kind: "model", model: { id: `${model.provider}/${model.id}`, label: modelLabel(model.id) } }];
 }
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });

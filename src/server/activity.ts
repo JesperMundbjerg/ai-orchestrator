@@ -2,9 +2,10 @@
 // runs on, from the events its harness reports: Claude Code through an HTTP hook, Pi through its
 // extension. Kept in memory only: it describes the last minutes, and a restart forgets it.
 
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { basename } from "node:path";
+import { modelLabel } from "../shared/models.ts";
 import type { ActivityEvent, AgentModel, Helper } from "../shared/types.ts";
+import { claudeTranscriptModel } from "./models.ts";
 
 /** A tool line stops being shown this long after it was reported, in case its end never comes. */
 const DOING_MS = 120_000;
@@ -146,55 +147,12 @@ export function claudeHookEvents(hook: Record<string, unknown>): { events: Activ
   return { events: [], helperId: null };
 }
 
-/** "claude-opus-5-5" → "Opus 5.5"; an id in another form is shown as it is. */
-export function claudeModelLabel(id: string): string {
-  const m = /^claude-([a-z]+)-(\d+)-(\d+)(?:-\d{8})?(\[1m\])?$/.exec(id);
-  if (!m) return id;
-  return `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1)} ${m[2]}.${m[3]}${m[4] ? " (1M)" : ""}`;
-}
-
-/** How much of a transcript's end is read to find the model of its latest reply. */
-const TRANSCRIPT_TAIL = 256 * 1024;
-
 /**
  * The model a Claude Code session runs, as Claude Code itself records it: the hook input's
  * `model` when it carries one, else the model of the latest reply in its transcript. Null when
  * neither says, so nothing is guessed.
  */
 export function claudeModel(hook: Record<string, unknown>): AgentModel | null {
-  const given = typeof hook.model === "string" ? hook.model : null;
-  const id = given ?? (typeof hook.transcript_path === "string" ? lastReplyModel(hook.transcript_path) : null);
-  return id ? { id, label: claudeModelLabel(id) } : null;
-}
-
-function lastReplyModel(path: string): string | null {
-  let text: string;
-  try {
-    const fd = openSync(path, "r");
-    try {
-      const size = fstatSync(fd).size;
-      const start = Math.max(0, size - TRANSCRIPT_TAIL);
-      const buffer = Buffer.alloc(size - start);
-      readSync(fd, buffer, 0, buffer.length, start);
-      text = buffer.toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    return null;
-  }
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]!;
-    if (!line.includes('"assistant"')) continue;
-    try {
-      const entry = JSON.parse(line) as { type?: string; message?: { model?: unknown } };
-      const model = entry.message?.model;
-      // Claude Code writes "<synthetic>" for replies it made up itself, such as an interruption.
-      if (entry.type === "assistant" && typeof model === "string" && model && !model.startsWith("<")) return model;
-    } catch {
-      // The first line of the tail is usually cut; any unreadable line is skipped.
-    }
-  }
-  return null;
+  if (typeof hook.model === "string" && hook.model) return { id: hook.model, label: modelLabel(hook.model) };
+  return typeof hook.transcript_path === "string" ? claudeTranscriptModel(hook.transcript_path) : null;
 }

@@ -4,7 +4,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeHookEvents, claudeModelLabel, describeTool } from "../src/server/activity.ts";
+import { claudeHookEvents, describeTool } from "../src/server/activity.ts";
 import { openDatabase } from "../src/server/db.ts";
 import { Inbox, type PresenceSource } from "../src/server/inbox.ts";
 import { World, type AgentSource, type LiveAgent } from "../src/server/world.ts";
@@ -519,13 +519,6 @@ test("an agent shows the model its harness reports, only for the session that re
   assert.equal(agent().model?.label, "GPT-5", "a model switched mid-session replaces the old one");
   setLive([lane("p1", "/lead", "s2", "idle")]);
   assert.equal(agent().model, null, "a new session in the same pane has not said which model it runs");
-});
-
-test("a Claude model id reads as its family and version", () => {
-  assert.equal(claudeModelLabel("claude-opus-5-5"), "Opus 5.5");
-  assert.equal(claudeModelLabel("claude-haiku-4-5-20251001"), "Haiku 4.5");
-  assert.equal(claudeModelLabel("claude-sonnet-5-5[1m]"), "Sonnet 5.5 (1M)");
-  assert.equal(claudeModelLabel("some-other-model"), "some-other-model");
 });
 
 test("a Claude Code hook call becomes activity, with a sub-agent's own tools kept apart", () => {
