@@ -4,9 +4,14 @@
 //   an agent's message, handoff or review → the sender walks to the (first) recipient, says it
 //                                           when there, carrying a folder for a handoff, and walks back
 //   your instruction                      → a bubble over each agent it goes to
+//   a blocked team                        → its lead comes to your desk and stays until it is
+//                                           unblocked or you send them back
+//
+// Unlike the rest, a lead at your desk is standing state, not an event: it follows from how
+// the teams stand right now, so it is there when the office opens too.
 
-import type { Message, MessageKind } from "../../shared/types.ts";
-import { route, yawTo, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
+import type { Message, MessageKind, WorldAgent, WorldTeam } from "../../shared/types.ts";
+import { callerSpot, route, yawTo, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
 
 export interface Visit {
   messageId: string;
@@ -47,6 +52,45 @@ export function visitSpot(target: Spot): Spot {
   return { pos, facing: yawTo(pos, target.pos), zone: target.zone, group: target.group, approach: target.approach };
 }
 
+/** A lead at your desk because their team cannot go on without you. */
+export interface Call {
+  teamId: string;
+  leadId: string;
+  /** Who holds the team up, the lead first when they are one of them. */
+  stuckIds: string[];
+  /**
+   * What the call is about. Sending the lead back holds only while it stays the same: when
+   * someone else gets stuck, or someone stops waiting on you and is at a prompt instead, they
+   * come again.
+   */
+  key: string;
+  spot: Spot;
+}
+
+/**
+ * The leads who come to your desk: one per blocked team whose lead is running, in the order the
+ * teams are listed, except those you sent back about the very same thing.
+ */
+export function calls(teams: WorldTeam[], agents: Map<string, WorldAgent>, sentBack: ReadonlySet<string>): Call[] {
+  const out: Call[] = [];
+  for (const team of teams) {
+    if (team.status !== "blocked") continue;
+    const lead = [...agents.values()].find((a) => a.teamId === team.id && a.role === "lead");
+    if (!lead || lead.status === "offline") continue;
+    const stuck = team.blockedBy.filter((id) => agents.has(id)).sort((a, b) => Number(b === lead.id) - Number(a === lead.id));
+    if (!stuck.length) continue;
+    const key = `${team.id}:${[...stuck].sort().map((id) => `${id}${agents.get(id)!.waitingOnYou ? "?" : "!"}`).join(",")}`;
+    if (sentBack.has(key)) continue;
+    out.push({ teamId: team.id, leadId: lead.id, stuckIds: stuck, key, spot: callerSpot(out.length) });
+  }
+  return out;
+}
+
+/** How long it takes to walk from one spot to another, in milliseconds. */
+export function walkMs(from: Spot, to: Spot): number {
+  return (length(from.pos, route(from.pos, from, to)) / WALK_SPEED) * 1000;
+}
+
 const length = (from: Vec2, path: Vec2[]) => path.reduce((sum, p, i) => sum + Math.hypot(p[0] - (path[i - 1] ?? from)[0], p[1] - (path[i - 1] ?? from)[1]), 0);
 
 export function plan(messages: Message[], office: OfficePlan, now: number): { visits: Visit[]; bubbles: Bubble[] } {
@@ -63,8 +107,7 @@ export function plan(messages: Message[], office: OfficePlan, now: number): { vi
     const target = toId ? office.spots.get(toId) : undefined;
     if (!toId || !from || !target || toId === m.fromAgentId) continue;
     const spot = visitSpot(target);
-    const walk = length(from.pos, route(from.pos, from, spot)) / WALK_SPEED;
-    visits.push({ messageId: m.id, fromId: m.fromAgentId, toId, kind: m.kind, text, spot, until: now + walk * 1000 + TALK_MS });
+    visits.push({ messageId: m.id, fromId: m.fromAgentId, toId, kind: m.kind, text, spot, until: now + walkMs(from, spot) + TALK_MS });
   }
   return { visits, bubbles };
 }

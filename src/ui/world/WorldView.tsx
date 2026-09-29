@@ -1,16 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import type { InboxState, ItemType, WorldState, WorldTeam } from "../../shared/types.ts";
+import type { InboxState, ItemType, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { useItemDetail } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
 import { Avatar } from "./Avatar.tsx";
-import { ENTRANCE, planOffice, queueOrder, SPAWN, type OfficePlan, type Vec2 } from "./layout.ts";
+import { CALLER, ENTRANCE, planOffice, queueOrder, SPAWN, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
+import { CallerCard } from "./Caller.tsx";
 import { Office } from "./Office.tsx";
 import { AgentPanel, AnswerModal, Legend, TeamPanel, TeamsPanel } from "./Panels.tsx";
 import { Helpers } from "./Helpers.tsx";
 import { Player, type FlyTarget } from "./Player.tsx";
-import { plan as planTalk, type Bubble, type Visit } from "./visits.ts";
+import { calls, plan as planTalk, walkMs, type Bubble, type Call, type Visit } from "./visits.ts";
 
 export interface Waiting {
   count: number;
@@ -19,6 +20,9 @@ export interface Waiting {
 }
 
 const START: FlyTarget = { pos: SPAWN, yaw: 0, seq: 0 };
+/** From your desk, turned so a lead who came over stands left of the card they bring. */
+const FACE_CALLER: Vec2 = [SPAWN[0] + 0.3, SPAWN[1] + 0.4];
+const FACE_CALLER_YAW = Math.atan2(CALLER[0] - FACE_CALLER[0], FACE_CALLER[1] - CALLER[1]) + 0.05;
 
 /**
  * The office: every agent as a person you can walk up to. Each project (and standing team) has its own corner, the
@@ -72,6 +76,9 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
   const teams = useMemo(() => new Map((world?.teams ?? []).map((t) => [t.id, t])), [world]);
   const selectedAgent = selected ? agents.get(selected) ?? null : null;
   const shownTeam = !selectedAgent && openTeam ? teams.get(openTeam) ?? null : null;
+  const { calling, arrived, sendBack } = useCalls(world, agents, plan);
+  // One at a time, once they are here, and not over what you opened yourself.
+  const caller = !answering && !selectedAgent && !shownTeam ? arrived[0] ?? null : null;
   const nextItem = entries.find((e) => e.item.id !== answering)?.item.id ?? null;
 
   const select = (id: string) => {
@@ -81,16 +88,25 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
   };
   const flyTo = (pos: Vec2, yaw: number) => setFly((f) => ({ pos, yaw, seq: (f?.seq ?? 0) + 1 }));
 
+  // When a lead has come over, you turn to face them.
+  const faced = useRef<string | null>(null);
+  useEffect(() => {
+    const key = arrived[0]?.key ?? null;
+    if (key && key !== faced.current) flyTo(FACE_CALLER, FACE_CALLER_YAW);
+    faced.current = key;
+  }, [arrived]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || (e.target as HTMLElement).closest("input, textarea, select")) return;
       if (answering) setAnswering(null);
       else if (selected) setSelected(null);
-      else setOpenTeam(null);
+      else if (openTeam) setOpenTeam(null);
+      else if (caller) sendBack(caller.key);
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [answering, selected]);
+  }, [answering, selected, openTeam, caller, sendBack]);
 
   if (!world || !plan) {
     return <div className="empty-page">{error ? `The office did not open (${error}).` : "Opening the office…"}</div>;
@@ -99,7 +115,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
   return (
     <div className="world">
       <Canvas shadows camera={{ fov: 62, near: 0.1, far: 160 }} onPointerMissed={() => setSelected(null)}>
-        <Scene plan={plan} world={world} agents={agents} teams={teams} waiting={waiting} arrivals={arrivals} talk={talk} selected={selected} onSelect={select} fly={fly} />
+        <Scene plan={plan} world={world} agents={agents} teams={teams} waiting={waiting} arrivals={arrivals} talk={talk} calling={calling} selected={selected} onSelect={select} fly={fly} />
       </Canvas>
 
       <header className="world-top">
@@ -158,6 +174,18 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
           onTeam={openTeam && selectedAgent.teamId === openTeam ? () => setSelected(null) : null}
         />
       ) : null}
+      {caller ? (
+        <CallerCard
+          key={caller.key}
+          call={caller}
+          team={teams.get(caller.teamId)!}
+          agents={agents}
+          waiting={waiting}
+          tick={tick}
+          onOpen={setSelected}
+          onDismiss={() => sendBack(caller.key)}
+        />
+      ) : null}
       <Legend />
       <p className="world-hint">
         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · <kbd>Shift</kbd> run · drag to turn · scroll or <kbd>+</kbd><kbd>−</kbd> to zoom · click someone
@@ -173,6 +201,38 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
       ) : null}
     </div>
   );
+}
+
+/**
+ * The leads coming to your desk, and those already there. Leads calling when the office opens
+ * are there already; later ones count as there once they have walked over.
+ */
+function useCalls(world: WorldState | null, agents: Map<string, WorldAgent>, office: OfficePlan | null) {
+  const [sentBack, setSentBack] = useState<ReadonlySet<string>>(new Set());
+  const calling = useMemo(() => (world ? calls(world.teams, agents, sentBack) : []), [world, agents, sentBack]);
+  // When each lead is at your desk. Kept per lead, so a call that changes while they stand there does not walk them again.
+  const at = useRef<Map<string, number> | null>(null);
+  const [seen, setSeen] = useState(0);
+  useEffect(() => {
+    if (!office) return;
+    const first = !at.current;
+    const t = Date.now();
+    const next = new Map<string, number>();
+    for (const c of calling) {
+      const home = office.spots.get(c.leadId);
+      next.set(c.leadId, at.current?.get(c.leadId) ?? (first || !home ? t : t + walkMs(home, c.spot)));
+    }
+    at.current = next;
+    setSeen((n) => n + 1);
+    const soonest = Math.min(...[...next.values()].filter((x) => x > t));
+    if (!Number.isFinite(soonest)) return;
+    const timer = setTimeout(() => setSeen((n) => n + 1), soonest - t + 50);
+    return () => clearTimeout(timer);
+  }, [calling, office]);
+  // `seen` changes whenever `at` does and when someone arrives, so this reads `at` afresh.
+  const arrived = useMemo(() => calling.filter((c) => (at.current?.get(c.leadId) ?? Infinity) <= Date.now()), [calling, seen]);
+  const sendBack = useCallback((key: string) => setSentBack((s) => new Set([...s, key])), []);
+  return { calling, arrived, sendBack };
 }
 
 /**
@@ -209,7 +269,7 @@ function useTalk(world: WorldState | null, office: OfficePlan | null): { visits:
   return talk;
 }
 
-function Scene({ plan, world, agents, teams, waiting, arrivals, talk, selected, onSelect, fly }: {
+function Scene({ plan, world, agents, teams, waiting, arrivals, talk, calling, selected, onSelect, fly }: {
   plan: OfficePlan;
   world: WorldState;
   agents: Map<string, WorldState["agents"][number]>;
@@ -217,6 +277,7 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, talk, selected, 
   waiting: Map<string, Waiting>;
   arrivals: Set<string>;
   talk: { visits: Visit[]; bubbles: Bubble[] };
+  calling: Call[];
   selected: string | null;
   onSelect: (id: string) => void;
   fly: FlyTarget | null;
@@ -248,17 +309,19 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, talk, selected, 
         // The latest visit wins: someone asked twice walks to the second person.
         const visit = talk.visits.findLast((v) => v.fromId === a.id);
         const home = plan.spots.get(a.id)!;
+        // A lead at your desk stays there; a message they are sent meanwhile waits in their terminal.
+        const call: Spot | undefined = calling.find((c) => c.leadId === a.id)?.spot;
         return (
           <group key={a.id}>
             <Avatar
               agent={a}
-              spot={visit?.spot ?? home}
+              spot={call ?? visit?.spot ?? home}
               enterFrom={arrivals.has(a.id) ? ENTRANCE : null}
               waiting={w ? { count: w.count, type: w.type } : null}
               selected={selected === a.id}
               onSelect={onSelect}
-              bubble={visit?.text ?? talk.bubbles.findLast((b) => b.agentId === a.id)?.text ?? null}
-              carrying={visit?.kind === "handoff"}
+              bubble={call ? null : visit?.text ?? talk.bubbles.findLast((b) => b.agentId === a.id)?.text ?? null}
+              carrying={!call && visit?.kind === "handoff"}
             />
             {a.helpers.length ? <Helpers helpers={a.helpers} spot={home} /> : null}
           </group>

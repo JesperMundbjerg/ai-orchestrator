@@ -4,13 +4,14 @@
 //
 //   north   a corner per project and standing team, in a grid (3 per row)
 //   ─────   the corridor everyone walks along
-//   south   the lounge (west) · your desk with its queue (centre)
+//   south   the lounge (west) · your desk with its queue (centre), and on your side of the
+//           desk whoever came over to talk to you
 
 import type { Team, WorldAgent } from "../../shared/types.ts";
 
 export type Vec2 = [number, number];
 
-export type Zone = "team" | "queue" | "lounge";
+export type Zone = "team" | "queue" | "lounge" | "caller";
 
 export interface Spot {
   pos: Vec2;
@@ -122,6 +123,19 @@ export function queueSpot(i: number): Spot {
   const pos: Vec2 = [QUEUE_FRONT[0] + QUEUE_SLANT * row - 1.3 * column, QUEUE_FRONT[1] - 1.05 * row];
   // Arrive and leave along the side lane, so nobody walks through the people in line.
   return { pos, facing: 0, zone: "queue", group: "queue", approach: [[QUEUE_SIDE_X, pos[1]]] };
+}
+
+/** Where a lead stands when they came to your desk: on your side of it, to the left of you, facing you. */
+export const CALLER: Vec2 = [-1.2, 11.4];
+const CALLER_PITCH = 1.1;
+
+/**
+ * The i-th lead who came over to you. They walk down the west side of the desk, so they pass
+ * neither the desk nor the line in front of it, and stand side by side where you can see them.
+ */
+export function callerSpot(i: number): Spot {
+  const pos: Vec2 = [CALLER[0] - CALLER_PITCH * i, CALLER[1] - 0.2 * i];
+  return { pos, facing: yawTo(pos, SPAWN), zone: "caller", group: "caller", approach: [[QUEUE_SIDE_X - 0.6, DESK[1]]] };
 }
 
 function loungeSpot(i: number, n: number): Spot {
