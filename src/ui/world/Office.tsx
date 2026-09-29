@@ -227,7 +227,7 @@ function DeskUnit({ desk, working }: { desk: Desk; working: boolean }) {
   const [x, z] = desk.pos;
   const lead = desk.kind === "lead";
   return (
-    <group position={[x, 0, z]} rotation-y={desk.facing + Math.PI}>
+    <group position={[x, 0, z]} rotation-y={desk.facing + Math.PI} scale={[desk.scale, 1, desk.scale]}>
       <mesh position={[0, 0.74, 0]} castShadow receiveShadow>
         <boxGeometry args={[lead ? 2 : 1.4, 0.06, 0.7]} />
         <meshStandardMaterial color={lead ? "#3a4656" : "#4a5566"} roughness={0.5} />

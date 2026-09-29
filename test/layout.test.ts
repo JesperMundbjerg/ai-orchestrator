@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Message, Team, WorldAgent } from "../src/shared/types.ts";
-import { callerSpot, CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, LOUNGE_TABLE, pipelineLane, pipelines, planOffice, QUEUE_SIDE_X, queueOrder, route, type OfficePlan, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
+import { callerSpot, CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, crewGrid, DESK, DESK_SIZE, LOUNGE_TABLE, pipelineLane, pipelines, planOffice, QUEUE_SIDE_X, queueOrder, queueSpot, route, type Corner, type Desk, type OfficePlan, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
 import { plan as planTalk } from "../src/ui/world/visits.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
@@ -108,7 +108,7 @@ function furniture(plan: OfficePlan): Array<{ name: string; hit: (p: Vec2) => bo
   return [
     desk("your desk", deskShape(DESK, 0, 2.6, 0.9)),
     { name: "the lounge table", hit: (p: Vec2) => dist(p, plan.lounge.center) < LOUNGE_TABLE + 0.2 },
-    ...plan.corners.flatMap((c) => c.desks.map((d) => desk(`a desk of ${c.team.id}`, deskShape(d.pos, d.facing, d.kind === "lead" ? 2 : 1.4, 0.7)))),
+    ...plan.corners.flatMap((c) => c.desks.map((d) => desk(`a desk of ${c.team.id}`, deskShape(d.pos, d.facing, DESK_SIZE[d.kind][0] * d.scale, DESK_SIZE[d.kind][1] * d.scale)))),
   ];
 }
 
@@ -196,4 +196,74 @@ test("work flows along the floor from a team to the team it hands to", () => {
   assert.equal(p!.fromTeamId, "dev");
   assert.ok(p!.path.slice(1, -1).every((q) => Math.abs(dist(q, DESK) - pipelineLane(office)) < 0.01), "round the desk, between the path and the corners");
   assert.equal(pipelines(planOffice([], [team("qa")], [])).length, 0);
+});
+
+/** One project: a lead and this many crew, each with a place. */
+function bigTeam(crew: number) {
+  const t = team("big");
+  const agents = [agent("lead", { teamId: "big", role: "lead" }), ...Array.from({ length: crew }, (_, i) => agent(`c${i}`, { teamId: "big" }))];
+  return planOffice(agents, [t], []);
+}
+
+/** A floor point in a corner's own frame (+z towards your desk): the inverse of how the corner is laid out. */
+const inCorner = (c: Corner, p: Vec2): Vec2 => {
+  const [dx, dz] = [p[0] - c.center[0], p[1] - c.center[1]];
+  return [dx * Math.cos(c.facing) - dz * Math.sin(c.facing), dx * Math.sin(c.facing) + dz * Math.cos(c.facing)];
+};
+const deskCorners = (c: Corner, d: Desk, margin = 0): Vec2[] =>
+  deskShape(d.pos, d.facing, DESK_SIZE[d.kind][0] * d.scale - 2 * margin, DESK_SIZE[d.kind][1] * d.scale - 2 * margin);
+
+test("a team of any size fits its corner: every desk and chair inside it, clear of the lead's desk and of each other", () => {
+  for (const crew of [...Array.from({ length: 30 }, (_, i) => i + 1), 45, 80, 200]) {
+    const plan = bigTeam(crew);
+    const corner = plan.corners[0]!;
+    assert.equal(corner.desks.filter((d) => d.kind === "console").length, Math.max(3, crew), `${crew} crew get their desks`);
+    // deskShape adds a walker's 15 cm all round, so ask for it back.
+    const shapes = corner.desks.map((d) => deskCorners(corner, d, 0.15));
+    corner.desks.forEach((d, i) => {
+      for (const p of shapes[i]!) {
+        const [x, z] = inCorner(corner, p);
+        assert.ok(Math.abs(x) <= CORNER_HALF_WIDTH && Math.abs(z) <= CORNER_HALF_DEPTH, `${crew} crew: a ${d.kind} desk sticks out of the corner at ${x.toFixed(2)},${z.toFixed(2)}`);
+      }
+      for (let j = i + 1; j < corner.desks.length; j++) assert.ok(!overlap(shapes[i]!, shapes[j]!), `${crew} crew: desks ${i} and ${j} overlap`);
+    });
+    // Each crew member sits behind their desk, in the corner (a chair about 60 cm across).
+    for (const m of corner.members) {
+      const spot = plan.spots.get(m.id)!;
+      const [x, z] = inCorner(corner, spot.pos);
+      assert.ok(Math.abs(x) + 0.3 <= CORNER_HALF_WIDTH && Math.abs(z) + 0.3 <= CORNER_HALF_DEPTH, `${crew} crew: ${m.id} sits outside the corner`);
+    }
+    const lead = corner.desks.find((d) => d.kind === "lead")!;
+    assert.ok(corner.desks.filter((d) => d !== lead).every((d) => !overlap(deskCorners(corner, d), deskCorners(corner, lead))));
+    assert.ok(corner.desks.every((d) => d === lead || inCorner(corner, d.pos)[1] < inCorner(corner, lead.pos)[1] - 1), `${crew} crew: a crew desk stands too close to the lead's`);
+  }
+});
+
+test("up to ten crew the desks stand as they always did; beyond that they only get smaller, never fewer or apart", () => {
+  for (let n = 1; n <= 10; n++) assert.deepEqual(crewGrid(n), { scale: 1, perRow: 5, pitch: 1.7, rowGap: 1.9, firstZ: -1.9 });
+  let last = 1;
+  for (let n = 11; n <= 200; n++) {
+    const { scale, perRow } = crewGrid(n);
+    assert.ok(scale <= last && scale > 0, `${n} crew: desks do not grow with the team`);
+    assert.ok(perRow >= 1);
+    last = scale;
+  }
+  assert.ok(crewGrid(15).scale > 0.9 && crewGrid(30).scale > 0.6, "thirty crew still have desks of a usable size");
+});
+
+test("crew walk to their desks and between them off every desk, in any size of team", () => {
+  for (const crew of [10, 11, 16, 30]) {
+    const plan = bigTeam(crew);
+    const things = furniture(plan);
+    const seats = [...plan.spots.entries()];
+    for (const [fromId, from] of seats) {
+      for (const [toId, to] of [...seats, ["line", queueSpot(0)] as const]) {
+        if (fromId === toId) continue;
+        for (const p of walked(from.pos, route(from.pos, from, to))) {
+          const hit = things.find((t) => t.hit(p));
+          assert.ok(!hit, `${crew} crew: ${fromId} → ${toId} walks through ${hit?.name} at ${p.map((v) => v.toFixed(2))}`);
+        }
+      }
+    }
+  }
 });

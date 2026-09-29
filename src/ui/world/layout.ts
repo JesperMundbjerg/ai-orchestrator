@@ -32,6 +32,8 @@ export interface Desk {
   pos: Vec2;
   facing: number;
   kind: "console" | "lead";
+  /** 1 for a desk at full size; a big team's console desks are smaller (see crewGrid). */
+  scale: number;
   occupantId: string | null;
 }
 
@@ -145,6 +147,49 @@ export function planOffice(agents: WorldAgent[], teams: Team[], queue: string[])
   };
 }
 
+/** A desk's top as seen from above, in metres (across, deep). A crowded team's console desks shrink by Desk.scale. */
+export const DESK_SIZE: Record<Desk["kind"], Vec2> = { console: [1.4, 0.7], lead: [2, 0.7] };
+const LEAD_DESK_Z = 2.3;
+
+export interface CrewGrid {
+  /** How much the console desks and the spacing between them shrink; 1 up to ten crew. */
+  scale: number;
+  perRow: number;
+  /** Across and between rows, and the first row's place, in the corner's frame. */
+  pitch: number;
+  rowGap: number;
+  firstZ: number;
+}
+
+/** The widest row of desks: five at today's pitch. The side lanes run outside it. */
+const ROW_SPAN = 4 * CREW_PITCH + DESK_SIZE.console[0];
+/** The lane behind the last row stays clear of the lead's desk. */
+const LANE_LIMIT = LEAD_DESK_Z - DESK_SIZE.lead[1] / 2 - 0.2;
+
+/** What a scale gives room for: desks per row, and rows from just in front of the screen to the lead's desk. */
+function gridAt(scale: number): CrewGrid & { rows: number } {
+  const pitch = CREW_PITCH * scale;
+  const firstZ = -3.55 + 0.35 * scale;
+  const rowGap = 1.9 * scale;
+  const perRow = Math.floor((ROW_SPAN - DESK_SIZE.console[0] * scale) / pitch + 1e-9) + 1;
+  const rows = Math.floor((LANE_LIMIT - 1.25 * scale - firstZ) / rowGap + 1e-9) + 1;
+  return { scale, perRow, pitch, rowGap, firstZ, rows };
+}
+
+/**
+ * Where n console desks go. Up to ten, as ever: rows of five, at full size. Beyond that the
+ * desks shrink together, and the rows tighten, just enough to fit every desk in the corner, so
+ * a team can be any size; more rows are filled evenly.
+ */
+export function crewGrid(n: number): CrewGrid {
+  if (n <= 2 * CREW_PER_ROW) return { scale: 1, perRow: CREW_PER_ROW, pitch: CREW_PITCH, rowGap: 1.9, firstZ: -1.9 };
+  let scale = 0.99;
+  let grid = gridAt(scale);
+  while (grid.perRow * grid.rows < n && scale > 0.02) grid = gridAt((scale = Math.round((scale - 0.01) * 100) / 100));
+  const { scale: fit, pitch, rowGap, firstZ } = grid;
+  return { scale: fit, perRow: Math.ceil(n / Math.ceil(n / grid.perRow)), pitch, rowGap, firstZ };
+}
+
 /**
  * The lead (a project's first mate) at the back and the crew in rows facing the big screen, like
  * a flight control room. Laid out in the corner's own frame, the screen away from your desk.
@@ -158,20 +203,22 @@ function controlRoom(team: Team, center: Vec2, facing: number, door: Vec2, membe
   const seat = (id: string, pos: Vec2, approach: Vec2[]) => seats.push([id, { pos, facing: facing + NORTH, zone: "team", group: team.id, approach: [door, ...approach] }]);
   const aisle = CORNER_HALF_DEPTH - 0.2;
   const shown = Math.max(3, crew.length);
+  const grid = crewGrid(shown);
+  const k = grid.scale;
   for (let i = 0; i < shown; i++) {
-    const row = Math.floor(i / CREW_PER_ROW);
-    const inRow = Math.min(CREW_PER_ROW, shown - row * CREW_PER_ROW);
-    const x = (i % CREW_PER_ROW - (inRow - 1) / 2) * CREW_PITCH;
-    const deskZ = -1.9 + row * 1.9;
+    const row = Math.floor(i / grid.perRow);
+    const inRow = Math.min(grid.perRow, shown - row * grid.perRow);
+    const x = (i % grid.perRow - (inRow - 1) / 2) * grid.pitch;
+    const deskZ = grid.firstZ + row * grid.rowGap;
     const occupant = crew[i] ?? null;
-    desks.push({ pos: at(x, deskZ), facing: facing + NORTH, kind: "console", occupantId: occupant?.id ?? null });
+    desks.push({ pos: at(x, deskZ), facing: facing + NORTH, kind: "console", scale: k, occupantId: occupant?.id ?? null });
     // Crew come in down the side of the room and along the gap behind their row's chairs, so
     // they pass neither the lead's desk nor anyone sitting down.
     const side = (x > 0 ? 1 : -1) * (CORNER_HALF_WIDTH - 0.3);
-    const lane = deskZ + 1.25;
-    if (occupant) seat(occupant.id, at(x, deskZ + 0.75), [at(side, aisle), at(side, lane), at(x, lane)]);
+    const lane = deskZ + 1.25 * k;
+    if (occupant) seat(occupant.id, at(x, deskZ + 0.75 * k), [at(side, aisle), at(side, lane), at(x, lane)]);
   }
-  desks.push({ pos: at(0, 2.3), facing: facing + NORTH, kind: "lead", occupantId: lead?.id ?? null });
+  desks.push({ pos: at(0, LEAD_DESK_Z), facing: facing + NORTH, kind: "lead", scale: 1, occupantId: lead?.id ?? null });
   if (lead) seat(lead.id, at(0, 3.05), [at(0, aisle)]);
   return { seats, desks };
 }
