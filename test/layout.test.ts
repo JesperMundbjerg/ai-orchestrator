@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Message, Team, WorldAgent } from "../src/shared/types.ts";
-import { CORRIDOR_Z, pipelines, planOffice, QUEUE_SIDE_X, queueOrder, route } from "../src/ui/world/layout.ts";
+import { callerSpot, CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, LOUNGE_TABLE, pipelineLane, pipelines, planOffice, QUEUE_SIDE_X, queueOrder, route, type OfficePlan, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
 import { plan as planTalk } from "../src/ui/world/visits.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
@@ -34,14 +34,140 @@ test("everyone has a place: team seats, the line at your desk, or the lounge", (
   assert.ok(fp.desks.some((d) => d.occupantId === "asking"));
 });
 
-test("walking to the line goes along the corridor and the side lane, and the line moves up directly", () => {
-  const plan = planOffice([agent("a", { teamId: "mc" }), agent("b"), agent("c")], [team("mc")], ["b", "c"]);
+test("walking to the line goes round the path and down the side lane, and the line moves up directly", () => {
+  const plan = planOffice([agent("a", { teamId: "mc" }), agent("b"), agent("c")], [team("mc"), team("fp"), team("qa")], ["b", "c"]);
   const desk = plan.spots.get("a")!;
   const [first, second] = [plan.spots.get("b")!, plan.spots.get("c")!];
   const path = route(desk.pos, desk, second);
-  assert.ok(path.some(([, z]) => z === CORRIDOR_Z));
+  assert.ok(path.some((p) => Math.abs(dist(p, DESK) - plan.path) < 0.01), "along the path");
   assert.deepEqual(path.at(-2), [QUEUE_SIDE_X, second.pos[1]]);
   assert.deepEqual(route(second.pos, second, first), [first.pos]);
+});
+
+const dist = (a: Vec2, b: Vec2) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+/** An office with n projects of a lead and three crew each, some agents in the lounge, and two in line. */
+function office(n: number, queued = ["q1", "q2"]) {
+  const teams = Array.from({ length: n }, (_, i) => team(`t${i}`));
+  const agents = [
+    ...teams.flatMap((t) => [agent(`${t.id}-lead`, { teamId: t.id, role: "lead" }), ...[1, 2, 3].map((k) => agent(`${t.id}-c${k}`, { teamId: t.id }))]),
+    ...["l1", "l2", "l3", ...queued].map((id) => agent(id)),
+  ];
+  return planOffice(agents, teams, queued);
+}
+
+/** The four floor corners of a team's corner, or of the lounge's place on the ring. */
+function footprint(center: Vec2, facing: number): Vec2[] {
+  const [c, s] = [Math.cos(facing), Math.sin(facing)];
+  return [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([x, z]) => {
+    const [lx, lz] = [x! * CORNER_HALF_WIDTH, z! * CORNER_HALF_DEPTH];
+    return [center[0] + lx * c + lz * s, center[1] - lx * s + lz * c] as Vec2;
+  });
+}
+
+/** Whether two convex floor shapes overlap (separating axis test). */
+function overlap(a: Vec2[], b: Vec2[]): boolean {
+  for (const shape of [a, b]) {
+    for (let i = 0; i < shape.length; i++) {
+      const [p, q] = [shape[i]!, shape[(i + 1) % shape.length]!];
+      const axis: Vec2 = [q[1] - p[1], p[0] - q[0]];
+      const span = (s: Vec2[]) => s.map(([x, z]) => x * axis[0] + z * axis[1]);
+      if (Math.max(...span(a)) <= Math.min(...span(b)) || Math.max(...span(b)) <= Math.min(...span(a))) return false;
+    }
+  }
+  return true;
+}
+
+const inside = (shape: Vec2[], [x, z]: Vec2) =>
+  shape.every((p, i) => {
+    const q = shape[(i + 1) % shape.length]!;
+    return (q[0] - p[0]) * (z - p[1]) - (q[1] - p[1]) * (x - p[0]) >= 0;
+  }) || shape.every((p, i) => {
+    const q = shape[(i + 1) % shape.length]!;
+    return (q[0] - p[0]) * (z - p[1]) - (q[1] - p[1]) * (x - p[0]) <= 0;
+  });
+
+/** Every 10 cm of a walk. */
+function walked(from: Vec2, path: Vec2[]): Vec2[] {
+  return path.flatMap((p, i) => {
+    const q = path[i - 1] ?? from;
+    const n = Math.max(1, Math.ceil(dist(p, q) / 0.1));
+    return Array.from({ length: n }, (_, k) => [q[0] + ((p[0] - q[0]) * k) / n, q[1] + ((p[1] - q[1]) * k) / n] as Vec2);
+  });
+}
+
+/** A desk's top as seen from above, with room for the walker's body around it. */
+function deskShape(pos: Vec2, facing: number, width: number, depth: number): Vec2[] {
+  const [c, s] = [Math.cos(facing), Math.sin(facing)];
+  const [w, d] = [width / 2 + 0.15, depth / 2 + 0.15];
+  return [[-w, -d], [w, -d], [w, d], [-w, d]].map(([x, z]) => [pos[0] + x! * c + z! * s, pos[1] - x! * s + z! * c] as Vec2);
+}
+
+function furniture(plan: OfficePlan): Array<{ name: string; hit: (p: Vec2) => boolean }> {
+  const desk = (name: string, shape: Vec2[]) => ({ name, hit: (p: Vec2) => inside(shape, p) });
+  return [
+    desk("your desk", deskShape(DESK, 0, 2.6, 0.9)),
+    { name: "the lounge table", hit: (p: Vec2) => dist(p, plan.lounge.center) < LOUNGE_TABLE + 0.2 },
+    ...plan.corners.flatMap((c) => c.desks.map((d) => desk(`a desk of ${c.team.id}`, deskShape(d.pos, d.facing, d.kind === "lead" ? 2 : 1.4, 0.7)))),
+  ];
+}
+
+test("every corner stands on a ring round your desk, facing it, as close as it can without overlapping", () => {
+  for (let n = 1; n <= 12; n++) {
+    const plan = office(n);
+    const shapes = [...plan.corners.map((c) => footprint(c.center, c.facing)), footprint(plan.lounge.center, plan.lounge.facing)];
+    for (const c of plan.corners) {
+      assert.ok(Math.abs(dist(c.center, DESK) - plan.ring) < 1e-9, "all equally far");
+      const toDesk = Math.atan2(DESK[0] - c.center[0], DESK[1] - c.center[1]);
+      assert.ok(Math.abs(Math.sin(c.facing - toDesk)) < 1e-9 && Math.cos(c.facing - toDesk) > 0, "facing your desk");
+    }
+    assert.ok(plan.ring <= (n <= 5 ? 14.6 : n <= 6 ? 15.5 : 26), `${n} teams stand ${plan.ring.toFixed(1)} m away`);
+    for (let i = 0; i < shapes.length; i++) {
+      for (let j = i + 1; j < shapes.length; j++) assert.ok(!overlap(shapes[i]!, shapes[j]!), `${n} teams: places ${i} and ${j} overlap`);
+      // Nothing on the ring reaches the path, so walking round it passes in front of the corners.
+      for (const p of shapes[i]!) assert.ok(dist(p, DESK) > plan.path + 1);
+    }
+  }
+});
+
+test("a new team takes the next place: the teams already there keep their side of the ring, and while it has room, their place", () => {
+  for (let n = 1; n < 12; n++) {
+    const [before, after] = [office(n), office(n + 1)];
+    before.corners.forEach((c, i) => {
+      const now = after.corners[i]!;
+      assert.equal(now.team.id, c.team.id);
+      assert.equal(Math.sign(Math.round(now.center[0] * 1e6)), Math.sign(Math.round(c.center[0] * 1e6)), `team ${i} changes sides at ${n + 1} teams`);
+      if (after.ring === before.ring) assert.deepEqual(now.center, c.center);
+    });
+  }
+  // The first straight ahead of you, the next to your right and left.
+  const [first, second, third] = office(3).corners;
+  assert.ok(Math.abs(first!.center[0]) < 1e-9 && first!.center[1] < 0);
+  assert.ok(second!.center[0] > 0 && third!.center[0] < 0);
+});
+
+test("walks between corners, the lounge, the line and your desk go round the path, off every desk and through no other corner", () => {
+  for (const n of [2, 7, 12]) {
+    const plan = office(n);
+    const things = furniture(plan);
+    // Everyone's place, and where leads stand when they come over to your desk.
+    const places: Array<[string, Spot]> = [...plan.spots.entries(), ["caller0", callerSpot(0)], ["caller1", callerSpot(1)]];
+    const cornerOf = new Map(plan.corners.map((c) => [c.team.id, footprint(c.center, c.facing)]));
+    for (const [fromId, from] of places) {
+      for (const [toId, to] of places) {
+        if (fromId === toId) continue;
+        const steps = walked(from.pos, route(from.pos, from, to));
+        for (const p of steps) {
+          const hit = things.find((t) => t.hit(p));
+          assert.ok(!hit, `${n} teams: ${fromId} → ${toId} walks through ${hit?.name} at ${p.map((v) => v.toFixed(2))}`);
+          for (const [teamId, shape] of cornerOf) {
+            if (teamId === from.group || teamId === to.group) continue;
+            assert.ok(!inside(shape, p), `${n} teams: ${fromId} → ${toId} cuts through ${teamId}`);
+          }
+        }
+      }
+    }
+  }
 });
 
 const said = (id: string, kind: Message["kind"], from: string | null, to: string[], text = "hello"): Message =>
@@ -68,6 +194,6 @@ test("work flows along the floor from a team to the team it hands to", () => {
   const office = planOffice([], teams, []);
   const [p] = pipelines(office);
   assert.equal(p!.fromTeamId, "dev");
-  assert.ok(p!.path.some(([, z]) => Math.abs(z - CORRIDOR_Z) < 1), "along the corridor");
+  assert.ok(p!.path.slice(1, -1).every((q) => Math.abs(dist(q, DESK) - pipelineLane(office)) < 0.01), "round the desk, between the path and the corners");
   assert.equal(pipelines(planOffice([], [team("qa")], [])).length, 0);
 });

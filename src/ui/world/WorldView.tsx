@@ -5,7 +5,7 @@ import { api } from "../api.ts";
 import { useItemDetail } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
 import { Avatar } from "./Avatar.tsx";
-import { CALLER, ENTRANCE, planOffice, queueOrder, SPAWN, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
+import { CALLER, planOffice, queueOrder, SPAWN, viewOf, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
 import { CallerCard } from "./Caller.tsx";
 import { Office } from "./Office.tsx";
 import { AgentPanel, AnswerModal, Legend, TeamPanel, TeamsPanel } from "./Panels.tsx";
@@ -19,7 +19,11 @@ export interface Waiting {
   itemIds: string[];
 }
 
-const START: FlyTarget = { pos: SPAWN, yaw: 0, seq: 0 };
+/**
+ * Just behind your chair and a little above it, facing the first team straight ahead: from
+ * here the desk, the line and the corners either side of the first are all in view.
+ */
+const START: FlyTarget = { pos: [SPAWN[0], SPAWN[1] + 5.5], yaw: 0, lift: 0.15, seq: 0 };
 /** From your desk, turned so a lead who came over stands left of the card they bring. */
 const FACE_CALLER: Vec2 = [SPAWN[0] + 0.3, SPAWN[1] + 0.4];
 const FACE_CALLER_YAW = Math.atan2(CALLER[0] - FACE_CALLER[0], FACE_CALLER[1] - CALLER[1]) + 0.05;
@@ -125,7 +129,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
           {world.agents.length} {world.agents.length === 1 ? "agent" : "agents"} · {world.herdr === "connected" ? "live from herdr" : "herdr not running: no live status"}
         </span>
         <span className="spacer" />
-        <button className="ghost small" onClick={() => flyTo(SPAWN, 0)}>Your desk</button>
+        <button className="ghost small" onClick={() => setFly((f) => ({ ...START, seq: (f?.seq ?? 0) + 1 }))}>Your desk</button>
         {entries.length ? (
           <button className="primary small" onClick={() => setAnswering(entries[0]!.item.id)}>
             {queue.length} in line · answer the first
@@ -142,7 +146,10 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
         onOpen={(id, pos, yaw) => {
           setSelected(null);
           setOpenTeam(id);
-          flyTo(pos, yaw);
+          // Corners face your desk from all round, so the plan knows where to stand to see one.
+          const corner = plan.corners.find((c) => c.team.id === id);
+          const view = corner ? viewOf(corner) : { pos, yaw };
+          flyTo(view.pos, view.yaw);
         }}
       />
       {shownTeam ? (
@@ -289,7 +296,8 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, talk, calling, s
   return (
     <>
       <color attach="background" args={["#dde5ee"]} />
-      <fog attach="fog" args={["#dde5ee", 35, 90]} />
+      {/* Far enough that the far side of the ring stays clear, from your desk or from above. */}
+      <fog attach="fog" args={["#dde5ee", reach + 10, reach * 2 + 60]} />
       <hemisphereLight args={["#ffffff", "#aeb8c2", 1.1]} />
       <directionalLight
         position={[14, 24, 10]}
@@ -316,7 +324,7 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, talk, calling, s
             <Avatar
               agent={a}
               spot={call ?? visit?.spot ?? home}
-              enterFrom={arrivals.has(a.id) ? ENTRANCE : null}
+              enterFrom={arrivals.has(a.id) ? plan.entrance : null}
               waiting={w ? { count: w.count, type: w.type } : null}
               selected={selected === a.id}
               onSelect={onSelect}

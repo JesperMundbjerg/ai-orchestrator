@@ -42,7 +42,7 @@ test("no lead walks over who is offline or missing, and a stuck lead is named fi
   assert.deepEqual(call!.stuckIds, ["clara", "liv"]);
 });
 
-test("two leads at your desk stand apart, and walk there from their corner by the corridor", () => {
+test("two leads at your desk stand apart, and walk there from their corner round the path", () => {
   const agents = byId(agent("clara", { role: "lead" }), agent("liv", { status: "blocked" }), agent("ada", { teamId: "t2", role: "lead", status: "blocked" }));
   const teams = [team("t1", { status: "blocked", blockedBy: ["liv"] }), team("t2", { status: "blocked", blockedBy: ["ada"] })];
   const [a, b] = calls(teams, agents, new Set());

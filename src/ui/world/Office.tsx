@@ -5,7 +5,7 @@ import type { Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
 import { textTexture, type Line } from "./label.ts";
 import { lookFor } from "./look.ts";
 import { teamLine } from "./status.ts";
-import { CORRIDOR_Z, DESK, LOUNGE_CENTER, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, type Corner, type Desk, type OfficePlan, type Vec2 } from "./layout.ts";
+import { CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, LOUNGE_SOFAS, LOUNGE_TABLE, pipelineLane, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, type Corner, type Desk, type OfficePlan, type Vec2 } from "./layout.ts";
 
 /** The room and its furniture. Nothing here moves on its own; it follows the plan. */
 export function Office({ plan, agents, teams, work, queueLength }: { plan: OfficePlan; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; queueLength: number }) {
@@ -21,21 +21,25 @@ export function Office({ plan, agents, teams, work, queueLength }: { plan: Offic
         <meshStandardMaterial color="#cfd5dc" roughness={0.95} />
       </mesh>
       <gridHelper args={[Math.max(w, d), Math.round(Math.max(w, d) / 2), "#bcc3cc", "#c5ccd4"]} position={[cx, 0.002, cz]} />
-      {/* The corridor */}
-      <mesh rotation-x={-Math.PI / 2} position={[cx, 0.004, CORRIDOR_Z]} receiveShadow>
-        <planeGeometry args={[w - 1, 2.2]} />
+      {/* The walkway around your desk, and the lane handed-over work runs along */}
+      <mesh rotation-x={-Math.PI / 2} position={[DESK[0], 0.004, DESK[1]]} receiveShadow>
+        <ringGeometry args={[plan.path - 1.1, plan.path + 0.6, 96]} />
         <meshStandardMaterial color="#b9c1ca" roughness={0.9} />
+      </mesh>
+      <mesh rotation-x={-Math.PI / 2} position={[DESK[0], 0.004, DESK[1]]}>
+        <ringGeometry args={[pipelineLane(plan) - 0.3, pipelineLane(plan) + 0.3, 96]} />
+        <meshStandardMaterial color="#c3cad2" roughness={0.9} />
       </mesh>
       <Walls minX={minX} maxX={maxX} minZ={minZ} maxZ={maxZ} />
       <YourDesk queueLength={queueLength} />
-      <Lounge />
+      <Lounge center={plan.lounge.center} facing={plan.lounge.facing} />
       {plan.corners.map((c) => (
         <TeamCorner key={c.team.id} corner={c} agents={agents} teams={teams} work={work} />
       ))}
       {pipelines(plan).map((p) => (
         <Pipeline key={p.fromTeamId} path={p.path} busy={work.some((w) => w.fromTeamId === p.fromTeamId && w.toTeamId === p.toTeamId && w.state === "in_review")} />
       ))}
-      {[[-20, 12.5], [20, 12.5], [-20, -2], [20, -2], [7, 12.8], [-8.5, 3]].map(([x, z]) => (
+      {[[minX + 1.5, minZ + 1.5], [maxX - 1.5, minZ + 1.5], [minX + 1.5, maxZ - 1.5], [maxX - 1.5, maxZ - 1.5]].map(([x, z]) => (
         <Plant key={`${x},${z}`} x={x!} z={z!} />
       ))}
     </group>
@@ -132,24 +136,26 @@ function YourDesk({ queueLength }: { queueLength: number }) {
   );
 }
 
-function Lounge() {
-  const [x, z] = LOUNGE_CENTER;
+/** The lounge takes a place on the ring like a corner, open towards your desk. */
+function Lounge({ center, facing }: { center: Vec2; facing: number }) {
+  const [x, z] = center;
   const sign = useTexture(
     () => textTexture([{ text: "Lounge", size: 64, color: "#ffffff", weight: 800 }, { text: "agents not on a project", size: 32, color: "#b8c2cc" }], { width: 512, height: 180, background: "#2b3a4a", radius: 24 }),
     [],
   );
   return (
-    <group position={[x, 0, z]}>
+    <group position={[x, 0, z]} rotation-y={facing}>
       <mesh rotation-x={-Math.PI / 2} position={[0, 0.006, 0]} receiveShadow>
-        <circleGeometry args={[4.6, 48]} />
+        <circleGeometry args={[4.4, 48]} />
         <meshStandardMaterial color="#a7b99e" roughness={1} />
       </mesh>
       <mesh position={[0, 0.22, 0]} castShadow>
-        <cylinderGeometry args={[0.8, 0.8, 0.44, 32]} />
+        <cylinderGeometry args={[LOUNGE_TABLE, LOUNGE_TABLE, 0.44, 32]} />
         <meshStandardMaterial color="#7a5c43" roughness={0.6} />
       </mesh>
-      {[0, (2 * Math.PI) / 3, (4 * Math.PI) / 3].map((a) => (
-        <group key={a} position={[Math.sin(a) * 3.9, 0, Math.cos(a) * 3.9]} rotation-y={a + Math.PI}>
+      {/* No sofa on the side facing your desk, so the way in is open. */}
+      {LOUNGE_SOFAS.map((a) => (
+        <group key={a} position={[Math.sin(a) * 3.7, 0, Math.cos(a) * 3.7]} rotation-y={a + Math.PI}>
           <mesh position={[0, 0.25, 0]} castShadow>
             <boxGeometry args={[2.2, 0.5, 0.8]} />
             <meshStandardMaterial color="#5a6f8c" roughness={0.9} />
@@ -160,7 +166,7 @@ function Lounge() {
           </mesh>
         </group>
       ))}
-      <mesh position={[-4.9, 2.2, 0]} rotation-y={Math.PI / 2}>
+      <mesh position={[0, 2.2, -4.4]}>
         <planeGeometry args={[1.8, 0.63]} />
         <meshBasicMaterial map={sign} toneMapped={false} side={2} />
       </mesh>
@@ -169,7 +175,7 @@ function Lounge() {
 }
 
 function TeamCorner({ corner, agents, teams, work }: { corner: Corner; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[] }) {
-  const { team, center, desks, members } = corner;
+  const { team, center, facing, desks, members } = corner;
   const live = teams.get(team.id) ?? null;
   const toReview = work.filter((w) => w.toTeamId === team.id && w.state === "in_review").length;
   const handsTo = team.handsTo ? teams.get(team.handsTo)?.name : null;
@@ -186,26 +192,29 @@ function TeamCorner({ corner, agents, teams, work }: { corner: Corner; agents: M
   const board = useTexture(() => textTexture(lines, { width: 1024, height: 360, background: "#141a22", radius: 28 }), [JSON.stringify(lines)]);
   return (
     <group>
-      <mesh rotation-x={-Math.PI / 2} position={[cx, 0.005, cz]} receiveShadow>
-        <planeGeometry args={[10.4, 9]} />
-        <meshStandardMaterial color={tint} roughness={1} transparent opacity={0.28} />
-      </mesh>
-      <group position={[cx, 0, cz - 4]}>
-        {/* The big wall screen the crew faces, high enough to read over their heads and name tags */}
-        <mesh position={[0, 3.9, 0]} castShadow>
-          <boxGeometry args={[7.2, 2.7, 0.12]} />
-          <meshStandardMaterial color="#0e1116" />
+      {/* Turned so its open side faces your desk; the screen is at the back, facing you. */}
+      <group position={[cx, 0, cz]} rotation-y={facing}>
+        <mesh rotation-x={-Math.PI / 2} position={[0, 0.005, 0]} receiveShadow>
+          <planeGeometry args={[CORNER_HALF_WIDTH * 2, CORNER_HALF_DEPTH * 2]} />
+          <meshStandardMaterial color={tint} roughness={1} transparent opacity={0.28} />
         </mesh>
-        <mesh position={[0, 3.9, 0.07]}>
-          <planeGeometry args={[6.9, 2.43]} />
-          <meshBasicMaterial map={board} toneMapped={false} />
-        </mesh>
-        {[-3, 3].map((dx) => (
-          <mesh key={dx} position={[dx, 1.3, 0]}>
-            <boxGeometry args={[0.12, 2.6, 0.12]} />
-            <meshStandardMaterial color="#2c3440" />
+        <group position={[0, 0, -4]}>
+          {/* The big wall screen the crew faces, high enough to read over their heads and name tags */}
+          <mesh position={[0, 3.9, 0]} castShadow>
+            <boxGeometry args={[7.2, 2.7, 0.12]} />
+            <meshStandardMaterial color="#0e1116" />
           </mesh>
-        ))}
+          <mesh position={[0, 3.9, 0.07]}>
+            <planeGeometry args={[6.9, 2.43]} />
+            <meshBasicMaterial map={board} toneMapped={false} />
+          </mesh>
+          {[-3, 3].map((dx) => (
+            <mesh key={dx} position={[dx, 1.3, 0]}>
+              <boxGeometry args={[0.12, 2.6, 0.12]} />
+              <meshStandardMaterial color="#2c3440" />
+            </mesh>
+          ))}
+        </group>
       </group>
       {desks.map((desk, i) => (
         <DeskUnit key={i} desk={desk} working={desk.occupantId ? agents.get(desk.occupantId)?.status === "working" : false} />

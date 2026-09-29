@@ -1,11 +1,15 @@
 // Where everything stands in the office. Pure: from the world state and the queue order it
 // returns each agent's spot, the furniture each team's corner needs, and the walking route
-// between two spots. Coordinates are metres on the floor as [x, z]; north is -z.
+// between two spots. Coordinates are metres on the floor as [x, z], with your desk at the
+// origin; north (-z) is straight ahead of you.
 //
-//   north   a corner per project and standing team, in a grid (3 per row)
-//   ─────   the corridor everyone walks along
-//   south   the lounge (west) · your desk with its queue (centre), and on your side of the
-//           desk whoever came over to talk to you
+//   centre   your desk, the line in front of it (north) and, on your side of it, whoever came
+//            over to talk to you
+//   path     a walkway circling the desk, between it and the corners
+//   ring     a corner per project and standing team, each facing the desk; the first straight
+//            ahead, the next ones alternately right and left, then the lounge. Corners stand
+//            side by side from the front until the ring is full; after that it widens just
+//            enough for everyone to fit, so all corners stay about as close to you.
 
 import type { Team, WorldAgent } from "../../shared/types.ts";
 
@@ -20,7 +24,7 @@ export interface Spot {
   zone: Zone;
   /** Spots sharing a group are reached from each other directly: same corner, same line. */
   group: string;
-  /** Waypoints from the corridor to the spot, in walking order. */
+  /** Waypoints from the path around the desk to the spot, in walking order. */
   approach: Vec2[];
 }
 
@@ -34,33 +38,42 @@ export interface Desk {
 export interface Corner {
   team: Team;
   center: Vec2;
+  /** The way the corner is turned: its open side, and the crew's backs, face your desk. */
+  facing: number;
   desks: Desk[];
   members: WorldAgent[];
 }
 
 export interface OfficePlan {
   corners: Corner[];
+  lounge: { center: Vec2; facing: number };
+  /** How far the corners' centres are from your desk, and the path around it. */
+  ring: number;
+  path: number;
+  /** Where someone new walks in from: the path in front of the lounge. */
+  entrance: Vec2;
   spots: Map<string, Spot>;
   queue: string[];
   bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
 }
 
-export const CORRIDOR_Z = 1.4;
-export const DESK: Vec2 = [0, 10.4];
-export const QUEUE_FRONT: Vec2 = [0, 9.2];
+export const DESK: Vec2 = [0, 0];
+export const QUEUE_FRONT: Vec2 = [0, -1.2];
 export const QUEUE_SIDE_X = -2.4;
 export const QUEUE_ROW = 6;
 /** Each place in line steps sideways a little, so from your desk you see past the person in front. */
 export const QUEUE_SLANT = 0.8;
-export const LOUNGE_CENTER: Vec2 = [-14, 7.5];
-export const SPAWN: Vec2 = [0, 13.7];
-export const ENTRANCE: Vec2 = [-6, 13.5];
+/** Where the side lane to the line starts, coming in from the path. */
+const QUEUE_HEAD: Vec2 = [QUEUE_SIDE_X, QUEUE_FRONT[1] - 1.05 * (QUEUE_ROW - 1) - 0.8];
+export const SPAWN: Vec2 = [0, 3.3];
 
-/** The first team sits straight ahead of your desk, the next ones to either side. */
-const CORNER_COLUMNS = [0, -13, 13];
-const CORNER_FIRST_Z = -6.5;
-const CORNER_PITCH = 12;
-const CORNER_HALF_DEPTH = 4.6;
+/** A corner is this wide and deep (the lounge fits the same space), with a metre between corners. */
+export const CORNER_HALF_WIDTH = 4.7;
+export const CORNER_HALF_DEPTH = 4.5;
+const CORNER_GAP = 1;
+/** The path runs this far inside the corners' open sides, and never closer to the desk than PATH_MIN (clear of the line). */
+const PATH_INSET = 1.4;
+const PATH_MIN = 8.6;
 const CREW_PITCH = 1.7;
 const CREW_PER_ROW = 5;
 
@@ -68,115 +81,202 @@ const CREW_PER_ROW = 5;
 export const yawTo = (from: Vec2, to: Vec2): number => Math.atan2(to[0] - from[0], to[1] - from[1]);
 const NORTH = Math.PI;
 
+/** A point given in a corner's own frame (+z towards your desk), on the floor. */
+const place = (center: Vec2, facing: number, [x, z]: Vec2): Vec2 =>
+  [center[0] + x * Math.cos(facing) + z * Math.sin(facing), center[1] - x * Math.sin(facing) + z * Math.cos(facing)];
+
+/** Ahead of you is angle 0, to your right positive. */
+const onCircle = (r: number, angle: number): Vec2 => [DESK[0] + r * Math.sin(angle), DESK[1] - r * Math.cos(angle)];
+const angleOf = ([x, z]: Vec2) => Math.atan2(x - DESK[0], DESK[1] - z);
+const distance = (a: Vec2, b: Vec2) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+
+/** The i-th place on the ring counted from straight ahead: 0, then +1, -1, +2, -2… steps to the right and left. */
+const slot = (i: number) => (i % 2 ? (i + 1) / 2 : -i / 2);
+
+/**
+ * How far out the corners stand for this many places on the ring (teams and the lounge), and
+ * the angle between neighbours. Up to what fits at the smallest ring they stand side by side,
+ * so a new team takes the next place without moving anyone; beyond that the ring widens until
+ * all of them fit evenly spaced.
+ */
+export function ringFor(places: number): { radius: number; step: number } {
+  const half = CORNER_HALF_WIDTH + CORNER_GAP / 2;
+  const smallest = PATH_MIN + PATH_INSET + CORNER_HALF_DEPTH;
+  const packed = 2 * Math.atan(half / (smallest - CORNER_HALF_DEPTH));
+  if (places * packed <= Math.PI * 2) return { radius: smallest, step: packed };
+  const step = (Math.PI * 2) / places;
+  return { radius: half / Math.tan(step / 2) + CORNER_HALF_DEPTH, step };
+}
+
 export function planOffice(agents: WorldAgent[], teams: Team[], queue: string[]): OfficePlan {
+  const { radius, step } = ringFor(teams.length + 1);
+  const path = radius - CORNER_HALF_DEPTH - PATH_INSET;
+  const at = (i: number) => {
+    const center = onCircle(radius, slot(i) * step);
+    return { center, facing: yawTo(center, DESK), door: onCircle(path, slot(i) * step) };
+  };
+
   const spots = new Map<string, Spot>();
   const corners = teams.map((team, i) => {
-    const center: Vec2 = [CORNER_COLUMNS[i % CORNER_COLUMNS.length]!, CORNER_FIRST_Z - CORNER_PITCH * Math.floor(i / CORNER_COLUMNS.length)];
+    const { center, facing, door } = at(i);
     const members = agents.filter((a) => a.teamId === team.id);
-    const corner = controlRoom(team, center, members);
+    const corner = controlRoom(team, center, facing, door, members);
     for (const [id, spot] of corner.seats) spots.set(id, spot);
-    return { team, center, desks: corner.desks, members };
+    return { team, center, facing, desks: corner.desks, members };
   });
 
   const queued = new Set(queue);
   queue.forEach((id, i) => spots.set(id, queueSpot(i)));
 
+  const lounge = at(teams.length);
   const lounging = agents.filter((a) => !queued.has(a.id) && !spots.has(a.id));
-  lounging.forEach((a, i) => spots.set(a.id, loungeSpot(i, lounging.length)));
+  lounging.forEach((a, i) => spots.set(a.id, loungeSpot(i, lounging.length, lounge.center, lounge.facing, lounge.door)));
 
-  const rows = Math.max(1, Math.ceil(teams.length / CORNER_COLUMNS.length));
+  const edge = radius + CORNER_HALF_DEPTH + 2;
   return {
     corners,
+    lounge: { center: lounge.center, facing: lounge.facing },
+    ring: radius,
+    path,
+    entrance: lounge.door,
     spots,
     queue,
-    bounds: { minX: -22, maxX: 22, minZ: CORNER_FIRST_Z - CORNER_PITCH * (rows - 1) - 7, maxZ: 14.5 },
+    bounds: { minX: DESK[0] - edge, maxX: DESK[0] + edge, minZ: DESK[1] - edge, maxZ: DESK[1] + edge },
   };
 }
 
-/** The lead (a project's first mate) at the back and the crew in rows facing the big screen, like a flight control room. */
-function controlRoom(team: Team, [cx, cz]: Vec2, members: WorldAgent[]) {
+/**
+ * The lead (a project's first mate) at the back and the crew in rows facing the big screen, like
+ * a flight control room. Laid out in the corner's own frame, the screen away from your desk.
+ */
+function controlRoom(team: Team, center: Vec2, facing: number, door: Vec2, members: WorldAgent[]) {
   const lead = members.find((m) => m.role === "lead") ?? null;
   const crew = members.filter((m) => m !== lead);
   const seats: Array<[string, Spot]> = [];
   const desks: Desk[] = [];
-  const aisleZ = cz + CORNER_HALF_DEPTH - 0.3;
+  const at = (x: number, z: number) => place(center, facing, [x, z]);
+  const seat = (id: string, pos: Vec2, approach: Vec2[]) => seats.push([id, { pos, facing: facing + NORTH, zone: "team", group: team.id, approach: [door, ...approach] }]);
+  const aisle = CORNER_HALF_DEPTH - 0.2;
   const shown = Math.max(3, crew.length);
   for (let i = 0; i < shown; i++) {
     const row = Math.floor(i / CREW_PER_ROW);
     const inRow = Math.min(CREW_PER_ROW, shown - row * CREW_PER_ROW);
-    const x = cx + (i % CREW_PER_ROW - (inRow - 1) / 2) * CREW_PITCH;
-    const deskZ = cz - 1.9 + row * 1.9;
+    const x = (i % CREW_PER_ROW - (inRow - 1) / 2) * CREW_PITCH;
+    const deskZ = -1.9 + row * 1.9;
     const occupant = crew[i] ?? null;
-    desks.push({ pos: [x, deskZ], facing: NORTH, kind: "console", occupantId: occupant?.id ?? null });
-    if (occupant) seats.push([occupant.id, { pos: [x, deskZ + 0.75], facing: NORTH, zone: "team", group: team.id, approach: [[x, aisleZ]] }]);
+    desks.push({ pos: at(x, deskZ), facing: facing + NORTH, kind: "console", occupantId: occupant?.id ?? null });
+    // Crew come in down the side of the room and along the gap behind their row's chairs, so
+    // they pass neither the lead's desk nor anyone sitting down.
+    const side = (x > 0 ? 1 : -1) * (CORNER_HALF_WIDTH - 0.3);
+    const lane = deskZ + 1.25;
+    if (occupant) seat(occupant.id, at(x, deskZ + 0.75), [at(side, aisle), at(side, lane), at(x, lane)]);
   }
-  const leadZ = cz + 2.3;
-  desks.push({ pos: [cx, leadZ], facing: NORTH, kind: "lead", occupantId: lead?.id ?? null });
-  if (lead) seats.push([lead.id, { pos: [cx, leadZ + 0.75], facing: NORTH, zone: "team", group: team.id, approach: [[cx, aisleZ]] }]);
+  desks.push({ pos: at(0, 2.3), facing: facing + NORTH, kind: "lead", occupantId: lead?.id ?? null });
+  if (lead) seat(lead.id, at(0, 3.05), [at(0, aisle)]);
   return { seats, desks };
 }
 
-/** The line at your desk: the front faces you, later arrivals queue behind towards the corridor. */
+/** Where to stand to look at a corner: inside the path, in front of its open side. */
+export function viewOf(corner: Corner): { pos: Vec2; yaw: number } {
+  const pos = place(corner.center, corner.facing, [0, CORNER_HALF_DEPTH + 4]);
+  // The player's yaw counts from north the other way round from an avatar's facing.
+  return { pos, yaw: -corner.facing };
+}
+
+/** The line at your desk: the front faces you, later arrivals queue behind towards the path. */
 export function queueSpot(i: number): Spot {
   const column = Math.floor(i / QUEUE_ROW);
   const row = i % QUEUE_ROW;
   const pos: Vec2 = [QUEUE_FRONT[0] + QUEUE_SLANT * row - 1.3 * column, QUEUE_FRONT[1] - 1.05 * row];
   // Arrive and leave along the side lane, so nobody walks through the people in line.
-  return { pos, facing: 0, zone: "queue", group: "queue", approach: [[QUEUE_SIDE_X, pos[1]]] };
+  return { pos, facing: 0, zone: "queue", group: "queue", approach: [QUEUE_HEAD, [QUEUE_SIDE_X, pos[1]]] };
 }
 
 /** Where a lead stands when they came to your desk: on your side of it, to the left of you, facing you. */
-export const CALLER: Vec2 = [-1.2, 11.4];
+export const CALLER: Vec2 = [-1.2, DESK[1] + 1];
 const CALLER_PITCH = 1.1;
 
 /**
- * The i-th lead who came over to you. They walk down the west side of the desk, so they pass
- * neither the desk nor the line in front of it, and stand side by side where you can see them.
+ * The i-th lead who came over to you. They come in from the west, beside the side lane, so they
+ * pass neither the desk nor the line in front of it, and stand side by side where you can see them.
  */
 export function callerSpot(i: number): Spot {
   const pos: Vec2 = [CALLER[0] - CALLER_PITCH * i, CALLER[1] - 0.2 * i];
   return { pos, facing: yawTo(pos, SPAWN), zone: "caller", group: "caller", approach: [[QUEUE_SIDE_X - 0.6, DESK[1]]] };
 }
 
-function loungeSpot(i: number, n: number): Spot {
+/** The lounge's table, and the sofas round it; the side facing your desk is open. */
+export const LOUNGE_TABLE = 0.8;
+export const LOUNGE_SOFAS = [Math.PI / 3, Math.PI, (5 * Math.PI) / 3];
+
+/** Around the lounge's table, facing it. In through the open side, and round the table inside the circle of chairs. */
+function loungeSpot(i: number, n: number, center: Vec2, facing: number, door: Vec2): Spot {
   const ring = Math.max(1, Math.ceil(n / 8));
   const r = 2.2 + 1.3 * Math.floor(i / 8);
   const inRing = Math.min(8, n - Math.floor(i / 8) * 8);
   const angle = ((i % 8) / inRing) * Math.PI * 2 + (ring > 1 ? Math.floor(i / 8) * 0.4 : 0);
-  const pos: Vec2 = [LOUNGE_CENTER[0] + Math.sin(angle) * r, LOUNGE_CENTER[1] + Math.cos(angle) * r];
-  return { pos, facing: yawTo(pos, LOUNGE_CENTER), zone: "lounge", group: "lounge", approach: [] };
+  const local = (a: number, d: number) => place(center, facing, [Math.sin(a) * d, Math.cos(a) * d]);
+  const pos = local(angle, r);
+  let turn = angle;
+  while (turn > Math.PI) turn -= Math.PI * 2;
+  const steps = Math.ceil(Math.abs(turn) / (Math.PI / 6));
+  const around = Array.from({ length: steps + 1 }, (_, k) => local((turn * k) / Math.max(1, steps), 1.5));
+  return { pos, facing: yawTo(pos, center), zone: "lounge", group: "lounge", approach: [door, local(0, 3), ...around] };
+}
+
+/** Points along the circle around the desk from one angle to another, the short way round. */
+function arc(r: number, from: number, to: number): Vec2[] {
+  let turn = to - from;
+  while (turn > Math.PI) turn -= Math.PI * 2;
+  while (turn < -Math.PI) turn += Math.PI * 2;
+  const steps = Math.ceil(Math.abs(turn) / (Math.PI / 12));
+  return Array.from({ length: steps + 1 }, (_, k) => onCircle(r, from + (turn * k) / Math.max(1, steps)));
 }
 
 /**
- * The waypoints from where an avatar is to its new spot: out of its old place, along the
- * corridor, and in by the new spot's approach. Moves inside one group go straight there.
+ * The waypoints from where an avatar is to its new spot: out of its old place to the path,
+ * round the desk along it, and in by the new spot's approach. Moves inside one corner or the
+ * lounge stay off the path; moves in the line go straight there. From the line or the desk, whichever is closer in, the walk first steps out
+ * to the path and back in at the other end.
  */
 export function route(from: Vec2, fromSpot: Spot | null, to: Spot): Vec2[] {
-  if (fromSpot && fromSpot.group === to.group) return [to.pos];
+  if (fromSpot && fromSpot.group === to.group) {
+    // In a corner or the lounge, out to where the two ways in meet and in again; in the line, straight on.
+    if (to.zone === "queue" || to.zone === "caller") return [to.pos];
+    return [...fromSpot.approach.slice(1).reverse(), ...to.approach.slice(1), to.pos];
+  }
   const leave = fromSpot ? [...fromSpot.approach].reverse() : [];
   const exit = leave.at(-1) ?? from;
   const entry = to.approach[0] ?? to.pos;
-  return [...leave, [exit[0], CORRIDOR_Z], [entry[0], CORRIDOR_Z], ...to.approach, to.pos];
+  const r = Math.max(distance(exit, DESK), distance(entry, DESK));
+  const around = arc(r, angleOf(exit), angleOf(entry)).filter((p) => distance(p, exit) > 0.05 && distance(p, entry) > 0.05);
+  return [...leave, ...around, ...to.approach, to.pos];
 }
 
 /**
  * The floor path each team's finished work takes to the team it hands to: out of its corner,
- * along the corridor, and into the other corner.
+ * round the desk just outside the walkway, and into the other corner.
  */
 export function pipelines(plan: OfficePlan): Array<{ fromTeamId: string; toTeamId: string; path: Vec2[] }> {
-  const at = new Map(plan.corners.map((c) => [c.team.id, c.center]));
-  return plan.corners.flatMap(({ team, center: [cx, cz] }) => {
-    const to = team.handsTo ? at.get(team.handsTo) : undefined;
-    if (!team.handsTo || !to) return [];
-    const [tx, tz] = to;
-    // Beside each corner's aisle, so the arrows do not run under people walking in.
-    const lane = CORRIDOR_Z - 0.55;
-    const out = cx + (tx > cx ? 1.2 : -1.2);
-    const into = tx + (tx > cx ? -1.2 : 1.2);
-    const path: Vec2[] = [[out, cz + CORNER_HALF_DEPTH], [out, lane], [into, lane], [into, tz + CORNER_HALF_DEPTH]];
-    return [{ fromTeamId: team.id, toTeamId: team.handsTo, path }];
+  const at = new Map(plan.corners.map((c) => [c.team.id, c]));
+  const lane = pipelineLane(plan);
+  return plan.corners.flatMap((from) => {
+    const to = from.team.handsTo ? at.get(from.team.handsTo) : undefined;
+    if (!to || to === from) return [];
+    let turn = angleOf(to.center) - angleOf(from.center);
+    while (turn > Math.PI) turn -= Math.PI * 2;
+    while (turn < -Math.PI) turn += Math.PI * 2;
+    // Beside each corner's aisle, on the side it leaves towards, so the arrows do not run under people walking in.
+    const side = turn > 0 ? -1.2 : 1.2;
+    const out = place(from.center, from.facing, [side, CORNER_HALF_DEPTH]);
+    const into = place(to.center, to.facing, [-side, CORNER_HALF_DEPTH]);
+    const path: Vec2[] = [out, ...arc(lane, angleOf(out), angleOf(into)), into];
+    return [{ fromTeamId: from.team.id, toTeamId: to.team.id, path }];
   });
 }
+
+/** The circle handed-over work follows: between the walkway and the corners. */
+export const pipelineLane = (plan: OfficePlan) => plan.path + PATH_INSET * 0.55;
 
 /** Agent ids in queue order, one place per agent however many items it waits with. */
 export function queueOrder(agents: WorldAgent[], taskIdsInQueueOrder: string[]): string[] {
