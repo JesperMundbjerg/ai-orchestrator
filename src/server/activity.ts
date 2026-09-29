@@ -1,5 +1,5 @@
 // What each agent is doing right now, the helpers (sub-agents) it has running and the model it
-// runs on, from the events its harness reports: Claude Code through an HTTP hook, Pi through its
+// runs on and the name its session goes by, from the events its harness reports: Claude Code through an HTTP hook, Pi through its
 // extension. Kept in memory only: it describes the last minutes, and a restart forgets it.
 
 import { basename } from "node:path";
@@ -18,11 +18,14 @@ interface Doing { text: string; at: number }
 interface Running extends Helper { seen: number }
 /** A model is told per session: a new session in the same checkout has not said which it runs. */
 interface Told { sessionId: string | null; model: AgentModel }
+/** A session's name is told per session too: another session in the same checkout is not called by it. */
+interface Named { sessionId: string | null; name: string }
 
 export class Activity {
   private doing = new Map<string, Doing>();
   private helpers = new Map<string, Map<string, Running>>();
   private models = new Map<string, Told>();
+  private names = new Map<string, Named>();
 
   /** Records the model a session reports; true when it changed. */
   setModel(agentId: string, sessionId: string | null, model: AgentModel): boolean {
@@ -36,6 +39,22 @@ export class Activity {
     const told = this.models.get(agentId);
     if (!told || (told.sessionId && sessionId && told.sessionId !== sessionId)) return null;
     return told.model;
+  }
+
+  /** Records the name a session reports (none clears it); true when it changed. */
+  setSessionName(agentId: string, sessionId: string | null, name: string | null): boolean {
+    const before = this.names.get(agentId);
+    const trimmed = name?.trim() || null;
+    if (trimmed) this.names.set(agentId, { sessionId, name: trimmed });
+    else this.names.delete(agentId);
+    return (before?.name ?? null) !== trimmed || (trimmed !== null && before?.sessionId !== sessionId);
+  }
+
+  /** The session name last reported, unless it was told by another session than the one running now. */
+  sessionNameOf(agentId: string, sessionId: string | null): string | null {
+    const told = this.names.get(agentId);
+    if (!told || (told.sessionId && sessionId && told.sessionId !== sessionId)) return null;
+    return told.name;
   }
 
   /** Records an event; true when what the office shows changed. */
@@ -66,7 +85,8 @@ export class Activity {
         if (event.helperId) helpers.delete(event.helperId);
         break;
       case "model":
-        // Kept per session by setModel; nothing to show here.
+      case "session_name":
+        // Kept per session by setModel and setSessionName; nothing to show here.
         break;
       case "idle":
         // A finished turn has no tool running; its helpers finished with it.

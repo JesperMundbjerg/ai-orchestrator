@@ -136,3 +136,35 @@ test("an office name or team still wins over a lane with the same name", () => {
   assert.equal(said.teamId, project.id, "the team called Einstein, whose lead is the lane's agent");
   assert.deepEqual(said.deliveries.map((d) => d.agentId), [lane!.id]);
 });
+
+test("a lane's agent can be the name a Pi session gave itself, matched exactly and never by folder", () => {
+  const { root, world, agent, setLive } = fysiklab();
+  // FysikLab's Mission Control: Pi in the main checkout, which herdr knows by no name; Claude Code works there too.
+  setLive([agent("p1", root, "idle"), agent("p2", root, "working", null, "claude")]);
+  const office = () => world.state().agents;
+  const [pi, claude] = ["p1", "p2"].map((p) => office().find((a) => a.paneId === p)!);
+  const lane = () => projectQueue(world.state(), "fysiklab").lanes.find((l) => l.name === "mission-control")!;
+
+  // Before Pi says its name nobody stands behind the lane: not the Claude session working in the same folder.
+  assert.deepEqual({ agent: lane().agentId, state: lane().state }, { agent: null, state: "offline" });
+  assert.match(lane().why!, /whose herdr name or Pi session name is dispatch-mission-control/);
+  assert.throws(() => world.messages.say(claude!, { to: "mission-control", text: "hi" }), /nobody runs whose herdr name or Pi session name is dispatch-mission-control/);
+
+  // A name that is not exactly the lane's is no match either.
+  world.report({ harness: "pi", sessionId: "s-p1", cwd: root, paneId: "p1" }, [{ kind: "session_name", sessionName: "dispatch-mission-control-2" }]);
+  assert.equal(lane().agentId, null);
+
+  world.report({ harness: "pi", sessionId: "s-p1", cwd: root, paneId: "p1" }, [{ kind: "session_name", sessionName: "dispatch-mission-control" }]);
+  assert.equal(office().find((a) => a.id === pi!.id)!.sessionName, "dispatch-mission-control");
+  assert.equal(office().find((a) => a.id === claude!.id)!.sessionName, null);
+  assert.deepEqual({ agent: lane().agentId, state: lane().state, harness: lane().harness, why: lane().why }, { agent: pi!.id, state: "idle", harness: "pi", why: null });
+  assert.deepEqual(world.messages.say(claude!, { to: "mission-control", text: "hi" }).deliveries.map((d) => d.agentId), [pi!.id]);
+
+  // A new Pi session in the same checkout has not said it is Mission Control, and a cleared name is forgotten.
+  setLive([{ ...agent("p1", root, "idle"), sessionId: "s-new" }, agent("p2", root, "working", null, "claude")]);
+  assert.equal(lane().agentId, null);
+  setLive([agent("p1", root, "idle"), agent("p2", root, "working", null, "claude")]);
+  assert.equal(lane().agentId, pi!.id);
+  world.report({ harness: "pi", sessionId: "s-p1", cwd: root, paneId: "p1" }, [{ kind: "session_name", sessionName: null }]);
+  assert.equal(lane().agentId, null);
+});

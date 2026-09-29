@@ -313,6 +313,8 @@ export interface WorldAgent {
   helpers: Helper[];
   /** The model its harness last reported for this session; null when it has not said. */
   model: AgentModel | null;
+  /** The name its session goes by in its own harness (Pi's session name, shown in its title), as the harness reported it; null when it has not said. */
+  sessionName: string | null;
   /** It has been seen running in herdr; a record that never has is a name with nobody behind it. */
   ran: boolean;
 }
@@ -327,7 +329,7 @@ export interface AgentModel {
 
 /** Reported by an agent's harness to POST /api/agent/events. */
 export interface ActivityEvent {
-  kind: "tool" | "tool_end" | "idle" | "helper_start" | "helper_stop" | "model";
+  kind: "tool" | "tool_end" | "idle" | "helper_start" | "helper_stop" | "model" | "session_name";
   tool?: string;
   input?: Record<string, unknown>;
   /** The harness's id for one tool call, so its end can be matched to its start. */
@@ -336,6 +338,8 @@ export interface ActivityEvent {
   helperType?: string;
   /** For "model": the model the harness runs now. */
   model?: AgentModel;
+  /** For "session_name": the session's name in its harness now; null or empty when it has none. */
+  sessionName?: string | null;
 }
 
 /** A sub-agent working for an agent while it runs. */
@@ -422,7 +426,7 @@ export interface AdapterLane {
   name: string;
   /** Absolute path of the checkout it works in (given relative to the main checkout). */
   worktree: string | null;
-  /** The name herdr knows it by, when that differs from `name`. */
+  /** The agent's own name, when that differs from `name`: herdr's name for it, or its Pi session name. Matched exactly. */
   agent: string | null;
   harness: Harness | null;
   model: string | null;

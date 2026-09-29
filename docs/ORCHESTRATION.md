@@ -79,7 +79,7 @@ A project describes itself in one file at its main checkout's root, `orchestrato
   "land": { "mode": "ff-or-cherry-pick", "publish": "git push origin dev", "setup": "node .claude/hooks/worktree-guard.mjs --bootstrap" },
   "lanes": [                                          // standing agents and how to start them
     { "name": "einstein", "worktree": ".claude/worktrees/einstein", "harness": "pi", "model": "openai-codex/gpt-6-astra" },
-    { "name": "mission-control", "role": "router", "harness": "pi" }
+    { "name": "mission-control", "agent": "dispatch-mission-control", "role": "router", "harness": "pi" }  // agent: its herdr name or Pi session name, exactly
   ]
 }
 ```

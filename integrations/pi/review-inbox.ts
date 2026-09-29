@@ -1,6 +1,7 @@
 // Review Inbox for Pi: gives the agent `review_submit` / `review_activity` tools, delivers
 // the user's replies into this running session (acknowledging each one once Pi has taken it),
-// and tells the office which tool the agent is using, which helpers it has running and which model it runs.
+// and tells the office which tool the agent is using, which helpers it has running, which model it runs
+// and the session's name (Pi's /name, the one in its terminal title), which a project's lane can name it by.
 // Install: add this file's absolute path to `extensions` in ~/.pi/agent/settings.json.
 
 import { Type } from "typebox";
@@ -22,6 +23,7 @@ interface PiApi {
   on(event: "session_start" | "session_shutdown" | "agent_end", handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
   on(event: "tool_call", handler: (event: { toolName: string; toolCallId: string; input: unknown }, ctx: PiContext) => void): void;
   on(event: "model_select", handler: (event: { model: PiModel }, ctx: PiContext) => void): void;
+  on(event: "session_info_changed", handler: (event: { name: string | undefined }, ctx: PiContext) => void): void;
   on(event: "tool_execution_end", handler: (event: { toolName: string; toolCallId: string }, ctx: PiContext) => void): void;
   registerTool(tool: {
     name: string;
@@ -31,6 +33,7 @@ interface PiApi {
     execute(id: string, params: any, signal: AbortSignal | undefined, onUpdate: unknown, ctx: PiContext): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown }>;
   }): void;
   sendUserMessage(text: string, options?: { deliverAs: "steer" | "followUp" }): void;
+  getSessionName(): string | undefined;
 }
 
 const POLL_MS = 2000;
@@ -52,6 +55,11 @@ function report(ctx: PiContext, ...events: ActivityEvent[]): void {
 function modelEvent(model: PiModel | undefined): ActivityEvent[] {
   if (!model?.id) return [];
   return [{ kind: "model", model: { id: `${model.provider}/${model.id}`, label: modelLabel(model.id) } }];
+}
+
+/** The session's name as Pi keeps it; none is reported too, so a cleared name is forgotten. */
+function nameEvent(name: string | undefined): ActivityEvent[] {
+  return [{ kind: "session_name", sessionName: name ?? null }];
 }
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
@@ -145,7 +153,8 @@ export default function reviewInbox(pi: PiApi): void {
   pi.on("session_start", (_event, ctx) => {
     const session = sessionOf(ctx);
     if (!session) return;
-    report(ctx, ...modelEvent(ctx.model));
+    report(ctx, ...modelEvent(ctx.model), ...nameEvent(pi.getSessionName()));
+    let reachable = true;
     const poll = async () => {
       let wait = POLL_MS;
       try {
@@ -161,8 +170,12 @@ export default function reviewInbox(pi: PiApi): void {
           }
           await acknowledge(session, reply.deliveryId);
         }
+        // An office started again keeps nothing in memory: tell it the name and model again.
+        if (!reachable) report(ctx, ...modelEvent(ctx.model), ...nameEvent(pi.getSessionName()));
+        reachable = true;
       } catch {
         wait = BACKOFF_MS; // the inbox is not running; keep quiet and try again later
+        reachable = false;
       }
       timer = setTimeout(poll, wait);
       timer.unref?.();
@@ -172,9 +185,10 @@ export default function reviewInbox(pi: PiApi): void {
 
   pi.on("tool_call", (e, ctx) => report(ctx, { kind: "tool", tool: e.toolName, callId: e.toolCallId, input: (e.input ?? {}) as Record<string, unknown> }));
   pi.on("tool_execution_end", (e, ctx) => report(ctx, { kind: "tool_end", tool: e.toolName, callId: e.toolCallId }));
-  // Every turn's end repeats the model, so an office started later still learns it.
-  pi.on("agent_end", (_e, ctx) => report(ctx, { kind: "idle" }, ...modelEvent(ctx.model)));
+  // Every turn's end repeats the model and name, so an office started later still learns them.
+  pi.on("agent_end", (_e, ctx) => report(ctx, { kind: "idle" }, ...modelEvent(ctx.model), ...nameEvent(pi.getSessionName())));
   pi.on("model_select", (e, ctx) => report(ctx, ...modelEvent(e.model)));
+  pi.on("session_info_changed", (e, ctx) => report(ctx, ...nameEvent(e.name)));
 
   pi.on("session_shutdown", () => {
     if (timer) clearTimeout(timer);

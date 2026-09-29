@@ -13,19 +13,26 @@ export function herdrName(identity: string): string | null {
 
 /**
  * The agent behind a lane. A lane with a worktree is whoever works in it; with `agent`, the one
- * herdr knows by that name (both, when both are given). A lane with neither is the agent herdr or
- * the office calls by the lane's name. Someone running wins over a desk left empty.
+ * herdr or its own session (Pi's session name) calls exactly that (both, when both are given).
+ * A lane with neither is the agent herdr or the office calls by the lane's name. Someone running
+ * wins over a desk left empty. Nobody matching is nobody: another agent in the same folder never stands in.
  */
 export function laneAgent(lane: AdapterLane, agents: WorldAgent[]): WorldAgent | null {
   const lower = lane.name.toLowerCase();
   const matches = agents.filter((a) => {
     if (lane.worktree && (!a.cwd || resolve(a.cwd) !== resolve(lane.worktree))) return false;
-    if (lane.agent) return herdrName(a.identity) === lane.agent;
+    if (lane.agent) return herdrName(a.identity) === lane.agent || a.sessionName === lane.agent;
     if (lane.worktree) return true;
     return herdrName(a.identity) === lane.name || a.name.toLowerCase() === lower;
   });
   const rank = (a: WorldAgent) => (a.status === "offline" ? 2 : a.status === "working" ? 0 : 1);
   return matches.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))[0] ?? null;
+}
+
+/** Why nobody stands behind a lane, for a lane whose agent was not found. */
+function nobody(lane: AdapterLane): string {
+  const where = lane.worktree ? ` in ${lane.worktree}` : "";
+  return lane.agent ? `nobody runs${where} whose herdr name or Pi session name is ${lane.agent}` : `nobody runs${where}`;
 }
 
 function laneOf(lane: AdapterLane, state: WorldState): Lane {
@@ -43,7 +50,7 @@ function laneOf(lane: AdapterLane, state: WorldState): Lane {
     doing: agent && status !== "offline" ? agent.doing ?? agent.title : null,
     branch: state.teams.find((t) => agent?.cwd && t.path === agent.cwd)?.branch ?? null,
     carrying: [],
-    why: !agent ? `nobody runs${where}` : status === "offline" ? `${agent.name} is not running${where}` : status === "blocked" ? `${agent.name} is stuck at a prompt` : null,
+    why: !agent ? nobody(lane) : status === "offline" ? `${agent.name} is not running${where}` : status === "blocked" ? `${agent.name} is stuck at a prompt` : null,
   };
 }
 
@@ -79,6 +86,6 @@ export function laneRecipient(state: WorldState, from: WorldAgent, name: string)
   const pick = found.length === 1 ? found[0]! : found.find((f) => f.repo.name === from.project);
   if (!pick) throw new InboxError(409, `${name} is a lane in ${found.map((f) => f.repo.adapter!.project).join(" and ")}; say it from inside that project`);
   const agent = laneAgent(pick.lane, state.agents);
-  if (!agent) throw new InboxError(404, `${pick.lane.name} is a lane of ${pick.repo.adapter!.project}, but nobody runs${pick.lane.worktree ? ` in ${pick.lane.worktree}` : ""}`);
+  if (!agent) throw new InboxError(404, `${pick.lane.name} is a lane of ${pick.repo.adapter!.project}, but ${nobody(pick.lane)}`);
   return agent;
 }

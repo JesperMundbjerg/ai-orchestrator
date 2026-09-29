@@ -52,7 +52,7 @@ export interface AgentSource {
 }
 
 type Inbox = () => Pick<InboxState, "tasks" | "projects" | "items">;
-type Joined = Omit<WorldAgent, "id" | "name" | "project" | "teamId" | "role" | "waitingOnYou" | "doing" | "helpers" | "model" | "ran"> & { sessionId: string | null };
+type Joined = Omit<WorldAgent, "id" | "name" | "project" | "teamId" | "role" | "waitingOnYou" | "doing" | "helpers" | "model" | "sessionName" | "ran"> & { sessionId: string | null };
 
 /** First names handed out in a stable order per identity; a name is kept once given. */
 const NAMES = [
@@ -172,6 +172,7 @@ export class World {
         ...this.activityOf(str(row.id), a.status),
         // What the harness reported wins; its own session file is the fallback, read lazily.
         model: this.activity.modelOf(str(row.id), sessionId) ?? this.files.modelOf(a.harness, sessionId, this.now().getTime(), a.cwd),
+        sessionName: this.activity.sessionNameOf(str(row.id), sessionId),
         ran: Boolean(row.ran_at),
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
@@ -284,7 +285,7 @@ export class World {
   }
 
   /**
-   * What an agent's harness reports it doing, and the model it runs. An unknown session is
+   * What an agent's harness reports it doing, the model it runs and its session's name. An unknown session is
    * ignored rather than an error, since a hook must never get in an agent's way. `modelFor` is
    * asked for the model when the caller has to read it from somewhere, given the one known now.
    */
@@ -303,6 +304,8 @@ export class World {
     const sessionId = session.sessionId ?? null;
     const model = events.findLast((e) => e.kind === "model")?.model ?? modelFor?.(this.activity.modelOf(agent.id, sessionId)) ?? null;
     if (model?.id && model.label) changed = this.activity.setModel(agent.id, sessionId, model) || changed;
+    const named = events.findLast((e) => e.kind === "session_name");
+    if (named) changed = this.activity.setSessionName(agent.id, sessionId, typeof named.sessionName === "string" ? named.sessionName : null) || changed;
     // Tool calls come several a second; the office redraws at most a few times a second.
     if (changed && !this.activityTimer) {
       this.activityTimer = setTimeout(() => {
