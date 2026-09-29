@@ -69,7 +69,7 @@ A project describes itself in one file at its main checkout's root, `orchestrato
     "charter": "docs/fix-comments-charter.md",        // what a worker is told to follow
     "leaseMinutes": 45
   },
-  "decisions": { "maxQuestion": 400, "awayCategories": ["product", "access", "spending", "ownership"] },
+  "decisions": { "maxQuestion": 400 },                // a hold longer than this is refused, not cut
   "checks": {                                        // named in briefs; the service never runs them
     "changed": "npm --prefix space-app run check:changed",
     "full": "npm --prefix space-app run gates",
@@ -141,12 +141,12 @@ type Lane = {                                      // "who is working", derived 
 | `DELETE /api/p/:p/comments/:id` | (while draft or waiting) | `{removed: id}` |
 | `POST /api/p/:p/groups/open/send` \| `/discard` | `{}` | `{groupId, count}` |
 | `POST /api/p/:p/comments/:id/answer` | `{answer}` | `{comment}` (same as answering its inbox item) |
-| `GET /api/p/:p/fixes` | `?outcome=open\|all` | `{fixes: Fix[]}`, oldest first |
+| `GET /api/p/:p/fixes` | `?outcome=open\|all`, or `?since=<cursor>` | `{fixes: Fix[], cursor}`: open fixes oldest first; with `since`, every fix added or closed after the cursor (closed ones carry `outcome`) |
 | `POST /api/p/:p/fixes/:id/verify` | `{built?: true}` (required for `owed`) | `{fix}`; idempotent; 409 for `owed` without `built` |
 | `POST /api/p/:p/fixes/:id/still-wrong` | `{relation, note?}` | `{fix, comment}`: closes the fix as `requeued` and files the linked comment **in one transaction** (today it is two calls) |
-| `GET /api/p/:p/queue` | | `{lanes: Lane[], counts: {waiting, assigned, working, held, fixed}, held: Comment[], paused, away}` |
-| `POST /api/p/:p/queue` | `{action: "pause" \| "resume" \| "away-on" \| "away-off" \| "route"}` | `{paused, away}` (`route` asks the router now) |
-| `GET /api/events` | SSE, as today | `data: {"type":"comments","project":"fysiklab"}` etc. Poll `?since=` is the fallback. |
+| `GET /api/p/:p/queue` | | `{lanes: Lane[], counts: {waiting, assigned, working, held, fixed}, held: Comment[], paused}` |
+| `POST /api/p/:p/queue` | `{action: "pause" \| "resume" \| "route"}` | `{paused}` (`route` asks the router now) |
+| `GET /api/events?project=:p` | SSE | only that project's changes: `event: fixes` / `event: comments`, `id:` and `data: {"cursor"}` (see below) |
 
 ### Endpoints for agents (CLI `inbox …`, the hook and the Pi extension; identified by session like every agent call)
 
@@ -155,11 +155,20 @@ type Lane = {                                      // "who is working", derived 
 | `POST /api/agent/comments/board` → `{ready: Comment[], lanes: Lane[], rules}` | What the router sees (replaces `dispatch-board.json`). |
 | `POST /api/agent/comments/assign` `{assignments: [{commentIds, agent}], holds: [{commentId, question, options?}], briefs: {id: text}}` | The router's plan. Every ready comment must be assigned or held; one bad entry rejects the whole plan with reasons (today's `validatePlan`). |
 | `POST /api/agent/comments/slice` | The caller's assigned comments; claims them and renews the lease. |
-| `POST /api/agent/comments/hold` `{commentId, question, options?}` | Becomes a Decide item owned by the caller; the comment is `held`. Away mode refuses anything outside the adapter's categories. |
+| `POST /api/agent/comments/hold` `{commentId, question, options?}` | Becomes a Decide item owned by the caller; the comment is `held`. A question over the adapter's `maxQuestion` is refused. The caller never waits for the answer. |
 | `POST /api/agent/comments/fix` `{commentIds \| "self", fix, kind, acceptance?}` | Writes the fix and closes the comments in one step; only after publish (the charter says so). |
 | `POST /api/agent/comments/release` `{commentIds, reassignTo?}` | Hands work back or on. |
 
 The service's own mechanical rules: an expired lease drops `claimedAt` and keeps `owner`; a comment claimed but not worked for 10 min, or a lane wedged for 30 min, is released and the router told; a ready comment with an idle owner gets one message ("you have N comments"), at most twice per slice. When comments become ready the router gets one office message; it answers with `assign`. The service never picks an owner itself.
+
+### Fix markers: owned here, followed by FysikLab
+
+The founder verifies fixes inside FysikLab exactly as today: pins on the page, **✓ Verified**, **Send back**. This service owns the markers; FysikLab reads and follows them.
+
+- **Cursor.** Every change to a project's comments or fixes gets the next number in one sequence the service keeps (`cursor`, an opaque string to clients). It never goes back, survives restarts, and is shared by the `since` queries and the event stream.
+- **Read.** `GET /api/p/fysiklab/fixes` returns the open fixes and the current cursor: the full picture, used on first load and whenever a follower is unsure.
+- **Follow.** `GET /api/events?project=fysiklab` streams `event: fixes` with `id: <cursor>` whenever a fix is added, verified or sent back (and `event: comments` likewise). The event carries no data beyond the cursor; the follower then asks `GET /api/p/fysiklab/fixes?since=<last cursor>` and applies the changes: add new fixes, drop those with an `outcome`. A reconnect sends `Last-Event-ID`, and the stream starts with an event if anything changed meanwhile, so a missed event costs one extra request, never a stale pin. Without the stream, polling `?since=` does the same.
+- **In FysikLab.** At first nothing follows: its `/api/dev/fix-markers` route proxies `GET` to the open-fixes read, and the UI's 10 s poll updates pins as today. When wanted, FysikLab's dev server keeps one follower (a small module holding the open fixes and the cursor) and the route answers from it, so pins change within a second of a fix landing and nothing polls the service. Verify and Send back always go straight through the proxy, and the UI keeps its optimistic removal.
 
 ### Origin and auth
 
@@ -175,7 +184,7 @@ With a switch in `space-app/.env.local` (`ORCHESTRATOR_URL=http://127.0.0.1:4870
 | `GET/POST/DELETE /api/dev/fix-markers` | `/api/p/fysiklab/fixes`, `/verify`, `/still-wrong` | `DELETE ?outcome=verified[&built=1]` → verify; `outcome=requeued` → the still-wrong call already filed the comment, so the second request is a no-op. |
 | `GET/POST /api/dev/dispatch` | `/api/p/fysiklab/queue` | `lanes`, `queue.lifecycle`, `asked` built from `Lane[]`, counts and `held`. |
 
-Polling stays at 3 s and 10 s. SSE through the proxy is a later nicety.
+Polling stays at 3 s and 10 s; the fix follower above is the first thing to add on top.
 
 ## 4. Migration
 
@@ -224,12 +233,12 @@ Each step ships alone, behind a switch in FysikLab's `.env.local` (off = today's
 - **Delete afterwards:** `comment-store.mjs` internals, `internal/queue-db.mjs`, migrations, `queue-snapshot.mjs`; `../.fysiklab-queue` is archived, not deleted.
 
 **Step 6. Dispatch.**
-- **Moves:** the daemon's mechanical part (leases, sweeps, kicks, pause, away) and the board / plan handshake.
+- **Moves:** the daemon's mechanical part (leases, sweeps, kicks, pause) and the board / plan handshake. Away mode is dropped, not moved.
 - **Here:** `board`, `assign`, `slice`, `hold`, `fix`, `release`; the sweeps; the router message. Mission Control becomes the lead of a standing team "Mission Control" in the office, told "N comments ready" by message and answering with `inbox assign`.
 - **FysikLab (`DISPATCH_VIA_OFFICE=1`):** Mission Control's charter uses `inbox` calls instead of the JSON files; the daemon is not started. Both can not run at once: flip at a moment with no comments `claimed`.
 - **Verify:** a comment filed on a scratch copy is assigned by a scratch router, claimed, fixed and verified end to end.
 - **Roll back:** switch off and start the daemon; assignments live in the service's store, which the daemon reads through `comment-store.mjs` since step 5.
-- **Delete afterwards:** `dispatch-daemon.mjs`, `dispatch-engine.mjs`, `dispatch-board.mjs`, `dispatch-recovery.mjs`, `mission-control.mjs`, `dispatch-*.json` at the repo root, `/dispatch-comments`.
+- **Delete afterwards:** `dispatch-daemon.mjs`, `dispatch-engine.mjs`, `dispatch-board.mjs`, `dispatch-recovery.mjs`, `mission-control.mjs`, `away-mode.mjs`, `dispatch-*.json` at the repo root, `/dispatch-comments`.
 
 **Step 7. Starting lanes.**
 - **Moves:** starting and seating standing agents in herdr.
@@ -248,13 +257,13 @@ What never moves: checks, `gate-scopes`, `check-runtime`, reviewers and `one-rev
 
 ## 5. Risks and open questions
 
-**Founder decides:**
+**The founder's decisions** (2026-09-29):
 
-1. **Who routes comments.** Keep a Mission Control agent (its judgement, its tokens), or have the service assign by a plain rule (same sim → same lane, else the least loaded). Recommendation: keep the agent; the service stays mechanical.
-2. **Where fixes are verified.** Only as pins in FysikLab's pages (today), or also as one Try it item per fix in the Review Inbox so all "go look" is in one queue. Recommendation: pins stay; the inbox shows one daily "N fixes to look at" item linking to them.
-3. **What may reach you.** Keep away mode and its four categories plus the 400-character limit as FysikLab policy in the adapter, or let every hold become a normal Decide item. Recommendation: keep them, as adapter settings any project can use.
-4. **Landing moves here or stays.** Step 8 makes landing reusable but is the riskiest step; FysikLab's landing works today. Recommendation: decide after step 6 has run for a while.
-5. **Usage, quota and Pi harness tweaks.** Pi metrics, the 5-hour-limit pause and compaction are harness concerns, not FysikLab's. Move them into this repo's Pi integration, or leave them in FysikLab. Recommendation: move metrics after step 7; leave the rest.
+1. **Who routes comments: decided, Mission Control.** It stays an agent, the lead of a standing team; the service stays mechanical and never picks an owner.
+2. **Where fixes are verified: decided, inside FysikLab as today.** This repo owns the markers and FysikLab follows them (see *Fix markers* in section 3). No inbox item per fix.
+3. **Away mode: decided, dropped** with its four categories; he never used them. Every hold becomes a Decide item, and the 400-character limit stays as the adapter's `maxQuestion`.
+4. **Landing moves here or stays: open, decide after step 6 has run for a while.** Step 8 makes landing reusable but is the riskiest step; FysikLab's landing works today.
+5. **Usage, quota and Pi harness tweaks: open.** The recommendation stands: move Pi metrics into this repo's Pi integration after step 7, leave the 5-hour-limit pause and compaction in FysikLab.
 
 **Risks and other open questions:**
 
