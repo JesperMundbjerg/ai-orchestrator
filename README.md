@@ -32,17 +32,18 @@ For UI work, `npm run dev` starts the service with `--watch` and the Vite UI on 
 
 **Walk into the office** in the sidebar (or open `/#/world`) for the same agents as people in a 3D office:
 
-- Every agent herdr sees gets a stable name and face, kept across session restarts because they are tied to the harness and checkout. Rename anyone in their panel.
-- **Teams** get their own corner. *Lead + crew* is a control room: the lead at the back hands work to a row of consoles facing a big screen. *Peers* sit around one table. Agents not in a team wait in the lounge.
+- Every agent herdr sees gets a stable name and face, kept across session restarts because they are tied to the harness and checkout (and to herdr's name for an agent that shares a checkout). Rename anyone in their panel.
+- A **project** is a worktree: every agent working in one is on that project, the first there leads it, and a worktree seen for the first time becomes a project named after its folder. Its lead is the **first mate**: your one contact, who splits the work, starts crew in herdr (Sonnet for most tasks, Opus at medium effort for deep thinking), supervises them and brings you only decisions and milestones. **Standing teams** such as Mission Control are always on and keep their members, whatever checkout they work in. Each gets a corner: the lead at the back of a control room, the crew at consoles facing a big screen. Agents on no project wait in the lounge.
 - The **lamp** over each head is their live status: green working, amber waiting at a prompt, blue finished a turn, dim idle, dark offline.
-- **Click someone** to see their terminal (read through herdr every two seconds), what they are doing, and to move them into a team.
-- **Click a team** in the list for where it stands, what each member is doing, and a box to **tell the team** what to do. A lead-and-crew team hears it through its lead, who divides the work; peers each hear it. The instruction is typed into the agent's terminal as soon as it is free, and the panel shows how far each one got.
-- A team can have a **purpose** (every member is told) and a team it **hands its finished work to**, drawn as arrows between corners. Agents talk with `inbox say`, hand work over with `inbox handoff` and review it with `inbox review` (below). You see them walk over and say it, with a folder when they hand work over; your own instructions appear as speech bubbles.
+- **Click someone** to see their terminal (read through herdr every two seconds), what they are doing, and to move them to another project.
+- **Click a project** in the list for where it stands, what each member is doing, and a box to **tell it** what to do. Its first mate (or a standing team's lead) hears it and runs the crew. The instruction is typed into the terminal as soon as it is free, and the panel shows how far it got.
+- **+ New project** makes a worktree beside the repository's main checkout (`space-shuttle-atoms-light` on branch `worktree-atoms-light`, from the branch the main checkout is on) and starts its first mate there with Claude Code. **Finish project** closes its agents and removes the worktree; it refuses while anything there is uncommitted or anyone is working, and deletes the branch only once it is merged. A worktree removed some other way ends its project too.
+- A project can have a **purpose** (every member is told) and a team it **hands its finished work to**, drawn as arrows between corners. Agents talk with `inbox say`, hand work over with `inbox handoff` and review it with `inbox review` (below). You see them walk over and say it, with a folder when they hand work over; your own instructions appear as speech bubbles.
 - A lamp only says *that* someone works. With the activity hooks (below) they also show **what** they are doing ("Editing Office.tsx") and their **helpers**: sub-agents stand behind them, small, for as long as they run.
 - A team is **blocked** when its lead is stuck (at a prompt, or waiting on your answer), or when someone is and nobody else is still working. It turns red, and herdr shows you a notification once, when it happens. A single crew member stuck while the lead works is the lead's to handle.
 - When an agent has something for you, they walk to **your desk** and queue there holding a card: purple for a decision, green to try something, orange for a milestone. Click them to answer. The line keeps the inbox's order, so an agent blocked on you is let to the front. Once answered, they walk back to their desk.
 
-**Teams** in the sidebar (`/#/teams`) is the same without walking: a column per team with its status, purpose and members. Drag people between columns (or to the lounge), pick the lead, tell a team what to do, and follow the work handed over and what was said.
+**Projects** in the sidebar (`/#/teams`) is the same without walking: a column per project and standing team with its status, branch, purpose and members. Start and finish projects, drag people between columns (or to the lounge), pick the lead, tell a project what to do, and follow the work handed over and what was said.
 
 WASD or the arrow keys walk, Shift runs, dragging pulls the view round (drag right to turn left), and scrolling, pinching or + and − zoom.
 
@@ -65,14 +66,14 @@ inbox replies --ack          # replies for this session, marked received
 In the office, agents work together through the same CLI:
 
 ```sh
-inbox team                   # who am I, my team, my part in it, what waits for me
+inbox team                   # who am I, my project, my part in it, what waits for me
 inbox say Agnes "Can you take the Danish copy?"      # an agent or a team, by name
 inbox handoff "Isotope step" --summary "Done in lessons/atoms; check the Danish captions"
 inbox review 3f2a9c1e changes --notes "The slider label is still English"
 inbox handoff --work 3f2a9c1e --summary "Label translated"   # round 2
 ```
 
-A message is typed into each recipient's terminal once herdr reports them free. A handoff goes to the team named with `--to`, or the one the sender's team hands its work to; a lead-and-crew team hears it through its lead. Only the receiving team can review, the verdict goes back to whoever handed the work over, and "changes" needs notes. Agents may send 30 messages an hour, so a runaway conversation stops.
+A message is typed into each recipient's terminal once herdr reports them free. A handoff goes to the team named with `--to`, or the one the sender's team hands its work to; a team hears it through its lead. Only the receiving team can review, the verdict goes back to whoever handed the work over, and "changes" needs notes. Agents may send 30 messages an hour, so a runaway conversation stops.
 
 Only files named with `--screenshot` are copied: png, jpg, webp, gif, pdf, md and txt files up to 20 MB, never dotfiles.
 
