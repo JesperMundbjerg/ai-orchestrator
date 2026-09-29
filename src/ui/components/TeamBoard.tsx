@@ -102,6 +102,7 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
         </section>
         <section>
           <h2>What was said</h2>
+          <p className="muted small-note said-key"><span className="for-you">answer to you</span> and <span className="for-you mine">you said</span> mark your own thread; the rest was between agents.</p>
           <ul className="order-list">
             {world.messages.slice(0, 30).map((m) => <MessageRow key={m.id} message={m} agents={agents} />)}
             {!world.messages.length ? <li className="muted small-note">Nobody has said anything yet.</li> : null}

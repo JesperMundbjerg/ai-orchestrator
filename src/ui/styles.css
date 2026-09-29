@@ -417,3 +417,17 @@ span.lead-toggle { border-radius: 6px; justify-self: start; }
 .caller-item .item { max-height: none; padding: 0; }
 /* Pages to step through need room: the card widens while it shows them. */
 .world-caller:has(.walk) { width: min(980px, calc(100% - 24px)); }
+
+/* Your thread with an agent versus what agents said among themselves. */
+.thread-title { color: var(--accent); }
+.thread-empty { margin: -2px 0 2px; }
+.for-you { display: inline-block; font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.04em; border-radius: 5px; padding: 0 6px; margin-right: 6px; background: var(--accent); color: var(--on-accent); }
+.for-you.mine { background: var(--accent-soft); color: var(--accent); }
+.say.them { border-left: 3px solid var(--accent); }
+.order.to-you { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+.order.from-you { border-left: 3px solid var(--accent-soft); }
+.said-key { margin: 0 0 6px; }
+.between { display: flex; flex-direction: column; gap: 4px; opacity: 0.85; }
+.between-title { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: var(--muted); font-size: 11px; }
+.between .order { font-size: 12px; }
+.between .order-text { font-size: 12px; max-height: 3.6em; }

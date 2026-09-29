@@ -40,8 +40,9 @@ export function MessageRow({ message, agents }: { message: Message; agents: Map<
   const to = message.toFounder ? "you" : message.deliveries.map((d) => agents.get(d.agentId)?.name ?? "someone").join(", ");
   const failure = message.deliveries.find((d) => d.error)?.error;
   return (
-    <li className={`order ${message.kind}`}>
+    <li className={`order ${message.kind}${message.toFounder ? " to-you" : !message.fromAgentId ? " from-you" : ""}`}>
       <div className="order-head">
+        {message.toFounder ? <span className="for-you">answer to you</span> : !message.fromAgentId ? <span className="for-you mine">you said</span> : null}
         <strong>{from}</strong>
         <span className="muted"> {VERB[message.kind]} {to}</span>
         <span className="muted"> · {ago(message.createdAt)}</span>
@@ -126,8 +127,13 @@ export function Conversation({ agent, messages }: { agent: WorldAgent; messages:
   useEffect(() => {
     if (list.current) list.current.scrollTop = list.current.scrollHeight;
   }, [last]);
-  if (!messages.length) return null;
+  const wrote = messages.some((m) => !m.fromAgentId);
+  const answered = messages.some((m) => m.fromAgentId);
   return (
+    <>
+      <div className="section-label thread-title">You and {agent.name}</div>
+      {wrote && !answered ? <div className="muted small-note thread-empty">{agent.name} hasn't answered you yet.</div> : null}
+      {messages.length ? (
     <ol ref={list} className="chat" aria-label={`You and ${agent.name}`}>
       {messages.map((m) => {
         const mine = !m.fromAgentId;
@@ -135,7 +141,7 @@ export function Conversation({ agent, messages }: { agent: WorldAgent; messages:
         return (
           <li key={m.id} className={`say ${mine ? "you" : "them"}`}>
             <div className="say-head">
-              {mine ? "You" : agent.name}
+              {mine ? "You" : <>{agent.name} <span className="for-you">to you</span></>}
               {m.kind === "instruction" ? " to the project" : ""} · {ago(m.createdAt)}
               {delivery && delivery.state !== "delivered" ? ` · ${DELIVERY_LABEL[delivery.state]}` : ""}
             </div>
@@ -144,6 +150,27 @@ export function Conversation({ agent, messages }: { agent: WorldAgent; messages:
         );
       })}
     </ol>
+      ) : null}
+    </>
+  );
+}
+
+/** What agents said to each other about one agent: quieter than your thread, folded away when long. */
+export function BetweenAgents({ messages, agents }: { messages: Message[]; agents: Map<string, WorldAgent> }) {
+  const long = messages.length > 3;
+  const [open, setOpen] = useState(!long);
+  if (!messages.length) return null;
+  return (
+    <section className="between">
+      <button type="button" className="section-label between-title" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span aria-hidden>{open ? "▾" : "▸"}</span> Between agents · {messages.length}
+      </button>
+      {open ? (
+        <ul className="order-list">
+          {messages.map((m) => <MessageRow key={m.id} message={m} agents={agents} />)}
+        </ul>
+      ) : null}
+    </section>
   );
 }
 
