@@ -1,5 +1,5 @@
-// What is said in the office: your instructions to a team, agents' messages to each other,
-// finished work handed to another team, and that team's verdict. Every message is stored with
+// What is said in the office: your instructions to a team, agents' messages to each other and
+// their answers to you, finished work handed to another team, and that team's verdict. Every message is stored with
 // one delivery row per agent it is meant for. A delivery is typed into the agent's terminal
 // only once herdr reports the agent free, one message at a time per agent, oldest first.
 
@@ -14,6 +14,10 @@ const str = (v: unknown): string => (v == null ? "" : String(v));
 const opt = (v: unknown): string | null => (v == null ? null : String(v));
 
 const MESSAGES_SHOWN = 60;
+/** Your conversation with the agents is kept apart from the rest, so it outlasts the office's own talk. */
+const WITH_FOUNDER_SHOWN = 200;
+/** How agents address you: `inbox say founder "…"`. No agent can be named this. */
+export const FOUNDER = "founder";
 const REVIEWED_SHOWN = 30;
 const MAX_TEXT = 8000;
 /** Agents talking to each other cost tokens on both sides; a runaway exchange stops here. */
@@ -39,6 +43,14 @@ export class Messages {
   /** The latest messages, newest first. */
   list(): Message[] {
     const rows = this.db.prepare(`SELECT *, rowid AS seq FROM messages ORDER BY rowid DESC LIMIT ${MESSAGES_SHOWN}`).all() as Row[];
+    return this.withDeliveries(rows);
+  }
+
+  /** What you said to agents and they answered you, newest first. */
+  withFounder(): Message[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM messages WHERE to_founder = 1 OR (from_agent_id IS NULL AND kind IN ('instruction', 'message')) ORDER BY rowid DESC LIMIT ${WITH_FOUNDER_SHOWN}`)
+      .all() as Row[];
     return this.withDeliveries(rows);
   }
 
@@ -68,15 +80,17 @@ export class Messages {
     return this.store("message", null, null, text(input.text), null, [agent.id], input.clientId);
   }
 
-  /** One agent to another agent or a team, named as the office shows it. */
+  /** One agent to another agent or a team, named as the office shows it, or its answer to you. */
   say(from: WorldAgent, input: { to?: string; text?: string; clientId?: string }): Message {
     const repeat = this.byClientId(input.clientId);
     if (repeat) return repeat;
     const body = text(input.text);
     this.limit(from);
-    const state = this.world();
     const name = input.to?.trim().toLowerCase();
     if (!name) throw new InboxError(400, "say who the message is for: an agent's name or a team's");
+    // Shown to you in the office; it is not a question for the inbox and nobody's terminal gets it.
+    if (name === FOUNDER) return this.store("message", from.id, null, body, null, [], input.clientId, true);
+    const state = this.world();
     const agent = state.agents.find((a) => a.name.toLowerCase() === name);
     if (agent) {
       if (agent.id === from.id) throw new InboxError(400, "that is you");
@@ -187,14 +201,14 @@ export class Messages {
     this.changed();
   }
 
-  private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string): Message {
+  private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false): Message {
     const id = randomUUID();
     const at = this.now().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
-        .prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, kind, fromAgentId, teamId, body, workId, clientId ?? null, at);
+        .prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, kind, fromAgentId, teamId, body, workId, clientId ?? null, at, toFounder ? 1 : 0);
       for (const agentId of to) {
         this.db.prepare("INSERT INTO message_deliveries (message_id, agent_id, state, updated_at) VALUES (?, ?, 'queued', ?)").run(id, agentId, at);
       }
@@ -279,6 +293,7 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
   const ownTeam = agent.teamId ? teams.get(agent.teamId) ?? null : null;
   const purpose = ownTeam?.purpose ? ` The project: ${ownTeam.purpose}` : "";
   const footer = "(From the office. `inbox team` shows your project and who else is here.)";
+  const answerFounder = `Answer the founder in one or two sentences: inbox say ${FOUNDER} "…". When the job is done or something new happens (a crew member finishes, say), follow up the same way. For a decision, use the review inbox (\`inbox decide\`).`;
 
   switch (message.kind) {
     case "instruction": {
@@ -287,10 +302,10 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
       const part = team?.standing
         ? `You lead ${team.name}. Divide this among your crew${named ? ` (${named})` : ""} and keep them moving.`
         : `You are the first mate of ${team?.name ?? "the project"}: plan this, give it to your crew${named ? ` (${named})` : ""} or start more in herdr (\`inbox team\` shows how), supervise them, and report the outcome.`;
-      return `[From the founder to ${team?.name ?? ""}] ${part}${purpose} Ask in the review inbox if you need a decision.\n\n${message.text}\n\n${footer}`;
+      return `[From the founder to ${team?.name ?? ""}] ${part}${purpose}\n\n${message.text}\n\n${answerFounder}\n${footer}`;
     }
     case "message": {
-      if (!message.fromAgentId) return `[Message from the founder]\n\n${message.text}\n\nFor a decision you need from the founder, ask in the review inbox (\`inbox decide\`).\n${footer}`;
+      if (!message.fromAgentId) return `[Message from the founder]\n\n${message.text}\n\n${answerFounder}\n${footer}`;
       const to = team ? ` to ${team.name}` : "";
       return `[Message from ${who(from)}${to}]\n\n${message.text}\n\nAnswer with: inbox say "${from?.name ?? ""}" "…"\n${footer}`;
     }
@@ -320,6 +335,7 @@ function toMessage(r: Row, deliveries: Delivery[]): Message {
     workId: opt(r.work_id),
     createdAt: str(r.created_at),
     deliveries,
+    toFounder: Number(r.to_founder) === 1,
   };
 }
 

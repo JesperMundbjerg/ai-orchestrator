@@ -141,7 +141,9 @@ CREATE TABLE IF NOT EXISTS messages (
   text TEXT NOT NULL,
   work_id TEXT REFERENCES work(id),
   client_id TEXT UNIQUE,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- An agent's answer to the founder: shown in the office, typed into nobody's terminal.
+  to_founder INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS message_deliveries (
@@ -203,6 +205,8 @@ function migrate(db: DatabaseSync): void {
       CREATE UNIQUE INDEX IF NOT EXISTS teams_path ON teams (path);
     `);
   }
+
+  if (!columns("messages").has("to_founder")) db.exec("ALTER TABLE messages ADD COLUMN to_founder INTEGER NOT NULL DEFAULT 0");
 
   // Team instructions were their own tables before agents could talk to each other.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'team_orders'").get()) {

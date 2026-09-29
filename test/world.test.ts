@@ -250,6 +250,33 @@ test("your message to one agent is typed into its terminal once it is free, from
   assert.throws(() => world.messages.tell("nobody", { text: "hi" }), /no agent/);
 });
 
+test("an agent answers the founder in the office: a thread with them, typed into nobody's terminal", async () => {
+  const { inbox, world, prompts, setLive } = setup();
+  setLive([lane("p1", "/tom", "s1", "idle"), lane("p2", "/ann", "s2", "idle")]);
+  const [tom, ann] = world.state().agents.filter((a) => a.cwd === "/tom" || a.cwd === "/ann").sort((a) => (a.cwd === "/tom" ? -1 : 1));
+  world.messages.tell(tom!.id, { text: "Rail first, please" });
+  await world.react();
+  assert.match(prompts[0]!.text, /inbox say founder "…"/, "the founder's message says how to answer");
+  assert.match(prompts[0]!.text, /follow up the same way/);
+
+  const reply = world.messages.say(tom!, { to: "Founder", text: "On it; the rail lands after the login fix.", clientId: "r1" });
+  assert.equal(reply.toFounder, true);
+  assert.deepEqual(reply.deliveries, [], "nobody's terminal gets it");
+  assert.equal(world.messages.say(tom!, { to: "founder", text: "On it; the rail lands after the login fix.", clientId: "r1" }).id, reply.id, "a retried answer is the same message");
+  world.messages.say(ann!, { to: "founder", text: "Unrelated: tests are green." });
+  await world.react();
+  assert.equal(prompts.length, 1, "an answer is never typed anywhere");
+
+  const thread = world.state().withFounder.filter((m) => (m.toFounder ? m.fromAgentId === tom!.id : m.deliveries.some((d) => d.agentId === tom!.id))).reverse();
+  assert.deepEqual(thread.map((m) => [m.fromAgentId ? "tom" : "you", m.text]), [["you", "Rail first, please"], ["tom", "On it; the rail lands after the login fix."]]);
+  assert.equal(inbox.state().items.length, 0, "not a question in the review inbox");
+  assert.equal(world.state().withFounder.filter((m) => m.toFounder).length, 2);
+
+  for (let i = 0; i < 29; i++) world.messages.say(tom!, { to: "founder", text: `update ${i}` });
+  assert.throws(() => world.messages.say(tom!, { to: "founder", text: "one more" }), /in the last hour/, "answers count toward the hourly limit");
+  assert.throws(() => world.updateAgent(ann!.id, { name: "Founder" }), /how agents address you/);
+});
+
 test("a team is blocked when its lead is stuck, or when someone is and nobody else is working", async () => {
   const { world, setLive } = setup();
   const statusWith = (lead: LiveAgent["status"], crew: LiveAgent["status"]) => {

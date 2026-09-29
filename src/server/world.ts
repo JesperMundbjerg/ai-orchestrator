@@ -15,7 +15,7 @@ import type {
 } from "../shared/types.ts";
 import { Activity } from "./activity.ts";
 import { InboxError } from "./inbox.ts";
-import { Messages } from "./messages.ts";
+import { FOUNDER, Messages } from "./messages.ts";
 import { whyStuck } from "../shared/stuck.ts";
 import { checkoutOf, deleteMergedBranch, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
 
@@ -79,6 +79,7 @@ const FIRST_MATE = [
   'Tell each crew member to report to you with `inbox say <your office name> "…"` when done or stuck, and not to ask the founder; their reports arrive in your terminal.',
   "Close a member's pane when its work is done: `herdr pane close <pane id>`.",
   "Bring the founder only real decisions (`inbox decide`) and finished milestones (`inbox milestone`).",
+  'Answer each message from the founder in one or two sentences with `inbox say founder "…"`, and follow up the same way when the job is done or something new happens, such as a crew member finishing.',
   "Ask a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers, options read \"Label: consequence\", and the recommendation gives your pick and why; `inbox --help` has an example.",
 ].join(" ");
 
@@ -155,6 +156,7 @@ export class World {
       agents: world,
       teams: teams.map((team) => ({ ...team, ...teamStatus(world.filter((a) => a.teamId === team.id)) })),
       messages: this.messages.list(),
+      withFounder: this.messages.withFounder(),
       work: this.messages.work(),
       repositories: this.repositories(world, teams),
       herdr: this.source?.available() ? "connected" : "unavailable",
@@ -285,7 +287,7 @@ export class World {
     }
     const others = state.teams.filter((t) => t.id !== team?.id);
     if (others.length) lines.push(`Other projects and teams: ${others.map((t) => `${t.name}${t.purpose ? ` (${t.purpose})` : ""}`).join("; ")}.`);
-    lines.push('Talk to anyone, agent or team, by name: inbox say NAME "text". Messages arrive in their terminal when they are free.');
+    lines.push('Talk to anyone, agent or team, by name: inbox say NAME "text". Messages arrive in their terminal when they are free. Answer the founder with inbox say founder "text".');
     return { agentId: me.id, text: lines.join("\n") };
   }
 
@@ -499,6 +501,7 @@ export class World {
     const row = this.db.prepare("SELECT * FROM world_agents WHERE id = ?").get(id) as Row | undefined;
     if (!row) throw new InboxError(404, `no agent ${id}`);
     if (patch.name !== undefined && !patch.name.trim()) throw new InboxError(400, "an agent needs a name");
+    if (patch.name?.trim().toLowerCase() === FOUNDER) throw new InboxError(400, `"${FOUNDER}" is how agents address you`);
     if (patch.teamId) this.team(patch.teamId);
     if (patch.role !== undefined && patch.role !== "lead" && patch.role !== "member") throw new InboxError(400, `role must be lead or member`);
     const teamId = patch.teamId === undefined ? (row.team_id ? str(row.team_id) : null) : patch.teamId;

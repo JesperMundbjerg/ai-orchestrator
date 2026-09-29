@@ -374,6 +374,8 @@ export interface Message {
   workId: string | null;
   createdAt: string;
   deliveries: Delivery[];
+  /** An agent answering you: it goes to nobody's terminal. */
+  toFounder: boolean;
 }
 
 export const WORK_STATES = ["in_review", "accepted", "changes_requested"] as const;
@@ -401,6 +403,8 @@ export interface WorldState {
   teams: WorldTeam[];
   /** The latest messages, newest first. */
   messages: Message[];
+  /** What you and the agents said to each other, newest first: kept apart so the office's own talk never pushes it out. */
+  withFounder: Message[];
   /** Work under review, and the latest reviewed. */
   work: Work[];
   repositories: Repository[];

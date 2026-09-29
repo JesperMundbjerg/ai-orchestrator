@@ -6,7 +6,7 @@ import { ItemDetailView } from "../components/ItemDetail.tsx";
 import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
 import type { OfficePlan, Vec2 } from "./layout.ts";
-import { agentMessages, MessageRow, teamMessages, teamWork, TellAgent, TellTeam, WorkRow } from "./Talk.tsx";
+import { agentMessages, Conversation, conversation, MessageRow, teamMessages, teamWork, TellAgent, TellTeam, WorkRow } from "./Talk.tsx";
 import { LAMP, TEAM_LAMP, teamLine } from "./status.ts";
 import type { Waiting } from "./WorldView.tsx";
 
@@ -189,7 +189,9 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
   const tasks = state.tasks.filter((t) => agent.taskIds.includes(t.id));
   const team = world.teams.find((t) => t.id === agent.teamId) ?? null;
   const agents = new Map(world.agents.map((a) => [a.id, a]));
-  const said = agentMessages(world, agent.id).slice(0, 8);
+  const thread = conversation(world, agent.id).slice(-20);
+  // What you and the agent said is in the thread; the rest is the office talking.
+  const said = agentMessages(world, agent.id).filter((m) => m.fromAgentId && !m.toFounder).slice(0, 8);
   const items = waiting ? waiting.itemIds.map((id) => state.items.find((i) => i.id === id)!).filter(Boolean) : [];
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
   const rename = () => {
@@ -220,6 +222,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
           {agent.project ? ` · ${agent.project}` : ""}
         </span>
       </div>
+      <Conversation agent={agent} messages={thread} />
       <TellAgent agent={agent} />
       {agent.cwd ? <code className="agent-cwd" title={agent.cwd}>{agent.cwd}</code> : null}
       {agent.doing ? <div className="agent-doing">{agent.doing}</div> : null}

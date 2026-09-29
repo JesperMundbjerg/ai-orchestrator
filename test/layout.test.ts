@@ -45,7 +45,7 @@ test("walking to the line goes along the corridor and the side lane, and the lin
 });
 
 const said = (id: string, kind: Message["kind"], from: string | null, to: string[], text = "hello"): Message =>
-  ({ id, kind, fromAgentId: from, teamId: null, text, workId: null, createdAt: "", deliveries: to.map((agentId) => ({ agentId, state: "queued", error: null, updatedAt: "" })) });
+  ({ id, kind, fromAgentId: from, teamId: null, text, workId: null, createdAt: "", toFounder: false, deliveries: to.map((agentId) => ({ agentId, state: "queued", error: null, updatedAt: "" })) });
 
 test("an agent who says something walks to the person it is for and stands beside them", () => {
   const teams = [team("dev"), team("qa")];
