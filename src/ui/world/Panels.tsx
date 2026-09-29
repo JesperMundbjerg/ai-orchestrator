@@ -214,7 +214,11 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
       <div className="agent-status">
         <span className="lamp" style={{ background: LAMP[agent.status].color }} />
         {LAMP[agent.status].label}
-        <span className="muted"> · {HARNESS_INFO[agent.harness].label}{agent.project ? ` · ${agent.project}` : ""}</span>
+        <span className="muted">
+          {" · "}{HARNESS_INFO[agent.harness].label}
+          {agent.model ? <span title={agent.model.id}> · {agent.model.label}</span> : null}
+          {agent.project ? ` · ${agent.project}` : ""}
+        </span>
       </div>
       <TellAgent agent={agent} />
       {agent.cwd ? <code className="agent-cwd" title={agent.cwd}>{agent.cwd}</code> : null}

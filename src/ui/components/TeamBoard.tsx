@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type DragEvent } from "react";
+import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import type { InboxState, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { LAMP, TEAM_LAMP, teamLine } from "../world/status.ts";
@@ -189,6 +190,7 @@ function MemberCard({ agent, team, state, run }: { agent: WorldAgent; team: Worl
       <span className="muted member-doing">
         {doing}
         {agent.helpers.length ? ` · ${agent.helpers.length} ${agent.helpers.length === 1 ? "helper" : "helpers"}` : ""}
+        {agent.model ? <span title={agent.model.id}> · {HARNESS_INFO[agent.harness].label} · {agent.model.label}</span> : null}
         {agent.project ? ` · ${agent.project}` : ""}
       </span>
     </li>

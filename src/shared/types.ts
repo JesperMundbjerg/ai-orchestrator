@@ -291,17 +291,29 @@ export interface WorldAgent {
   doing: string | null;
   /** Sub-agents it has running, such as reviewers. */
   helpers: Helper[];
+  /** The model its harness last reported for this session; null when it has not said. */
+  model: AgentModel | null;
+}
+
+/** A model as the harness names it: its own id, and a short label to show. */
+export interface AgentModel {
+  /** "claude-opus-5-5", or Pi's "anthropic/claude-opus-5-5". */
+  id: string;
+  /** "Opus 5.5". */
+  label: string;
 }
 
 /** Reported by an agent's harness to POST /api/agent/events. */
 export interface ActivityEvent {
-  kind: "tool" | "tool_end" | "idle" | "helper_start" | "helper_stop";
+  kind: "tool" | "tool_end" | "idle" | "helper_start" | "helper_stop" | "model";
   tool?: string;
   input?: Record<string, unknown>;
   /** The harness's id for one tool call, so its end can be matched to its start. */
   callId?: string;
   helperId?: string;
   helperType?: string;
+  /** For "model": the model the harness runs now. */
+  model?: AgentModel;
 }
 
 /** A sub-agent working for an agent while it runs. */

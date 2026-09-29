@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -104,4 +104,27 @@ test("the Claude Code hook endpoint never gets in an agent's way", async () => {
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), {});
   });
+});
+
+test("Claude Code's hooks tell the office the model from the session's own transcript", async () => {
+  const transcript = join(mkdtempSync(join(tmpdir(), "inbox-transcript-")), "session.jsonl");
+  const reply = (model: string) => `${JSON.stringify({ type: "assistant", message: { model, content: [] } })}\n`;
+  writeFileSync(transcript, `${JSON.stringify({ type: "user", message: { content: "hi" } })}\n${reply("claude-opus-5-5")}${reply("<synthetic>")}`);
+  const live: LiveAgent[] = [{ paneId: "p1", harness: "claude", sessionId: "c1", cwd: "/repo", status: "working", title: null, name: null }];
+  await withServer(async (base) => {
+    const hook = (event: string, extra: Record<string, unknown> = {}) => fetch(`${base}/api/hooks/claude`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ hook_event_name: event, session_id: "c1", cwd: "/repo", transcript_path: transcript, tool_name: "Bash", tool_input: {}, ...extra }),
+    });
+    const model = async () => ((await (await fetch(`${base}/api/world`)).json()).agents[0].model);
+    await hook("PreToolUse");
+    assert.deepEqual(await model(), { id: "claude-opus-5-5", label: "Opus 5.5" }, "the latest real reply's model; a synthetic one is skipped");
+    appendFileSync(transcript, reply("claude-sonnet-5-5"));
+    await hook("PreToolUse");
+    assert.equal((await model()).label, "Opus 5.5", "a known model is not re-read on every tool call");
+    await hook("Stop");
+    assert.equal((await model()).label, "Sonnet 5.5", "a turn's end picks up a /model switch");
+    await hook("SessionStart", { model: "claude-fable-5-1", transcript_path: undefined });
+    assert.equal((await model()).label, "Fable 5.1", "a model the hook input names wins");
+  }, live);
 });

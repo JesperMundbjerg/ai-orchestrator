@@ -136,11 +136,13 @@ async function replies(): Promise<void> {
   }
 }
 
-/** Claude Code hook: hands queued replies to the session at its turn boundaries. */
+/** Claude Code hook: hands queued replies to the session at its turn boundaries, and tells the office a new session's model. */
 async function claudeHook(): Promise<void> {
   const input = JSON.parse(readFileSync(0, "utf8") || "{}") as { hook_event_name?: string; session_id?: string; cwd?: string };
   if (!input.session_id) return;
   const s: SessionInput = { harness: "claude", sessionId: input.session_id, cwd: input.cwd };
+  // A starting session says which model it runs; the office hears it as it hears the HTTP hooks.
+  if (input.hook_event_name === "SessionStart") await call("/api/hooks/claude", input, 1500).catch(() => {});
   let pending;
   try {
     pending = await fetchReplies(s, "boundary");

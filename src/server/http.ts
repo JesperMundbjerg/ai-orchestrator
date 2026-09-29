@@ -5,8 +5,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
-import type { ActivityEvent, ActivityInput, SessionInput, SubmitInput } from "../shared/types.ts";
-import { claudeHookEvents } from "./activity.ts";
+import type { ActivityEvent, ActivityInput, AgentModel, SessionInput, SubmitInput } from "../shared/types.ts";
+import { claudeHookEvents, claudeModel } from "./activity.ts";
 import { Inbox, InboxError } from "./inbox.ts";
 import type { Herdr } from "./herdr.ts";
 import type { World } from "./world.ts";
@@ -83,7 +83,9 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/hooks\/claude$/, (_r, b: Record<string, unknown>) => {
       if (world && typeof b.session_id === "string") {
         const { events, helperId } = claudeHookEvents(b);
-        world.report({ harness: "claude", sessionId: b.session_id, cwd: typeof b.cwd === "string" ? b.cwd : undefined }, events, helperId);
+        // A turn's end, or a session the office has no model for yet, is when the transcript is read.
+        const modelFor = !helperId ? (known: AgentModel | null) => (!known || b.hook_event_name === "Stop" || typeof b.model === "string" ? claudeModel(b) : null) : undefined;
+        world.report({ harness: "claude", sessionId: b.session_id, cwd: typeof b.cwd === "string" ? b.cwd : undefined }, events, helperId, modelFor);
       }
       return {};
     }],

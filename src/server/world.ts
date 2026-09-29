@@ -11,7 +11,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type {
-  ActivityEvent, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
+  ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
 import { Activity } from "./activity.ts";
 import { InboxError } from "./inbox.ts";
@@ -48,7 +48,7 @@ export interface AgentSource {
 }
 
 type Inbox = () => Pick<InboxState, "tasks" | "projects" | "items">;
-type Joined = Omit<WorldAgent, "id" | "name" | "project" | "teamId" | "role" | "waitingOnYou" | "doing" | "helpers"> & { sessionId: string | null };
+type Joined = Omit<WorldAgent, "id" | "name" | "project" | "teamId" | "role" | "waitingOnYou" | "doing" | "helpers" | "model"> & { sessionId: string | null };
 
 /** First names handed out in a stable order per identity; a name is kept once given. */
 const NAMES = [
@@ -135,7 +135,7 @@ export class World {
       agents.push({ identity: str(row.identity), harness, cwd, status: "offline", title: null, paneId: null, taskIds: [], sessionId: null });
     }
 
-    const world = agents.map(({ sessionId: _, ...a }): WorldAgent => {
+    const world = agents.map(({ sessionId, ...a }): WorldAgent => {
       const row = rows.get(a.identity)!;
       return {
         ...a,
@@ -146,6 +146,7 @@ export class World {
         role: str(row.role) as AgentRole,
         waitingOnYou: a.taskIds.some((t) => waitedOn.has(t)),
         ...this.activityOf(str(row.id), a.status),
+        model: this.activity.modelOf(str(row.id), sessionId),
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
     this.appointLeads(world, teams, rows);
@@ -199,11 +200,12 @@ export class World {
   }
 
   /**
-   * What an agent's harness reports it doing. An unknown session is ignored rather than an
-   * error, since a hook must never get in an agent's way.
+   * What an agent's harness reports it doing, and the model it runs. An unknown session is
+   * ignored rather than an error, since a hook must never get in an agent's way. `modelFor` is
+   * asked for the model when the caller has to read it from somewhere, given the one known now.
    */
-  report(session: SessionInput, events: ActivityEvent[], helperId: string | null = null): { ok: boolean } {
-    if (!events.length && !helperId) return { ok: true };
+  report(session: SessionInput, events: ActivityEvent[], helperId: string | null = null, modelFor?: (known: AgentModel | null) => AgentModel | null): { ok: boolean } {
+    if (!events.length && !helperId && !modelFor) return { ok: true };
     let agent: WorldAgent;
     try {
       agent = this.resolve(session);
@@ -214,6 +216,9 @@ export class World {
     if (helperId) this.activity.touchHelper(agent.id, helperId, now);
     let changed = false;
     for (const e of events) changed = this.activity.record(agent.id, e, now) || changed;
+    const sessionId = session.sessionId ?? null;
+    const model = events.findLast((e) => e.kind === "model")?.model ?? modelFor?.(this.activity.modelOf(agent.id, sessionId)) ?? null;
+    if (model?.id && model.label) changed = this.activity.setModel(agent.id, sessionId, model) || changed;
     // Tool calls come several a second; the office redraws at most a few times a second.
     if (changed && !this.activityTimer) {
       this.activityTimer = setTimeout(() => {

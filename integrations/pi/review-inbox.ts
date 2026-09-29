@@ -1,6 +1,6 @@
 // Review Inbox for Pi: gives the agent `review_submit` / `review_activity` tools, delivers
 // the user's replies into this running session (acknowledging each one once Pi has taken it),
-// and tells the office which tool the agent is using and which helpers it has running.
+// and tells the office which tool the agent is using, which helpers it has running and which model it runs.
 // Install: add this file's absolute path to `extensions` in ~/.pi/agent/settings.json.
 
 import { Type } from "typebox";
@@ -10,14 +10,17 @@ import { projectRoot } from "../../src/shared/project.ts";
 import type { ActivityEvent, ItemType, SessionInput, SubmitResult } from "../../src/shared/types.ts";
 
 // The slice of Pi's extension API this uses (the full types ship with @earendil-works/pi-coding-agent).
+interface PiModel { id: string; name?: string; provider: string }
 interface PiContext {
   cwd: string;
+  model?: PiModel;
   sessionManager: { getSessionFile(): string | undefined };
   isIdle(): boolean;
 }
 interface PiApi {
   on(event: "session_start" | "session_shutdown" | "agent_end", handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
   on(event: "tool_call", handler: (event: { toolName: string; toolCallId: string; input: unknown }, ctx: PiContext) => void): void;
+  on(event: "model_select", handler: (event: { model: PiModel }, ctx: PiContext) => void): void;
   on(event: "tool_execution_end", handler: (event: { toolName: string; toolCallId: string }, ctx: PiContext) => void): void;
   registerTool(tool: {
     name: string;
@@ -38,10 +41,17 @@ function sessionOf(ctx: PiContext): SessionInput | null {
 }
 
 /** Fire and forget: the office is a view, and a tool call never waits for it. */
-function report(ctx: PiContext, event: ActivityEvent): void {
+function report(ctx: PiContext, ...events: ActivityEvent[]): void {
   const session = sessionOf(ctx);
   // herdr's pane id finds this agent in the office however herdr names the session.
-  if (session) call("/api/agent/events", { session: { ...session, paneId: process.env.HERDR_PANE_ID }, events: [event] }, 1500).catch(() => {});
+  if (session && events.length) call("/api/agent/events", { session: { ...session, paneId: process.env.HERDR_PANE_ID }, events }, 1500).catch(() => {});
+}
+
+/** The model Pi runs, as Pi names it: "anthropic/claude-opus-5-5", shown as "Claude Opus 5.5". */
+function modelEvent(model: PiModel | undefined): ActivityEvent[] {
+  if (!model?.id) return [];
+  const id = `${model.provider}/${model.id}`;
+  return [{ kind: "model", model: { id, label: model.name || id } }];
 }
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: {} });
@@ -126,6 +136,7 @@ export default function reviewInbox(pi: PiApi): void {
   pi.on("session_start", (_event, ctx) => {
     const session = sessionOf(ctx);
     if (!session) return;
+    report(ctx, ...modelEvent(ctx.model));
     const poll = async () => {
       let wait = POLL_MS;
       try {
@@ -152,7 +163,9 @@ export default function reviewInbox(pi: PiApi): void {
 
   pi.on("tool_call", (e, ctx) => report(ctx, { kind: "tool", tool: e.toolName, callId: e.toolCallId, input: (e.input ?? {}) as Record<string, unknown> }));
   pi.on("tool_execution_end", (e, ctx) => report(ctx, { kind: "tool_end", tool: e.toolName, callId: e.toolCallId }));
-  pi.on("agent_end", (_e, ctx) => report(ctx, { kind: "idle" }));
+  // Every turn's end repeats the model, so an office started later still learns it.
+  pi.on("agent_end", (_e, ctx) => report(ctx, { kind: "idle" }, ...modelEvent(ctx.model)));
+  pi.on("model_select", (e, ctx) => report(ctx, ...modelEvent(e.model)));
 
   pi.on("session_shutdown", () => {
     if (timer) clearTimeout(timer);

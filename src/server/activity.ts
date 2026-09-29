@@ -1,9 +1,10 @@
-// What each agent is doing right now and the helpers (sub-agents) it has running, from the
-// events its harness reports: Claude Code through an HTTP hook, Pi through its extension.
-// Kept in memory only: it describes the last minutes, and a restart forgets it.
+// What each agent is doing right now, the helpers (sub-agents) it has running and the model it
+// runs on, from the events its harness reports: Claude Code through an HTTP hook, Pi through its
+// extension. Kept in memory only: it describes the last minutes, and a restart forgets it.
 
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { basename } from "node:path";
-import type { ActivityEvent, Helper } from "../shared/types.ts";
+import type { ActivityEvent, AgentModel, Helper } from "../shared/types.ts";
 
 /** A tool line stops being shown this long after it was reported, in case its end never comes. */
 const DOING_MS = 120_000;
@@ -14,10 +15,27 @@ const PI_HELPER_TOOLS = new Set(["agent", "agents"]);
 
 interface Doing { text: string; at: number }
 interface Running extends Helper { seen: number }
+/** A model is told per session: a new session in the same checkout has not said which it runs. */
+interface Told { sessionId: string | null; model: AgentModel }
 
 export class Activity {
   private doing = new Map<string, Doing>();
   private helpers = new Map<string, Map<string, Running>>();
+  private models = new Map<string, Told>();
+
+  /** Records the model a session reports; true when it changed. */
+  setModel(agentId: string, sessionId: string | null, model: AgentModel): boolean {
+    const before = this.models.get(agentId);
+    this.models.set(agentId, { sessionId, model });
+    return before?.sessionId !== sessionId || before.model.id !== model.id || before.model.label !== model.label;
+  }
+
+  /** The model last reported, unless it was told by another session than the one running now. */
+  modelOf(agentId: string, sessionId: string | null): AgentModel | null {
+    const told = this.models.get(agentId);
+    if (!told || (told.sessionId && sessionId && told.sessionId !== sessionId)) return null;
+    return told.model;
+  }
 
   /** Records an event; true when what the office shows changed. */
   record(agentId: string, event: ActivityEvent, now: number): boolean {
@@ -45,6 +63,9 @@ export class Activity {
         break;
       case "helper_stop":
         if (event.helperId) helpers.delete(event.helperId);
+        break;
+      case "model":
+        // Kept per session by setModel; nothing to show here.
         break;
       case "idle":
         // A finished turn has no tool running; its helpers finished with it.
@@ -123,4 +144,57 @@ export function claudeHookEvents(hook: Record<string, unknown>): { events: Activ
   }
   if (name === "Stop" || name === "SessionEnd") return { events: [{ kind: "idle" }], helperId: null };
   return { events: [], helperId: null };
+}
+
+/** "claude-opus-5-5" → "Opus 5.5"; an id in another form is shown as it is. */
+export function claudeModelLabel(id: string): string {
+  const m = /^claude-([a-z]+)-(\d+)-(\d+)(?:-\d{8})?(\[1m\])?$/.exec(id);
+  if (!m) return id;
+  return `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1)} ${m[2]}.${m[3]}${m[4] ? " (1M)" : ""}`;
+}
+
+/** How much of a transcript's end is read to find the model of its latest reply. */
+const TRANSCRIPT_TAIL = 256 * 1024;
+
+/**
+ * The model a Claude Code session runs, as Claude Code itself records it: the hook input's
+ * `model` when it carries one, else the model of the latest reply in its transcript. Null when
+ * neither says, so nothing is guessed.
+ */
+export function claudeModel(hook: Record<string, unknown>): AgentModel | null {
+  const given = typeof hook.model === "string" ? hook.model : null;
+  const id = given ?? (typeof hook.transcript_path === "string" ? lastReplyModel(hook.transcript_path) : null);
+  return id ? { id, label: claudeModelLabel(id) } : null;
+}
+
+function lastReplyModel(path: string): string | null {
+  let text: string;
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const start = Math.max(0, size - TRANSCRIPT_TAIL);
+      const buffer = Buffer.alloc(size - start);
+      readSync(fd, buffer, 0, buffer.length, start);
+      text = buffer.toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (!line.includes('"assistant"')) continue;
+    try {
+      const entry = JSON.parse(line) as { type?: string; message?: { model?: unknown } };
+      const model = entry.message?.model;
+      // Claude Code writes "<synthetic>" for replies it made up itself, such as an interruption.
+      if (entry.type === "assistant" && typeof model === "string" && model && !model.startsWith("<")) return model;
+    } catch {
+      // The first line of the tail is usually cut; any unreadable line is skipped.
+    }
+  }
+  return null;
 }
