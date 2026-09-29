@@ -9,6 +9,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import type {
   ActivityEvent, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
@@ -178,6 +179,13 @@ export class World {
       if (checkout && !out.has(checkout.repoRoot)) out.set(checkout.repoRoot, { name: checkout.repoName, root: checkout.repoRoot, base: this.checkout(checkout.repoRoot)?.branch ?? null });
     }
     return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** A repository nobody works in yet, named by the path of its main checkout. */
+  private mainCheckout(path: string | undefined): Repository | undefined {
+    const checkout = path && isAbsolute(path) ? checkoutOf(path) : null;
+    if (!checkout || checkout.linked || checkout.top !== path) return undefined;
+    return { name: checkout.repoName, root: checkout.repoRoot, base: checkout.branch };
   }
 
   /** A worktree seen for the first time becomes a project, named after its folder. */
@@ -371,7 +379,7 @@ export class World {
       return team;
     }
     const repositories = this.state().repositories;
-    const repository = repositories.find((r) => r.root === input.repository) ?? (repositories.length === 1 && !input.repository ? repositories[0] : undefined);
+    const repository = repositories.find((r) => r.root === input.repository) ?? (repositories.length === 1 && !input.repository ? repositories[0] : undefined) ?? this.mainCheckout(input.repository);
     if (!repository) throw new InboxError(400, "pick the repository the project works in");
     if (!this.source?.available()) throw new InboxError(409, "a project gets its worktree and lead through herdr, and herdr is not running");
     const place = placeFor(repository.root, name);

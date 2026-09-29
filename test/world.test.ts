@@ -172,6 +172,12 @@ test("starting a project makes its worktree beside the repository and starts a f
   await assert.rejects(world.createTeam({ name: "Frontpage video", repository: root }), /repo-frontpage-video already exists/);
   await assert.rejects(world.createTeam({ name: "Other", repository: "/nowhere" }), /pick the repository/);
   await assert.rejects(world.createTeam({ name: "42", repository: root }), /start the project's name with a letter/);
+
+  // A repository nobody works in yet is named by its main checkout, never by one of its worktrees.
+  const other = repository();
+  await assert.rejects(world.createTeam({ name: "Inside", repository: other.atoms }), /pick the repository/);
+  const fresh = await world.createTeam({ name: "Agent office", repository: other.root });
+  assert.equal(fresh.path, join(other.dir, "repo-agent-office"));
 });
 
 test("finishing a project closes its agents and removes the worktree, but never loses work", async () => {
