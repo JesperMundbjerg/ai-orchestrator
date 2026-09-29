@@ -43,6 +43,8 @@ export interface AgentSource {
   createWorktree(repoRoot: string, place: { path: string; branch: string; base: string | null; label: string }): Promise<{ paneId: string }>;
   /** Starts an agent in a pane. One stopped at a question while starting still counts: it is there, waiting on you. */
   startAgent(paneId: string, name: string, harness: Harness, args: string[]): Promise<void>;
+  /** Reads the agent list again now, rather than waiting for the next change or poll. */
+  refresh?(): Promise<void>;
   closePane(paneId: string): Promise<void>;
   /** Removes a worktree and closes its workspace. It refuses a worktree with uncommitted changes. */
   removeWorktree(repoRoot: string, path: string): Promise<void>;
@@ -415,12 +417,34 @@ export class World {
       '`inbox team` shows your office name, your crew and what waits for you; `inbox say NAME "text"` reaches anyone in the office.',
       next ? `When the work is done, hand it to ${next} for review: inbox handoff "title" --summary "what was done, where, how to check it".` : "",
     ].filter(Boolean).join(" ");
+    // The lead starts with only its brief, so herdr sees it ready for input; its first task follows as a prompt.
     try {
-      await this.source.startAgent(paneId, `lead-${place.slug}`.slice(0, 32).replace(/-+$/, ""), "claude", [...FIRST_MATE_ARGS, "--append-system-prompt", brief, ...(purpose ? [`Start on the project: ${purpose}`] : [])]);
+      await this.source.startAgent(paneId, `lead-${place.slug}`.slice(0, 32).replace(/-+$/, ""), "claude", [...FIRST_MATE_ARGS, "--append-system-prompt", brief]);
     } catch (err) {
-      throw new InboxError(502, `The worktree ${team.path} is made, but its first mate did not start: ${(err as Error).message}`);
+      // herdr gave up waiting for it to look ready, but it may be running all the same: then the project is started.
+      await this.source.refresh?.().catch(() => {});
+      if (!this.source.live().some((a) => a.paneId === paneId && a.harness === "claude")) {
+        throw new InboxError(502, `The worktree ${team.path} is made, but no first mate is running in it (herdr: ${(err as Error).message}). Start one there in herdr, or finish the project.`);
+      }
     }
+    if (purpose) await this.kickoff(team, paneId, `Start on the project: ${purpose}`);
     return team;
+  }
+
+  /**
+   * A new lead's first task, typed once herdr sees it ready. One that cannot take it now, such as
+   * a lead stopped at a question, gets it as your message instead, typed once it is free.
+   */
+  private async kickoff(team: Team, paneId: string, text: string): Promise<void> {
+    try {
+      await this.source!.prompt(paneId, text);
+      return;
+    } catch (err) {
+      await this.source!.refresh?.().catch(() => {});
+      const lead = this.state().agents.find((a) => a.paneId === paneId);
+      if (!lead) throw new InboxError(502, `${team.name}'s first mate is starting but could not be given its first task (herdr: ${(err as Error).message}). Tell it in the office.`);
+      this.messages.tell(lead.id, { text });
+    }
   }
 
   private insertTeam(t: Omit<Team, "id" | "createdAt">): Team {

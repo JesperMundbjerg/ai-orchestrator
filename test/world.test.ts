@@ -27,6 +27,8 @@ function setup() {
   const started: Array<{ pane: string; name: string; args: string[] }> = [];
   const closed: string[] = [];
   let refuse: string | null = null;
+  let startFails: string | null = null;
+  let onStart: (() => void) | null = null;
   // herdr's worktree commands, done with git the way herdr does them.
   const source: AgentSource = {
     available: () => true,
@@ -40,12 +42,16 @@ function setup() {
       git(repoRoot, "worktree", "add", "-b", place.branch, place.path, ...(place.base ? [place.base] : []));
       return { paneId: "w2:p1" };
     },
-    startAgent: async (pane, name, _harness, args) => void started.push({ pane, name, args }),
+    startAgent: async (pane, name, _harness, args) => {
+      started.push({ pane, name, args });
+      onStart?.();
+      if (startFails) throw new Error(startFails);
+    },
     closePane: async (pane) => void closed.push(pane),
     removeWorktree: async (repoRoot, path) => void git(repoRoot, "worktree", "remove", path),
   };
   const world = new World(db, source, () => inbox.state());
-  return { inbox, world, prompts, notices, started, closed, setLive: (next: LiveAgent[]) => void (live = next), refuse: (why: string | null) => void (refuse = why) };
+  return { inbox, world, prompts, notices, started, closed, setLive: (next: LiveAgent[]) => void (live = next), refuse: (why: string | null) => void (refuse = why), failStart: (why: string | null) => void (startFails = why), whenStarted: (fn: () => void) => void (onStart = fn) };
 }
 
 /** A standing team with the given agents on it; the first leads it. */
@@ -149,7 +155,7 @@ test("an agent working in a worktree is on that project, named after it, and the
 
 test("starting a project makes its worktree beside the repository and starts a first mate there", async () => {
   const { dir, root } = repository();
-  const { world, setLive, started } = setup();
+  const { world, setLive, started, prompts } = setup();
   setLive([lane("p1", root, "s1")]);
   const qa = await world.createTeam({ name: "QA", standing: true });
   const team = await world.createTeam({ name: "Frontpage video!", purpose: "A live simulation on the front page", handsTo: qa.id, repository: root });
@@ -166,7 +172,8 @@ test("starting a project makes its worktree beside the repository and starts a f
   assert.match(brief, /herdr agent start <name> --kind claude --pane <pane id> -- --model sonnet/);
   assert.match(brief, /--model opus --effort medium for work that needs deep thinking/);
   assert.match(brief, /hand it to QA for review/);
-  assert.equal(lead!.args.at(-1), "Start on the project: A live simulation on the front page");
+  assert.ok(!lead!.args.some((a) => a.startsWith("Start on the project")), "started with its brief only, so herdr sees it ready");
+  assert.deepEqual(prompts, [{ pane: "w2:p1", text: "Start on the project: A live simulation on the front page" }], "then given its first task");
 
   await assert.rejects(world.createTeam({ name: "frontpage video!", repository: root }), /already a project or team called/);
   await assert.rejects(world.createTeam({ name: "Frontpage video", repository: root }), /repo-frontpage-video already exists/);
@@ -275,6 +282,53 @@ test("an agent answers the founder in the office: a thread with them, typed into
   for (let i = 0; i < 29; i++) world.messages.say(tom!, { to: "founder", text: `update ${i}` });
   assert.throws(() => world.messages.say(tom!, { to: "founder", text: "one more" }), /in the last hour/, "answers count toward the hourly limit");
   assert.throws(() => world.updateAgent(ann!.id, { name: "Founder" }), /how agents address you/);
+});
+
+/** herdr's view of a new project's lead: Claude in the pane the worktree was made with. */
+const leadIn = (path: string, status: LiveAgent["status"]): LiveAgent => ({ paneId: "w2:p1", harness: "claude", sessionId: "lead-session", cwd: path, status, title: null, name: "lead-cosmology" });
+
+test("a first mate herdr did not see as ready in time, but which is running, still starts the project", async () => {
+  const { dir, root } = repository();
+  const { world, setLive, prompts, failStart, whenStarted } = setup();
+  setLive([lane("p1", root, "s1")]);
+  failStart("timed out waiting for agent startup");
+  // Claude is there and working when herdr gives up waiting for it to look ready.
+  const path = join(dir, "repo-cosmology");
+  whenStarted(() => setLive([lane("p1", root, "s1"), leadIn(path, "working")]));
+  const team = await world.createTeam({ name: "Cosmology", purpose: "The cosmology lesson", repository: root });
+  assert.equal(team.path, path);
+  assert.deepEqual(prompts, [{ pane: "w2:p1", text: "Start on the project: The cosmology lesson" }]);
+});
+
+test("a first mate that is running but cannot take its first task now gets it as a message once free", async () => {
+  const { dir, root } = repository();
+  const { world, setLive, prompts, refuse, whenStarted } = setup();
+  setLive([lane("p1", root, "s1")]);
+  whenStarted(() => setLive([lane("p1", root, "s1"), leadIn(join(dir, "repo-cosmology"), "blocked")]));
+  refuse("the agent is asking something");
+  await world.createTeam({ name: "Cosmology", purpose: "The cosmology lesson", repository: root });
+  assert.equal(prompts.length, 0);
+  const lead = world.state().agents.find((a) => a.paneId === "w2:p1")!;
+  assert.equal(world.state().teams.find((t) => t.name === "Cosmology")?.id, lead.teamId, "the lead is on its project");
+  const queued = world.state().withFounder.find((m) => m.deliveries.some((d) => d.agentId === lead.id));
+  assert.equal(queued?.text, "Start on the project: The cosmology lesson");
+  assert.equal(queued?.deliveries[0]!.state, "queued", "typed once the lead is free");
+});
+
+test("a first mate that did not start at all is reported plainly, with the worktree kept", async () => {
+  const { dir, root } = repository();
+  const { world, setLive, prompts, failStart } = setup();
+  setLive([lane("p1", root, "s1")]);
+  failStart("timed out waiting for agent startup");
+  await assert.rejects(
+    world.createTeam({ name: "Cosmology", purpose: "The cosmology lesson", repository: root }),
+    (err: Error & { status?: number }) => {
+      assert.match(err.message, /The worktree .*repo-cosmology is made, but no first mate is running in it \(herdr: timed out waiting for agent startup\)\. Start one there in herdr, or finish the project\./);
+      return true;
+    },
+  );
+  assert.ok(existsSync(join(dir, "repo-cosmology")));
+  assert.equal(prompts.length, 0);
 });
 
 test("a team is blocked when its lead is stuck, or when someone is and nobody else is working", async () => {
