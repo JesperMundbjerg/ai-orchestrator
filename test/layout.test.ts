@@ -5,7 +5,7 @@ import { callerSpot, CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, LOUNGE_TABLE, p
 import { plan as planTalk } from "../src/ui/world/visits.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
-  id, identity: id, name: id, harness: "pi", cwd: null, project: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra,
+  id, identity: id, name: id, harness: "pi", cwd: null, project: null, branch: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra,
 });
 const team = (id: string): Team => ({ id, name: id, purpose: "", handsTo: null, path: `/repo-${id}`, branch: `worktree-${id}`, standing: false, createdAt: "" });
 

@@ -2,6 +2,7 @@
 // branch it is on, and whether finishing a project there would lose anything.
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { projectSlug } from "../shared/slug.ts";
 
@@ -12,6 +13,8 @@ export interface Checkout {
   /** The main checkout, whose folder the repository's worktrees sit beside. */
   repoRoot: string;
   branch: string | null;
+  /** This worktree's own git directory, whose HEAD says the branch without asking git again. */
+  gitDir: string;
   /** A worktree made beside the main checkout, which is what a project works in. */
   linked: boolean;
 }
@@ -22,12 +25,21 @@ function git(cwd: string, args: string[]): string {
 
 export function checkoutOf(cwd: string): Checkout | null {
   try {
-    const [top, common, branch] = git(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--abbrev-ref", "HEAD"]).split("\n");
-    if (!top || !common) return null;
+    const [top, common, gitDir, branch] = git(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--git-dir", "--abbrev-ref", "HEAD"]).split("\n");
+    if (!top || !common || !gitDir) return null;
     const repoRoot = basename(common) === ".git" ? dirname(common) : common;
-    return { top, repoName: basename(repoRoot), repoRoot, branch: branch && branch !== "HEAD" ? branch : null, linked: top !== repoRoot };
+    return { top, repoName: basename(repoRoot), repoRoot, branch: branch && branch !== "HEAD" ? branch : null, gitDir, linked: top !== repoRoot };
   } catch {
     return null;
+  }
+}
+
+/** The branch a checkout is on now, read from its HEAD: a checkout seen earlier may have switched since. */
+export function currentBranch(checkout: Checkout): string | null {
+  try {
+    return readFileSync(join(checkout.gitDir, "HEAD"), "utf8").match(/^ref: refs\/heads\/(.+)$/m)?.[1] ?? null;
+  } catch {
+    return checkout.branch;
   }
 }
 

@@ -48,7 +48,8 @@ function laneOf(lane: AdapterLane, state: WorldState): Lane {
     model: agent?.model?.label ?? lane.model,
     state: status === "working" ? "working" : status === "blocked" ? "blocked" : status === "offline" ? "offline" : "idle",
     doing: agent && status !== "offline" ? agent.doing ?? agent.title : null,
-    branch: state.teams.find((t) => agent?.cwd && t.path === agent.cwd)?.branch ?? null,
+    // Git's word for the checkout the agent stands in, which is the lane's worktree when it has one: a standing team has no path to look it up by.
+    branch: agent?.branch ?? null,
     carrying: [],
     why: !agent ? nobody(lane) : status === "offline" ? `${agent.name} is not running${where}` : status === "blocked" ? `${agent.name} is stuck at a prompt` : null,
   };

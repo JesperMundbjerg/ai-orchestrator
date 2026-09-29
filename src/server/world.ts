@@ -19,7 +19,7 @@ import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
 import { SessionFiles } from "./models.ts";
 import { whyStuck } from "../shared/stuck.ts";
-import { checkoutOf, deleteMergedBranch, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
+import { checkoutOf, currentBranch, deleteMergedBranch, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
 
 /** An agent a terminal multiplexer reports as running. */
 export interface LiveAgent {
@@ -52,7 +52,7 @@ export interface AgentSource {
 }
 
 type Inbox = () => Pick<InboxState, "tasks" | "projects" | "items">;
-type Joined = Omit<WorldAgent, "id" | "name" | "project" | "teamId" | "role" | "waitingOnYou" | "doing" | "helpers" | "model" | "sessionName" | "ran"> & { sessionId: string | null };
+type Joined = Omit<WorldAgent, "id" | "name" | "project" | "branch" | "teamId" | "role" | "waitingOnYou" | "doing" | "helpers" | "model" | "sessionName" | "ran"> & { sessionId: string | null };
 
 /** First names handed out in a stable order per identity; a name is kept once given. */
 const NAMES = [
@@ -166,6 +166,7 @@ export class World {
         id: str(row.id),
         name: str(row.name),
         project: (a.cwd ? this.checkout(a.cwd)?.repoName : null) ?? projectOfTask.get(a.taskIds[0] ?? "") ?? null,
+        branch: (a.cwd ? this.checkout(a.cwd)?.branch : null) ?? null,
         teamId: row.team_id ? str(row.team_id) : null,
         role: str(row.role) as AgentRole,
         waitingOnYou: a.taskIds.some((t) => waitedOn.has(t)),
@@ -433,11 +434,12 @@ export class World {
     return row;
   }
 
-  /** What git says about a folder, asked again once a worktree it was in is removed. */
+  /** What git says about a folder, asked again once a worktree it was in is removed; its branch is read fresh, as a checkout can switch. */
   private checkout(cwd: string): Checkout | null {
     const known = this.checkouts.get(cwd);
     if (known === undefined || (known && !existsSync(known.top))) this.checkouts.set(cwd, checkoutOf(cwd));
-    return this.checkouts.get(cwd)!;
+    const checkout = this.checkouts.get(cwd)!;
+    return checkout && { ...checkout, branch: currentBranch(checkout) };
   }
 
   /** The teams, without projects whose worktree has gone: removed outside the office, the project is over. */

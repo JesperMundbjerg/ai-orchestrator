@@ -34,7 +34,7 @@ function fysiklab(adapter: object = {
   const world = new World(db, { available: () => true, live: () => live } as unknown as AgentSource, () => inbox.state());
   const agent = (pane: string, cwd: string, status: LiveAgent["status"], name: string | null = null, harness: LiveAgent["harness"] = "pi"): LiveAgent =>
     ({ paneId: pane, harness, sessionId: `s-${pane}`, cwd, status, title: `${pane} title`, name });
-  return { root, world, inbox, agent, setLive: (next: LiveAgent[]) => void (live = next) };
+  return { root, db, world, inbox, agent, setLive: (next: LiveAgent[]) => void (live = next) };
 }
 
 test("herdr's name for an agent is read from the end of its identity", () => {
@@ -80,6 +80,24 @@ test("a lane whose agent is stuck at a prompt says who, and one that stopped kee
   assert.equal(lane.doing, null);
   assert.ok(lane.agentName);
   assert.equal(lane.why, `${lane.agentName} is not running in ${einstein}`);
+});
+
+test("a lane's branch is what git says for its worktree, even when its agent is on a standing team with no path", async () => {
+  const { root, db, world, agent, setLive } = fysiklab();
+  const einstein = join(root, ".claude/worktrees/einstein");
+  const heisenberg = join(root, ".claude/worktrees/heisenberg");
+  setLive([agent("p1", einstein, "working"), agent("p2", heisenberg, "idle")]);
+  const crew = await world.createTeam({ name: "Crew", standing: true });
+  assert.equal(crew.path, null);
+  for (const a of world.state().agents) world.updateAgent(a.id, { teamId: crew.id, role: "member" });
+  db.exec("DELETE FROM teams WHERE standing = 0"); // the projects first made for the worktrees
+  const state = world.state();
+  assert.deepEqual(state.teams.map((t) => t.path), [null], "no team stands at the lane's worktree to be found by");
+  assert.deepEqual(projectQueue(state, "fysiklab").lanes.slice(0, 2).map((l) => l.branch), ["worktree-einstein", "worktree-heisenberg"]);
+  // Git is asked, not the branch a team was made with: a lane switched to another branch shows that one.
+  git(heisenberg, "switch", "-q", "-c", "fix-heisenberg");
+  setLive([agent("p1", einstein, "working"), agent("p2", join(heisenberg, "."), "idle")]);
+  assert.equal(projectQueue(world.state(), "fysiklab").lanes[1]!.branch, "fix-heisenberg");
 });
 
 test("an unknown project is a 404, and a broken adapter says what is wrong", () => {

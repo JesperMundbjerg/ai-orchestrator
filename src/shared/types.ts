@@ -298,6 +298,8 @@ export interface WorldAgent {
   cwd: string | null;
   /** The repository the checkout belongs to. */
   project: string | null;
+  /** The branch git says its checkout is on; null without a checkout, or on a detached HEAD. */
+  branch: string | null;
   status: Presence["status"] | "offline";
   title: string | null;
   paneId: string | null;
