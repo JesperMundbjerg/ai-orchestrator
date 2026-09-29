@@ -50,7 +50,7 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
 
   The office (a project per worktree, run by its first mate; standing teams like Mission Control):
   inbox team                      who you are, your project, your part in it, what waits for you
-  inbox say NAME "text"           message an agent, project or team by name; it arrives when they are free
+  inbox say NAME "text"           message an agent, project, team or a project's lane by name; it arrives when they are free
   inbox say founder "text"        answer the founder in a sentence or two; shown beside you in the office
   inbox handoff "Title" --summary "what was done, where, how to check it" [--to TEAM]
   inbox handoff --work ID --summary "what changed"      hand it over again after changes

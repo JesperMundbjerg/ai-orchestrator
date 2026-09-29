@@ -108,3 +108,31 @@ test("GET /api/p/:project/queue answers the same over HTTP", async () => {
     server.close();
   }
 });
+
+test("inbox say <lane> reaches the agent behind a project's lane by the name its tools use", () => {
+  const { root, world, agent, setLive } = fysiklab();
+  const einstein = join(root, ".claude/worktrees/einstein");
+  setLive([agent("p1", einstein, "idle"), agent("p2", root, "idle", "dispatch-mission-control", "claude")]);
+  const office = world.state().agents;
+  const [lane, router] = ["p1", "p2"].map((p) => office.find((a) => a.paneId === p)!);
+  // Einstein's worktree is also a project called Einstein, led by the lane's agent: either way it reaches it.
+  assert.deepEqual(world.messages.say(router!, { to: "Einstein", text: "You have 2 comments" }).deliveries.map((d) => d.agentId), [lane!.id]);
+  const toRouter = world.messages.say(lane!, { to: "mission-control", text: "done" });
+  assert.deepEqual([toRouter.teamId, toRouter.deliveries.map((d) => d.agentId)], [null, [router!.id]], "a lane with no worktree, found by herdr's name");
+  assert.throws(() => world.messages.say(router!, { to: "mission-control", text: "me?" }), /that is you/);
+  assert.throws(() => world.messages.say(router!, { to: "heisenberg", text: "hi" }), /heisenberg is a lane of fysiklab, but nobody runs in .*heisenberg/);
+  assert.throws(() => world.messages.say(router!, { to: "galilei", text: "hi" }), /nobody called galilei in the office/);
+});
+
+test("an office name or team still wins over a lane with the same name", () => {
+  const { world, agent, setLive, root } = fysiklab({ project: "fysiklab", lanes: [{ name: "einstein", worktree: ".claude/worktrees/einstein" }] });
+  setLive([agent("p1", join(root, ".claude/worktrees/einstein"), "idle"), agent("p2", root, "idle", null, "claude")]);
+  const office = world.state().agents;
+  const [lane, other] = ["p1", "p2"].map((p) => office.find((a) => a.paneId === p)!);
+  // The lane's agent is on its worktree's project, named after the folder: "Einstein".
+  const project = world.state().teams.find((t) => t.path === join(root, ".claude/worktrees/einstein"))!;
+  assert.equal(project.name, "Einstein");
+  const said = world.messages.say(other!, { to: "einstein", text: "hi" });
+  assert.equal(said.teamId, project.id, "the team called Einstein, whose lead is the lane's agent");
+  assert.deepEqual(said.deliveries.map((d) => d.agentId), [lane!.id]);
+});

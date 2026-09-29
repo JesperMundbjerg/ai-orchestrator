@@ -66,3 +66,19 @@ export function projectQueue(state: WorldState, project: string): ProjectQueue {
     paused: false,
   };
 }
+
+/**
+ * The office agent a project's lane name stands for, so a project's tools can message their
+ * lanes by the names they already use (`inbox say einstein`). A name that is a lane in several
+ * projects means the sender's own; null when no project has a lane by that name.
+ */
+export function laneRecipient(state: WorldState, from: WorldAgent, name: string): WorldAgent | null {
+  const lower = name.toLowerCase();
+  const found = state.repositories.flatMap((r) => (r.adapter?.lanes ?? []).filter((l) => l.name.toLowerCase() === lower).map((lane) => ({ repo: r, lane })));
+  if (!found.length) return null;
+  const pick = found.length === 1 ? found[0]! : found.find((f) => f.repo.name === from.project);
+  if (!pick) throw new InboxError(409, `${name} is a lane in ${found.map((f) => f.repo.adapter!.project).join(" and ")}; say it from inside that project`);
+  const agent = laneAgent(pick.lane, state.agents);
+  if (!agent) throw new InboxError(404, `${pick.lane.name} is a lane of ${pick.repo.adapter!.project}, but nobody runs${pick.lane.worktree ? ` in ${pick.lane.worktree}` : ""}`);
+  return agent;
+}

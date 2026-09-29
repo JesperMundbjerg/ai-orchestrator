@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import type { Delivery, DeliveryState, Message, MessageKind, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
 import { InboxError } from "./inbox.ts";
+import { laneRecipient } from "./queue.ts";
 import type { AgentSource } from "./world.ts";
 
 type Row = Record<string, unknown>;
@@ -97,8 +98,12 @@ export class Messages {
       return this.store("message", from.id, null, body, null, [agent.id], input.clientId);
     }
     const team = state.teams.find((t) => t.name.toLowerCase() === name);
-    if (!team) throw new InboxError(404, `nobody called ${input.to} in the office: see who is there with \`inbox team\``);
-    return this.store("message", from.id, team.id, body, null, recipients(state, team, from.id), input.clientId);
+    if (team) return this.store("message", from.id, team.id, body, null, recipients(state, team, from.id), input.clientId);
+    // A project's lane by the name its own tools use: `inbox say einstein`.
+    const lane = laneRecipient(state, from, name);
+    if (!lane) throw new InboxError(404, `nobody called ${input.to} in the office: see who is there with \`inbox team\``);
+    if (lane.id === from.id) throw new InboxError(400, "that is you");
+    return this.store("message", from.id, null, body, null, [lane.id], input.clientId);
   }
 
   /**
