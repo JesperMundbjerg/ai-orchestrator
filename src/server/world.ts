@@ -134,6 +134,7 @@ export class World {
     }
 
     const seen = new Set(agents.map((a) => a.identity));
+    this.seatLeads(agents, rows, seen);
     // A standing team keeps its members' desks, and a project its lead's, while they are neither running nor holding a task.
     for (const row of rows.values()) {
       const team = row.team_id ? teams.find((t) => t.id === row.team_id) : undefined;
@@ -168,6 +169,52 @@ export class World {
       repositories: this.repositories(world, teams),
       herdr: this.source?.available() ? "connected" : "unavailable",
     };
+  }
+
+  /**
+   * The agent running in the pane a project's first mate was started in is its lead, whatever
+   * herdr calls it. herdr can lose the name it started the agent with, which makes it a new
+   * record; the lead record left offline is folded into it, keeping its name and what was said
+   * to it. A lead who is running, such as one you picked, is left alone.
+   */
+  private seatLeads(agents: Joined[], rows: Map<string, Row>, seen: Set<string>): void {
+    const panes = this.db.prepare("SELECT id, lead_pane FROM teams WHERE lead_pane IS NOT NULL AND standing = 0").all() as Row[];
+    for (const t of panes) {
+      const teamId = str(t.id);
+      const running = agents.find((a) => a.paneId === str(t.lead_pane) && a.status !== "offline");
+      const row = running && rows.get(running.identity);
+      if (!row || (row.team_id === teamId && row.role === "lead")) continue;
+      const lead = [...rows.values()].find((r) => r.team_id === teamId && r.role === "lead");
+      if (lead && seen.has(str(lead.identity))) continue;
+      this.tx(() => {
+        if (lead) {
+          const [from, to] = [str(lead.id), str(row.id)];
+          this.db.prepare("UPDATE OR IGNORE message_deliveries SET agent_id = ? WHERE agent_id = ?").run(to, from);
+          this.db.prepare("DELETE FROM message_deliveries WHERE agent_id = ?").run(from);
+          this.db.prepare("UPDATE messages SET from_agent_id = ? WHERE from_agent_id = ?").run(to, from);
+          this.db.prepare("UPDATE work SET from_agent_id = ? WHERE from_agent_id = ?").run(to, from);
+          this.db.prepare("UPDATE work SET reviewer_id = ? WHERE reviewer_id = ?").run(to, from);
+          this.db.prepare("DELETE FROM world_agents WHERE id = ?").run(from);
+          rows.delete(str(lead.identity));
+          row.name = lead.name;
+        }
+        this.db.prepare("UPDATE world_agents SET role = 'member' WHERE team_id = ? AND id != ?").run(teamId, str(row.id));
+        for (const r of rows.values()) if (r.team_id === teamId) r.role = "member";
+        this.db.prepare("UPDATE world_agents SET name = ?, team_id = ?, role = 'lead' WHERE id = ?").run(str(row.name), teamId, str(row.id));
+        Object.assign(row, { team_id: teamId, role: "lead" });
+      });
+    }
+  }
+
+  private tx(fn: () => void): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      fn();
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   /** Every team with anyone on it has a lead: the one who has been on it longest, preferring someone running. */
@@ -408,6 +455,7 @@ export class World {
       throw new InboxError(502, `herdr could not make the worktree: ${(err as Error).message}`);
     }
     const team = this.insertTeam({ name, purpose, handsTo, path: checkoutOf(place.path)?.top ?? place.path, branch: place.branch, standing: false });
+    this.db.prepare("UPDATE teams SET lead_pane = ? WHERE id = ?").run(paneId, team.id);
     this.onChange("world");
     const next = handsTo ? this.team(handsTo).name : null;
     const brief = [

@@ -119,7 +119,9 @@ CREATE TABLE IF NOT EXISTS teams (
   path TEXT UNIQUE,
   branch TEXT,
   standing INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  -- The herdr pane a project's first mate was started in: whoever runs there is its lead.
+  lead_pane TEXT
 );
 
 CREATE TABLE IF NOT EXISTS world_agents (
@@ -193,6 +195,7 @@ function migrate(db: DatabaseSync): void {
   const columns = (table: string) => new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name));
   const teams = columns("teams");
   if (!teams.has("purpose")) db.exec("ALTER TABLE teams ADD COLUMN purpose TEXT NOT NULL DEFAULT ''");
+  if (!teams.has("lead_pane")) db.exec("ALTER TABLE teams ADD COLUMN lead_pane TEXT");
   if (!teams.has("hands_to")) db.exec("ALTER TABLE teams ADD COLUMN hands_to TEXT REFERENCES teams(id) ON DELETE SET NULL");
   // Teams were formed by hand, as a lead with crew or as peers, before a team was a project's
   // worktree. Those teams had no worktree, so they carry on as standing teams, all with a lead.

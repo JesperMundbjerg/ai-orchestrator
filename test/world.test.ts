@@ -315,6 +315,41 @@ test("a first mate that is running but cannot take its first task now gets it as
   assert.equal(queued?.deliveries[0]!.state, "queued", "typed once the lead is free");
 });
 
+test("whoever runs in the first mate's pane leads the project, even after herdr loses its name", async () => {
+  const { dir, root } = repository();
+  const { world, setLive, prompts, failStart, whenStarted } = setup();
+  const path = join(dir, "repo-cosmology");
+  setLive([lane("p1", root, "s1")]);
+  failStart("timed out waiting for agent startup");
+  whenStarted(() => setLive([lane("p1", root, "s1"), leadIn(path, "working")]));
+  const team = await world.createTeam({ name: "Cosmology", purpose: "The cosmology lesson", repository: root });
+  const named = world.state().agents.find((a) => a.paneId === "w2:p1")!;
+  assert.equal(named.role, "lead");
+
+  // herdr drops the name, briefly loses the pane, and you tell the lead something meanwhile.
+  setLive([lane("p1", root, "s1")]);
+  const offline = world.state().agents.find((a) => a.id === named.id)!;
+  assert.equal(offline.status, "offline");
+  const told = world.messages.tell(named.id, { text: "Use the new star map" });
+  const crew = { ...lane("p3", path, "crew-session", "working"), name: null };
+  setLive([lane("p1", root, "s1"), { ...leadIn(path, "idle"), name: null }, crew]);
+
+  const onTeam = world.state().agents.filter((a) => a.teamId === team.id);
+  const lead = onTeam.find((a) => a.paneId === "w2:p1")!;
+  assert.deepEqual([lead.role, lead.name], ["lead", named.name], "the running agent is the lead, under the name you know");
+  assert.equal(onTeam.filter((a) => a.role === "lead").length, 1);
+  assert.ok(!world.state().agents.some((a) => a.id === named.id), "no lead left offline for ever");
+  assert.deepEqual(world.state().withFounder.find((m) => m.id === told.id)?.deliveries.map((d) => d.agentId), [lead.id], "what was said to it reaches it");
+  await world.react();
+  assert.ok(prompts.some((p) => p.pane === "w2:p1" && p.text.includes("Use the new star map")));
+
+  // A lead you pick is yours to pick while it runs.
+  const other = onTeam.find((a) => a.paneId === "p3")!;
+  world.updateAgent(other.id, { role: "lead" });
+  assert.equal(world.state().agents.find((a) => a.id === other.id)?.role, "lead");
+  assert.equal(world.state().agents.find((a) => a.id === lead.id)?.role, "member");
+});
+
 test("a first mate that did not start at all is reported plainly, with the worktree kept", async () => {
   const { dir, root } = repository();
   const { world, setLive, prompts, failStart } = setup();
