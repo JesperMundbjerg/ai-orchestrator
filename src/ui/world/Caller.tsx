@@ -72,8 +72,8 @@ export function CallerNote({ call, agents }: { call: Call; agents: Map<string, W
   const why = stuck
     .map((a) => {
       const own = a.id === lead.id;
-      if (a.waitingOnYou) return own ? "they need your answer" : `${a.name} needs your answer`;
-      return own ? "they are stuck at a prompt" : `${a.name} is stuck at a prompt`;
+      if (a.waitingOnYou) return own ? "needs your answer" : `${a.name} needs your answer`;
+      return own ? "stuck at their own prompt" : `${a.name} is stuck at a prompt`;
     })
     .join(", ");
   return (
