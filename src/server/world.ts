@@ -168,7 +168,7 @@ export class World {
         waitingOnYou: a.taskIds.some((t) => waitedOn.has(t)),
         ...this.activityOf(str(row.id), a.status),
         // What the harness reported wins; its own session file is the fallback, read lazily.
-        model: this.activity.modelOf(str(row.id), sessionId) ?? this.files.modelOf(a.harness, sessionId, this.now().getTime()),
+        model: this.activity.modelOf(str(row.id), sessionId) ?? this.files.modelOf(a.harness, sessionId, this.now().getTime(), a.cwd),
         ran: Boolean(row.ran_at),
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
