@@ -24,7 +24,8 @@ test("team instructions from before agents could talk are kept as messages", () 
   const db = openDatabase(file);
   assert.deepEqual({ ...db.prepare("SELECT id, kind, team_id, text, client_id FROM messages").get() }, { id: "o1", kind: "instruction", team_id: "t1", text: "Ship the login page", client_id: "c1" });
   assert.deepEqual({ ...db.prepare("SELECT message_id, agent_id, state FROM message_deliveries").get() }, { message_id: "o1", agent_id: "a1", state: "delivered" });
-  assert.deepEqual({ ...db.prepare("SELECT purpose, hands_to FROM teams").get() }, { purpose: "", hands_to: null });
+  // A hand-formed team from before projects carries on as a standing team.
+  assert.deepEqual({ ...db.prepare("SELECT * FROM teams").get() }, { id: "t1", name: "Mission Control", created_at: "2026-09-27T10:00:00Z", purpose: "", hands_to: null, path: null, branch: null, standing: 1 });
   assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_orders'").get(), undefined);
   db.close();
   openDatabase(file).close();

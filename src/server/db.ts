@@ -108,13 +108,16 @@ CREATE TABLE IF NOT EXISTS events (
   detail TEXT NOT NULL
 );
 
--- The office world: teams, and every agent it has seen, keyed by harness + checkout.
+-- The office world: a team per project (its worktree) or standing, and every agent it has
+-- seen, keyed by harness + checkout.
 CREATE TABLE IF NOT EXISTS teams (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  structure TEXT NOT NULL CHECK (structure IN ('dispatch', 'circle')),
   purpose TEXT NOT NULL DEFAULT '',
   hands_to TEXT REFERENCES teams(id) ON DELETE SET NULL,
+  path TEXT UNIQUE,
+  branch TEXT,
+  standing INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -188,6 +191,18 @@ function migrate(db: DatabaseSync): void {
   const teams = columns("teams");
   if (!teams.has("purpose")) db.exec("ALTER TABLE teams ADD COLUMN purpose TEXT NOT NULL DEFAULT ''");
   if (!teams.has("hands_to")) db.exec("ALTER TABLE teams ADD COLUMN hands_to TEXT REFERENCES teams(id) ON DELETE SET NULL");
+  // Teams were formed by hand, as a lead with crew or as peers, before a team was a project's
+  // worktree. Those teams had no worktree, so they carry on as standing teams, all with a lead.
+  if (teams.has("structure")) {
+    db.exec(`
+      ALTER TABLE teams ADD COLUMN path TEXT;
+      ALTER TABLE teams ADD COLUMN branch TEXT;
+      ALTER TABLE teams ADD COLUMN standing INTEGER NOT NULL DEFAULT 0;
+      UPDATE teams SET standing = 1;
+      ALTER TABLE teams DROP COLUMN structure;
+      CREATE UNIQUE INDEX IF NOT EXISTS teams_path ON teams (path);
+    `);
+  }
 
   // Team instructions were their own tables before agents could talk to each other.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'team_orders'").get()) {

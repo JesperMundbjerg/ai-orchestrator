@@ -135,7 +135,7 @@ function YourDesk({ queueLength }: { queueLength: number }) {
 function Lounge() {
   const [x, z] = LOUNGE_CENTER;
   const sign = useTexture(
-    () => textTexture([{ text: "Lounge", size: 64, color: "#ffffff", weight: 800 }, { text: "agents not in a team", size: 32, color: "#b8c2cc" }], { width: 512, height: 180, background: "#2b3a4a", radius: 24 }),
+    () => textTexture([{ text: "Lounge", size: 64, color: "#ffffff", weight: 800 }, { text: "agents not on a project", size: 32, color: "#b8c2cc" }], { width: 512, height: 180, background: "#2b3a4a", radius: 24 }),
     [],
   );
   return (
@@ -179,7 +179,7 @@ function TeamCorner({ corner, agents, teams, work }: { corner: Corner; agents: M
   const status = live ? teamLine(live, agents) : { text: "", color: "#8b95a3" };
   const lines: Line[] = [
     { text: team.name, size: 72, color: "#ffffff", weight: 800 },
-    { text: `${team.structure === "dispatch" ? "Lead + crew" : "Peers around one table"} · ${members.length} ${members.length === 1 ? "agent" : "agents"}`, size: 34, color: "#b8c2cc", weight: 500 },
+    { text: `${team.standing ? "Always on" : `Project · ${team.branch ?? "worktree"}`} · ${members.length} ${members.length === 1 ? "agent" : "agents"}`, size: 34, color: "#b8c2cc", weight: 500 },
     { text: status.text, size: 34, color: status.color, weight: 600 },
     ...(flow ? [{ text: flow, size: 30, color: toReview ? "#8fb8ff" : "#b8c2cc", weight: 600 }] : []),
   ];
@@ -190,75 +190,32 @@ function TeamCorner({ corner, agents, teams, work }: { corner: Corner; agents: M
         <planeGeometry args={[10.4, 9]} />
         <meshStandardMaterial color={tint} roughness={1} transparent opacity={0.28} />
       </mesh>
-      {team.structure === "dispatch" ? (
-        <group position={[cx, 0, cz - 4]}>
-          {/* The big wall screen the crew faces, high enough to read over their heads and name tags */}
-          <mesh position={[0, 3.9, 0]} castShadow>
-            <boxGeometry args={[7.2, 2.7, 0.12]} />
-            <meshStandardMaterial color="#0e1116" />
+      <group position={[cx, 0, cz - 4]}>
+        {/* The big wall screen the crew faces, high enough to read over their heads and name tags */}
+        <mesh position={[0, 3.9, 0]} castShadow>
+          <boxGeometry args={[7.2, 2.7, 0.12]} />
+          <meshStandardMaterial color="#0e1116" />
+        </mesh>
+        <mesh position={[0, 3.9, 0.07]}>
+          <planeGeometry args={[6.9, 2.43]} />
+          <meshBasicMaterial map={board} toneMapped={false} />
+        </mesh>
+        {[-3, 3].map((dx) => (
+          <mesh key={dx} position={[dx, 1.3, 0]}>
+            <boxGeometry args={[0.12, 2.6, 0.12]} />
+            <meshStandardMaterial color="#2c3440" />
           </mesh>
-          <mesh position={[0, 3.9, 0.07]}>
-            <planeGeometry args={[6.9, 2.43]} />
-            <meshBasicMaterial map={board} toneMapped={false} />
-          </mesh>
-          {[-3, 3].map((dx) => (
-            <mesh key={dx} position={[dx, 1.3, 0]}>
-              <boxGeometry args={[0.12, 2.6, 0.12]} />
-              <meshStandardMaterial color="#2c3440" />
-            </mesh>
-          ))}
-        </group>
-      ) : (
-        <group position={[cx, 0, cz]}>
-          <mesh position={[0, 0.74, 0]} castShadow receiveShadow>
-            <cylinderGeometry args={[1.4, 1.4, 0.06, 40]} />
-            <meshStandardMaterial color="#e8e1d5" roughness={0.5} />
-          </mesh>
-          <mesh position={[0, 0.37, 0]}>
-            <cylinderGeometry args={[0.12, 0.3, 0.74, 16]} />
-            <meshStandardMaterial color="#6b7280" />
-          </mesh>
-          {/* A standing board with the team's name */}
-          <group position={[0, 0, -4.1]}>
-            <mesh position={[0, 1.1, 0]}>
-              <cylinderGeometry args={[0.04, 0.04, 2.2, 8]} />
-              <meshStandardMaterial color="#6b7280" />
-            </mesh>
-            <mesh position={[0, 2.3, 0.03]}>
-              <planeGeometry args={[2.9, 1.02]} />
-              <meshBasicMaterial map={board} toneMapped={false} side={2} />
-            </mesh>
-          </group>
-        </group>
-      )}
+        ))}
+      </group>
       {desks.map((desk, i) => (
-        <DeskUnit key={i} desk={desk} working={desk.occupantId ? agents.get(desk.occupantId)?.status === "working" : false} round={team.structure === "circle"} />
+        <DeskUnit key={i} desk={desk} working={desk.occupantId ? agents.get(desk.occupantId)?.status === "working" : false} />
       ))}
     </group>
   );
 }
 
-function DeskUnit({ desk, working, round }: { desk: Desk; working: boolean; round: boolean }) {
+function DeskUnit({ desk, working }: { desk: Desk; working: boolean }) {
   const [x, z] = desk.pos;
-  if (round) {
-    // At the round table a place is a laptop on the tabletop.
-    return (
-      <group position={[x, 0.77, z]} rotation-y={desk.facing}>
-        <mesh position={[0, 0.01, 0]}>
-          <boxGeometry args={[0.36, 0.02, 0.25]} />
-          <meshStandardMaterial color="#9aa3ad" metalness={0.5} roughness={0.4} />
-        </mesh>
-        <mesh position={[0, 0.13, 0.12]} rotation-x={0.25}>
-          <boxGeometry args={[0.36, 0.24, 0.015]} />
-          <meshStandardMaterial color="#9aa3ad" metalness={0.5} roughness={0.4} />
-        </mesh>
-        <mesh position={[0, 0.13, 0.104]} rotation={[0.25, Math.PI, 0]}>
-          <planeGeometry args={[0.32, 0.2]} />
-          <meshBasicMaterial color={working ? "#3ddc84" : desk.occupantId ? "#2d3a4a" : "#1b1f24"} toneMapped={false} />
-        </mesh>
-      </group>
-    );
-  }
   const lead = desk.kind === "lead";
   return (
     <group position={[x, 0, z]} rotation-y={desk.facing + Math.PI}>

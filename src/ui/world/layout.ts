@@ -2,7 +2,7 @@
 // returns each agent's spot, the furniture each team's corner needs, and the walking route
 // between two spots. Coordinates are metres on the floor as [x, z]; north is -z.
 //
-//   north   team corners in a grid (3 per row)
+//   north   a corner per project and standing team, in a grid (3 per row)
 //   ─────   the corridor everyone walks along
 //   south   the lounge (west) · your desk with its queue (centre)
 
@@ -72,7 +72,7 @@ export function planOffice(agents: WorldAgent[], teams: Team[], queue: string[])
   const corners = teams.map((team, i) => {
     const center: Vec2 = [CORNER_COLUMNS[i % CORNER_COLUMNS.length]!, CORNER_FIRST_Z - CORNER_PITCH * Math.floor(i / CORNER_COLUMNS.length)];
     const members = agents.filter((a) => a.teamId === team.id);
-    const corner = team.structure === "dispatch" ? dispatchCorner(team, center, members) : circleCorner(team, center, members);
+    const corner = controlRoom(team, center, members);
     for (const [id, spot] of corner.seats) spots.set(id, spot);
     return { team, center, desks: corner.desks, members };
   });
@@ -92,8 +92,8 @@ export function planOffice(agents: WorldAgent[], teams: Team[], queue: string[])
   };
 }
 
-/** A lead at the back and a crew in rows facing the big screen, like a flight control room. */
-function dispatchCorner(team: Team, [cx, cz]: Vec2, members: WorldAgent[]) {
+/** The lead (a project's first mate) at the back and the crew in rows facing the big screen, like a flight control room. */
+function controlRoom(team: Team, [cx, cz]: Vec2, members: WorldAgent[]) {
   const lead = members.find((m) => m.role === "lead") ?? null;
   const crew = members.filter((m) => m !== lead);
   const seats: Array<[string, Spot]> = [];
@@ -112,26 +112,6 @@ function dispatchCorner(team: Team, [cx, cz]: Vec2, members: WorldAgent[]) {
   const leadZ = cz + 2.3;
   desks.push({ pos: [cx, leadZ], facing: NORTH, kind: "lead", occupantId: lead?.id ?? null });
   if (lead) seats.push([lead.id, { pos: [cx, leadZ + 0.75], facing: NORTH, zone: "team", group: team.id, approach: [[cx, aisleZ]] }]);
-  return { seats, desks };
-}
-
-/** Peers around one round table. */
-function circleCorner(team: Team, [cx, cz]: Vec2, members: WorldAgent[]) {
-  const seats: Array<[string, Spot]> = [];
-  const desks: Desk[] = [];
-  const n = Math.max(3, members.length);
-  const aisleZ = cz + CORNER_HALF_DEPTH - 0.3;
-  for (let i = 0; i < n; i++) {
-    const angle = (i / n) * Math.PI * 2;
-    const at = (r: number): Vec2 => [cx + Math.sin(angle) * r, cz + Math.cos(angle) * r];
-    const pos = at(2.0);
-    const occupant = members[i] ?? null;
-    desks.push({ pos: at(1.25), facing: yawTo(pos, [cx, cz]), kind: "console", occupantId: occupant?.id ?? null });
-    if (!occupant) continue;
-    // Walk round the table rather than through it.
-    const side = cx + (pos[0] >= cx ? 1 : -1) * 3.6;
-    seats.push([occupant.id, { pos, facing: yawTo(pos, [cx, cz]), zone: "team", group: team.id, approach: [[side, aisleZ], [side, cz], at(3.1)] }]);
-  }
   return { seats, desks };
 }
 

@@ -70,14 +70,12 @@ export function WorkRow({ work, world, agents }: { work: Work; world: WorldState
   );
 }
 
-/** Your instruction to a team: typed into its lead's terminal, or every running peer's, once free. */
+/** Your instruction to a team: typed into its first mate's (or lead's) terminal once free. */
 export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAgent[] }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lead = members.find((m) => m.role === "lead") ?? null;
-  const running = members.filter((m) => m.paneId);
-  const hearers = team.structure === "dispatch" ? (lead ? [lead] : []) : running.length ? running : members;
   const send = () => {
     setSending(true);
     api.instructTeam(team.id, text).then(
@@ -93,19 +91,17 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
         if (text.trim() && !sending) send();
       }}
     >
-      <div className="section-label">Tell the team</div>
+      <div className="section-label">Tell {team.name}</div>
       <textarea
         value={text}
         rows={3}
-        placeholder={team.structure === "dispatch" ? `What should ${team.name} do? ${lead?.name ?? "The lead"} divides it among the crew.` : `What should ${team.name} do? Every peer hears it.`}
+        placeholder={`What should ${team.name} do? ${lead?.name ?? (team.standing ? "The lead" : "The first mate")} ${team.standing ? "divides it among the crew" : "plans it and runs the crew"}.`}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && e.currentTarget.form?.requestSubmit()}
       />
       <div className="row">
-        <button className="primary small" type="submit" disabled={!text.trim() || sending || !hearers.length}>Send to {team.name}</button>
-        <span className="muted small-note">
-          {hearers.length ? `Typed into ${hearers.map((h) => h.name).join(" and ")}'s terminal once free.` : team.structure === "dispatch" ? "Pick a lead first." : "Nobody in the team yet."}
-        </span>
+        <button className="primary small" type="submit" disabled={!text.trim() || sending || !lead}>Send to {team.name}</button>
+        <span className="muted small-note">{lead ? `Typed into ${lead.name}'s terminal once free.` : "Nobody on it yet."}</span>
       </div>
       {error ? <div className="warn">{error}</div> : null}
     </form>

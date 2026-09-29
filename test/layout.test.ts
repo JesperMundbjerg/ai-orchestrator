@@ -7,7 +7,7 @@ import { plan as planTalk } from "../src/ui/world/visits.ts";
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
   id, identity: id, name: id, harness: "pi", cwd: null, project: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], ...extra,
 });
-const team = (id: string, structure: Team["structure"]): Team => ({ id, name: id, structure, purpose: "", handsTo: null, createdAt: "" });
+const team = (id: string): Team => ({ id, name: id, purpose: "", handsTo: null, path: `/repo-${id}`, branch: `worktree-${id}`, standing: false, createdAt: "" });
 
 test("the queue has one place per agent, in the order its items wait", () => {
   const agents = [agent("tom", { taskIds: ["t1", "t3"] }), agent("ada", { taskIds: ["t2"] })];
@@ -16,7 +16,7 @@ test("the queue has one place per agent, in the order its items wait", () => {
 });
 
 test("everyone has a place: team seats, the line at your desk, or the lounge", () => {
-  const teams = [team("mc", "dispatch"), team("fp", "circle")];
+  const teams = [team("mc"), team("fp")];
   const agents = [
     agent("lead", { teamId: "mc", role: "lead" }), agent("c1", { teamId: "mc" }), agent("c2", { teamId: "mc" }),
     agent("p1", { teamId: "fp" }), agent("p2", { teamId: "fp" }), agent("asking", { teamId: "fp" }),
@@ -35,7 +35,7 @@ test("everyone has a place: team seats, the line at your desk, or the lounge", (
 });
 
 test("walking to the line goes along the corridor and the side lane, and the line moves up directly", () => {
-  const plan = planOffice([agent("a", { teamId: "mc" }), agent("b"), agent("c")], [team("mc", "dispatch")], ["b", "c"]);
+  const plan = planOffice([agent("a", { teamId: "mc" }), agent("b"), agent("c")], [team("mc")], ["b", "c"]);
   const desk = plan.spots.get("a")!;
   const [first, second] = [plan.spots.get("b")!, plan.spots.get("c")!];
   const path = route(desk.pos, desk, second);
@@ -48,7 +48,7 @@ const said = (id: string, kind: Message["kind"], from: string | null, to: string
   ({ id, kind, fromAgentId: from, teamId: null, text, workId: null, createdAt: "", deliveries: to.map((agentId) => ({ agentId, state: "queued", error: null, updatedAt: "" })) });
 
 test("an agent who says something walks to the person it is for and stands beside them", () => {
-  const teams = [team("dev", "dispatch"), team("qa", "circle")];
+  const teams = [team("dev"), team("qa")];
   const agents = [agent("lead", { teamId: "dev", role: "lead" }), agent("coder", { teamId: "dev" }), agent("rev", { teamId: "qa" })];
   const office = planOffice(agents, teams, []);
   const { visits, bubbles } = planTalk([said("m1", "handoff", "coder", ["rev"]), said("m2", "instruction", null, ["lead"], "Ship it")], office, 1000);
@@ -64,10 +64,10 @@ test("an agent who says something walks to the person it is for and stands besid
 });
 
 test("work flows along the floor from a team to the team it hands to", () => {
-  const teams = [{ ...team("qa", "circle") }, { ...team("dev", "dispatch"), handsTo: "qa" }];
+  const teams = [{ ...team("qa") }, { ...team("dev"), handsTo: "qa" }];
   const office = planOffice([], teams, []);
   const [p] = pipelines(office);
   assert.equal(p!.fromTeamId, "dev");
   assert.ok(p!.path.some(([, z]) => Math.abs(z - CORRIDOR_Z) < 1), "along the corridor");
-  assert.equal(pipelines(planOffice([], [team("qa", "circle")], [])).length, 0);
+  assert.equal(pipelines(planOffice([], [team("qa")], [])).length, 0);
 });

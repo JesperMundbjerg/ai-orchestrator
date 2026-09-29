@@ -16,7 +16,11 @@ async function withServer(fn: (base: string) => Promise<void>, live: LiveAgent[]
   const dir = mkdtempSync(join(tmpdir(), "inbox-http-"));
   const db = openDatabase(":memory:");
   const inbox = new Inbox(db, join(dir, "files"), { available: () => false, forSession: () => null, resolvePane: () => null });
-  const world = new World(db, { available: () => true, live: () => live, read: async () => "", focus: async () => {}, prompt: async (pane, text) => void typed.push(`${pane}: ${text}`), notify: async () => {} }, () => inbox.state());
+  const none = async () => { throw new Error("not in this test"); };
+  const world = new World(db, {
+    available: () => true, live: () => live, read: async () => "", focus: async () => {}, prompt: async (pane, text) => void typed.push(`${pane}: ${text}`), notify: async () => {},
+    createWorktree: none, startAgent: none, closePane: none, removeWorktree: none,
+  }, () => inbox.state());
   const port = nextPort++;
   const server = createInboxServer(inbox, null, { port, staticDir: null, world });
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
@@ -68,10 +72,10 @@ test("a request for another host name is refused (DNS rebinding)", async () => {
   });
 });
 
-test("an agent finds its team and talks to another agent by name", async () => {
+test("an agent finds its project and talks to another agent by name", async () => {
   const live: LiveAgent[] = [
-    { paneId: "p1", harness: "pi", sessionId: "s1", cwd: "/a", status: "idle", title: null },
-    { paneId: "p2", harness: "claude", sessionId: "s2", cwd: "/b", status: "idle", title: null },
+    { paneId: "p1", harness: "pi", sessionId: "s1", cwd: "/a", status: "idle", title: null, name: null },
+    { paneId: "p2", harness: "claude", sessionId: "s2", cwd: "/b", status: "idle", title: null, name: null },
   ];
   const typed: string[] = [];
   await withServer(async (base) => {
@@ -79,7 +83,7 @@ test("an agent finds its team and talks to another agent by name", async () => {
     const brief = await post("/api/agent/team", { session: { harness: "pi", sessionId: "s1", paneId: "p1" } });
     assert.equal(brief.status, 200);
     const { text } = await brief.json();
-    assert.match(text, /not in a team/);
+    assert.match(text, /not on a project/);
     const world = await (await fetch(`${base}/api/world`)).json();
     const b = world.agents.find((a: { cwd: string }) => a.cwd === "/b");
     const said = await post("/api/agent/say", { session: { harness: "pi", sessionId: "s1", paneId: "p1" }, to: b.name, text: "hello", clientId: "k1" });

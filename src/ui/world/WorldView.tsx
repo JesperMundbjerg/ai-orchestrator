@@ -21,7 +21,7 @@ export interface Waiting {
 const START: FlyTarget = { pos: SPAWN, yaw: 0, seq: 0 };
 
 /**
- * The office: every agent as a person you can walk up to. Teams have their own corner, the
+ * The office: every agent as a person you can walk up to. Each project (and standing team) has its own corner, the
  * rest wait in the lounge, and anyone with something for you queues at your desk.
  */
 export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: number; onLeave: () => void }) {

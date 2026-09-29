@@ -34,7 +34,7 @@ export function Sidebar({ state, route, navigate }: { state: InboxState; route: 
       <ul className="views">
         <li>
           <button className={route.view === "teams" ? "active" : ""} onClick={() => navigate({ view: "teams", itemId: null })}>
-            <span>Teams</span>
+            <span>Projects</span>
           </button>
         </li>
       </ul>
@@ -43,11 +43,11 @@ export function Sidebar({ state, route, navigate }: { state: InboxState; route: 
         Walk into the office <span aria-hidden>→</span>
       </button>
 
-      <div className="section-label">Projects</div>
+      <div className="section-label">Repositories</div>
       <ul className="projects">
         <li>
           <button className={!route.projectId ? "active" : ""} onClick={() => navigate({ projectId: null, itemId: null })}>
-            <span>All projects</span>
+            <span>All repositories</span>
           </button>
         </li>
         {state.projects.map((p) => (

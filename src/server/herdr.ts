@@ -159,6 +159,7 @@ export class Herdr implements PresenceSource, AgentSource {
         cwd: a.cwd ?? null,
         status: a.agent_status ?? "unknown",
         title: a.terminal_title_stripped ?? null,
+        name: a.name ?? null,
       }];
     });
   }
@@ -181,6 +182,46 @@ export class Herdr implements PresenceSource, AgentSource {
   async prompt(paneId: string, text: string): Promise<void> {
     try {
       await run(this.bin, ["agent", "prompt", paneId, text, "--wait", "--until", "working", "--until", "blocked", "--timeout", "15000"], { timeout: 20_000 });
+    } catch (err) {
+      throw new Error(herdrError(err));
+    }
+  }
+
+  async createWorktree(repoRoot: string, place: { path: string; branch: string; base: string | null; label: string }): Promise<{ paneId: string }> {
+    const base = place.base ? ["--base", place.base] : [];
+    const created = await this.call<{ root_pane: { pane_id: string } }>(["worktree", "create", "--cwd", repoRoot, "--branch", place.branch, ...base, "--path", place.path, "--label", place.label, "--no-focus"]);
+    return { paneId: created.root_pane.pane_id };
+  }
+
+  async startAgent(paneId: string, name: string, harness: Harness, args: string[]): Promise<void> {
+    try {
+      await this.call(["agent", "start", name, "--kind", harness, "--pane", paneId, "--timeout", "30000", "--", ...args], 40_000);
+    } catch (err) {
+      // Stopped at a question while starting, such as whether to trust the folder: it is running, waiting on you.
+      if (!(err instanceof Error && /blocked during startup/.test(err.message))) throw err;
+    }
+  }
+
+  async closePane(paneId: string): Promise<void> {
+    await this.call(["pane", "close", paneId]);
+  }
+
+  /** herdr removes a worktree through the workspace it is open in, so one not open is opened first. */
+  async removeWorktree(repoRoot: string, path: string): Promise<void> {
+    const listed = await this.call<{ worktrees: Array<{ path: string; open_workspace_id?: string | null }> }>(["worktree", "list", "--cwd", repoRoot]);
+    let workspace = listed.worktrees.find((w) => w.path === path)?.open_workspace_id;
+    if (!workspace) {
+      const opened = await this.call<{ workspace: { workspace_id: string } }>(["worktree", "open", "--cwd", repoRoot, "--path", path, "--no-focus"]);
+      workspace = opened.workspace.workspace_id;
+    }
+    await this.call(["worktree", "remove", "--workspace", workspace]);
+  }
+
+  /** Runs a herdr command and returns its result, or throws with herdr's own message. */
+  private async call<T = unknown>(args: string[], timeout = 20_000): Promise<T> {
+    try {
+      const { stdout } = await run(this.bin, args, { timeout, maxBuffer: 2_000_000 });
+      return (JSON.parse(stdout) as { result: T }).result;
     } catch (err) {
       throw new Error(herdrError(err));
     }

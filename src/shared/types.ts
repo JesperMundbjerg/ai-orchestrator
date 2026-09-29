@@ -243,20 +243,23 @@ export interface PendingReply {
 
 // ── The office world ─────────────────────────────────────────────────────────────────────
 
-/** How a team works, which is also how its corner of the office is furnished:
- * `dispatch` has a lead at the back handing work to a row of crew consoles;
- * `circle` is peers around one table who settle things between them. */
-export const TEAM_STRUCTURES = ["dispatch", "circle"] as const;
-export type TeamStructure = (typeof TEAM_STRUCTURES)[number];
-
+/**
+ * The agents working on one project. A project is a git worktree: every agent working in it is
+ * on the project, and finishing the project removes the worktree. A standing team, such as
+ * Mission Control, has no worktree of its own: its agents keep their own checkouts and it is
+ * never finished. Every team with anyone in it has one lead, who divides the work.
+ */
 export interface Team {
   id: string;
   name: string;
-  structure: TeamStructure;
-  /** What the team is for, in your words. Every agent in it is told this. */
+  /** What the project is for, in your words. Every agent on it is told this. */
   purpose: string;
-  /** The team its finished work goes to, such as a QA team. */
+  /** The team its finished work goes to for review. */
   handsTo: string | null;
+  /** The worktree checkout; null for a standing team. */
+  path: string | null;
+  branch: string | null;
+  standing: boolean;
   createdAt: string;
 }
 
@@ -319,8 +322,14 @@ export interface WorldTeam extends Team {
   status: TeamStatus;
   /** Who holds the team up, when it is blocked. */
   blockedBy: string[];
-  /** The repositories its members work in. */
-  projects: string[];
+}
+
+/** A repository agents work in, where a new project's worktree can be made. */
+export interface Repository {
+  name: string;
+  root: string;
+  /** The branch its main checkout is on, which a new project's branch starts from. */
+  base: string | null;
 }
 
 export const DELIVERY_STATES = ["queued", "sending", "delivered", "failed"] as const;
@@ -382,6 +391,7 @@ export interface WorldState {
   messages: Message[];
   /** Work under review, and the latest reviewed. */
   work: Work[];
+  repositories: Repository[];
   herdr: "connected" | "unavailable";
 }
 

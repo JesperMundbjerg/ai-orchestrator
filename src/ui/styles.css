@@ -392,6 +392,8 @@ h1, h2, h3 { margin: 0; }
 .card-member .member-doing { grid-column: 1 / -1; white-space: normal; }
 .lead-toggle { padding: 1px 8px; font-size: 11.5px; }
 .lead-toggle.on { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+span.lead-toggle { border-radius: 6px; justify-self: start; }
+.board-note { background: var(--accent-soft); border-radius: 8px; padding: 8px 12px; display: flex; gap: 10px; align-items: center; }
 .drop-hint { padding: 10px; border: 1px dashed var(--line); border-radius: 8px; text-align: center; }
 .team-activity { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 24px; }
 .team-activity h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 10px; }

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeHookEvents, describeTool } from "../src/server/activity.ts";
@@ -23,7 +24,10 @@ function setup() {
   const inbox = new Inbox(db, join(mkdtempSync(join(tmpdir(), "world-test-")), "files"), presence);
   const prompts: Array<{ pane: string; text: string }> = [];
   const notices: string[] = [];
+  const started: Array<{ pane: string; name: string; args: string[] }> = [];
+  const closed: string[] = [];
   let refuse: string | null = null;
+  // herdr's worktree commands, done with git the way herdr does them.
   const source: AgentSource = {
     available: () => true,
     live: () => live,
@@ -34,24 +38,46 @@ function setup() {
       prompts.push({ pane, text });
     },
     notify: async (title) => void notices.push(title),
+    createWorktree: async (repoRoot, place) => {
+      git(repoRoot, "worktree", "add", "-b", place.branch, place.path, ...(place.base ? [place.base] : []));
+      return { paneId: "w2:p1" };
+    },
+    startAgent: async (pane, name, _harness, args) => void started.push({ pane, name, args }),
+    closePane: async (pane) => void closed.push(pane),
+    removeWorktree: async (repoRoot, path) => void git(repoRoot, "worktree", "remove", path),
   };
   const world = new World(db, source, () => inbox.state());
-  return { inbox, world, prompts, notices, setLive: (next: LiveAgent[]) => void (live = next), refuse: (why: string | null) => void (refuse = why) };
+  return { inbox, world, prompts, notices, started, closed, setLive: (next: LiveAgent[]) => void (live = next), refuse: (why: string | null) => void (refuse = why) };
 }
 
-/** A team with the given agents seated in it; the first is the lead of a dispatch team. */
-function seat(world: World, structure: "dispatch" | "circle", cwds: string[]) {
-  const team = world.createTeam({ name: "Mission Control", structure });
+/** A standing team with the given agents on it; the first leads it. */
+async function seat(world: World, cwds: string[]) {
+  const team = await world.createTeam({ name: "Mission Control", standing: true });
   const agents = cwds.map((cwd) => world.state().agents.find((a) => a.cwd === cwd)!);
-  agents.forEach((a, i) => world.updateAgent(a.id, { teamId: team.id, role: structure === "dispatch" && i === 0 ? "lead" : "member" }));
+  agents.forEach((a, i) => world.updateAgent(a.id, { teamId: team.id, role: i === 0 ? "lead" : "member" }));
   return { team, agents };
+}
+
+const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+
+/** A repository on `dev` with one commit, and a project worktree `repo-atoms-light` beside it. */
+function repository() {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "world-repo-")));
+  const root = join(dir, "repo");
+  execFileSync("git", ["init", "-q", "-b", "dev", root]);
+  writeFileSync(join(root, "a.txt"), "a\n");
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "init");
+  const atoms = join(dir, "repo-atoms-light");
+  git(root, "worktree", "add", "-q", "-b", "worktree-atoms-light", atoms);
+  return { dir, root, atoms };
 }
 
 /** The text of a message as typed, without the header and footer around it. */
 const body = (typed: string) => typed.split("\n\n")[1];
 
 const lane = (paneId: string, cwd: string, sessionId: string, status: LiveAgent["status"] = "idle"): LiveAgent =>
-  ({ paneId, harness: "pi", sessionId, cwd, status, title: null });
+  ({ paneId, harness: "pi", sessionId, cwd, status, title: null, name: null });
 
 test("an agent keeps its name when its session restarts in the same checkout", () => {
   const { world, setLive } = setup();
@@ -74,32 +100,117 @@ test("every agent gets its own name, and two agents in one checkout are two peop
   assert.equal(new Set(agents.map((a) => a.name)).size, 32);
 });
 
-test("a team member who stops running keeps a desk; someone in the lounge just leaves", () => {
+test("a standing team keeps its members' desks; someone in the lounge just leaves", async () => {
   const { world, setLive } = setup();
   setLive([lane("p1", "/lead", "s1"), lane("p2", "/idle", "s2")]);
-  const [lead] = world.state().agents.filter((a) => a.cwd === "/lead");
-  const team = world.createTeam({ name: "Mission Control", structure: "dispatch" });
-  world.updateAgent(lead!.id, { teamId: team.id, role: "lead" });
+  const { team } = await seat(world, ["/lead"]);
   setLive([]);
   const agents = world.state().agents;
   assert.deepEqual(agents.map((a) => [a.cwd, a.status, a.teamId, a.role]), [["/lead", "offline", team.id, "lead"]]);
 });
 
-test("a team has one lead, leaving drops the role, and disbanding sends everyone to the lounge", () => {
+test("a team has one lead, leaving drops the role, and disbanding a standing team sends everyone to the lounge", async () => {
   const { world, setLive } = setup();
   setLive([lane("p1", "/a", "s1"), lane("p2", "/b", "s2")]);
   const [a, b] = world.state().agents;
-  const team = world.createTeam({ name: "Crew", structure: "dispatch" });
+  const team = await world.createTeam({ name: "Crew", standing: true });
   world.updateAgent(a!.id, { teamId: team.id, role: "lead" });
   world.updateAgent(b!.id, { teamId: team.id, role: "lead" });
   assert.equal(world.agent(a!.id).role, "member");
   assert.equal(world.agent(b!.id).role, "lead");
   assert.equal(world.updateAgent(b!.id, { teamId: null }).role, "member");
-  world.updateAgent(b!.id, { teamId: team.id });
-  world.deleteTeam(team.id);
+  assert.equal(world.agent(a!.id).role, "lead", "a team with anyone on it always has a lead");
+  assert.match((await world.deleteTeam(team.id)).note, /disbanded/);
   assert.deepEqual(world.state().agents.map((x) => x.teamId), [null, null]);
-  assert.throws(() => world.createTeam({ name: "  " }), /needs a name/);
-  assert.throws(() => world.createTeam({ name: "X", structure: "hierarchy" }), /structure/);
+  await assert.rejects(world.createTeam({ name: "  " }), /needs a name/);
+});
+
+test("an agent working in a worktree is on that project, named after it, and the first one there leads it", () => {
+  const { root, atoms } = repository();
+  const { world, setLive } = setup();
+  setLive([
+    { ...lane("p1", atoms, "s1"), harness: "claude" },
+    { ...lane("p2", root, "s2") },
+  ]);
+  const { teams, agents } = world.state();
+  assert.deepEqual(teams.map((t) => [t.name, t.path, t.branch, t.standing]), [["Atoms light", atoms, "worktree-atoms-light", false]]);
+  const lead = agents.find((a) => a.paneId === "p1")!;
+  assert.deepEqual([lead.teamId, lead.role, lead.project], [teams[0]!.id, "lead", "repo"]);
+  assert.equal(agents.find((a) => a.paneId === "p2")!.teamId, null, "the main checkout is no project");
+
+  // The first mate's crew shares its worktree; herdr knows each by name, so each is its own person.
+  setLive([{ ...lane("p1", atoms, "s1"), harness: "claude" }, { ...lane("p3", atoms, "s3"), harness: "claude", name: "tests" }]);
+  const crew = world.state().agents.find((a) => a.paneId === "p3")!;
+  assert.equal(crew.identity, `claude:${atoms}@tests`);
+  assert.deepEqual([crew.teamId, crew.role], [teams[0]!.id, "member"]);
+
+  // Crew who stop running leave; the first mate keeps its desk.
+  setLive([]);
+  assert.deepEqual(world.state().agents.map((a) => [a.id, a.status]), [[lead.id, "offline"]]);
+});
+
+test("starting a project makes its worktree beside the repository and starts a first mate there", async () => {
+  const { dir, root } = repository();
+  const { world, setLive, started } = setup();
+  setLive([lane("p1", root, "s1")]);
+  const qa = await world.createTeam({ name: "QA", standing: true });
+  const team = await world.createTeam({ name: "Frontpage video!", purpose: "A live simulation on the front page", handsTo: qa.id, repository: root });
+  assert.deepEqual([team.path, team.branch, team.standing], [join(dir, "repo-frontpage-video"), "worktree-frontpage-video", false]);
+  assert.equal(git(team.path!, "rev-parse", "--abbrev-ref", "HEAD"), "worktree-frontpage-video");
+  assert.equal(git(team.path!, "rev-parse", "HEAD"), git(root, "rev-parse", "dev"), "branched from the main checkout's branch");
+
+  const [lead] = started;
+  assert.deepEqual([lead!.pane, lead!.name], ["w2:p1", "lead-frontpage-video"]);
+  assert.deepEqual(lead!.args.slice(0, 4), ["--model", "opus", "--effort", "medium"]);
+  const brief = lead!.args[lead!.args.indexOf("--append-system-prompt") + 1]!;
+  assert.match(brief, /first mate/);
+  assert.match(brief, /You do not write the code yourself/);
+  assert.match(brief, /herdr agent start <name> --kind claude --pane <pane id> -- --model sonnet/);
+  assert.match(brief, /--model opus --effort medium for work that needs deep thinking/);
+  assert.match(brief, /hand it to QA for review/);
+  assert.equal(lead!.args.at(-1), "Start on the project: A live simulation on the front page");
+
+  await assert.rejects(world.createTeam({ name: "frontpage video!", repository: root }), /already a project or team called/);
+  await assert.rejects(world.createTeam({ name: "Frontpage video", repository: root }), /repo-frontpage-video already exists/);
+  await assert.rejects(world.createTeam({ name: "Other", repository: "/nowhere" }), /pick the repository/);
+  await assert.rejects(world.createTeam({ name: "42", repository: root }), /start the project's name with a letter/);
+});
+
+test("finishing a project closes its agents and removes the worktree, but never loses work", async () => {
+  const { root, atoms } = repository();
+  const { world, setLive, closed } = setup();
+  setLive([lane("p1", atoms, "s1", "working"), lane("p9", root, "s9")]);
+  const team = world.state().teams[0]!;
+  await assert.rejects(world.deleteTeam(team.id), /is still working/);
+
+  setLive([lane("p1", atoms, "s1", "idle"), lane("p9", root, "s9")]);
+  writeFileSync(join(atoms, "b.txt"), "b\n");
+  await assert.rejects(world.deleteTeam(team.id), /1 uncommitted change in .*: commit or discard it first/);
+
+  git(atoms, "add", ".");
+  git(atoms, "commit", "-qm", "b");
+  const { note } = await world.deleteTeam(team.id);
+  assert.deepEqual(closed, ["p1"], "only the agents working in it are closed");
+  assert.equal(existsSync(atoms), false);
+  assert.match(note, /Branch worktree-atoms-light is kept: 1 commit is not in dev yet/);
+  assert.equal(git(root, "branch", "--list", "worktree-atoms-light"), "worktree-atoms-light");
+  assert.deepEqual(world.state().teams, []);
+});
+
+test("a finished project's merged branch is deleted, and a project whose worktree is gone is over", async () => {
+  const { root, atoms } = repository();
+  const { world, setLive } = setup();
+  setLive([lane("p1", atoms, "s1")]);
+  const team = world.state().teams[0]!;
+  assert.match((await world.deleteTeam(team.id)).note, /Branch worktree-atoms-light was merged and is deleted/);
+  assert.equal(git(root, "branch", "--list", "worktree-atoms-light"), "");
+
+  const again = repository();
+  setLive([lane("p1", again.atoms, "s1")]);
+  assert.equal(world.state().teams.length, 1);
+  setLive([]);
+  git(again.root, "worktree", "remove", again.atoms);
+  assert.deepEqual(world.state().teams, [], "removed outside the office");
 });
 
 test("an agent known only from the inbox appears offline with its project and its tasks", () => {
@@ -124,14 +235,14 @@ test("a terminal is read through the agent source, and only for a running agent"
   await assert.rejects(world.screen(offline!.id), /not running in herdr/);
 });
 
-test("a team is blocked when its lead is stuck, or when someone is and nobody else is working", () => {
+test("a team is blocked when its lead is stuck, or when someone is and nobody else is working", async () => {
   const { world, setLive } = setup();
   const statusWith = (lead: LiveAgent["status"], crew: LiveAgent["status"]) => {
     setLive([lane("p1", "/lead", "s1", lead), lane("p2", "/crew", "s2", crew)]);
     return world.state().teams[0]!.status;
   };
   setLive([lane("p1", "/lead", "s1"), lane("p2", "/crew", "s2")]);
-  seat(world, "dispatch", ["/lead", "/crew"]);
+  await seat(world, ["/lead", "/crew"]);
   assert.equal(statusWith("working", "blocked"), "working", "the lead handles a stuck crew member");
   assert.equal(statusWith("blocked", "working"), "blocked");
   assert.equal(statusWith("idle", "blocked"), "blocked", "nobody left working");
@@ -140,10 +251,10 @@ test("a team is blocked when its lead is stuck, or when someone is and nobody el
   assert.equal(world.state().teams[0]!.status, "offline");
 });
 
-test("a lead waiting on your answer in the inbox blocks the team", () => {
+test("a lead waiting on your answer in the inbox blocks the team", async () => {
   const { inbox, world, setLive } = setup();
   setLive([lane("p1", "/lead", "s1", "working"), lane("p2", "/crew", "s2", "working")]);
-  seat(world, "dispatch", ["/lead", "/crew"]);
+  await seat(world, ["/lead", "/crew"]);
   inbox.submit({ session: { harness: "pi", sessionId: "s1" }, item: { type: "decide", title: "Which way?", options: ["A", "B"], blocking: true } });
   const { teams, agents } = world.state();
   assert.equal(teams[0]!.status, "blocked");
@@ -153,7 +264,7 @@ test("a lead waiting on your answer in the inbox blocks the team", () => {
 test("a team is announced once when it becomes blocked, and not for how things stood at start", async () => {
   const { world, notices, setLive } = setup();
   setLive([lane("p1", "/lead", "s1", "blocked")]);
-  seat(world, "dispatch", ["/lead"]);
+  await seat(world, ["/lead"]);
   await world.react();
   assert.deepEqual(notices, [], "already blocked when the service started");
   setLive([lane("p1", "/lead", "s1", "working")]);
@@ -164,10 +275,10 @@ test("a team is announced once when it becomes blocked, and not for how things s
   assert.deepEqual(notices, ["Mission Control is blocked"]);
 });
 
-test("an instruction to a lead-and-crew team goes to the lead once it is free, with its crew named", async () => {
+test("an instruction goes to the team's lead once it is free, with its crew named", async () => {
   const { world, prompts, setLive } = setup();
   setLive([lane("p1", "/lead", "s1", "working"), lane("p2", "/crew", "s2", "idle")]);
-  const { team, agents } = seat(world, "dispatch", ["/lead", "/crew"]);
+  const { team, agents } = await seat(world, ["/lead", "/crew"]);
   const order = world.messages.instruct(team.id, { text: "Ship the login page", clientId: "c1" });
   assert.deepEqual(order.deliveries.map((d) => [d.agentId, d.state]), [[agents[0]!.id, "queued"]]);
   await world.react();
@@ -183,42 +294,44 @@ test("an instruction to a lead-and-crew team goes to the lead once it is free, w
   assert.equal(world.messages.instruct(team.id, { text: "Ship the login page", clientId: "c1" }).id, order.id, "a retried request is the same order");
 });
 
-test("peers each hear an instruction, one order at a time, and a failed delivery can be retried", async () => {
+test("a lead speaking to its own team is heard by its crew, one message at a time, and a failed delivery can be retried", async () => {
   const { world, prompts, setLive, refuse } = setup();
-  setLive([lane("p1", "/a", "s1"), lane("p2", "/b", "s2")]);
-  const { team, agents } = seat(world, "circle", ["/a", "/b"]);
+  setLive([lane("p1", "/lead", "s1"), lane("p2", "/a", "s2"), lane("p3", "/b", "s3")]);
+  const { agents } = await seat(world, ["/lead", "/a", "/b"]);
+  const lead = agents[0]!;
   refuse("agent_blocked");
-  const first = world.messages.instruct(team.id, { text: "first" });
-  world.messages.instruct(team.id, { text: "second" });
+  const first = world.messages.say(lead, { to: "Mission Control", text: "first" });
+  world.messages.say(lead, { to: "Mission Control", text: "second" });
   await world.react();
   const failed = world.state().messages.find((m) => m.id === first.id)!;
   assert.deepEqual(failed.deliveries.map((d) => [d.state, d.error]), [["failed", "agent_blocked"], ["failed", "agent_blocked"]]);
   refuse(null);
   await world.react();
-  assert.deepEqual(prompts.map((p) => body(p.text)), ["second", "second"], "a failed order does not hold up the next");
-  world.messages.retry(first.id, agents[0]!.id);
+  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]).sort(), [["p2", "second"], ["p3", "second"]], "a failed message does not hold up the next");
+  world.messages.retry(first.id, agents[1]!.id);
   await world.react();
-  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]).at(-1), ["p1", "first"]);
-  assert.throws(() => world.messages.retry(first.id, agents[0]!.id), /only a failed delivery/);
+  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]).at(-1), ["p2", "first"]);
+  assert.throws(() => world.messages.retry(first.id, agents[1]!.id), /only a failed delivery/);
 });
 
-test("an instruction needs someone to hear it", () => {
+test("an instruction needs someone to hear it", async () => {
   const { world, setLive } = setup();
   setLive([lane("p1", "/crew", "s1")]);
-  const team = world.createTeam({ name: "Crew", structure: "dispatch" });
+  const team = await world.createTeam({ name: "Crew", standing: true });
+  assert.throws(() => world.messages.instruct(team.id, { text: "go" }), /nobody is on Crew yet/);
   world.updateAgent(world.state().agents[0]!.id, { teamId: team.id });
-  assert.throws(() => world.messages.instruct(team.id, { text: "go" }), /no lead/);
+  assert.equal(world.messages.instruct(team.id, { text: "go" }).deliveries.length, 1, "whoever is on it leads it");
   assert.throws(() => world.messages.instruct(team.id, { text: " " }), /needs some text/);
 });
 
-test("an agent hears its orders in the order they were given, even while another peer is still being told", async () => {
+test("an agent hears its messages in the order they were sent, even while another is still busy", async () => {
   const { world, prompts, setLive } = setup();
-  setLive([lane("p1", "/a", "s1", "working"), lane("p2", "/b", "s2", "idle")]);
-  const { team } = seat(world, "circle", ["/a", "/b"]);
-  world.messages.instruct(team.id, { text: "first" });
-  world.messages.instruct(team.id, { text: "second" });
+  setLive([lane("p0", "/lead", "s0"), lane("p1", "/a", "s1", "working"), lane("p2", "/b", "s2", "idle")]);
+  const { agents } = await seat(world, ["/lead", "/a", "/b"]);
+  world.messages.say(agents[0]!, { to: "Mission Control", text: "first" });
+  world.messages.say(agents[0]!, { to: "Mission Control", text: "second" });
   await world.react();
-  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]), [["p2", "first"]], "p1 is busy; p2 gets only the first order");
+  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]), [["p2", "first"]], "p1 is busy; p2 gets only the first");
   await world.react();
   assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]).at(-1), ["p2", "second"]);
   assert.equal(prompts.filter((p) => p.pane === "p1").length, 0);
@@ -227,7 +340,7 @@ test("an agent hears its orders in the order they were given, even while another
 test("agents talk to each other by name, and a team hears it through its lead", async () => {
   const { world, prompts, setLive } = setup();
   setLive([lane("p1", "/lead", "s1"), lane("p2", "/crew", "s2"), lane("p3", "/other", "s3")]);
-  const { agents } = seat(world, "dispatch", ["/lead", "/crew"]);
+  const { agents } = await seat(world, ["/lead", "/crew"]);
   const other = world.state().agents.find((a) => a.cwd === "/other")!;
   const crew = world.resolve({ harness: "pi", sessionId: "s2" });
   assert.equal(crew.id, agents[1]!.id, "a session is found through herdr");
@@ -246,9 +359,9 @@ test("agents talk to each other by name, and a team hears it through its lead", 
 test("finished work goes to the team a team hands to, and the verdict comes back to whoever handed it over", async () => {
   const { world, prompts, setLive } = setup();
   setLive([lane("p1", "/dev", "s1"), lane("p2", "/qa1", "s2"), lane("p3", "/qa2", "s3")]);
-  const qa = seat(world, "circle", ["/qa1", "/qa2"]).team;
+  const qa = (await seat(world, ["/qa1", "/qa2"])).team;
   world.updateTeam(qa.id, { name: "QA", purpose: "Review every handoff for correctness and tests" });
-  const dev = world.createTeam({ name: "Dev", structure: "circle", handsTo: qa.id });
+  const dev = await world.createTeam({ name: "Dev", standing: true, handsTo: qa.id });
   const coder = world.state().agents.find((a) => a.cwd === "/dev")!;
   world.updateAgent(coder.id, { teamId: dev.id });
   const me = world.resolve({ harness: "pi", sessionId: "s1" });
@@ -256,7 +369,7 @@ test("finished work goes to the team a team hands to, and the verdict comes back
   const { work } = world.messages.handoff(me, { title: "Login page", summary: "Done in src/login.ts; run npm test" });
   assert.equal(work.toTeamId, qa.id);
   await world.react();
-  assert.deepEqual(prompts.map((p) => p.pane).sort(), ["p2", "p3"], "every QA peer hears it");
+  assert.deepEqual(prompts.map((p) => p.pane), ["p2"], "QA's lead hears it");
   assert.match(prompts[0]!.text, new RegExp(`inbox review ${work.id} accept`));
   assert.match(prompts[0]!.text, /Review every handoff for correctness/);
 
@@ -272,27 +385,27 @@ test("finished work goes to the team a team hands to, and the verdict comes back
   const again = world.messages.handoff(me, { work: work.id, summary: "Empty passwords are refused now" }).work;
   assert.deepEqual([again.state, again.round, again.notes], ["in_review", 2, ""]);
   assert.throws(() => world.messages.handoff(me, { work: work.id, summary: "again" }), /still under review/);
-  assert.throws(() => world.deleteTeam(qa.id), /under review/);
+  await assert.rejects(world.deleteTeam(qa.id), /under review/);
   world.messages.review(reviewer, { work: work.id, verdict: "accept" });
   assert.equal(world.state().work[0]!.state, "accepted");
   assert.match(world.brief({ harness: "pi", sessionId: "s1" }).text, /Your handoff .* accepted/);
   assert.throws(() => world.messages.handoff(me, { title: "x", summary: "y", to: "Nowhere" }), /no team called/);
 });
 
-test("a handoff needs somewhere to go", () => {
+test("a handoff needs somewhere to go", async () => {
   const { world, setLive } = setup();
   setLive([lane("p1", "/dev", "s1")]);
   const me = world.state().agents[0]!;
   assert.throws(() => world.messages.handoff(me, { title: "Login", summary: "done" }), /does not hand its work to anyone/);
-  const team = world.createTeam({ name: "Dev" });
+  const team = await world.createTeam({ name: "Dev", standing: true });
   world.updateAgent(me.id, { teamId: team.id });
   assert.throws(() => world.messages.handoff(world.agent(me.id), { title: "Login", summary: "done", to: "dev" }), /not your own/);
 });
 
-test("inbox team tells an agent its team, its part and how to reach the others", () => {
+test("inbox team tells an agent its team, its part and how to reach the others", async () => {
   const { world, setLive } = setup();
   setLive([lane("p1", "/lead", "s1"), lane("p2", "/crew", "s2", "working")]);
-  const { team, agents } = seat(world, "dispatch", ["/lead", "/crew"]);
+  const { team, agents } = await seat(world, ["/lead", "/crew"]);
   world.updateTeam(team.id, { purpose: "Fix founder comments in the lessons" });
   const text = world.brief({ paneId: "p2" }).text;
   assert.match(text, new RegExp(`You are ${agents[1]!.name}`));
@@ -310,11 +423,26 @@ test("an agent that keeps sending messages is stopped for the hour", () => {
   assert.throws(() => world.messages.say(a!, { to: b!.name, text: "one more" }), /in the last hour/);
 });
 
-test("team names are unique, since agents address teams by name", () => {
+test("inbox team tells a first mate how to run its crew, and its crew to report to it", () => {
+  const { atoms } = repository();
+  const { world, setLive } = setup();
+  setLive([lane("p1", atoms, "s1")]);
+  world.state();
+  setLive([lane("p1", atoms, "s1"), { ...lane("p2", atoms, "s2"), name: "tests" }]);
+  const [mate, crew] = ["p1", "p2"].map((p) => world.state().agents.find((a) => a.paneId === p)!);
+  const told = world.brief({ paneId: "p1" }).text;
+  assert.match(told, new RegExp(`Project: Atoms light, in the worktree ${atoms}`));
+  assert.match(told, new RegExp(`Your office name is ${mate!.name}. You are the project's first mate`));
+  assert.match(told, /--model sonnet/);
+  assert.match(world.brief({ paneId: "p2" }).text, new RegExp(`${mate!.name} is its first mate: .*inbox say ${mate!.name}`));
+  assert.equal(crew!.role, "member");
+});
+
+test("team names are unique, since agents address teams by name", async () => {
   const { world } = setup();
-  world.createTeam({ name: "QA" });
-  assert.throws(() => world.createTeam({ name: "qa" }), /already a team called/);
-  const other = world.createTeam({ name: "Dev" });
+  await world.createTeam({ name: "QA", standing: true });
+  await assert.rejects(world.createTeam({ name: "qa", standing: true }), /already a project or team called/);
+  const other = await world.createTeam({ name: "Dev", standing: true });
   assert.throws(() => world.updateTeam(other.id, { handsTo: other.id }), /itself/);
 });
 

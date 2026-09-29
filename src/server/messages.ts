@@ -50,10 +50,7 @@ export class Messages {
     return rows.map(toWork);
   }
 
-  /**
-   * Your instruction to a team. A lead-and-crew team hears it through its lead, who divides the
-   * work; peers each hear it. Retrying with the same client id returns the first message.
-   */
+  /** Your instruction to a team, heard by its lead. Retrying with the same client id returns the first message. */
   instruct(teamId: string, input: { text?: string; clientId?: string }): Message {
     const repeat = this.byClientId(input.clientId);
     if (repeat) return repeat;
@@ -249,20 +246,17 @@ function teamOf(state: WorldState, id: string): Team {
 }
 
 /**
- * Who hears something said to a team. A lead-and-crew team hears it through its lead (or, when
- * the lead is the one speaking, its crew). Peers each hear it: the running ones, or all of them
- * when nobody is running, so it waits for whoever comes back first.
+ * Who hears something said to a team: its lead, who divides the work, or, when the lead is the
+ * one speaking, its crew (the running ones, or all of them when none is running).
  */
 export function recipients(state: WorldState, team: Team, speaker: string | null): string[] {
   const members = state.agents.filter((a) => a.teamId === team.id && a.id !== speaker);
   const lead = members.find((a) => a.role === "lead");
-  if (team.structure === "dispatch" && lead) return [lead.id];
-  if (team.structure === "dispatch" && !state.agents.some((a) => a.id === speaker && a.teamId === team.id && a.role === "lead")) {
-    throw new InboxError(409, `${team.name} has no lead to hand it to`);
-  }
+  if (lead) return [lead.id];
+  if (!state.agents.some((a) => a.id === speaker && a.teamId === team.id)) throw new InboxError(409, `nobody is on ${team.name} yet`);
   const running = members.filter((a) => a.paneId);
   const out = (running.length ? running : members).map((a) => a.id);
-  if (!out.length) throw new InboxError(409, `nobody is in ${team.name}`);
+  if (!out.length) throw new InboxError(409, `${team.name} has no crew yet: start some in herdr (\`inbox team\` shows how)`);
   return out;
 }
 
@@ -274,17 +268,17 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
   const who = (a: WorldAgent | null | undefined) => (a ? `${a.name}${a.teamId && teams.get(a.teamId) ? ` of ${teams.get(a.teamId)!.name}` : ""}` : "someone");
   const team = message.teamId ? teams.get(message.teamId) ?? null : null;
   const ownTeam = agent.teamId ? teams.get(agent.teamId) ?? null : null;
-  const purpose = ownTeam?.purpose ? ` Your team's purpose: ${ownTeam.purpose}` : "";
-  const footer = "(From the office. `inbox team` shows your team and who else is here.)";
+  const purpose = ownTeam?.purpose ? ` The project: ${ownTeam.purpose}` : "";
+  const footer = "(From the office. `inbox team` shows your project and who else is here.)";
 
   switch (message.kind) {
     case "instruction": {
       const others = state.agents.filter((a) => a.teamId === team?.id && a.id !== agent.id);
-      const named = (list: WorldAgent[]) => list.map((a) => `${a.name}${a.cwd ? ` (${a.cwd})` : ""}`).join(", ");
-      const part = team?.structure === "dispatch"
-        ? `You lead ${team.name}. Divide this among your crew${others.length ? ` (${named(others)})` : ""} and keep them moving.`
-        : `You are one of the peers in ${team?.name ?? "your team"}${others.length ? `, with ${named(others)}` : ""}. Settle between you who does what.`;
-      return `[From the founder to the team ${team?.name ?? ""}] ${part}${purpose} Ask in the review inbox if you need a decision.\n\n${message.text}\n\n${footer}`;
+      const named = others.map((a) => `${a.name}${a.cwd ? ` (${a.cwd})` : ""}`).join(", ");
+      const part = team?.standing
+        ? `You lead ${team.name}. Divide this among your crew${named ? ` (${named})` : ""} and keep them moving.`
+        : `You are the first mate of ${team?.name ?? "the project"}: plan this, give it to your crew${named ? ` (${named})` : ""} or start more in herdr (\`inbox team\` shows how), supervise them, and report the outcome.`;
+      return `[From the founder to ${team?.name ?? ""}] ${part}${purpose} Ask in the review inbox if you need a decision.\n\n${message.text}\n\n${footer}`;
     }
     case "message": {
       const to = team ? ` to ${team.name}` : "";
@@ -294,9 +288,9 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
       const id = work?.id ?? message.workId ?? "";
       const round = work && work.round > 1 ? ` (round ${work.round}, after changes)` : "";
       const others = state.agents.filter((a) => a.teamId === team?.id && a.id !== agent.id).map((a) => a.name);
-      const part = team?.structure === "dispatch" && agent.role === "lead"
-        ? `You lead ${team.name}: have it reviewed${others.length ? ` by your crew (${others.join(", ")})` : ""}, then give the verdict.`
-        : `Settle with ${others.length ? others.join(", ") : "your team"} who reviews it; one of you gives the verdict.`;
+      const part = agent.role === "lead"
+        ? `You lead ${team?.name ?? "your team"}: have it reviewed${others.length ? ` by your crew (${others.join(", ")})` : ""} or review it yourself, then give the verdict.`
+        : `Review it with ${others.length ? others.join(", ") : "your team"}; one of you gives the verdict.`;
       return `[Handoff to ${team?.name ?? "your team"} from ${who(from)}] Work ${id}${round}: "${work?.title ?? ""}"\n\n${message.text}\n\n${part}${purpose}\nVerdict: inbox review ${id} accept --notes "…"   or   inbox review ${id} changes --notes "what must change"\n${footer}`;
     }
     case "review": {

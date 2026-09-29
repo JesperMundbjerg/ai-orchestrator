@@ -25,9 +25,9 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox withdraw KEY | inbox resolve KEY
   inbox hook claude               Claude Code hook (Stop / UserPromptSubmit / SessionStart)
 
-  The office (teams of agents):
-  inbox team                      who you are, your team, your part in it, what waits for you
-  inbox say NAME "text"           message an agent or a team by name; it arrives when they are free
+  The office (a project per worktree, run by its first mate; standing teams like Mission Control):
+  inbox team                      who you are, your project, your part in it, what waits for you
+  inbox say NAME "text"           message an agent, project or team by name; it arrives when they are free
   inbox handoff "Title" --summary "what was done, where, how to check it" [--to TEAM]
   inbox handoff --work ID --summary "what changed"      hand it over again after changes
   inbox review ID accept|changes --notes "…"            your team's verdict on work handed to it

@@ -3,14 +3,14 @@ import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import type { AgentScreen, InboxState, ItemDetail, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ItemDetailView } from "../components/ItemDetail.tsx";
-import { TeamForm } from "../components/TeamForm.tsx";
+import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
 import type { OfficePlan, Vec2 } from "./layout.ts";
 import { MessageRow, teamMessages, teamWork, TellTeam, WorkRow } from "./Talk.tsx";
 import { LAMP, TEAM_LAMP, teamLine } from "./status.ts";
 import type { Waiting } from "./WorldView.tsx";
 
-/** The team list: where each team stands, open one, found a team, rename or disband one. */
+/** The project list: where each stands, open one, start a project, change or finish one. */
 export function TeamsPanel({ world, plan, agents, onOpen }: {
   world: WorldState;
   plan: OfficePlan;
@@ -20,22 +20,25 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   const lounge = world.agents.filter((a) => !a.teamId).length;
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
 
   return (
     <aside className="world-panel teams">
       <div className="panel-head">
-        <strong>Teams</strong>
-        <button className="ghost small" onClick={() => setAdding(!adding)}>{adding ? "Cancel" : "+ New team"}</button>
+        <strong>Projects</strong>
+        <button className="ghost small" onClick={() => setAdding(!adding)}>{adding ? "Cancel" : "+ New project"}</button>
       </div>
       {adding ? (
         <TeamForm
-          submit="Create team"
+          submit="Start"
           teams={world.teams}
+          repositories={world.repositories}
           onSubmit={(fields) => run(api.createTeam(fields).then(() => setAdding(false)))}
         />
       ) : null}
+      {note ? <div className="board-note small-note">{note}<button className="ghost small" onClick={() => setNote(null)}>OK</button></div> : null}
       <ul className="team-list">
         {plan.corners.map(({ team, center }) => {
           const live = world.teams.find((t) => t.id === team.id)!;
@@ -46,15 +49,12 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
                 <TeamForm
                   initial={team}
                   teams={world.teams}
+                  repositories={world.repositories}
                   submit="Save"
                   onSubmit={(fields) => run(api.updateTeam(team.id, fields).then(() => setEditing(null)))}
                   extra={
-                    <button
-                      type="button"
-                      className="ghost small danger"
-                      onClick={() => confirm(`Disband ${team.name}? Its members go back to the lounge.`) && run(api.deleteTeam(team.id))}
-                    >
-                      Disband
+                    <button type="button" className="ghost small danger" onClick={() => void run(finishTeam(live).then((said) => said && (setNote(said), setEditing(null))))}>
+                      {team.standing ? "Disband" : "Finish project"}
                     </button>
                   }
                 />
@@ -65,7 +65,7 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
                       <span className="lamp" style={{ background: TEAM_LAMP[live.status].color }} /> {team.name}
                     </span>
                     <span className={live.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
-                    {live.projects.length ? <span className="muted small-note">{live.projects.join(" · ")}</span> : null}
+                    <span className="muted small-note">{team.standing ? "Always on" : team.branch}</span>
                   </button>
                   <button className="ghost small" onClick={() => setEditing(team.id)} aria-label={`Edit ${team.name}`}>Edit</button>
                 </div>
@@ -73,9 +73,9 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
             </li>
           );
         })}
-        {!plan.corners.length ? <li className="muted">No teams yet. Create one, then click an agent to seat them in it.</li> : null}
+        {!plan.corners.length ? <li className="muted">No projects yet. Start one, or start an agent in a worktree.</li> : null}
       </ul>
-      <div className="muted small-note">{lounge} in the lounge. Click someone to move them into a team.</div>
+      <div className="muted small-note">{lounge} in the lounge, not working in a project's worktree. Click someone to move them.</div>
       {error ? <div className="warn">{error}</div> : null}
     </aside>
   );
@@ -110,7 +110,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
       <div className="agent-status">
         <span className="lamp" style={{ background: TEAM_LAMP[team.status].color }} />
         <span className={team.status === "blocked" ? "team-blocked" : ""}>{line.text}</span>
-        <span className="muted"> · {team.structure === "dispatch" ? "lead + crew" : "peers"}{team.projects.length ? ` · ${team.projects.join(", ")}` : ""}</span>
+        <span className="muted" title={team.path ?? undefined}> · {team.standing ? "always on" : `worktree on ${team.branch ?? "an unknown branch"}`}</span>
       </div>
 
       {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}
@@ -140,12 +140,12 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
             <li key={m.id}>
               <button className="member" onClick={() => onAgent(m.id)}>
                 <span className="lamp" style={{ background: LAMP[m.status].color }} title={LAMP[m.status].label} />
-                <span className="member-name">{m.name}{m.role === "lead" ? <span className="muted"> · lead</span> : null}</span>
+                <span className="member-name">{m.name}{m.role === "lead" ? <span className="muted"> · {leadTitle(team).toLowerCase()}</span> : null}</span>
                 <span className="muted member-doing">{doing(m) || LAMP[m.status].label}{m.helpers.length ? ` · ${m.helpers.length} ${m.helpers.length === 1 ? "helper" : "helpers"}` : ""}</span>
               </button>
             </li>
           ))}
-          {!members.length ? <li className="muted small-note">Nobody yet. Click an agent and pick this team.</li> : null}
+          {!members.length ? <li className="muted small-note">Nobody yet. Start an agent in its worktree, or click an agent and pick this project.</li> : null}
         </ul>
       </div>
 
@@ -243,20 +243,17 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
 
       <div className="agent-seat">
         <label>
-          <span>Team</span>
+          <span>Project</span>
           <select value={agent.teamId ?? ""} onChange={(e) => void run(api.updateAgent(agent.id, { teamId: e.target.value || null }))}>
-            <option value="">Lounge (no team)</option>
+            <option value="">Its own worktree's project, or the lounge</option>
             {world.teams.map((t) => (
               <option key={t.id} value={t.id}>{t.name}</option>
             ))}
           </select>
         </label>
-        {team?.structure === "dispatch" ? (
-          <label className="radio">
-            <input type="checkbox" checked={agent.role === "lead"} onChange={(e) => void run(api.updateAgent(agent.id, { role: e.target.checked ? "lead" : "member" }))} />
-            Lead of {team.name}
-          </label>
-        ) : null}
+        {team && agent.role !== "lead" ? (
+          <button className="ghost small" onClick={() => void run(api.updateAgent(agent.id, { role: "lead" }))}>Make {agent.name} the {leadTitle(team).toLowerCase()}</button>
+        ) : team ? <span className="muted small-note">{leadTitle(team)} of {team.name}</span> : null}
       </div>
 
       <div className="row">

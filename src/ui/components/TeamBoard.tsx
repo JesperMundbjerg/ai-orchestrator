@@ -3,30 +3,36 @@ import type { InboxState, WorldAgent, WorldState, WorldTeam } from "../../shared
 import { api } from "../api.ts";
 import { LAMP, TEAM_LAMP, teamLine } from "../world/status.ts";
 import { MessageRow, TellTeam, WorkRow } from "../world/Talk.tsx";
-import { TeamForm } from "./TeamForm.tsx";
+import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
 
 const LOUNGE = "lounge";
 
 /**
- * Teams at a glance, without walking the office: a column per team with where it stands and
- * who is in it (drag people between columns), the work flowing between teams and what was said.
+ * Projects at a glance, without walking the office: a column per project (and standing team)
+ * with where it stands and who is on it (drag people between columns), the work flowing between
+ * them and what was said. Starting a project makes its worktree; finishing one removes it.
  */
 export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: number; onOffice: () => void }) {
   const [world, setWorld] = useState<WorldState | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  /** What went wrong with the last thing you did; kept until you do something else, not cleared by the next refresh. */
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [over, setOver] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
 
   useEffect(() => {
     let live = true;
-    api.world().then((w) => live && (setWorld(w), setError(null)), (e: Error) => live && setError(e.message));
+    api.world().then((w) => live && (setWorld(w), setLoadError(null)), (e: Error) => live && setLoadError(e.message));
     return () => void (live = false);
   }, [tick]);
 
   const agents = useMemo(() => new Map((world?.agents ?? []).map((a) => [a.id, a])), [world]);
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
+  const finish = (team: WorldTeam) => run(finishTeam(team).then((said) => said && setNote(said)));
 
-  if (!world) return <main className="board">{error ? <p className="warn">The office did not answer ({error}).</p> : <p className="muted pad">Loading…</p>}</main>;
+  if (!world) return <main className="board">{loadError ? <p className="warn">The office did not answer ({loadError}).</p> : <p className="muted pad">Loading…</p>}</main>;
 
   const drop = (column: string) => (e: DragEvent) => {
     e.preventDefault();
@@ -46,28 +52,38 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
     <main className="board team-board">
       <header className="board-head row">
         <div>
-          <h1>Teams</h1>
-          <p className="muted">Drag people between teams. Your instructions go to a team's lead, or to every peer; finished work flows to the team it hands to.</p>
+          <h1>Projects</h1>
+          <p className="muted">A project is a worktree: everyone working in it is on it, and its first mate runs the crew. Your instructions go to the first mate; finished work flows to the team it hands to.</p>
         </div>
         <span className="spacer" />
         <button className="ghost small" onClick={onOffice}>Walk into the office →</button>
-        <button className="primary small" onClick={() => setAdding(!adding)}>{adding ? "Cancel" : "+ New team"}</button>
+        <button className="primary small" onClick={() => setAdding(!adding)}>{adding ? "Cancel" : "+ New project"}</button>
       </header>
-      {error ? <p className="warn">{error}</p> : null}
+      {error || loadError ? <p className="warn">{error ?? `The office did not answer (${loadError}).`}</p> : null}
+      {note ? <p className="board-note">{note} <button className="ghost small" onClick={() => setNote(null)}>OK</button></p> : null}
       {adding ? (
         <div className="team-column new">
-          <TeamForm teams={world.teams} submit="Create team" onSubmit={(fields) => run(api.createTeam(fields).then(() => setAdding(false)))} />
+          <TeamForm
+            teams={world.teams}
+            repositories={world.repositories}
+            submit={starting ? "Starting…" : "Start"}
+            onSubmit={(fields) => {
+              setStarting(true);
+              void run(api.createTeam(fields).then(() => setAdding(false))).finally(() => setStarting(false));
+            }}
+          />
+          {starting ? <p className="muted small-note">Making the worktree and starting its first mate…</p> : null}
         </div>
       ) : null}
 
       <div className="team-columns">
         {world.teams.map((t) => (
-          <TeamColumn key={t.id} team={t} world={world} agents={agents} state={state} over={over === t.id} target={target(t.id)} run={run} />
+          <TeamColumn key={t.id} team={t} world={world} agents={agents} state={state} over={over === t.id} target={target(t.id)} run={run} onFinish={() => finish(t)} />
         ))}
         <section className={`team-column lounge ${over === LOUNGE ? "over" : ""}`} {...target(LOUNGE)}>
           <div className="team-column-head">
             <strong>Lounge</strong>
-            <span className="muted small-note">Not in a team · {lounge.length}</span>
+            <span className="muted small-note">Not on a project · {lounge.length}</span>
           </div>
           <ul className="member-list">
             {lounge.map((a) => <MemberCard key={a.id} agent={a} team={null} state={state} run={run} />)}
@@ -95,7 +111,7 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
   );
 }
 
-function TeamColumn({ team, world, agents, state, over, target, run }: {
+function TeamColumn({ team, world, agents, state, over, target, run, onFinish }: {
   team: WorldTeam;
   world: WorldState;
   agents: Map<string, WorldAgent>;
@@ -103,6 +119,7 @@ function TeamColumn({ team, world, agents, state, over, target, run }: {
   over: boolean;
   target: Record<string, (e: DragEvent) => void>;
   run: (p: Promise<unknown>) => void;
+  onFinish: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const members = world.agents.filter((a) => a.teamId === team.id).sort((a, b) => Number(b.role === "lead") - Number(a.role === "lead"));
@@ -115,12 +132,13 @@ function TeamColumn({ team, world, agents, state, over, target, run }: {
         <TeamForm
           initial={team}
           teams={world.teams}
+          repositories={world.repositories}
           submit="Save"
           onSubmit={(fields) => run(api.updateTeam(team.id, fields).then(() => setEditing(false)))}
           extra={
             <>
               <button type="button" className="ghost small" onClick={() => setEditing(false)}>Cancel</button>
-              <button type="button" className="ghost small danger" onClick={() => confirm(`Disband ${team.name}? Its members go back to the lounge.`) && run(api.deleteTeam(team.id))}>Disband</button>
+              <button type="button" className="ghost small danger" onClick={onFinish}>{team.standing ? "Disband" : "Finish project"}</button>
             </>
           }
         />
@@ -133,7 +151,7 @@ function TeamColumn({ team, world, agents, state, over, target, run }: {
             <button className="ghost small" onClick={() => setEditing(true)}>Edit</button>
           </div>
           <span className={team.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
-          <span className="muted small-note">{team.structure === "dispatch" ? "Lead + crew" : "Peers"}{team.projects.length ? ` · ${team.projects.join(", ")}` : ""}</span>
+          <span className="muted small-note" title={team.path ?? undefined}>{team.standing ? "Always on" : `Worktree on ${team.branch ?? "an unknown branch"}`}</span>
           {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}
           {handsTo || toReview ? (
             <div className="team-flow">
@@ -145,7 +163,7 @@ function TeamColumn({ team, world, agents, state, over, target, run }: {
       )}
       <ul className="member-list">
         {members.map((a) => <MemberCard key={a.id} agent={a} team={team} state={state} run={run} />)}
-        {!members.length ? <li className="muted small-note drop-hint">Drag someone here.</li> : null}
+        {!members.length ? <li className="muted small-note drop-hint">{team.standing ? "Drag someone here." : "Nobody working in it. Drag someone here, or start an agent in its worktree."}</li> : null}
       </ul>
       <TellTeam team={team} members={members} />
     </section>
@@ -161,15 +179,13 @@ function MemberCard({ agent, team, state, run }: { agent: WorldAgent; team: Worl
         {agent.name}
         {agent.waitingOnYou ? <span className="type decide"> waits for you</span> : null}
       </span>
-      {team?.structure === "dispatch" ? (
-        <button
-          className={`ghost small lead-toggle ${agent.role === "lead" ? "on" : ""}`}
-          title={agent.role === "lead" ? "Leads the team: hears your instructions" : "Make this agent the lead"}
-          onClick={() => run(api.updateAgent(agent.id, { role: agent.role === "lead" ? "member" : "lead" }))}
-        >
-          {agent.role === "lead" ? "Lead" : "Make lead"}
+      {!team ? <span /> : agent.role === "lead" ? (
+        <span className="lead-toggle on" title="Hears your instructions and runs the others">{leadTitle(team)}</span>
+      ) : (
+        <button className="ghost small lead-toggle" title={`Make ${agent.name} the ${leadTitle(team).toLowerCase()}`} onClick={() => run(api.updateAgent(agent.id, { role: "lead" }))}>
+          Make {leadTitle(team).toLowerCase()}
         </button>
-      ) : <span />}
+      )}
       <span className="muted member-doing">
         {doing}
         {agent.helpers.length ? ` · ${agent.helpers.length} ${agent.helpers.length === 1 ? "helper" : "helpers"}` : ""}
