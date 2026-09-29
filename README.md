@@ -45,7 +45,7 @@ For UI work, `npm run dev` starts the service with `--watch` and the Vite UI on 
 
 **Projects** in the sidebar (`/#/teams`) is the same without walking: a column per project and standing team with its status, branch, purpose and members. Start and finish projects, drag people between columns (or to the lounge), pick the lead, tell a project what to do, and follow the work handed over and what was said.
 
-WASD or the arrow keys walk, Shift runs, dragging pulls the view round (drag right to turn left), and scrolling, pinching or + and − zoom.
+WASD or the arrow keys walk, Shift runs, dragging turns the view with the pointer (drag right to turn right, up to look up), and scrolling, pinching or + and − zoom.
 
 The service talks to the herdr session it was started in (`HERDR_SOCKET_PATH`), or herdr's default session when started outside herdr. Start it from a pane in the session your agents run in.
 

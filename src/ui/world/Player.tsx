@@ -37,11 +37,11 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
     const move = (e: PointerEvent) => {
       if (!drag || !(e.buttons & 1)) return;
       const v = view.current;
-      // Grab the office and pull it: drag right to turn left, drag up to look down. Zoomed
-      // in, the same drag turns less, so what is under the pointer keeps up with it.
+      // The view follows the pointer, as in a first-person game: drag right to turn right, drag
+      // up to look up. Zoomed in, the same drag turns less, so what is under the pointer keeps up.
       const gain = v.fov / FOV;
-      v.yaw -= (e.clientX - drag.x) * 0.004 * gain;
-      v.pitch = Math.max(-1.2, Math.min(1.0, v.pitch + (e.clientY - drag.y) * 0.003 * gain));
+      v.yaw += (e.clientX - drag.x) * 0.004 * gain;
+      v.pitch = Math.max(-1.2, Math.min(1.0, v.pitch - (e.clientY - drag.y) * 0.003 * gain));
       drag = { x: e.clientX, y: e.clientY };
       flight.current = null;
     };
