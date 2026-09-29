@@ -170,7 +170,9 @@ test("starting a project makes its worktree beside the repository and starts a f
   assert.match(brief, /first mate/);
   assert.match(brief, /You do not write the code yourself/);
   assert.match(brief, /herdr agent start <name> --kind claude --pane <pane id> -- --model sonnet/);
-  assert.match(brief, /--model opus --effort medium for work that needs deep thinking/);
+  assert.match(brief, /--model opus --effort medium` for work that needs deep thinking/);
+  assert.match(brief, /start it inside Pi: `herdr agent start <name> --kind pi --pane <pane id> -- --model openai-codex\/gpt-6-astra`/);
+  assert.match(brief, /never use --kind codex or any other kind/);
   assert.match(brief, /hand it to QA for review/);
   assert.ok(!lead!.args.some((a) => a.startsWith("Start on the project")), "started with its brief only, so herdr sees it ready");
   assert.deepEqual(prompts, [{ pane: "w2:p1", text: "Start on the project: A live simulation on the front page" }], "then given its first task");
