@@ -293,7 +293,7 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
   const ownTeam = agent.teamId ? teams.get(agent.teamId) ?? null : null;
   const purpose = ownTeam?.purpose ? ` The project: ${ownTeam.purpose}` : "";
   const footer = "(From the office. `inbox team` shows your project and who else is here.)";
-  const answerFounder = `Answer the founder in one or two sentences: inbox say ${FOUNDER} "…". When the job is done or something new happens (a crew member finishes, say), follow up the same way. For a decision, use the review inbox (\`inbox decide\`).`;
+  const answerFounder = `Answer the founder in one or two sentences: inbox say ${FOUNDER} "…". When the job is done or something new happens (a crew member finishes, say), follow up the same way. For a decision, use the review inbox (\`inbox decide\`); to show what you changed, add the pages to step through (\`--page "Label=URL"\`, repeated).`;
 
   switch (message.kind) {
     case "instruction": {

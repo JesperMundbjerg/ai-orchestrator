@@ -1,4 +1,4 @@
-import type { InboxState, Item, ItemDetail, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
+import type { InboxState, Item, ItemDetail, PageCheck, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -18,7 +18,7 @@ export const api = {
     request<Reply>("POST", `/api/items/${itemId}/replies`, body),
   snooze: (itemId: string, until: Date) => request<Item>("POST", `/api/items/${itemId}/snooze`, { until: until.toISOString() }),
   resolve: (itemId: string) => request<Item>("POST", `/api/items/${itemId}/resolve`, {}),
-  checkPreview: (itemId: string) => request<{ reachable: boolean; status: number | null; checkedAt: string }>("GET", `/api/items/${itemId}/preview-check`),
+  checkPage: (itemId: string, index: number) => request<PageCheck>("GET", `/api/items/${itemId}/pages/${index}/check`),
   retry: (replyId: string) => request<Reply>("POST", `/api/replies/${replyId}/retry`, {}),
   updateTask: (taskId: string, patch: Partial<Task>) => request<Task>("PATCH", `/api/tasks/${taskId}`, patch),
   openConversation: (taskId: string) => request<{ ok: true }>("POST", `/api/tasks/${taskId}/open`, {}),

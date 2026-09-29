@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS items (
   options TEXT NOT NULL,
   check_text TEXT NOT NULL,
   preview TEXT,
+  pages TEXT,
   blocking INTEGER NOT NULL,
   content_hash TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('needs_attention', 'answer_queued', 'delivered', 'resolved', 'snoozed', 'withdrawn')),
@@ -207,6 +208,8 @@ function migrate(db: DatabaseSync): void {
   }
 
   if (!columns("messages").has("to_founder")) db.exec("ALTER TABLE messages ADD COLUMN to_founder INTEGER NOT NULL DEFAULT 0");
+  // An item's walkthrough of pages; before it, an item had one preview, which reads as a one-page walkthrough.
+  if (!columns("items").has("pages")) db.exec("ALTER TABLE items ADD COLUMN pages TEXT");
 
   // Team instructions were their own tables before agents could talk to each other.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'team_orders'").get()) {

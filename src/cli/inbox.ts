@@ -8,13 +8,15 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { acknowledge, call, fetchReplies, formatReply } from "../shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
+import { parsePage } from "../shared/pages.ts";
 import { projectRoot } from "../shared/project.ts";
-import type { EvidenceInput, Item, ItemType, Message, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
+import type { EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
 
   inbox decide  "The question?" --request "…" --option "Label: consequence" --option "…" --recommend "…"
   inbox try     "Title" --preview URL [--check "what to do and expect"] [--viewport phone] [--setup "…"]
+  inbox try     "Title" --page "Label=URL" [--look "what to look at"] --page … [--check "…"]
   inbox milestone "Title" [--context "what changed"] [--limitations "…"]
       common: --request "what you need"  --context "…"  --screenshot FILE (repeat)  --url URL (repeat)
               --key KEY (resubmitting a key revises that item)  --task "task name"  --nonblocking | --blocking
@@ -30,6 +32,13 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
       --option "Overlay: tutor covers the right third; slider hidden while it talks" \\
       --option "Docked: the stage narrows; everything stays visible" \\
       --recommend "Docked, because the lesson depends on the slider staying in view"
+
+  To show what you did in the app itself, line up the pages to go through in order: the founder
+  sees each one live in a frame and presses Next. --page works on decide and milestone too.
+
+    inbox try "Isotope simulation: new drag hint" \\
+      --page "Step 1=http://127.0.0.1:3000/sim/isotopes?step=1" --look "The hint pulses under the slider" \\
+      --page "Step 2=http://127.0.0.1:3000/sim/isotopes?step=2" --look "It is gone once you have dragged"
 
   Keep the title near ${SOFT_CAPS.title} characters and the request near ${SOFT_CAPS.request}; longer is accepted with a hint.
 
@@ -58,6 +67,8 @@ const OPTIONS = {
   limitations: { type: "string" },
   check: { type: "string" },
   preview: { type: "string" },
+  page: { type: "string", multiple: true },
+  look: { type: "string", multiple: true },
   viewport: { type: "string" },
   setup: { type: "string" },
   screenshot: { type: "string", multiple: true },
@@ -80,6 +91,8 @@ const OPTIONS = {
 
 type Flags = ReturnType<typeof parseArgs<{ allowPositionals: true; options: typeof OPTIONS }>>["values"];
 let flags: Flags = {};
+/** The flags in the order given, so each --look belongs to the --page before it. */
+let order: Array<{ name: string; value: string | undefined }> = [];
 
 function session(): SessionInput {
   const cwd = process.cwd();
@@ -110,7 +123,10 @@ async function submit(type: ItemType, title: string | undefined): Promise<void> 
     recommendation: flags.recommend ?? base.recommendation,
     options: flags.option ?? base.options,
     check: flags.check ?? base.check,
-    preview: flags.preview ? { url: flags.preview, viewport: (flags.viewport as "phone" | "desktop" | undefined) ?? null, setup: flags.setup ?? "" } : base.preview,
+    preview: flags.preview || ((flags.viewport || flags.setup) && flags.page)
+      ? { url: flags.preview, viewport: (flags.viewport as "phone" | "desktop" | undefined) ?? null, setup: flags.setup ?? "" }
+      : base.preview,
+    pages: flags.page ? pagesFrom(order) : base.pages,
     blocking: flags.blocking ? true : flags.nonblocking ? false : base.blocking,
     evidence,
   };
@@ -123,6 +139,20 @@ async function submit(type: ItemType, title: string | undefined): Promise<void> 
   });
   for (const hint of lengthHints(item)) console.error(`inbox: hint: ${hint}`);
   console.log(result.changed ? `Submitted "${itemTitle}" (revision ${result.revision}, item ${result.itemId}).` : `No change: "${itemTitle}" is already in the inbox as revision ${result.revision}.`);
+}
+
+/** --page "Label=URL" [--look "…"], repeated: each --look says what to look at on the page before it. */
+export function pagesFrom(given: Array<{ name: string; value: string | undefined }>): Array<Partial<Page>> {
+  const pages: Array<Partial<Page>> = [];
+  for (const { name, value } of given) {
+    if (name === "page" && value !== undefined) pages.push(parsePage(value));
+    if (name === "look") {
+      const last = pages.at(-1);
+      if (!last) throw new Error('--look says what to look at on the page before it: --page "Label=URL" --look "…"');
+      last.look = value;
+    }
+  }
+  return pages;
 }
 
 async function replies(): Promise<void> {
@@ -161,8 +191,9 @@ async function claudeHook(): Promise<void> {
 }
 
 async function main(argv: string[]): Promise<void> {
-  const parsed = parseArgs({ args: argv, allowPositionals: true, options: OPTIONS });
+  const parsed = parseArgs({ args: argv, allowPositionals: true, options: OPTIONS, tokens: true });
   flags = parsed.values;
+  order = parsed.tokens.flatMap((t) => (t.kind === "option" ? [{ name: t.name, value: t.value }] : []));
   const [command, arg] = parsed.positionals;
   if (!command || flags.help) return console.log(HELP);
   switch (command) {

@@ -61,10 +61,14 @@ inbox decide "Should the tutor cover the slider or push it aside?" \
   --option "Docked: the stage narrows; everything stays visible" \
   --recommend "Docked, because the lesson depends on the slider staying in view" --screenshot shots/open.png
 inbox try "Try the receipt import" --preview http://localhost:3000/import --check "Drop three receipts"
+inbox try "The import, step by step" --page "Upload=http://localhost:3000/import" --look "Three receipts listed" \
+  --page "Review=http://localhost:3000/import/review" --look "Totals match"
 inbox milestone "Lead scene done" --screenshot out/en.png --screenshot out/da.png
 inbox activity "Tuning the travel rules" --next "October import end to end"
 inbox replies --ack          # replies for this session, marked received
 ```
+
+To show what changed in the app itself, an agent lines up pages with `--page "Label=URL"` (each optionally followed by `--look "what to look at"`), on any kind of item. You see each page live in a frame and step through them with Next or ← →, the answer below.
 
 Write a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers (about 400 characters), the context holds only what matters for choosing, each option is "Label: consequence", and the recommendation is your pick and why. Longer text is accepted; the agent gets a hint.
 

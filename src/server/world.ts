@@ -81,7 +81,7 @@ const FIRST_MATE = [
   "Crew share this checkout, so give each one files of its own.",
   'Tell each crew member to report to you with `inbox say <your office name> "…"` when done or stuck, and not to ask the founder; their reports arrive in your terminal.',
   "Close a member's pane when its work is done: `herdr pane close <pane id>`.",
-  "Bring the founder only real decisions (`inbox decide`) and finished milestones (`inbox milestone`).",
+  "Bring the founder only real decisions (`inbox decide`) and finished milestones (`inbox milestone`); to show what changed in the app, add the pages to step through in order (`--page \"Label=URL\"`).",
   'Answer each message from the founder in one or two sentences with `inbox say founder "…"`, and follow up the same way when the job is done or something new happens, such as a crew member finishing.',
   "Ask a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers, options read \"Label: consequence\", and the recommendation gives your pick and why; `inbox --help` has an example.",
 ].join(" ");

@@ -30,3 +30,19 @@ test("team instructions from before agents could talk are kept as messages", () 
   db.close();
   openDatabase(file).close();
 });
+
+test("items from before walkthroughs gain a pages column and keep their preview", () => {
+  const file = join(mkdtempSync(join(tmpdir(), "inbox-db-")), "inbox.db");
+  const old = new DatabaseSync(file);
+  old.exec(`
+    CREATE TABLE items (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, key TEXT NOT NULL, type TEXT NOT NULL, revision INTEGER NOT NULL,
+      title TEXT NOT NULL, request TEXT NOT NULL, context TEXT NOT NULL, recommendation TEXT NOT NULL, options TEXT NOT NULL,
+      check_text TEXT NOT NULL, preview TEXT, blocking INTEGER NOT NULL, content_hash TEXT NOT NULL, state TEXT NOT NULL,
+      snoozed_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (task_id, key));
+    INSERT INTO items VALUES ('i1', 't1', 'k', 'try', 1, 'Try it', '', '', '', '[]', '', '{"url":"http://127.0.0.1:3000/","viewport":null,"setup":""}', 0, 'h', 'needs_attention', NULL, 'x', 'x');
+  `);
+  old.close();
+  const db = openDatabase(file);
+  assert.deepEqual({ ...db.prepare("SELECT preview IS NOT NULL AS preview, pages FROM items").get() }, { preview: 1, pages: null });
+  db.close();
+});

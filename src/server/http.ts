@@ -5,7 +5,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
-import type { ActivityEvent, ActivityInput, AgentModel, SessionInput, SubmitInput } from "../shared/types.ts";
+import { frameAllowed } from "../shared/pages.ts";
+import type { ActivityEvent, ActivityInput, AgentModel, PageCheck, SessionInput, SubmitInput } from "../shared/types.ts";
 import { claudeHookEvents, claudeModel } from "./activity.ts";
 import { Inbox, InboxError } from "./inbox.ts";
 import type { Herdr } from "./herdr.ts";
@@ -53,6 +54,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/items\/([\w-]+)\/snooze$/, (_r, b, [id]) => inbox.snooze(id!, b.until)],
     ["POST", /^\/api\/items\/([\w-]+)\/resolve$/, (_r, _b, [id]) => inbox.resolve(id!)],
     ["GET", /^\/api\/items\/([\w-]+)\/preview-check$/, (_r, _b, [id]) => checkPreview(inbox.item(id!).preview?.url)],
+    ["GET", /^\/api\/items\/([\w-]+)\/pages\/(\d+)\/check$/, (r, _b, [id, n]) => checkPreview(inbox.item(id!).pages[Number(n)]?.url, `http://${r.headers.host ?? "localhost"}`)],
     ["POST", /^\/api\/replies\/([\w-]+)\/retry$/, (_r, _b, [id]) => inbox.retry(id!)],
     ["PATCH", /^\/api\/tasks\/([\w-]+)$/, (_r, b, [id]) => inbox.updateTask(id!, pickTaskPatch(b))],
     ["POST", /^\/api\/tasks\/([\w-]+)\/open$/, async (_r, _b, [id]) => {
@@ -162,16 +164,21 @@ function pickTaskPatch(b: Record<string, unknown>) {
   return out;
 }
 
-/** Is the item's preview answering right now? Only the item's own http(s) URL is ever fetched. */
-async function checkPreview(url: string | undefined): Promise<{ reachable: boolean; status: number | null; checkedAt: string }> {
+/**
+ * Is the item's preview, or one of its pages, answering right now, and will it let the office
+ * frame it? Only the item's own http(s) URLs are ever fetched. `framable` is null when unknown.
+ */
+async function checkPreview(url: string | undefined, officeOrigin?: string): Promise<PageCheck> {
   const checkedAt = new Date().toISOString();
-  if (!url) throw new InboxError(404, "this item has no preview");
+  if (!url) throw new InboxError(404, "this item has no such page");
   try {
     const res = await fetch(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(4000) });
     await res.body?.cancel();
-    return { reachable: res.status < 500, status: res.status, checkedAt };
+    const headers = { xFrameOptions: res.headers.get("x-frame-options"), csp: res.headers.get("content-security-policy") };
+    const framable = officeOrigin ? frameAllowed(headers, new URL(url).origin, officeOrigin) : null;
+    return { reachable: res.status < 500, status: res.status, framable, checkedAt };
   } catch {
-    return { reachable: false, status: null, checkedAt };
+    return { reachable: false, status: null, framable: null, checkedAt };
   }
 }
 

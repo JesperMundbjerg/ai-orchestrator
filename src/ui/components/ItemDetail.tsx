@@ -4,9 +4,10 @@ import type { Evidence, ItemDetail } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ACTION_LABEL, ago, clock, deliveryLabel, TYPE_LABEL } from "../format.ts";
 import { Owner } from "./Owner.tsx";
+import { PageWalk } from "./PageWalk.tsx";
 import { Respond } from "./Respond.tsx";
 
-type Tab = "context" | "screenshots" | "preview" | "conversation";
+type Tab = "context" | "screenshots" | "pages" | "conversation";
 
 export function ItemDetailView({ detail, onNext }: { detail: ItemDetail; onNext: (() => void) | null }) {
   const { item, task, project, evidence, replies } = detail;
@@ -14,10 +15,11 @@ export function ItemDetailView({ detail, onNext }: { detail: ItemDetail; onNext:
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "context", label: "Context" },
     ...(evidence.length ? [{ id: "screenshots" as const, label: `Screenshots ${current.length ? `(${current.length})` : ""}` }] : []),
-    ...(item.preview ? [{ id: "preview" as const, label: "Live preview" }] : []),
+    ...(item.pages.length ? [{ id: "pages" as const, label: item.pages.length > 1 ? `Pages (${item.pages.length})` : "Live preview" }] : []),
     ...(replies.length || item.revision > 1 ? [{ id: "conversation" as const, label: "Conversation" }] : []),
   ];
-  const [tab, setTab] = useState<Tab>(current.some((e) => e.kind === "image") ? "screenshots" : "context");
+  // A walkthrough is what the agent wants you to see first.
+  const [tab, setTab] = useState<Tab>(item.pages.length > 1 ? "pages" : current.some((e) => e.kind === "image") ? "screenshots" : "context");
   const [openError, setOpenError] = useState<string | null>(null);
   const activeTab = tabs.some((t) => t.id === tab) ? tab : "context";
 
@@ -59,11 +61,11 @@ export function ItemDetailView({ detail, onNext }: { detail: ItemDetail; onNext:
       <div className="tab-body">
         {activeTab === "context" ? <ContextTab detail={detail} /> : null}
         {activeTab === "screenshots" ? <EvidenceTab evidence={evidence} revision={item.revision} /> : null}
-        {activeTab === "preview" && item.preview ? <PreviewTab itemId={item.id} url={item.preview.url} viewport={item.preview.viewport} setup={item.preview.setup} /> : null}
+        {activeTab === "pages" ? <PageWalk itemId={item.id} pages={item.pages} viewport={item.preview?.viewport ?? null} setup={item.preview?.setup ?? ""} /> : null}
         {activeTab === "conversation" ? <ConversationTab detail={detail} /> : null}
       </div>
 
-      <Respond detail={detail} onNext={onNext} onOpenPreview={() => setTab("preview")} />
+      <Respond detail={detail} onNext={onNext} onOpenPreview={() => setTab("pages")} />
       <p className="route-note">{DELIVERY_LABEL[task.capabilities.reply]}.</p>
     </article>
   );
@@ -169,30 +171,6 @@ function EvidenceTab({ evidence, revision }: { evidence: Evidence[]; revision: n
           <img src={zoom.href} alt={zoom.caption} />
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function PreviewTab({ itemId, url, viewport, setup }: { itemId: string; url: string; viewport: "desktop" | "phone" | null; setup: string }) {
-  const [check, setCheck] = useState<{ reachable: boolean; status: number | null; checkedAt: string } | null>(null);
-  const [embed, setEmbed] = useState(true);
-  const runCheck = () => api.checkPreview(itemId).then(setCheck);
-  return (
-    <div className="preview">
-      <div className="preview-bar">
-        <code>{url}</code>
-        <a className="primary small" href={url} target="_blank" rel="noreferrer">Open ↗</a>
-        <button className="ghost small" onClick={runCheck}>Check it is up</button>
-        <button className="ghost small" onClick={() => setEmbed(!embed)}>{embed ? "Hide embed" : "Embed here"}</button>
-        {check ? (
-          <span className={check.reachable ? "ok" : "warn"}>
-            {check.reachable ? `Answering (${check.status})` : "Not answering — the preview may be stopped"} · {clock(check.checkedAt)}
-          </span>
-        ) : null}
-      </div>
-      {setup ? <p className="muted">Setup: {setup}</p> : null}
-      <p className="muted small-note">The preview is live and may have moved on since the screenshots were taken.</p>
-      {embed ? <iframe className={`frame ${viewport ?? "desktop"}`} src={url} title="Live preview" /> : null}
     </div>
   );
 }

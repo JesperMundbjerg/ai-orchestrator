@@ -30,7 +30,7 @@ The one exception is a **message in the office** (below): your instruction to a 
 | Type | You get | Primary actions |
 |---|---|---|
 | **Decide** | the question as the title, what the agent needs and what happens if nobody answers, 2+ options with consequences, the agent's pick and why, screenshots | pick an option (plus an optional note) |
-| **Try it** | what to check, a live preview (checked for reachability, embeddable at desktop or phone width), setup notes | open it, then "Tried it" with a note |
+| **Try it** | what to check, a live preview or a walkthrough of pages (each checked for reachability and framing, shown at desktop or phone width), setup notes | open it, then "Tried it" with a note |
 | **Review milestone** | what was finished, evidence at the exact revision | Accept, or Request changes (text required) |
 
 **Discuss** (free text to the owning agent) and **Later** (snooze 1 h / 3 h / tomorrow, or mark handled) are on every type. A choice never stops you writing more.
@@ -41,7 +41,7 @@ The one exception is a **message in the office** (below): your instruction to a 
 - **Queue** (Needs you): filter chips by type with counts. The sort is stated on screen: pinned projects, then items an agent is blocked on, then the longest waiting. `n` opens the next item, `j`/`k` move. Each card shows type, task · project, age, a thumbnail, owner and harness, and whether the agent is waiting.
 - **Detail**:
   - The header shows owner, harness, live status and Open conversation.
-  - Tabs appear only when they have content: Context (with the task brief), Screenshots (older revisions dimmed), Live preview, Conversation (your replies with their delivery state and a Retry).
+  - Tabs appear only when they have content: Context (with the task brief), Screenshots (older revisions dimmed), Live preview (or Pages, a walkthrough: one live frame at a time with what to look at, Previous/Next and ← →, opened first when there are several; a page that is down or refuses framing says so with an open-in-tab link), Conversation (your replies with their delivery state and a Retry).
   - The answer area is pinned at the bottom.
 - **Working / Parked**: one card per task with its brief (objective, latest decision, last accepted milestone, doing now, next milestone), its open items and Park / Open conversation. Parking hides a task's items from Needs you; it does not pause the agent.
 
@@ -54,7 +54,7 @@ The **task brief** is project memory for you rather than for the model. It is ed
 - **Delivery is acknowledged.** A reply is `queued` until an integration claims it, and `delivered` only after that integration acks it. If a claim has no ack after 30 s, the reply is shown as *uncertain*. A failed delivery returns the item to Needs you with Retry. Each send carries a client-made id, so a retried request never becomes a second answer.
 - **Only the owner reads its replies**: session id plus harness must match.
 - **Loopback only.** The service binds 127.0.0.1 and checks the Host header (against DNS rebinding). Writes require `application/json` and a same-origin `Origin`.
-- **Only explicit attachments.** Evidence is copied from paths the agent names, by type allowlist and size limit, never dotfiles. It is served with a sandbox CSP. The preview check fetches only that item's own http(s) URL.
+- **Only explicit attachments.** Evidence is copied from paths the agent names, by type allowlist and size limit, never dotfiles. It is served with a sandbox CSP. The preview check fetches only that item's own http(s) URLs. Pages are http(s) only and framed sandboxed; a page on the office's own origin gets no same-origin rights.
 - **State lives outside worktrees** (`~/.review-inbox`), so branch switches and worktree deletion never lose it. A project is a repository's git common dir, so all its worktrees are one project.
 
 ## The office

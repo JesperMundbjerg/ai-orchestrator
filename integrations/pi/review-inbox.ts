@@ -67,7 +67,7 @@ export default function reviewInbox(pi: PiApi): void {
     description:
       "Put a result in front of the user in their Review Inbox and get their answer back in this conversation. " +
       "Use at a meaningful point, not for every turn: `decide` for a concrete question with 2-3 options, " +
-      "`try` for a preview the user should interact with, `milestone` for an increment to accept or send back. " +
+      "`try` for a preview the user should interact with (or `pages`, a walkthrough of live pages they step through), `milestone` for an increment to accept or send back. " +
       "Write a decision the way an engineer asks a colleague, e.g. title \"Should the tutor cover the slider or push it aside?\", " +
       "request \"I need this to finish the isotope step. Until you answer I'll keep it docked.\", " +
       "options [\"Overlay: tutor covers the right third; slider hidden while it talks\", \"Docked: the stage narrows; everything stays visible\"], " +
@@ -82,6 +82,14 @@ export default function reviewInbox(pi: PiApi): void {
       options: Type.Optional(Type.Array(Type.String({ description: "\"Label: consequence in plain words\"" }), { description: "For decide: 2-3 options" })),
       check: Type.Optional(Type.String({ description: "For try: the interaction to perform and the expected behaviour" })),
       preview_url: Type.Optional(Type.String()),
+      pages: Type.Optional(Type.Array(
+        Type.Object({
+          url: Type.String({ description: "http(s) URL of a live page" }),
+          label: Type.Optional(Type.String({ description: "Short name, e.g. \"Step 2\"" })),
+          look: Type.Optional(Type.String({ description: "What to look at on this page" })),
+        }),
+        { description: "To show what you did in the app itself: the pages to go through in order. The user sees each live in a frame and presses Next. Works on any type" },
+      )),
       viewport: Type.Optional(Type.Union([Type.Literal("desktop"), Type.Literal("phone")])),
       setup: Type.Optional(Type.String()),
       screenshots: Type.Optional(Type.Array(Type.String({ description: "Absolute path of an image to attach" }))),
@@ -105,7 +113,8 @@ export default function reviewInbox(pi: PiApi): void {
           recommendation: p.recommendation,
           options: p.options,
           check: p.check,
-          preview: p.preview_url ? { url: p.preview_url, viewport: p.viewport ?? null, setup: p.setup ?? "" } : undefined,
+          preview: p.preview_url || (p.pages?.length && (p.viewport || p.setup)) ? { url: p.preview_url, viewport: p.viewport ?? null, setup: p.setup ?? "" } : undefined,
+          pages: p.pages,
           blocking: p.blocking,
           evidence: (p.screenshots ?? []).map((path: string) => ({ path })),
         },

@@ -92,6 +92,22 @@ export interface Preview {
   setup: string;
 }
 
+/** One step of a walkthrough: a live page to look at, and what to look for on it. */
+export interface Page {
+  url: string;
+  label: string;
+  /** What to look at on this page; empty when the label says it. */
+  look: string;
+}
+
+/** Whether a page answers now, and whether it lets the office frame it (null: not known). */
+export interface PageCheck {
+  reachable: boolean;
+  status: number | null;
+  framable: boolean | null;
+  checkedAt: string;
+}
+
 export type EvidenceKind = "image" | "url" | "document";
 
 export interface Evidence {
@@ -119,6 +135,8 @@ export interface Item {
   options: Option[];
   check: string;
   preview: Preview | null;
+  /** The pages to go through, in order. An item with only a preview has that one page. */
+  pages: Page[];
   /** The agent is waiting on this answer, rather than carrying on with other work. */
   blocking: boolean;
   state: ItemState;
@@ -206,6 +224,8 @@ export interface SubmitInput {
     options?: Array<string | Partial<Option>>;
     check?: string;
     preview?: Partial<Preview> | string;
+    /** A walkthrough: "Label=URL" or {url, label, look}, in the order to go through them. */
+    pages?: Array<string | Partial<Page>>;
     blocking?: boolean;
     evidence?: EvidenceInput[];
   };

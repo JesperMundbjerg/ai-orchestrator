@@ -10,9 +10,10 @@ import {
   HARNESSES, ITEM_TYPES, REPLY_ACTIONS,
   type ActivityInput, type Binding, type Capabilities, type Evidence, type EvidenceInput, type Harness,
   type HistoryEvent, type InboxState, type Item, type ItemDetail, type ItemSummary, type Option,
-  type PendingReply, type Presence, type Preview, type Project, type Reply, type ReplyAction,
+  type PendingReply, type Presence, type Page, type Preview, type Project, type Reply, type ReplyAction,
   type SessionInput, type SubmitInput, type SubmitResult, type Task,
 } from "../shared/types.ts";
+import { MAX_PAGES, pageUrlProblem, parsePage } from "../shared/pages.ts";
 
 /** Live session facts from a terminal multiplexer (herdr); absent sessions simply have none. */
 export interface PresenceSource {
@@ -151,7 +152,7 @@ export class Inbox {
     const binding = this.resolveSession(input.session ?? {});
     const fields = normalizeItem(raw);
     if (raw.type === "decide" && fields.options.length < 2) throw new InboxError(400, "a decision needs at least two options");
-    if (raw.type === "try" && !fields.preview) throw new InboxError(400, "a try-it request needs a preview url");
+    if (raw.type === "try" && !fields.preview) throw new InboxError(400, "a try-it request needs a preview url or pages");
     const attachments = (raw.evidence ?? []).map((e) => this.prepareEvidence(e));
     const hash = sha256(JSON.stringify([fields, attachments.map((a) => [a.kind, a.sha256 ?? a.url, a.caption])]));
 
@@ -167,11 +168,11 @@ export class Inbox {
       const revision = existing ? Number(existing.revision) + 1 : 1;
       const values = [fields.type, revision, fields.title, fields.request, fields.context, fields.recommendation,
         JSON.stringify(fields.options), fields.check, fields.preview ? JSON.stringify(fields.preview) : null,
-        fields.blocking ? 1 : 0, hash] as const;
+        fields.pages.length ? JSON.stringify(fields.pages) : null, fields.blocking ? 1 : 0, hash] as const;
       if (existing) {
         this.db
           .prepare(`UPDATE items SET type = ?, revision = ?, title = ?, request = ?, context = ?, recommendation = ?, options = ?,
-                    check_text = ?, preview = ?, blocking = ?, content_hash = ?, state = 'needs_attention', snoozed_until = NULL,
+                    check_text = ?, preview = ?, pages = ?, blocking = ?, content_hash = ?, state = 'needs_attention', snoozed_until = NULL,
                     updated_at = ? WHERE id = ?`)
           .run(...values, now, itemId);
         // An answer written for the previous revision must not be applied to the changed item.
@@ -179,9 +180,9 @@ export class Inbox {
         this.log("agent", "item.revised", { taskId, itemId }, { revision, staleReplies: Number(staled.changes) });
       } else {
         this.db
-          .prepare(`INSERT INTO items (type, revision, title, request, context, recommendation, options, check_text, preview, blocking,
+          .prepare(`INSERT INTO items (type, revision, title, request, context, recommendation, options, check_text, preview, pages, blocking,
                     content_hash, id, task_id, key, state, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?)`)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?)`)
           .run(...values, itemId, taskId, key, now, now);
         this.log("agent", "item.submitted", { taskId, itemId }, { type: fields.type, title: fields.title });
       }
@@ -552,7 +553,11 @@ function normalizeItem(raw: SubmitInput["item"]): Omit<Item, "id" | "taskId" | "
   }).filter((o) => o.label);
   const p = typeof raw.preview === "string" ? { url: raw.preview } : raw.preview;
   if (p?.url && !/^https?:\/\//i.test(p.url)) throw new InboxError(400, `preview url must be http(s): ${p.url}`);
-  const preview: Preview | null = p?.url ? { url: p.url, viewport: p.viewport ?? null, setup: p.setup?.trim() ?? "" } : null;
+  const pages = normalizePages(raw.pages);
+  // A walkthrough's first page is the preview; a preview alone is a walkthrough of one page.
+  const url = p?.url || pages[0]?.url;
+  const preview: Preview | null = url ? { url, viewport: p?.viewport ?? null, setup: p?.setup?.trim() ?? "" } : null;
+  if (!pages.length && preview) pages.push({ url: preview.url, label: "", look: "" });
   return {
     type: raw.type,
     title: raw.title.trim(),
@@ -562,8 +567,23 @@ function normalizeItem(raw: SubmitInput["item"]): Omit<Item, "id" | "taskId" | "
     options,
     check: raw.check?.trim() ?? "",
     preview,
+    pages,
     blocking: raw.blocking ?? raw.type === "decide",
   };
+}
+
+function normalizePages(raw: SubmitInput["item"]["pages"]): Page[] {
+  if (raw !== undefined && !Array.isArray(raw)) throw new InboxError(400, "item.pages must be a list");
+  const pages = (raw ?? []).map((given, i) => {
+    const page = typeof given === "string" ? parsePage(given) : given;
+    const url = typeof page?.url === "string" ? page.url.trim() : "";
+    if (!url) throw new InboxError(400, `page ${i + 1} needs a url`);
+    const problem = pageUrlProblem(url);
+    if (problem) throw new InboxError(400, `page ${i + 1}: ${problem}`);
+    return { url, label: page.label?.trim() ?? "", look: page.look?.trim() ?? "" };
+  });
+  if (pages.length > MAX_PAGES) throw new InboxError(400, `a walkthrough has at most ${MAX_PAGES} pages; split it into items`);
+  return pages;
 }
 
 /** "Label: consequence" — the CLI's compact option form. */
@@ -585,6 +605,7 @@ function toProject(r: Row): Project {
 }
 
 function toItem(r: Row): Item {
+  const preview = r.preview ? (JSON.parse(str(r.preview)) as Preview) : null;
   return {
     id: str(r.id),
     taskId: str(r.task_id),
@@ -597,7 +618,8 @@ function toItem(r: Row): Item {
     recommendation: str(r.recommendation),
     options: JSON.parse(str(r.options)) as Option[],
     check: str(r.check_text),
-    preview: r.preview ? (JSON.parse(str(r.preview)) as Preview) : null,
+    preview,
+    pages: r.pages ? (JSON.parse(str(r.pages)) as Page[]) : preview ? [{ url: preview.url, label: "", look: "" }] : [],
     blocking: Boolean(r.blocking),
     state: str(r.state) as Item["state"],
     snoozedUntil: nullable(r.snoozed_until),
