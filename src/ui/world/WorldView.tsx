@@ -6,12 +6,12 @@ import { useItemDetail } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
 import { Avatar } from "./Avatar.tsx";
 import { CALLER, planOffice, queueOrder, SPAWN, viewOf, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
-import { CallerCard } from "./Caller.tsx";
+import { CallerCard, CallerNote } from "./Caller.tsx";
 import { Office } from "./Office.tsx";
 import { AgentPanel, AnswerModal, Legend, TeamPanel, TeamsPanel } from "./Panels.tsx";
 import { Helpers } from "./Helpers.tsx";
 import { Player, type FlyTarget } from "./Player.tsx";
-import { calls, plan as planTalk, walkMs, type Bubble, type Call, type Visit } from "./visits.ts";
+import { calls, GRACE_MS, plan as planTalk, walkMs, type Bubble, type Call, type Visit } from "./visits.ts";
 
 export interface Waiting {
   count: number;
@@ -81,6 +81,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
   const selectedAgent = selected ? agents.get(selected) ?? null : null;
   const shownTeam = !selectedAgent && openTeam ? teams.get(openTeam) ?? null : null;
   const { calling, arrived, sendBack } = useCalls(world, agents, plan);
+  const walking = calling.filter((c) => !arrived.includes(c));
   // One at a time, once they are here, and not over what you opened yourself.
   const caller = !answering && !selectedAgent && !shownTeam ? arrived[0] ?? null : null;
   const nextItem = entries.find((e) => e.item.id !== answering)?.item.id ?? null;
@@ -193,6 +194,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
           onDismiss={() => sendBack(caller.key)}
         />
       ) : null}
+      {!caller && walking[0] ? <CallerNote call={walking[0]} agents={agents} /> : null}
       <Legend />
       <p className="world-hint">
         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · <kbd>Shift</kbd> run · drag to turn · scroll or <kbd>+</kbd><kbd>−</kbd> to zoom · click someone
@@ -216,7 +218,25 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
  */
 function useCalls(world: WorldState | null, agents: Map<string, WorldAgent>, office: OfficePlan | null) {
   const [sentBack, setSentBack] = useState<ReadonlySet<string>>(new Set());
-  const calling = useMemo(() => (world ? calls(world.teams, agents, sentBack) : []), [world, agents, sentBack]);
+  // When each agent became blocked, as this office has seen it; one already blocked when it opens counts from then.
+  const since = useRef<Map<string, number>>(new Map());
+  const [now, setNow] = useState(Date.now);
+  const blockedSince = useMemo(() => {
+    const t = Date.now();
+    const next = new Map<string, number>();
+    for (const a of agents.values()) if (a.status === "blocked") next.set(a.id, since.current.get(a.id) ?? t);
+    since.current = next;
+    return next;
+  }, [agents]);
+  // Look again when the earliest crew member still in their grace period has been there long enough.
+  useEffect(() => {
+    const t = Date.now();
+    const due = Math.min(...[...blockedSince.values()].map((s) => s + GRACE_MS).filter((d) => d > t));
+    if (!Number.isFinite(due)) return;
+    const timer = setTimeout(() => setNow(Date.now()), due - t + 50);
+    return () => clearTimeout(timer);
+  }, [blockedSince, now]);
+  const calling = useMemo(() => (world ? calls(world.teams, agents, sentBack, { blockedSince, now }) : []), [world, agents, sentBack, blockedSince, now]);
   // When each lead is at your desk. Kept per lead, so a call that changes while they stand there does not walk them again.
   const at = useRef<Map<string, number> | null>(null);
   const [seen, setSeen] = useState(0);

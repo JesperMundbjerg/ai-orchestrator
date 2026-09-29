@@ -67,17 +67,34 @@ export interface Call {
   spot: Spot;
 }
 
+/** How long a crew member may sit at a prompt before their lead comes to you: leads answer crew prompts within 1–5 minutes. */
+export const GRACE_MS = 6 * 60 * 1000;
+
 /**
  * The leads who come to your desk: one per blocked team whose lead is running, in the order the
  * teams are listed, except those you sent back about the very same thing.
+ *
+ * A lead who is blocked, and anyone waiting on your answer, bring the lead at once. A crew member
+ * at a prompt does so only once `blockedSince` (when each agent became blocked) says they have
+ * been there GRACE_MS by `now`; one it does not know counts as just blocked. Without `grace`
+ * nobody waits.
  */
-export function calls(teams: WorldTeam[], agents: Map<string, WorldAgent>, sentBack: ReadonlySet<string>): Call[] {
+export function calls(
+  teams: WorldTeam[],
+  agents: Map<string, WorldAgent>,
+  sentBack: ReadonlySet<string>,
+  grace?: { blockedSince: ReadonlyMap<string, number>; now: number },
+): Call[] {
   const out: Call[] = [];
   for (const team of teams) {
     if (team.status !== "blocked") continue;
     const lead = [...agents.values()].find((a) => a.teamId === team.id && a.role === "lead");
     if (!lead || lead.status === "offline") continue;
-    const stuck = team.blockedBy.filter((id) => agents.has(id)).sort((a, b) => Number(b === lead.id) - Number(a === lead.id));
+    const due = (id: string) => {
+      const a = agents.get(id)!;
+      return !grace || a.id === lead.id || a.waitingOnYou || grace.now - (grace.blockedSince.get(id) ?? grace.now) >= GRACE_MS;
+    };
+    const stuck = team.blockedBy.filter((id) => agents.has(id) && due(id)).sort((a, b) => Number(b === lead.id) - Number(a === lead.id));
     if (!stuck.length) continue;
     const key = `${team.id}:${[...stuck].sort().map((id) => `${id}${agents.get(id)!.waitingOnYou ? "?" : "!"}`).join(",")}`;
     if (sentBack.has(key)) continue;

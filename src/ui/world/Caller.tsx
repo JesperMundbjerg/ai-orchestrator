@@ -64,6 +64,28 @@ export function CallerCard({ call, team, agents, waiting, tick, onOpen, onDismis
   );
 }
 
+/** A line while the lead is still walking over, so the walk is never unexplained. It goes when the call does. */
+export function CallerNote({ call, agents }: { call: Call; agents: Map<string, WorldAgent> }) {
+  const lead = agents.get(call.leadId);
+  const stuck = call.stuckIds.flatMap((id) => agents.get(id) ?? []);
+  if (!lead || !stuck.length) return null;
+  const why = stuck
+    .map((a) => {
+      const own = a.id === lead.id;
+      if (a.waitingOnYou) return own ? "they need your answer" : `${a.name} needs your answer`;
+      return own ? "they are stuck at a prompt" : `${a.name} is stuck at a prompt`;
+    })
+    .join(", ");
+  return (
+    <div
+      role="status"
+      style={{ position: "absolute", zIndex: 4, left: "50%", bottom: 64, transform: "translateX(-50%)", maxWidth: "calc(100% - 24px)", padding: "6px 14px", borderRadius: 999, background: "var(--panel)", boxShadow: "0 8px 24px rgba(0,0,0,0.25)", borderLeft: "4px solid #ff5a4f", fontSize: 13 }}
+    >
+      <strong>{lead.name}</strong> is coming over: {why}
+    </div>
+  );
+}
+
 /** What the lead says when they arrive, in their own voice. */
 function said(lead: WorldAgent, stuck: WorldAgent[], waiting: Map<string, Waiting>): string {
   const who = (a: WorldAgent) => (a.id === lead.id ? "I" : a.name);
