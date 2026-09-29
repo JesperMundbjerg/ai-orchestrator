@@ -1,7 +1,7 @@
 // What people in the office say to each other and the work they hand over, as rows the team
 // panel and the board both show.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Message, MessageKind, WorkState, Work, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ago } from "../format.ts";
@@ -34,6 +34,29 @@ export function teamWork(world: WorldState, teamId: string): Work[] {
   return world.work.filter((w) => w.toTeamId === teamId || w.fromTeamId === teamId);
 }
 
+/** Long text folded to a few lines with a fade and a toggle; text that fits shows no toggle. */
+function Clamp({ text, className }: { text: string; className: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    // Folded is the resting state, so measure against it; open keeps whatever was found.
+    const measure = () => !open && setLong(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    const watch = new ResizeObserver(measure);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [text, open]);
+  return (
+    <>
+      <div ref={box} className={`${className} clamp${open ? "" : " folded"}${long && !open ? " faded" : ""}`}>{text}</div>
+      {long ? <button type="button" className="ghost small clamp-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "Show less" : "Show more"}</button> : null}
+    </>
+  );
+}
+
 export function MessageRow({ message, agents }: { message: Message; agents: Map<string, WorldAgent> }) {
   const [error, setError] = useState<string | null>(null);
   const from = message.fromAgentId ? (agents.get(message.fromAgentId)?.name ?? "someone who left") : "You";
@@ -47,7 +70,8 @@ export function MessageRow({ message, agents }: { message: Message; agents: Map<
         <span className="muted"> {VERB[message.kind]} {to}</span>
         <span className="muted"> · {ago(message.createdAt)}</span>
       </div>
-      <div className="order-text">{message.text}</div>
+      {/* Anything said to or by you is shown whole; only agents' talk to each other folds. */}
+      {message.toFounder || !message.fromAgentId ? <div className="order-text">{message.text}</div> : <Clamp text={message.text} className="order-text" />}
       <div className="order-meta">
         {message.deliveries.map((d) => (
           <span key={d.agentId} className={`delivery ${d.state}`} title={d.error ?? undefined}>
@@ -75,7 +99,7 @@ export function WorkRow({ work, world, agents }: { work: Work; world: WorldState
         <strong> {work.title}</strong>
         <span className="muted"> · {from} → {to}{work.round > 1 ? ` · round ${work.round}` : ""} · {ago(work.updatedAt)}</span>
       </div>
-      <div className="order-text">{work.summary}</div>
+      <Clamp text={work.summary} className="order-text" />
       {work.notes ? <div className="work-notes"><span className="muted">{reviewer ?? "Reviewer"}:</span> {work.notes}</div> : null}
     </li>
   );
@@ -123,9 +147,9 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
 export function Conversation({ agent, messages }: { agent: WorldAgent; messages: Message[] }) {
   const list = useRef<HTMLOListElement>(null);
   const last = messages.at(-1)?.id;
-  // Only the thread scrolls to its newest line; the panel around it stays where it is.
+  // The thread is as tall as it is; the panel scrolls. Bring the newest line into view on open and on a reply.
   useEffect(() => {
-    if (list.current) list.current.scrollTop = list.current.scrollHeight;
+    list.current?.lastElementChild?.scrollIntoView({ block: "nearest" });
   }, [last]);
   const wrote = messages.some((m) => !m.fromAgentId);
   const answered = messages.some((m) => m.fromAgentId);

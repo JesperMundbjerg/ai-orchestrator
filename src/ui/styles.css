@@ -328,7 +328,10 @@ h1, h2, h3 { margin: 0; }
 .instruct { display: flex; flex-direction: column; gap: 6px; }
 .instruct textarea { resize: vertical; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; }
 .order { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
-.order-text { white-space: pre-wrap; font-size: 13.5px; max-height: 5.6em; overflow: hidden; }
+.order-text { white-space: pre-wrap; font-size: 13.5px; overflow-wrap: anywhere; }
+.order-text.clamp.folded { max-height: 5.6em; overflow: hidden; }
+.order-text.clamp.faded { -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
+.clamp-toggle { align-self: flex-start; padding: 0 6px; }
 .order-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; }
 .delivery { border-radius: 999px; padding: 1px 8px; background: var(--line); display: inline-flex; align-items: center; gap: 4px; }
 .delivery.delivered { background: rgba(61, 220, 132, 0.18); }
@@ -369,7 +372,7 @@ h1, h2, h3 { margin: 0; }
 .order.handoff, .order.review { border-left: 3px solid var(--try); }
 /* The agent panel scrolls as a whole; nothing in it is squeezed to make room. */
 .world-panel.agent > * { flex-shrink: 0; }
-.chat { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; flex: none; max-height: 240px; overflow-y: auto; }
+.chat { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; flex: none; }
 .say { max-width: 88%; border-radius: 10px; padding: 6px 10px; display: flex; flex-direction: column; gap: 2px; }
 .say.you { align-self: flex-end; background: var(--accent-soft); }
 .say.them { align-self: flex-start; background: var(--bg); border: 1px solid var(--line); }
@@ -380,7 +383,7 @@ h1, h2, h3 { margin: 0; }
 .work-state.in_review { background: rgba(59, 111, 224, 0.18); }
 .work-state.accepted { background: rgba(61, 220, 132, 0.18); }
 .work-state.changes_requested { background: rgba(229, 72, 77, 0.16); }
-.work-notes { font-size: 13px; white-space: pre-wrap; }
+.work-notes { font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-doing { font-size: 13px; padding: 4px 8px; border-radius: 6px; background: rgba(61, 220, 132, 0.12); }
 .agent-helpers { font-size: 12.5px; }
 .team-form textarea, .team-form select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; resize: vertical; }
@@ -430,5 +433,6 @@ span.lead-toggle { border-radius: 6px; justify-self: start; }
 .between { display: flex; flex-direction: column; gap: 4px; opacity: 0.85; }
 .between-title { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: var(--muted); font-size: 11px; }
 .between .order { font-size: 12px; }
-.between .order-text { font-size: 12px; max-height: 3.6em; }
+.between .order-text { font-size: 12px; }
+.between .order-text.clamp.folded { max-height: 3.6em; }
 .member-remove { float: right; margin-left: 6px; padding: 0 6px; font-size: 11.5px; }
