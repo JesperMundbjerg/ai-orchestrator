@@ -15,6 +15,7 @@ import type {
 import { Activity } from "./activity.ts";
 import { InboxError } from "./inbox.ts";
 import { Messages } from "./messages.ts";
+import { whyStuck } from "../shared/stuck.ts";
 import { checkoutOf, deleteMergedBranch, nameFor, placeFor, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
 
 /** An agent a terminal multiplexer reports as running. */
@@ -286,10 +287,10 @@ export class World {
     const first = this.announced === null;
     const before = this.announced ?? new Map<string, TeamStatus>();
     this.announced = new Map(state.teams.map((t) => [t.id, t.status]));
-    const names = new Map(state.agents.map((a) => [a.id, a.name]));
+    const agents = new Map(state.agents.map((a) => [a.id, a]));
     const notices = first ? [] : state.teams.filter((t) => t.status === "blocked" && before.get(t.id) !== "blocked");
     await Promise.all([
-      ...notices.map((t) => this.source?.notify(`${t.name} is blocked`, `Waiting on ${t.blockedBy.map((id) => names.get(id) ?? id).join(" and ")}.`).catch(() => {})),
+      ...notices.map((t) => this.source?.notify(`${t.name} is blocked`, `${whyStuck(t.blockedBy.flatMap((id) => agents.get(id) ?? []))}.`).catch(() => {})),
       this.messages.deliver(state),
     ]);
   }

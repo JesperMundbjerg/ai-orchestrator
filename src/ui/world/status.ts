@@ -2,6 +2,7 @@
 // panels and the team board.
 
 import type { TeamStatus, WorldAgent, WorldTeam } from "../../shared/types.ts";
+import { whyStuck } from "../../shared/stuck.ts";
 
 /** The status lamp above each head. */
 export const LAMP: Record<WorldAgent["status"], { color: string; label: string; glow: number }> = {
@@ -24,7 +25,7 @@ export const TEAM_LAMP: Record<TeamStatus, { color: string; label: string }> = {
 export function teamLine(team: WorldTeam, agents: Map<string, WorldAgent>): { text: string; color: string } {
   const color = TEAM_LAMP[team.status].color;
   const members = [...agents.values()].filter((a) => a.teamId === team.id);
-  if (team.status === "blocked") return { text: `Blocked · waiting on ${team.blockedBy.map((id) => agents.get(id)?.name ?? "someone").join(" and ")}`, color };
+  if (team.status === "blocked") return { text: `Blocked · ${whyStuck(team.blockedBy.flatMap((id) => agents.get(id) ?? []))}`, color };
   if (team.status === "working") return { text: `${members.filter((m) => m.status === "working").length} working now`, color };
   if (team.status === "idle") return { text: "Idle · ready for work", color };
   return { text: "Everyone offline", color };
