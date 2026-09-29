@@ -11,6 +11,7 @@
 // the teams stand right now, so it is there when the office opens too.
 
 import type { Message, MessageKind, WorldAgent, WorldTeam } from "../../shared/types.ts";
+import { routeIn, type RouteFn } from "./building.ts";
 import { callerSpot, route, yawTo, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
 
 export interface Visit {
@@ -103,9 +104,9 @@ export function calls(
   return out;
 }
 
-/** How long it takes to walk from one spot to another, in milliseconds. */
-export function walkMs(from: Spot, to: Spot): number {
-  return (length(from.pos, route(from.pos, from, to)) / WALK_SPEED) * 1000;
+/** How long it takes to walk from one spot to another, in milliseconds, round the ring unless `walk` says otherwise. */
+export function walkMs(from: Spot, to: Spot, walk: RouteFn = route): number {
+  return (length(from.pos, walk(from.pos, from, to)) / WALK_SPEED) * 1000;
 }
 
 const length = (from: Vec2, path: Vec2[]) => path.reduce((sum, p, i) => sum + Math.hypot(p[0] - (path[i - 1] ?? from)[0], p[1] - (path[i - 1] ?? from)[1]), 0);
@@ -113,6 +114,7 @@ const length = (from: Vec2, path: Vec2[]) => path.reduce((sum, p, i) => sum + Ma
 export function plan(messages: Message[], office: OfficePlan, now: number): { visits: Visit[]; bubbles: Bubble[] } {
   const visits: Visit[] = [];
   const bubbles: Bubble[] = [];
+  const walk = routeIn(office);
   for (const m of messages) {
     const text = bubbleText(m);
     if (!m.fromAgentId) {
@@ -124,7 +126,7 @@ export function plan(messages: Message[], office: OfficePlan, now: number): { vi
     const target = toId ? office.spots.get(toId) : undefined;
     if (!toId || !from || !target || toId === m.fromAgentId) continue;
     const spot = visitSpot(target);
-    visits.push({ messageId: m.id, fromId: m.fromAgentId, toId, kind: m.kind, text, spot, until: now + walkMs(from, spot) + TALK_MS });
+    visits.push({ messageId: m.id, fromId: m.fromAgentId, toId, kind: m.kind, text, spot, until: now + walkMs(from, spot, walk) + TALK_MS });
   }
   return { visits, bubbles };
 }

@@ -29,9 +29,11 @@ interface Props {
   bubble: string | null;
   /** A folder in hand, for work being handed over. */
   carrying: boolean;
+  /** How to walk in this office: round the ring, or along the building's walkway. */
+  walk?: (from: Vec2, fromSpot: Spot | null, to: Spot) => Vec2[];
 }
 
-export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bubble, carrying }: Props) {
+export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bubble, carrying, walk = route }: Props) {
   const look = useMemo(() => lookFor(agent.id), [agent.id]);
   const root = useRef<Group>(null);
   const legs = useRef<[Group | null, Group | null]>([null, null]);
@@ -42,7 +44,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const motion = useRef({
     pos: [...(enterFrom ?? spot.pos)] as Vec2,
     yaw: spot.facing,
-    path: enterFrom ? route(enterFrom, null, spot) : ([] as Vec2[]),
+    path: enterFrom ? walk(enterFrom, null, spot) : ([] as Vec2[]),
     spot,
     phase: Math.random() * 10,
   });
@@ -52,7 +54,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   useEffect(() => {
     const m = motion.current;
     if (m.spot.pos[0] === spot.pos[0] && m.spot.pos[1] === spot.pos[1] && m.spot.group === spot.group) return;
-    m.path = route(m.pos, m.spot, spot);
+    m.path = walk(m.pos, m.spot, spot);
     m.spot = spot;
   }, [spot]);
 

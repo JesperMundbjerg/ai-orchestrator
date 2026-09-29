@@ -7,7 +7,7 @@ This file holds the instructions for every coding agent (Pi, Claude Code, Codex)
 - `src/cli/`: the `inbox` command, for every harness, and the Claude Code hook.
 - `integrations/pi/`: the Pi extension (live delivery and activity).
 - `src/shared/`: types, the agent-side client and `slug.ts` (a project's worktree and branch name), shared by the service, the CLI, the integrations and the UI.
-- `src/ui/`: React + Vite. It talks only to the service's HTTP API. `src/ui/world/` is the 3D office (React Three Fiber), loaded only when opened; `layout.ts` (desks, routes, pipelines) and `visits.ts` (who walks to whom) there are pure, and `Talk.tsx` holds the message and work rows the office panels and the team board (`components/TeamBoard.tsx`) share.
+- `src/ui/`: React + Vite. It talks only to the service's HTTP API. `src/ui/world/` is the 3D office (React Three Fiber), loaded only when opened; `layout.ts` (desks, routes, pipelines round the ring), `building.ts` (the same for the other layout, one building, drawn by `BuildingOffice.tsx`) and `visits.ts` (who walks to whom) there are pure, and `Talk.tsx` holds the message and work rows the office panels and the team board (`components/TeamBoard.tsx`) share.
 
 ## Rules
 - The UI never learns about a vendor. Harness-specific behaviour belongs in an integration or the CLI, and the UI branches on `Task.capabilities`.

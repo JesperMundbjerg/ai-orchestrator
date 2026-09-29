@@ -75,7 +75,7 @@ function Walls({ minX, maxX, minZ, maxZ }: { minX: number; maxX: number; minZ: n
 }
 
 /** Your desk, with the rope lane the queue forms in. */
-function YourDesk({ queueLength }: { queueLength: number }) {
+export function YourDesk({ queueLength }: { queueLength: number }) {
   const sign = useTexture(
     () => textTexture(
       [
@@ -136,8 +136,8 @@ function YourDesk({ queueLength }: { queueLength: number }) {
   );
 }
 
-/** The lounge takes a place on the ring like a corner, open towards your desk. */
-function Lounge({ center, facing }: { center: Vec2; facing: number }) {
+/** The lounge takes a place on the ring like a corner, open towards your desk; in the building it is a room as deep as the bays. */
+export function Lounge({ center, facing, halfDepth = CORNER_HALF_DEPTH }: { center: Vec2; facing: number; halfDepth?: number }) {
   const [x, z] = center;
   const sign = useTexture(
     () => textTexture([{ text: "Lounge", size: 64, color: "#ffffff", weight: 800 }, { text: "agents not on a project", size: 32, color: "#b8c2cc" }], { width: 512, height: 180, background: "#2b3a4a", radius: 24 }),
@@ -166,7 +166,7 @@ function Lounge({ center, facing }: { center: Vec2; facing: number }) {
           </mesh>
         </group>
       ))}
-      <mesh position={[0, 2.2, -4.4]}>
+      <mesh position={[0, 2.2, -(halfDepth - 0.1)]}>
         <planeGeometry args={[1.8, 0.63]} />
         <meshBasicMaterial map={sign} toneMapped={false} side={2} />
       </mesh>
@@ -174,7 +174,8 @@ function Lounge({ center, facing }: { center: Vec2; facing: number }) {
   );
 }
 
-function TeamCorner({ corner, agents, teams, work }: { corner: Corner; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[] }) {
+/** A team's corner of the ring, or its bay in the building, which is as wide and deep as `half` says. */
+export function TeamCorner({ corner, agents, teams, work, half = [CORNER_HALF_WIDTH, CORNER_HALF_DEPTH] }: { corner: Corner; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; half?: Vec2 }) {
   const { team, center, facing, desks, members } = corner;
   const live = teams.get(team.id) ?? null;
   const toReview = work.filter((w) => w.toTeamId === team.id && w.state === "in_review").length;
@@ -195,10 +196,10 @@ function TeamCorner({ corner, agents, teams, work }: { corner: Corner; agents: M
       {/* Turned so its open side faces your desk; the screen is at the back, facing you. */}
       <group position={[cx, 0, cz]} rotation-y={facing}>
         <mesh rotation-x={-Math.PI / 2} position={[0, 0.005, 0]} receiveShadow>
-          <planeGeometry args={[CORNER_HALF_WIDTH * 2, CORNER_HALF_DEPTH * 2]} />
+          <planeGeometry args={[half[0] * 2, half[1] * 2]} />
           <meshStandardMaterial color={tint} roughness={1} transparent opacity={0.28} />
         </mesh>
-        <group position={[0, 0, -4]}>
+        <group position={[0, 0, 0.5 - half[1]]}>
           {/* The big wall screen the crew faces, high enough to read over their heads and name tags */}
           <mesh position={[0, 3.9, 0]} castShadow>
             <boxGeometry args={[7.2, 2.7, 0.12]} />
@@ -262,7 +263,7 @@ function Monitor({ position, rotation, lit, color, dim = true }: { position: [nu
   );
 }
 
-function Plant({ x, z }: { x: number; z: number }) {
+export function Plant({ x, z }: { x: number; z: number }) {
   return (
     <group position={[x, 0, z]}>
       <mesh position={[0, 0.3, 0]} castShadow>
@@ -282,7 +283,7 @@ function Plant({ x, z }: { x: number; z: number }) {
 const CHEVRON_GAP = 0.9;
 
 /** Arrows on the floor flowing from one team to the team it hands its work to; brighter while work is in review. */
-function Pipeline({ path, busy }: { path: Vec2[]; busy: boolean }) {
+export function Pipeline({ path, busy }: { path: Vec2[]; busy: boolean }) {
   const segments = useMemo(() => path.slice(1).map((p, i) => {
     const a = path[i]!;
     return { a, dx: p[0] - a[0], dz: p[1] - a[1], len: Math.hypot(p[0] - a[0], p[1] - a[1]) };
@@ -324,7 +325,7 @@ function Pipeline({ path, busy }: { path: Vec2[]; busy: boolean }) {
 }
 
 /** A texture made once per key and disposed when replaced. */
-function useTexture(make: () => Texture, deps: unknown[]): Texture {
+export function useTexture(make: () => Texture, deps: unknown[]): Texture {
   const texture = useMemo(make, deps);
   useEffect(() => () => texture.dispose(), [texture]);
   return texture;

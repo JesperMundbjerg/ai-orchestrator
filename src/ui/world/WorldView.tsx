@@ -5,7 +5,9 @@ import { api } from "../api.ts";
 import { useItemDetail } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
 import { Avatar } from "./Avatar.tsx";
-import { CALLER, planOffice, queueOrder, SPAWN, viewOf, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
+import { CALLER, planOffice, queueOrder, SPAWN, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
+import { isBuilding, planBuilding, routeIn, savedLayout, saveLayout, viewIn, type Layout } from "./building.ts";
+import { BuildingOffice } from "./BuildingOffice.tsx";
 import { CallerCard, CallerNote } from "./Caller.tsx";
 import { Office } from "./Office.tsx";
 import { AgentPanel, AnswerModal, Legend, TeamPanel, TeamsPanel } from "./Panels.tsx";
@@ -39,6 +41,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
   const [openTeam, setOpenTeam] = useState<string | null>(null);
   const [answering, setAnswering] = useState<string | null>(null);
   const [fly, setFly] = useState<FlyTarget | null>(null);
+  const [layout, setLayout] = useState<Layout>(savedLayout);
   const detail = useItemDetail(answering, tick);
 
   useEffect(() => {
@@ -49,7 +52,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
 
   const entries = useMemo(() => needsYou(state, "all", null), [state]);
   const queue = useMemo(() => (world ? queueOrder(world.agents, entries.map((e) => e.task.id)) : []), [world, entries]);
-  const plan = useMemo(() => (world ? planOffice(world.agents, world.teams, queue) : null), [world, queue]);
+  const plan = useMemo(() => (world ? (layout === "building" ? planBuilding : planOffice)(world.agents, world.teams, queue) : null), [world, queue, layout]);
   const waiting = useMemo(() => {
     const out = new Map<string, Waiting>();
     if (!world) return out;
@@ -126,6 +129,13 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
       <header className="world-top">
         <button className="ghost small" onClick={onLeave}>← Inbox</button>
         <strong>Office</strong>
+        <span className="layout-toggle" role="group" aria-label="Office layout" style={{ display: "inline-flex", gap: 4 }}>
+          {(["ring", "building"] as const).map((l) => (
+            <button key={l} className={`${layout === l ? "primary" : "ghost"} small`} aria-pressed={layout === l} onClick={() => (saveLayout(l), setLayout(l))}>
+              {l === "ring" ? "Ring" : "Building"}
+            </button>
+          ))}
+        </span>
         <span className="muted">
           {world.agents.length} {world.agents.length === 1 ? "agent" : "agents"} · {world.herdr === "connected" ? "live from herdr" : "herdr not running: no live status"}
         </span>
@@ -147,9 +157,9 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
         onOpen={(id, pos, yaw) => {
           setSelected(null);
           setOpenTeam(id);
-          // Corners face your desk from all round, so the plan knows where to stand to see one.
+          // Corners and bays face your desk from all round, so the plan knows where to stand to see one.
           const corner = plan.corners.find((c) => c.team.id === id);
-          const view = corner ? viewOf(corner) : { pos, yaw };
+          const view = corner ? viewIn(plan, corner) : { pos, yaw };
           flyTo(view.pos, view.yaw);
         }}
       />
@@ -247,7 +257,7 @@ function useCalls(world: WorldState | null, agents: Map<string, WorldAgent>, off
     const next = new Map<string, number>();
     for (const c of calling) {
       const home = office.spots.get(c.leadId);
-      next.set(c.leadId, at.current?.get(c.leadId) ?? (first || !home ? t : t + walkMs(home, c.spot)));
+      next.set(c.leadId, at.current?.get(c.leadId) ?? (first || !home ? t : t + walkMs(home, c.spot, routeIn(office))));
     }
     at.current = next;
     setSeen((n) => n + 1);
@@ -310,6 +320,9 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, talk, calling, s
   fly: FlyTarget | null;
 }) {
   const { minX, maxX, minZ, maxZ } = plan.bounds;
+  const walk = useMemo(() => routeIn(plan), [plan]);
+  // Changing the layout puts everyone straight at their new places rather than walking them there through the walls.
+  const layout = isBuilding(plan) ? "building" : "ring";
   // The light aims at the origin and its shadow frustum is in the light's own frame, so it is
   // sized to reach the farthest corner of the floor.
   const reach = Math.max(...[minX, maxX].flatMap((x) => [minZ, maxZ].map((z) => Math.hypot(x, z)))) + 2;
@@ -331,7 +344,11 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, talk, calling, s
         shadow-camera-far={120}
         shadow-bias={-0.0005}
       />
-      <Office plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
+      {isBuilding(plan) ? (
+        <BuildingOffice plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
+      ) : (
+        <Office plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
+      )}
       {world.agents.map((a) => {
         const w = waiting.get(a.id);
         // The latest visit wins: someone asked twice walks to the second person.
@@ -340,7 +357,7 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, talk, calling, s
         // A lead at your desk stays there; a message they are sent meanwhile waits in their terminal.
         const call: Spot | undefined = calling.find((c) => c.leadId === a.id)?.spot;
         return (
-          <group key={a.id}>
+          <group key={`${layout}:${a.id}`}>
             <Avatar
               agent={a}
               spot={call ?? visit?.spot ?? home}
@@ -350,6 +367,7 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, talk, calling, s
               onSelect={onSelect}
               bubble={call ? null : visit?.text ?? talk.bubbles.findLast((b) => b.agentId === a.id)?.text ?? null}
               carrying={!call && visit?.kind === "handoff"}
+              walk={walk}
             />
             {a.helpers.length ? <Helpers helpers={a.helpers} spot={home} /> : null}
           </group>
