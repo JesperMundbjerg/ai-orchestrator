@@ -28,6 +28,14 @@ For UI work, `npm run dev` starts the service with `--watch` and the Vite UI on 
 | `INBOX_DATA_DIR` | `~/.review-inbox` | SQLite database and copied evidence, outside every worktree |
 | `INBOX_URL` | `http://127.0.0.1:$INBOX_PORT` | where agent-side tools find the service |
 
+## Restart the office
+
+```sh
+npm run restart-office            # add -- --build to rebuild the UI first
+```
+
+It stops the office listening on `INBOX_PORT` (only if that is `node src/server/main.ts`; anything else is left alone), starts this checkout's service in the background with its output appended to `office.log` in the data directory, and prints `Office restarted on 4870 (pid N)` once `/api/world` answers, or what went wrong. herdr's `HERDR_BIN_PATH` and `HERDR_SOCKET_PATH` come from the environment, else from `office.env` (`KEY=VALUE` lines) in the data directory, else from the running office's own environment. It never stops herdr.
+
 ## The office
 
 **Walk into the office** in the sidebar (or open `/#/world`) for the same agents as people in a 3D office:

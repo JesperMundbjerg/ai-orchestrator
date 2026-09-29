@@ -11,6 +11,7 @@
     "start": "node src/server/main.ts",
     "dev": "node scripts/dev.ts",
     "build": "vite build",
+    "restart-office": "node scripts/restart-office.ts",
     "demo": "node scripts/demo.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json"
