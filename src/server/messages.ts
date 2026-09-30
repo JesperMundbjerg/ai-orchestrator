@@ -1,12 +1,15 @@
 // What is said in the office: your instructions to a team, agents' messages to each other and
 // their answers to you, finished work handed to another team, and that team's verdict. Every message is stored with
 // one delivery row per agent it is meant for. A delivery is typed into the agent's terminal
-// only once herdr reports the agent free, one message at a time per agent, oldest first.
+// only once herdr reports the agent free, one message at a time per agent, oldest first. The
+// founder's answer to a review item goes the same way to a session nothing else would hand it to
+// while it is idle (no live integration): typed in the words the hook uses.
 
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import type { Delivery, DeliveryState, Message, MessageKind, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
-import { InboxError } from "./inbox.ts";
+import type { Delivery, DeliveryState, Message, MessageKind, PendingReply, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
+import { formatReply } from "../shared/agent-client.ts";
+import { InboxError, type Inbox } from "./inbox.ts";
 import { laneRecipient } from "./queue.ts";
 import type { AgentSource } from "./world.ts";
 
@@ -32,6 +35,10 @@ export class Messages {
   private world: () => WorldState;
   private now: () => Date;
   private changed: () => void;
+  /** The inbox's replies waiting for a pane, when the service wires them in. */
+  replies: Pick<Inbox, "typeable" | "claimTyping" | "typed"> | null = null;
+  /** Agents a reply is being typed into; like a message being sent, it keeps them busy. */
+  private typingTo = new Set<string>();
 
   constructor(db: DatabaseSync, source: AgentSource | null, world: () => WorldState, now: () => Date, changed: () => void) {
     this.db = db;
@@ -169,22 +176,47 @@ export class Messages {
     return this.message(messageId);
   }
 
-  /** Types every message whose agent has become free, one per agent, oldest first. */
+  /**
+   * Types what waits for every agent that has become free, one thing per agent: the founder's
+   * answer to something it asked first, then messages, oldest first.
+   */
   async deliver(state: WorldState): Promise<void> {
     const agents = new Map(state.agents.map((a) => [a.id, a]));
     const pending = this.db
       .prepare("SELECT d.agent_id, d.state, m.* FROM message_deliveries d JOIN messages m ON m.id = d.message_id WHERE d.state IN ('queued', 'sending') ORDER BY m.rowid")
       .all() as Row[];
-    const busy = new Set<string>();
+    const busy = new Set<string>(this.typingTo);
+    for (const row of pending) if (row.state === "sending") busy.add(str(row.agent_id));
     const sends: Array<Promise<void>> = [];
+    for (const { paneId, reply } of this.replies?.typeable() ?? []) {
+      const agent = state.agents.find((a) => a.paneId === paneId);
+      if (!agent || busy.has(agent.id)) continue;
+      busy.add(agent.id);
+      if (FREE.has(agent.status)) sends.push(this.typeReply(reply, agent));
+    }
     for (const row of pending) {
       const agentId = str(row.agent_id);
       if (busy.has(agentId)) continue;
       busy.add(agentId);
       const agent = agents.get(agentId);
-      if (row.state === "queued" && agent?.paneId && FREE.has(agent.status)) sends.push(this.send(toMessage(row, []), agent, state));
+      if (agent?.paneId && FREE.has(agent.status)) sends.push(this.send(toMessage(row, []), agent, state));
     }
     await Promise.all(sends);
+  }
+
+  /** The founder's answer, typed as the hook would hand it over, and acknowledged only once herdr sees the agent take it up. */
+  private async typeReply(reply: PendingReply, agent: WorldAgent): Promise<void> {
+    if (!this.source || !this.replies!.claimTyping(reply.deliveryId)) return;
+    this.typingTo.add(agent.id);
+    let error: string | undefined;
+    try {
+      await this.source.prompt(agent.paneId!, formatReply(reply));
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      this.typingTo.delete(agent.id);
+    }
+    this.replies!.typed(reply.deliveryId, error);
   }
 
   private async send(message: Message, agent: WorldAgent, state: WorldState): Promise<void> {

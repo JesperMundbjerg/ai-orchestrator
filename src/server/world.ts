@@ -8,11 +8,14 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
+import { serviceUrl } from "../shared/agent-client.ts";
 import { Activity } from "./activity.ts";
 import { Adapters } from "./adapter.ts";
 import { InboxError } from "./inbox.ts";
@@ -89,6 +92,24 @@ const FIRST_MATE = [
   'Answer each message from the founder in one or two sentences with `inbox say founder "…"`, and follow up the same way when the job is done or something new happens, such as a crew member finishing.',
   "Ask a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers, options read \"Label: consequence\", and the recommendation gives your pick and why; `inbox --help` has an example.",
 ].join(" ");
+
+/** The CLI of the checkout the service runs from; a lead's pane need not have `inbox` on its PATH. */
+const INBOX_BIN = fileURLToPath(new URL("../../bin/inbox", import.meta.url));
+
+/**
+ * Claude Code settings, for this session only, that run the inbox hook in a lead the office
+ * starts, so the founder's answers reach it at its turn boundaries. Nothing is written to anyone's
+ * settings. Left out when the settings Claude Code reads there already run it: two hooks would hand
+ * each reply over twice.
+ */
+export function hookSettings(cwd: string): string[] {
+  const config = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  const files = [join(config, "settings.json"), join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")];
+  if (files.some((f) => existsSync(f) && /\bhook claude\b/.test(readFileSync(f, "utf8")))) return [];
+  const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+  const hook = [{ hooks: [{ type: "command", command: `INBOX_URL=${quote(serviceUrl())} ${quote(INBOX_BIN)} hook claude` }] }];
+  return ["--settings", JSON.stringify({ hooks: { SessionStart: hook, UserPromptSubmit: hook, Stop: hook } })];
+}
 
 export function agentId(identity: string): string {
   return createHash("sha256").update(identity).digest("hex").slice(0, 12);
@@ -500,7 +521,7 @@ export class World {
     ].filter(Boolean).join(" ");
     // The lead starts with only its brief, so herdr sees it ready for input; its first task follows as a prompt.
     try {
-      await this.source.startAgent(paneId, `lead-${place.slug}`.slice(0, 32).replace(/-+$/, ""), "claude", [...FIRST_MATE_ARGS, "--append-system-prompt", brief]);
+      await this.source.startAgent(paneId, `lead-${place.slug}`.slice(0, 32).replace(/-+$/, ""), "claude", [...FIRST_MATE_ARGS, ...hookSettings(place.path), "--append-system-prompt", brief]);
     } catch (err) {
       // herdr gave up waiting for it to look ready, but it may be running all the same: then the project is started.
       await this.source.refresh?.().catch(() => {});

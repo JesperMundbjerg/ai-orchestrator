@@ -50,6 +50,8 @@ export class Inbox {
   private filesDir: string;
   private presence: PresenceSource;
   private now: () => Date;
+  /** Replies being typed into a pane right now (kept in memory: a restart mid-typing leaves the reply claimed, shown as uncertain). */
+  private typing = new Set<string>();
   onChange: (reason: string) => void = () => {};
 
   constructor(db: DatabaseSync, filesDir: string, presence: PresenceSource, now: () => Date = () => new Date()) {
@@ -261,25 +263,51 @@ export class Inbox {
                 FROM replies r JOIN items i ON i.id = r.item_id
                 WHERE i.task_id = ? AND r.state = 'queued' ORDER BY r.created_at`)
       .all(str(task.id)) as Row[];
-    if (rows.length) {
-      this.db.prepare(`UPDATE replies SET claimed_at = coalesce(claimed_at, ?) WHERE id IN (${rows.map(() => "?").join(",")})`).run(now, ...rows.map((r) => str(r.id)));
+    // A reply the office is typing into the session's pane is on its way; handing it over too would say it twice.
+    const out = rows.filter((r) => !this.typing.has(str(r.id)));
+    if (out.length) {
+      this.db.prepare(`UPDATE replies SET claimed_at = coalesce(claimed_at, ?) WHERE id IN (${out.map(() => "?").join(",")})`).run(now, ...out.map((r) => str(r.id)));
     }
-    return rows.map((r) => {
-      const options = JSON.parse(str(r.options)) as Option[];
-      return {
-        deliveryId: str(r.id),
-        itemId: str(r.item_id),
-        itemKey: str(r.key),
-        itemTitle: str(r.item_title),
-        itemType: str(r.item_type) as Item["type"],
-        revision: Number(r.revision),
-        action: str(r.action) as ReplyAction,
-        choice: nullable(r.choice),
-        choiceLabel: options.find((o) => o.id === r.choice)?.label ?? null,
-        text: str(r.text),
-        createdAt: str(r.created_at),
-      };
+    return out.map(toPending);
+  }
+
+  /**
+   * Replies the office may type into a session's herdr pane, oldest first: queued and never
+   * collected, for a session with no live integration (a hook hands replies over only at a turn
+   * boundary, which an idle agent never reaches). Whether the agent is free is for the typist to check.
+   */
+  typeable(): Array<{ paneId: string; reply: PendingReply }> {
+    const rows = this.db
+      .prepare(`SELECT r.*, i.key, i.title AS item_title, i.type AS item_type, i.options, t.harness, t.session_id, t.listener_seen_at
+                FROM replies r JOIN items i ON i.id = r.item_id JOIN tasks t ON t.id = i.task_id
+                WHERE r.state = 'queued' AND r.claimed_at IS NULL ORDER BY r.created_at`)
+      .all() as Row[];
+    return rows.flatMap((r) => {
+      if (isFresh(nullable(r.listener_seen_at), this.now())) return [];
+      const presence = this.presence.forSession(str(r.harness) as Harness, str(r.session_id));
+      return presence ? [{ paneId: presence.paneId, reply: toPending(r) }] : [];
     });
+  }
+
+  /** Claims a reply for typing, so it is typed once and no hook or pull hands it over meanwhile. */
+  claimTyping(deliveryId: string): boolean {
+    const claimed = this.db.prepare("UPDATE replies SET claimed_at = ? WHERE id = ? AND state = 'queued' AND claimed_at IS NULL").run(this.iso(), deliveryId);
+    if (!claimed.changes) return false;
+    this.typing.add(deliveryId);
+    return true;
+  }
+
+  /**
+   * The office typed a claimed reply into the session's pane (herdr saw the agent take it up), or
+   * could not. It settles like an integration's ack; a reply that changed meanwhile (overtaken by a
+   * new revision) is left as it is.
+   */
+  typed(deliveryId: string, error?: string): void {
+    this.typing.delete(deliveryId);
+    const row = this.db.prepare("SELECT r.*, i.task_id FROM replies r JOIN items i ON i.id = r.item_id WHERE r.id = ?").get(deliveryId) as Row | undefined;
+    if (!row || str(row.state) !== "queued") return;
+    this.settle(row, error, "system", { via: "pane" });
+    this.onChange("reply");
   }
 
   /** The owning session confirms a reply reached it (or reports that it could not take it). */
@@ -290,25 +318,31 @@ export class Inbox {
                 WHERE r.id = ? AND t.harness = ? AND t.session_id = ?`)
       .get(deliveryId, binding.harness, binding.sessionId) as Row | undefined;
     if (!row) throw new InboxError(404, `no reply ${deliveryId} for this session`);
-    const itemId = str(row.item_id);
     if (str(row.state) === "delivered") return this.reply(deliveryId);
     if (str(row.state) !== "queued") throw new InboxError(409, `reply ${deliveryId} is ${str(row.state)}, not queued`);
+    this.settle(row, error, "agent");
+    this.onChange("reply");
+    return this.reply(deliveryId);
+  }
+
+  /** A queued reply reached its session, or could not: a failed one returns its item to Needs you, with Retry. */
+  private settle(row: Row, error: string | undefined, actor: HistoryEvent["actor"], detail: Record<string, unknown> = {}): void {
+    const deliveryId = str(row.id);
+    const itemId = str(row.item_id);
     this.tx(() => {
       if (error) {
         this.db.prepare("UPDATE replies SET state = 'failed', error = ?, claimed_at = NULL WHERE id = ?").run(error, deliveryId);
         this.db.prepare("UPDATE items SET state = 'needs_attention', updated_at = ? WHERE id = ?").run(this.iso(), itemId);
-        this.log("agent", "reply.failed", { taskId: str(row.task_id), itemId }, { deliveryId, error });
+        this.log(actor, "reply.failed", { taskId: str(row.task_id), itemId }, { deliveryId, error, ...detail });
       } else {
         this.db.prepare("UPDATE replies SET state = 'delivered', delivered_at = ? WHERE id = ?").run(this.iso(), deliveryId);
         const waiting = this.db.prepare("SELECT count(*) AS n FROM replies WHERE item_id = ? AND state = 'queued'").get(itemId) as Row;
         if (Number(waiting.n) === 0) {
           this.db.prepare("UPDATE items SET state = 'delivered', updated_at = ? WHERE id = ? AND state = 'answer_queued'").run(this.iso(), itemId);
         }
-        this.log("agent", "reply.delivered", { taskId: str(row.task_id), itemId }, { deliveryId });
+        this.log(actor, "reply.delivered", { taskId: str(row.task_id), itemId }, { deliveryId, ...detail });
       }
     });
-    this.onChange("reply");
-    return this.reply(deliveryId);
   }
 
   /** The agent withdraws a request that no longer applies, or resolves one it has acted on. */
@@ -544,6 +578,23 @@ export function capabilities(binding: Binding, listenerSeenAt: string | null, bo
 
 function isFresh(at: string | null, now: Date): boolean {
   return at !== null && now.getTime() - Date.parse(at) < LISTENER_FRESH_MS;
+}
+
+function toPending(r: Row): PendingReply {
+  const options = JSON.parse(str(r.options)) as Option[];
+  return {
+    deliveryId: str(r.id),
+    itemId: str(r.item_id),
+    itemKey: str(r.key),
+    itemTitle: str(r.item_title),
+    itemType: str(r.item_type) as Item["type"],
+    revision: Number(r.revision),
+    action: str(r.action) as ReplyAction,
+    choice: nullable(r.choice),
+    choiceLabel: options.find((o) => o.id === r.choice)?.label ?? null,
+    text: str(r.text),
+    createdAt: str(r.created_at),
+  };
 }
 
 function normalizeItem(raw: SubmitInput["item"]): Omit<Item, "id" | "taskId" | "key" | "revision" | "state" | "snoozedUntil" | "createdAt" | "updatedAt"> {
