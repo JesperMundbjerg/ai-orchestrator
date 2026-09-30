@@ -1,10 +1,10 @@
 import { useLayoutEffect, useRef } from "react";
 import { BoxGeometry, Color, IcosahedronGeometry, Object3D, type InstancedMesh } from "three";
 import { place, type Room } from "./building.ts";
-import type { Desk, Vec2 } from "./layout.ts";
+import type { Vec2 } from "./layout.ts";
 
-// The building's furniture as a few instanced meshes: every box of one finish, however many desks,
-// chairs and planters there are, is one draw call. A piece is built from boxes in its own frame
+// The building's furniture as a few instanced meshes: every box of one finish, however many chairs,
+// sofas and planters there are, is one draw call. A piece is built from boxes in its own frame
 // and put down on the floor by `Kit`.
 
 export type Finish = "white" | "wood" | "metal" | "fabric" | "screen" | "leaf" | "hedge" | "pot" | "wall" | "frame" | "window" | "glass" | "frosted";
@@ -66,29 +66,6 @@ export function officeChair(add: Add, x: number, z: number, turn: number, color:
   add("metal", [x, 0.25, z], [0.06, 0.42, 0.06], turn);
   add("metal", [x, 0.05, z], [0.56, 0.04, 0.07], turn);
   add("metal", [x, 0.05, z], [0.07, 0.04, 0.56], turn);
-}
-
-/**
- * A desk as the plan has it: a white top on legs, two monitors on the far side facing the person
- * and their chair. Someone standing there has pushed it back to their left, out of the way of a
- * visitor, who stands to their right.
- */
-export function deskUnit(kit: Kit, desk: Desk, occupied: boolean, lit: boolean, chair: string) {
-  const lead = desk.kind === "lead";
-  const w = lead ? 2 : 1.4;
-  const add = kit.at(desk.pos, desk.facing);
-  add("white", [0, 0.73, 0], [w, 0.04, 0.7]);
-  for (const sx of [-1, 1]) add("metal", [sx * (w / 2 - 0.05), 0.36, 0], [0.05, 0.72, 0.62]);
-  add("white", [0, 0.9, 0.36], [w, 0.3, 0.02]);
-  const screens = lead ? [-0.45, 0.45] : [-0.3, 0.3];
-  for (const dx of screens) {
-    add("metal", [dx, 0.8, 0.2], [0.06, 0.12, 0.06]);
-    add("metal", [dx, 1.03, 0.18], [0.56, 0.34, 0.03]);
-    add("screen", [dx, 1.03, 0.163], [0.52, 0.3, 0.005], 0, lit ? "#8fd6a8" : occupied ? "#3a4a5e" : "#1a1e24");
-  }
-  add("white", [0.1, 0.765, -0.12], [0.42, 0.015, 0.14]);
-  if (occupied) officeChair(add, -0.45, -0.95, 0.5, chair);
-  else officeChair(add, 0, -0.45, 0, chair);
 }
 
 /** A potted plant: a pot and a few leafy clumps above it. */

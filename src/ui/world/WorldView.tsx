@@ -6,6 +6,7 @@ import { api } from "../api.ts";
 import { useItemDetail } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
 import { Avatar } from "./Avatar.tsx";
+import { crafters } from "./crafts.ts";
 import { lookFor } from "./look.ts";
 import { CALLER, planOffice, queueOrder, SPAWN, YOUR_VIEW, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
 import { callerIn, isBuilding, planBuilding, routeIn, savedLayout, saveLayout, viewIn, type BuildingPlan, type Layout } from "./building.ts";
@@ -376,6 +377,8 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
 }) {
   const { minX, maxX, minZ, maxZ } = plan.bounds;
   const walk = useMemo(() => routeIn(plan), [plan]);
+  // What each member makes at their station in their team's room.
+  const makes = useMemo(() => crafters(office.corners), [office]);
   // Changing the layout puts everyone straight at their new places rather than walking them there through the walls.
   const layout = isBuilding(plan) ? "building" : "ring";
   // The light aims at the origin and its shadow frustum is in the light's own frame, so it is
@@ -424,6 +427,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
               carrying={!call && visit?.kind === "handoff"}
               team={a.teamId && teams.has(a.teamId) ? { name: teams.get(a.teamId)!.name, color: tagColor(a.teamId) } : null}
               walk={walk}
+              craft={makes.get(a.id) ?? null}
             />
             {a.helpers.length ? <Helpers helpers={a.helpers} spot={home} /> : null}
           </group>

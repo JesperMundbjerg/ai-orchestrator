@@ -4,7 +4,9 @@ import type { Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
 import { textTexture, type Line } from "./label.ts";
 import { lookFor } from "./look.ts";
 import { buildingPipelines, place, teamDesks, type BuildingPlan, type Garden, type Rect, type Room, type Wall } from "./building.ts";
-import { deskUnit, Furniture, Kit, officeChair, plant, sofa } from "./Furniture.tsx";
+import { Furniture, Kit, officeChair, plant, sofa } from "./Furniture.tsx";
+import { stationsFor, studio } from "./crafts.ts";
+import { Crafts } from "./Crafts.tsx";
 import { GardenScene } from "./Garden.tsx";
 import { plantGarden, treesRound } from "./planting.ts";
 import { boardLines, Pipeline, useTexture } from "./Office.tsx";
@@ -38,8 +40,12 @@ export function BuildingOffice({ plan, agents, teams, work, queueLength }: { pla
   const { outline, hall } = plan;
   const lounge = plan.rooms.find((r) => r.kind === "lounge")!;
   const meetings = plan.rooms.filter((r) => r.kind === "meeting");
-  const working = [...agents.values()].filter((a) => a.status === "working").map((a) => a.id).join(",");
-  const pieces = useMemo(() => furnish(plan, new Set(working.split(","))), [plan, working]);
+  const pieces = useMemo(() => furnish(plan), [plan]);
+  // A craft station for every member of a team, and free ones in the bays no team has yet.
+  const stations = [
+    ...studio(plan.corners),
+    ...plan.rooms.filter((r) => r.kind === "bay" && !r.teamId).flatMap((r) => stationsFor(teamDesks(r, []).desks, `bay@${r.center.join(",")}`)),
+  ];
   // The plan is made again whenever the world changes; the garden only grows again when the building's size does.
   const size = JSON.stringify(outline);
   const green = useMemo(() => ({ garden: plan.garden, planting: plantGarden(plan.garden), outside: treesRound(outline) }), [size]);
@@ -55,13 +61,14 @@ export function BuildingOffice({ plan, agents, teams, work, queueLength }: { pla
       {meetings.map((r, i) => <Carpet key={i} room={r} color="#8e959c" />)}
       <GardenScene garden={green.garden} planting={green.planting} outside={green.outside} />
       <Furniture pieces={pieces} />
+      <Crafts stations={stations} agents={agents} />
       <Reception plan={plan} />
       <WaitingSign garden={plan.garden} queueLength={queueLength} />
       <LoungeSign room={lounge} />
       {plan.corners.map((c) => (
         <TeamTv key={c.team.id} corner={c} room={plan.rooms.find((r) => r.teamId === c.team.id)!} agents={agents} teams={teams} work={work} />
       ))}
-      {plan.rooms.filter((r) => r.kind === "bay" && !r.teamId).map((r, i) => <FreeDesks key={i} room={r} />)}
+      {plan.rooms.filter((r) => r.kind === "bay" && !r.teamId).map((r, i) => <FreeBay key={i} room={r} />)}
       {meetings.map((r, i) => <MeetingRoom key={i} room={r} n={i + 1} />)}
       {buildingPipelines(plan).map((p) => (
         <Pipeline key={p.fromTeamId} path={p.path} busy={work.some((w) => w.fromTeamId === p.fromTeamId && w.toTeamId === p.toTeamId && w.state === "in_review")} />
@@ -76,29 +83,33 @@ function carpetFor(teamId: string): string {
 }
 
 /**
- * Everything that stands on the floor, as boxes: the desks and chairs in every bay, planters,
+ * Everything that stands on the floor, as boxes, but the craft stations (Crafts.tsx): what is at the back of every bay, planters,
  * the lounge's sofas and kitchen, the meeting rooms' tables, reception, plants, and the garden's
  * benches. What grows in the garden is Garden.tsx.
  */
-function furnish(plan: BuildingPlan, working: Set<string>) {
+function furnish(plan: BuildingPlan) {
   const kit = new Kit();
   const { outline, hall } = plan;
   let n = 0;
   const chair = () => CHAIRS[n++ % CHAIRS.length]!;
 
-  // The bays: their desks, and at the back a low cabinet under the TV, a whiteboard and a plant.
+  // The bays: at the back a low cabinet under the TV with finished work on it, a pegboard of tools and a plant.
   for (const room of plan.rooms.filter((r) => r.kind === "bay")) {
-    const corner = plan.corners.find((c) => c.team.id === room.teamId);
-    const desks = corner?.desks ?? teamDesks(room, []).desks;
-    for (const d of desks) deskUnit(kit, d, !!d.occupantId, !!d.occupantId && working.has(d.occupantId), chair());
     const add = kit.in(room);
     const [hw, hd] = room.half;
     add("white", [0, 0.36, 0.4 - hd], [2.6, 0.72, 0.45]);
     add("wood", [0, 0.735, 0.4 - hd], [2.64, 0.03, 0.48]);
-    add("metal", [0.9, 0.84, 0.4 - hd], [0.3, 0.18, 0.22]);
-    add("white", [-3.3, 1.45, 0.4 - hd], [1.6, 1.0, 0.04]);
+    add("pot", [0.7, 0.87, 0.4 - hd], [0.2, 0.24, 0.2], 0, "#b8643c");
+    add("pot", [1.0, 0.83, 0.42 - hd], [0.16, 0.16, 0.16], 0.5, "#6f8fa8");
+    add("wood", [-0.8, 0.8, 0.4 - hd], [0.5, 0.1, 0.3], 0.1, "#d9b98c");
+    add("wood", [-3.3, 1.45, 0.4 - hd], [1.6, 1.0, 0.04], 0, "#c9a27a");
     add("metal", [-3.3, 1.45, 0.38 - hd], [1.66, 1.06, 0.03]);
     for (const sx of [-1, 1]) add("metal", [-3.3 + sx * 0.78, 0.5, 0.4 - hd], [0.04, 1.0, 0.04]);
+    // Tools hung on the pegboard: a saw, hammers, brushes and chisels.
+    add("metal", [-3.75, 1.5, 0.44 - hd], [0.42, 0.14, 0.01], 0, "#b8bec6");
+    for (const [x, h, c] of [[-3.35, 0.3, "#7a5a40"], [-3.2, 0.24, "#7a5a40"], [-3.02, 0.2, "#d9534f"], [-2.94, 0.2, "#3f7fd0"], [-2.86, 0.2, "#f0c040"], [-2.75, 0.26, "#8a939c"]] as const) {
+      add("wood", [x, 1.45, 0.44 - hd], [0.03, h, 0.02], 0, c);
+    }
     plant(add, hw - 0.5, 0.5 - hd, 1.4);
   }
 
@@ -350,9 +361,9 @@ function HangingSign({ texture, z }: { texture: Texture; z: number }) {
   );
 }
 
-/** A bay no team has yet: its desks stand free, and its sign says so. */
-function FreeDesks({ room }: { room: Room }) {
-  const texture = useTexture(() => textTexture([{ text: "Free desks", size: 80, color: "#ffffff", weight: 800 }, { text: "for the next project", size: 40, color: "#b8c2cc" }], { width: 1024, height: 360, background: "#2f3b48" }), []);
+/** A bay no team has yet: its stations stand free, and its sign says so. */
+function FreeBay({ room }: { room: Room }) {
+  const texture = useTexture(() => textTexture([{ text: "Free workshop", size: 80, color: "#ffffff", weight: 800 }, { text: "for the next project", size: 40, color: "#b8c2cc" }], { width: 1024, height: 360, background: "#2f3b48" }), []);
   return (
     <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
       <HangingSign texture={texture} z={room.half[1] - 0.45} />

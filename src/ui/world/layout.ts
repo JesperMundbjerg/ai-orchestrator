@@ -36,6 +36,7 @@ export interface Spot {
   stroll?: Vec2[];
 }
 
+/** A member's place in their team's room: a craft station stands there (crafts.ts), its person in front of it, facing it. */
 export interface Desk {
   pos: Vec2;
   facing: number;

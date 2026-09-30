@@ -18,7 +18,8 @@
 //            (eight desks at least, another bench for a bigger crew), the lead's desk at the
 //            front, the team's TV on the back wall and a way in at each front corner. Every bay
 //            is as deep as the deepest one needs, so the building stays square; places no team
-//            has yet have their desks free.
+//            has yet have their desks free. A desk here is a place: what stands on it is a craft
+//            station (crafts.ts)
 //   south    the lounge and kitchen west of the front door, two glass meeting rooms east of it
 //
 // Where your desk stood, the origin, is now the clearing: you stand there, facing north.

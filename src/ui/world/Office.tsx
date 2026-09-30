@@ -4,8 +4,10 @@ import type { Group, Texture } from "three";
 import type { Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
 import { textTexture, type Line } from "./label.ts";
 import { lookFor } from "./look.ts";
+import { studio } from "./crafts.ts";
+import { Crafts } from "./Crafts.tsx";
 import { teamLine } from "./status.ts";
-import { CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, LOUNGE_SOFAS, LOUNGE_TABLE, pipelineLane, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, type Corner, type Desk, type OfficePlan, type Vec2 } from "./layout.ts";
+import { CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, LOUNGE_SOFAS, LOUNGE_TABLE, pipelineLane, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, type Corner, type OfficePlan, type Vec2 } from "./layout.ts";
 
 /** The room and its furniture. Nothing here moves on its own; it follows the plan. */
 export function Office({ plan, agents, teams, work, queueLength }: { plan: OfficePlan; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; queueLength: number }) {
@@ -36,6 +38,7 @@ export function Office({ plan, agents, teams, work, queueLength }: { plan: Offic
       {plan.corners.map((c) => (
         <TeamCorner key={c.team.id} corner={c} agents={agents} teams={teams} work={work} />
       ))}
+      <Crafts stations={studio(plan.corners)} agents={agents} />
       {pipelines(plan).map((p) => (
         <Pipeline key={p.fromTeamId} path={p.path} busy={work.some((w) => w.fromTeamId === p.fromTeamId && w.toTeamId === p.toTeamId && w.state === "in_review")} />
       ))}
@@ -176,7 +179,7 @@ export function Lounge({ center, facing, halfDepth = CORNER_HALF_DEPTH }: { cent
 
 /** A team's corner of the ring, or its bay in the building, which is as wide and deep as `half` says. */
 export function TeamCorner({ corner, agents, teams, work, half = [CORNER_HALF_WIDTH, CORNER_HALF_DEPTH] }: { corner: Corner; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; half?: Vec2 }) {
-  const { team, center, facing, desks } = corner;
+  const { team, center, facing } = corner;
   const [cx, cz] = center;
   const tint = useMemo(() => lookFor(team.id).shirt, [team.id]);
   const lines = boardLines(corner, agents, teams, work);
@@ -207,9 +210,6 @@ export function TeamCorner({ corner, agents, teams, work, half = [CORNER_HALF_WI
           ))}
         </group>
       </group>
-      {desks.map((desk, i) => (
-        <DeskUnit key={i} desk={desk} working={desk.occupantId ? agents.get(desk.occupantId)?.status === "working" : false} />
-      ))}
     </group>
   );
 }
@@ -227,45 +227,6 @@ export function boardLines({ team, members }: Corner, agents: Map<string, WorldA
     { text: status.text, size: 34, color: status.color, weight: 600 },
     ...(flow ? [{ text: flow, size: 30, color: toReview ? "#8fb8ff" : "#b8c2cc", weight: 600 }] : []),
   ];
-}
-
-function DeskUnit({ desk, working }: { desk: Desk; working: boolean }) {
-  const [x, z] = desk.pos;
-  const lead = desk.kind === "lead";
-  return (
-    <group position={[x, 0, z]} rotation-y={desk.facing + Math.PI} scale={[desk.scale, 1, desk.scale]}>
-      <mesh position={[0, 0.74, 0]} castShadow receiveShadow>
-        <boxGeometry args={[lead ? 2 : 1.4, 0.06, 0.7]} />
-        <meshStandardMaterial color={lead ? "#3a4656" : "#4a5566"} roughness={0.5} />
-      </mesh>
-      <mesh position={[0, 0.37, -0.25]}>
-        <boxGeometry args={[lead ? 1.9 : 1.3, 0.72, 0.05]} />
-        <meshStandardMaterial color="#2c3440" />
-      </mesh>
-      {(lead ? [-0.55, 0, 0.55] : [-0.3, 0.3]).map((dx) => (
-        <Monitor key={dx} position={[dx, 0.77, -0.15]} rotation={0} lit={working} color={lead ? "#5b9dff" : "#3ddc84"} dim={!!desk.occupantId} />
-      ))}
-    </group>
-  );
-}
-
-function Monitor({ position, rotation, lit, color, dim = true }: { position: [number, number, number]; rotation: number; lit: boolean; color: string; dim?: boolean }) {
-  return (
-    <group position={position} rotation-y={rotation}>
-      <mesh position={[0, 0.06, 0]}>
-        <boxGeometry args={[0.12, 0.12, 0.08]} />
-        <meshStandardMaterial color="#1b1f24" />
-      </mesh>
-      <mesh position={[0, 0.3, 0]} castShadow>
-        <boxGeometry args={[0.52, 0.32, 0.03]} />
-        <meshStandardMaterial color="#15181d" />
-      </mesh>
-      <mesh position={[0, 0.3, 0.017]}>
-        <planeGeometry args={[0.48, 0.28]} />
-        <meshBasicMaterial color={lit ? color : dim ? "#2d3a4a" : "#16191e"} toneMapped={false} />
-      </mesh>
-    </group>
-  );
 }
 
 export function Plant({ x, z }: { x: number; z: number }) {

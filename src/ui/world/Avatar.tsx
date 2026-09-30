@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import type { Group, Mesh, MeshBasicMaterial, Texture } from "three";
 import type { ItemType, WorldAgent } from "../../shared/types.ts";
@@ -7,6 +7,8 @@ import { textTexture } from "./label.ts";
 import { LAMP } from "./status.ts";
 import { lookFor, type Look } from "./look.ts";
 import { route, type Spot, type Vec2 } from "./layout.ts";
+import type { Craft } from "./crafts.ts";
+import { craftPose, HandTool } from "./Crafts.tsx";
 
 const WALK_SPEED = 1.9;
 /** Strolling round the garden, taking it easy. */
@@ -42,9 +44,11 @@ interface Props {
   team?: { name: string; color: string } | null;
   /** How to walk in this office: round the ring, or along the building's walkway. */
   walk?: (from: Vec2, fromSpot: Spot | null, to: Spot) => Vec2[];
+  /** What they make at their station in their team's room, while they work there. */
+  craft?: Craft | null;
 }
 
-export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bubble, carrying, team = null, walk = route }: Props) {
+export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bubble, carrying, team = null, walk = route, craft = null }: Props) {
   const look = useMemo(() => lookFor(agent.id), [agent.id]);
   const root = useRef<Group>(null);
   const legs = useRef<[Group | null, Group | null]>([null, null]);
@@ -55,6 +59,9 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const head = useRef<Group>(null);
   const upper = useRef<Group>(null);
   const flower = useRef<Group>(null);
+  const tool = useRef<Group>(null);
+  const saw = useRef<Group>(null);
+  const hammer = useRef<Group>(null);
   const motion = useRef({
     pos: [...(enterFrom ?? spot.pos)] as Vec2,
     yaw: spot.facing,
@@ -147,7 +154,11 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     const pose = walking ? undefined : m.spot.pose;
 
     const t = state.clock.elapsedTime + m.phase;
-    const typing = !walking && m.spot.zone === "team" && agent.status === "working";
+    // At their station while they work, they make something; otherwise they stand at it.
+    const crafting = craft && !walking && m.spot.zone === "team" && agent.status === "working" ? craftPose(craft, t) : null;
+    if (tool.current) tool.current.visible = !!crafting;
+    if (saw.current) saw.current.visible = !crafting?.hammering;
+    if (hammer.current) hammer.current.visible = !!crafting?.hammering;
     const holding = m.spot.zone === "queue" || carrying;
     // A stroller never stops, so they say it on the way.
     if (speech.current) speech.current.visible = !walking || m.strolling;
@@ -161,13 +172,15 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     }
     // Picking a flower: bend down to it for a few seconds, then stand up and hold it up to look at it.
     const holdingFlower = picking && (t % 8) > 3.5;
-    if (upper.current) upper.current.rotation.x = picking && !holdingFlower ? BEND : pose === "look" || pose === "stretch" ? -0.08 : 0;
+    if (upper.current) upper.current.rotation.x = picking && !holdingFlower ? BEND : pose === "look" || pose === "stretch" ? -0.08 : crafting ? crafting.lean : 0;
     if (flower.current) flower.current.visible = holdingFlower;
     if (head.current) {
       head.current.rotation.x = pose === "look" ? -0.5 + Math.sin(t * 0.5) * 0.06 : picking ? (holdingFlower ? 0.1 : -0.4) : pose === "watch" ? 0.3 : pose === "chat" ? Math.sin(t * 1.7) * 0.07 : 0;
       head.current.rotation.y = pose === "look" ? Math.sin(t * 0.3) * 0.35 : pose === "watch" ? Math.sin(t * 0.4) * 0.3 : 0;
     }
     if (al && ar) {
+      al.rotation.z = crafting ? crafting.left[1] : 0;
+      ar.rotation.z = crafting ? crafting.right[1] : 0;
       if (pose === "pick") {
         // Bent over, the arms hang to the ground and one reaches for the flower.
         al.rotation.x = holdingFlower ? 0 : -BEND + 0.1;
@@ -183,9 +196,9 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
         // Arms up over the head for a long stretch, then down again.
         al.rotation.x = -2.9;
         ar.rotation.x = -2.9;
-      } else if (typing) {
-        al.rotation.x = -1.15 + Math.sin(t * 14) * 0.08;
-        ar.rotation.x = -1.15 + Math.sin(t * 14 + 1.7) * 0.08;
+      } else if (crafting) {
+        al.rotation.x = crafting.left[0];
+        ar.rotation.x = crafting.right[0];
       } else if (sitting) {
         al.rotation.x = -0.55 + Math.sin(t * 1.3) * 0.03;
         ar.rotation.x = -0.55 + Math.sin(t * 1.3 + 1) * 0.03;
@@ -224,7 +237,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
       onPointerOut={() => setHovered(false)}
     >
       <group scale={look.height}>
-        <Body look={look} legs={legs} arms={arms} card={card} folder={carrying} head={head} upper={upper} flower={flower} />
+        <Body look={look} legs={legs} arms={arms} card={card} folder={carrying} head={head} upper={upper} flower={flower} tool={craft ? <HandTool craft={craft} tool={tool} saw={saw} hammer={hammer} /> : null} />
       </group>
       <mesh ref={lamp} position={[0, 2.18, 0]}>
         <sphereGeometry args={[0.08, 20, 16]} />
@@ -261,7 +274,7 @@ function turn(from: number, to: number, max: number): number {
   return from + Math.max(-max, Math.min(max, d));
 }
 
-export function Body({ look, legs, arms, card, folder = false, head, upper, flower }: {
+export function Body({ look, legs, arms, card, folder = false, head, upper, flower, tool = null }: {
   look: Look;
   legs: RefObject<[Group | null, Group | null]>;
   arms: RefObject<[Group | null, Group | null]>;
@@ -273,6 +286,8 @@ export function Body({ look, legs, arms, card, folder = false, head, upper, flow
   upper?: RefObject<Group | null>;
   /** A flower in the right hand, shown once picked. */
   flower?: RefObject<Group | null>;
+  /** What they work with at their craft, in the right hand. */
+  tool?: ReactNode;
 }) {
   const skin = <meshStandardMaterial color={look.skin} roughness={0.7} />;
   const shirt = <meshStandardMaterial color={look.shirt} roughness={0.8} />;
@@ -334,6 +349,7 @@ export function Body({ look, legs, arms, card, folder = false, head, upper, flow
                   </mesh>
                 </group>
               ) : null}
+              {side === 1 && !folder && !card ? tool : null}
             </group>
           ))}
           <mesh position={[0, 1.55, 0]}>
