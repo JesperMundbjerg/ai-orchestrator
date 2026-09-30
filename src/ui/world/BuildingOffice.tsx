@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Color, type Texture } from "three";
+import { Color } from "three";
 import type { Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
 import { textTexture, type Line } from "./label.ts";
 import { lookFor } from "./look.ts";
@@ -9,24 +9,25 @@ import { stationsFor, studio } from "./crafts.ts";
 import { Crafts } from "./Crafts.tsx";
 import { GardenScene } from "./Garden.tsx";
 import { plantGarden, treesRound } from "./planting.ts";
-import { boardLines, Pipeline, useTexture } from "./Office.tsx";
+import { Pipeline, useTexture } from "./Office.tsx";
+import { freeBoard, teamBoard } from "./corkboard.ts";
+import { CorkBoard } from "./CorkBoard.tsx";
 import { LOUNGE_SOFAS, LOUNGE_TABLE, type Corner, type Vec2 } from "./layout.ts";
 
-/** Ceiling height, as far as the outside walls go: an open ceiling, high enough for the teams' signs. */
+/** Ceiling height, as far as the outside walls go: an open ceiling. */
 const WALL_H = 4.3;
 /** The windows run from the sill to the head, in panes this wide at most. */
 const SILL = 0.85;
 const HEAD = 3.4;
 const PANE = 1.6;
-/** The team's TV on a bay's back wall, for the crew. */
-const TV: Vec2 = [2.4, 1.35];
-const TV_Y = 1.75;
 /**
- * The team's sign hangs over the bay's front, its bottom above every name tag as seen from the
- * hall, so the name and status read over the heads of whoever is in the bay.
+ * The team's corkboard on a bay's back wall, twice as wide as tall. From eye height in the hall
+ * the name tags of a full bay's front row cover the back wall up to about 4 m, so the wall rises
+ * behind the board (to `PANEL_TOP`) and the board hangs high enough to read over them.
  */
-const SIGN: Vec2 = [3.2, 1.125];
-const SIGN_Y = 3.55;
+const BOARD_W = 4.4;
+const BOARD_Y = 4.2;
+const PANEL_TOP = 5.6;
 /** Planters between the bays and round the lounge: low enough to see every team from the hall. */
 const PLANTER_H = 0.75;
 const GLASS_H = 2.9;
@@ -66,7 +67,7 @@ export function BuildingOffice({ plan, agents, teams, work, queueLength }: { pla
       <WaitingSign garden={plan.garden} queueLength={queueLength} />
       <LoungeSign room={lounge} />
       {plan.corners.map((c) => (
-        <TeamTv key={c.team.id} corner={c} room={plan.rooms.find((r) => r.teamId === c.team.id)!} agents={agents} teams={teams} work={work} />
+        <TeamBoard key={c.team.id} corner={c} room={plan.rooms.find((r) => r.teamId === c.team.id)!} agents={agents} teams={teams} work={work} />
       ))}
       {plan.rooms.filter((r) => r.kind === "bay" && !r.teamId).map((r, i) => <FreeBay key={i} room={r} />)}
       {meetings.map((r, i) => <MeetingRoom key={i} room={r} n={i + 1} />)}
@@ -93,10 +94,12 @@ function furnish(plan: BuildingPlan) {
   let n = 0;
   const chair = () => CHAIRS[n++ % CHAIRS.length]!;
 
-  // The bays: at the back a low cabinet under the TV with finished work on it, a pegboard of tools and a plant.
+  // The bays: at the back a low cabinet under the corkboard with finished work on it, a pegboard of tools and a plant.
   for (const room of plan.rooms.filter((r) => r.kind === "bay")) {
     const add = kit.in(room);
     const [hw, hd] = room.half;
+    add("wall", [0, (WALL_H + PANEL_TOP) / 2, -hd], [BOARD_W + 0.7, PANEL_TOP - WALL_H, 0.3]);
+    add("wood", [0, PANEL_TOP + 0.02, -hd], [BOARD_W + 0.8, 0.04, 0.36]);
     add("white", [0, 0.36, 0.4 - hd], [2.6, 0.72, 0.45]);
     add("wood", [0, 0.735, 0.4 - hd], [2.64, 0.03, 0.48]);
     add("pot", [0.7, 0.87, 0.4 - hd], [0.2, 0.24, 0.2], 0, "#b8643c");
@@ -205,12 +208,11 @@ function furnish(plan: BuildingPlan) {
 
 /**
  * The outside walls: a sill and a head, and windows between them in panes, except behind the
- * teams' TVs, the meeting rooms' and the lounge's sign, where the wall is solid.
+ * bays' corkboards, the meeting rooms' and the lounge's sign, where the wall is solid.
  */
 function outerWalls(kit: Kit, plan: BuildingPlan) {
   const solid = plan.rooms
-    .filter((r) => r.kind !== "bay" || r.teamId)
-    .map((r) => ({ at: place(r.center, r.facing, [r.kind === "lounge" ? SIGN_X : 0, -r.half[1]]), half: r.kind === "bay" ? TV[0] / 2 + 0.1 : 1.3 }));
+    .map((r) => ({ at: place(r.center, r.facing, [r.kind === "lounge" ? SIGN_X : 0, -r.half[1]]), half: r.kind === "bay" ? BOARD_W / 2 + 0.2 : 1.3 }));
   for (const w of plan.walls.filter((x) => x.kind === "outer")) {
     const { x, z, length, yaw } = span(w);
     const add = kit.at([x, z], yaw);
@@ -309,64 +311,20 @@ function Sign({ lines, size, width, height, position, rotation = 0 }: { lines: L
   );
 }
 
-/** A team's TV on its bay's back wall, with the board the ring's corners show: name, what it is, how it is doing. */
-function TeamTv({ corner, room, agents, teams, work }: { corner: Corner; room: Room; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[] }) {
-  const lines = boardLines(corner, agents, teams, work);
-  const board = useTexture(() => textTexture(lines, { width: 1024, height: 360, background: "#141a22" }), [JSON.stringify(lines)]);
-  const tv = useTexture(() => textTexture(lines.map((l, i) => ({ ...l, size: Math.round(l.size * (i ? 1.45 : 1.6)) })), { width: 1024, height: 576, background: "#141a22" }), [JSON.stringify(lines)]);
+/** A team's corkboard on its bay's back wall, facing the crew and the hall. */
+function TeamBoard({ corner, room, agents, teams, work }: { corner: Corner; room: Room; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[] }) {
   return (
     <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
-      <WallTv texture={tv} z={0.19 - room.half[1]} />
-      <HangingSign texture={board} z={room.half[1] - 0.45} />
+      <CorkBoard board={teamBoard(corner, agents, teams, work)} width={BOARD_W} position={[0, BOARD_Y, 0.2 - room.half[1]]} />
     </group>
   );
 }
 
-function WallTv({ texture, z }: { texture: Texture; z: number }) {
-  return (
-    <group position={[0, TV_Y, z]}>
-      <mesh>
-        <boxGeometry args={[TV[0] + 0.08, TV[1] + 0.08, 0.06]} />
-        <meshStandardMaterial color="#111418" roughness={0.4} />
-      </mesh>
-      <mesh position={[0, 0, 0.032]}>
-        <planeGeometry args={TV} />
-        <meshBasicMaterial map={texture} toneMapped={false} />
-      </mesh>
-    </group>
-  );
-}
-
-/** A slim screen hung from the ceiling on two cables, showing the same on both faces. */
-function HangingSign({ texture, z }: { texture: Texture; z: number }) {
-  return (
-    <group position={[0, SIGN_Y, z]}>
-      <mesh>
-        <boxGeometry args={[SIGN[0] + 0.08, SIGN[1] + 0.08, 0.07]} />
-        <meshStandardMaterial color="#111418" roughness={0.4} />
-      </mesh>
-      {[0, Math.PI].map((turn) => (
-        <mesh key={turn} rotation-y={turn} position={[0, 0, turn ? -0.037 : 0.037]}>
-          <planeGeometry args={SIGN} />
-          <meshBasicMaterial map={texture} toneMapped={false} />
-        </mesh>
-      ))}
-      {[-1, 1].map((sx) => (
-        <mesh key={sx} position={[sx * (SIGN[0] / 2 - 0.3), (WALL_H - SIGN_Y) / 2 + SIGN[1] / 4, 0]}>
-          <boxGeometry args={[0.015, WALL_H - SIGN_Y - SIGN[1] / 2, 0.015]} />
-          <meshStandardMaterial color="#5b636c" />
-        </mesh>
-      ))}
-    </group>
-  );
-}
-
-/** A bay no team has yet: its stations stand free, and its sign says so. */
+/** A bay no team has yet: its stations stand free, and its board says so. */
 function FreeBay({ room }: { room: Room }) {
-  const texture = useTexture(() => textTexture([{ text: "Free workshop", size: 80, color: "#ffffff", weight: 800 }, { text: "for the next project", size: 40, color: "#b8c2cc" }], { width: 1024, height: 360, background: "#2f3b48" }), []);
   return (
     <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
-      <HangingSign texture={texture} z={room.half[1] - 0.45} />
+      <CorkBoard board={freeBoard(`bay@${room.center.join(",")}`)} width={BOARD_W} position={[0, BOARD_Y, 0.2 - room.half[1]]} />
     </group>
   );
 }

@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import type { Group, Texture } from "three";
 import type { Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
-import { textTexture, type Line } from "./label.ts";
+import { textTexture } from "./label.ts";
 import { lookFor } from "./look.ts";
 import { studio } from "./crafts.ts";
 import { Crafts } from "./Crafts.tsx";
-import { teamLine } from "./status.ts";
+import { teamBoard } from "./corkboard.ts";
+import { CorkBoard } from "./CorkBoard.tsx";
 import { CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, LOUNGE_SOFAS, LOUNGE_TABLE, pipelineLane, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, type Corner, type OfficePlan, type Vec2 } from "./layout.ts";
 
 /** The room and its furniture. Nothing here moves on its own; it follows the plan. */
@@ -182,51 +183,34 @@ export function TeamCorner({ corner, agents, teams, work, half = [CORNER_HALF_WI
   const { team, center, facing } = corner;
   const [cx, cz] = center;
   const tint = useMemo(() => lookFor(team.id).shirt, [team.id]);
-  const lines = boardLines(corner, agents, teams, work);
-  const board = useTexture(() => textTexture(lines, { width: 1024, height: 360, background: "#141a22", radius: 28 }), [JSON.stringify(lines)]);
+  const board = teamBoard(corner, agents, teams, work);
   return (
     <group>
-      {/* Turned so its open side faces your desk; the screen is at the back, facing you. */}
+      {/* Turned so its open side faces your desk; the board is at the back, facing you. */}
       <group position={[cx, 0, cz]} rotation-y={facing}>
         <mesh rotation-x={-Math.PI / 2} position={[0, 0.005, 0]} receiveShadow>
           <planeGeometry args={[half[0] * 2, half[1] * 2]} />
           <meshStandardMaterial color={tint} roughness={1} transparent opacity={0.28} />
         </mesh>
         <group position={[0, 0, 0.5 - half[1]]}>
-          {/* The big wall screen the crew faces, high enough to read over their heads and name tags */}
-          <mesh position={[0, 3.9, 0]} castShadow>
-            <boxGeometry args={[7.2, 2.7, 0.12]} />
-            <meshStandardMaterial color="#0e1116" />
-          </mesh>
-          <mesh position={[0, 3.9, 0.07]}>
-            <planeGeometry args={[6.9, 2.43]} />
-            <meshBasicMaterial map={board} toneMapped={false} />
-          </mesh>
-          {[-3, 3].map((dx) => (
-            <mesh key={dx} position={[dx, 1.3, 0]}>
-              <boxGeometry args={[0.12, 2.6, 0.12]} />
-              <meshStandardMaterial color="#2c3440" />
-            </mesh>
+          {/* The crew's corkboard on two wooden legs, high enough to read over their heads and name tags */}
+          <CorkBoard board={board} width={6} position={[0, 4.15, 0]} />
+          {[-2.6, 2.6].map((dx) => (
+            <group key={dx}>
+              <mesh position={[dx, 1.45, -0.08]} castShadow>
+                <boxGeometry args={[0.14, 2.9, 0.14]} />
+                <meshStandardMaterial color="#7a4f2e" roughness={0.8} />
+              </mesh>
+              <mesh position={[dx, 0.04, -0.08]}>
+                <boxGeometry args={[0.2, 0.08, 0.9]} />
+                <meshStandardMaterial color="#6b4428" roughness={0.8} />
+              </mesh>
+            </group>
           ))}
         </group>
       </group>
     </group>
   );
-}
-
-/** What a team's board says: its name, what it is, how it is doing, and the work it hands on and gets. */
-export function boardLines({ team, members }: Corner, agents: Map<string, WorldAgent>, teams: Map<string, WorldTeam>, work: Work[]): Line[] {
-  const live = teams.get(team.id) ?? null;
-  const toReview = work.filter((w) => w.toTeamId === team.id && w.state === "in_review").length;
-  const handsTo = team.handsTo ? teams.get(team.handsTo)?.name : null;
-  const flow = [toReview ? `${toReview} to review` : "", handsTo ? `hands its work to ${handsTo}` : ""].filter(Boolean).join(" · ");
-  const status = live ? teamLine(live, agents) : { text: "", color: "#8b95a3" };
-  return [
-    { text: team.name, size: 72, color: "#ffffff", weight: 800 },
-    { text: `${team.standing ? "Always on" : `Project · ${team.branch ?? "worktree"}`} · ${members.length} ${members.length === 1 ? "agent" : "agents"}`, size: 34, color: "#b8c2cc", weight: 500 },
-    { text: status.text, size: 34, color: status.color, weight: 600 },
-    ...(flow ? [{ text: flow, size: 30, color: toReview ? "#8fb8ff" : "#b8c2cc", weight: 600 }] : []),
-  ];
 }
 
 export function Plant({ x, z }: { x: number; z: number }) {
