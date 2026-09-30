@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import type { PerspectiveCamera } from "three";
 import type { Vec2 } from "./layout.ts";
+import { usePace } from "./Pace.tsx";
 
 const EYE = 1.62;
 const WALK = 4.2;
@@ -33,7 +34,14 @@ const pitchAt = (lift: number) => LEVEL_PITCH + lift * (OVERVIEW_PITCH - LEVEL_P
  * under it.
  */
 export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: number; minZ: number; maxZ: number }; start: FlyTarget; fly: FlyTarget | null }) {
-  const { camera, gl } = useThree();
+  const { camera, gl, invalidate } = useThree();
+  const pace = usePace();
+  // You moved the view: draw it now, and smoothly while it moves.
+  const stir = useRef(() => {});
+  stir.current = () => {
+    pace?.moved(performance.now());
+    invalidate();
+  };
   // High enough that the whole floor fits below you.
   const top = Math.max(18, (bounds.maxX - bounds.minX) * 0.72);
   const lifted = start.lift ?? 0;
@@ -57,10 +65,12 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
       v.pitch = Math.max(-1.5, Math.min(1.0, v.pitch - (e.clientY - drag.y) * 0.003 * gain));
       drag = { x: e.clientX, y: e.clientY };
       flight.current = null;
+      stir.current();
     };
     const up = () => void (drag = null);
     const zoom = (factor: number) => {
       const v = view.current;
+      stir.current();
       const lifting = factor > 1 ? v.fov >= FOV_MAX - 0.01 : v.lift > 0;
       if (!lifting) {
         v.fov = Math.max(FOV_MIN, Math.min(FOV_MAX, v.fov * factor));
@@ -81,6 +91,7 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
     const keydown = (e: KeyboardEvent) => {
       if (typing(e) || e.metaKey || e.ctrlKey) return;
       keys.current.add(e.code);
+      stir.current();
       if (e.code === "Equal" || e.code === "NumpadAdd") zoom(1 / 1.2);
       if (e.code === "Minus" || e.code === "NumpadSubtract") zoom(1.2);
       if (e.code.startsWith("Arrow")) e.preventDefault();
@@ -109,6 +120,7 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
     if (!fly) return;
     const v = view.current;
     flight.current = { from: { x: v.x, z: v.z, yaw: v.yaw, lift: v.lift }, to: fly, t: 0 };
+    stir.current();
   }, [fly?.seq]);
 
   useFrame((_, dt) => {
@@ -148,6 +160,8 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
     camera.position.set(v.x, v.eye, v.z);
     camera.rotation.set(v.pitch, -v.yaw, 0, "YXZ");
     const lens = camera as PerspectiveCamera;
+    const settling = Math.abs(v.eye - (EYE + v.lift * (top - EYE))) > 0.01 || Math.abs(lens.fov - v.fov) > 0.01;
+    if (forward || strafe || turn || f || settling) pace?.moved(performance.now());
     if (Math.abs(lens.fov - v.fov) > 0.01) {
       lens.fov += (v.fov - lens.fov) * Math.min(1, step * 12);
       lens.updateProjectionMatrix();

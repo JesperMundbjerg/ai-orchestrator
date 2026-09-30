@@ -46,7 +46,8 @@ export function Crafts({ stations: given, agents }: { stations: Station[]; agent
 
   // Makers at work put the time in; a piece that grows a stage has the pieces drawn again.
   useFrame((_, dt) => {
-    const step = Math.min(dt, 0.1);
+    // Still, the office is drawn a few times a second; a longer gap (a hidden tab) does not count as work.
+    const step = Math.min(dt, 0.5);
     let next = "";
     for (const s of stations) {
       const id = s.desk.occupantId;
@@ -131,7 +132,7 @@ function Instanced({ placed, busy }: { placed: Placed[]; busy: RefObject<Set<str
     for (const i of spinning) {
       const p = placed[i]!;
       if (!p.station.desk.occupantId || !busy.current?.has(p.station.desk.occupantId)) continue;
-      const a = (spin.current.get(i) ?? 0) + Math.min(dt, 0.1) * 7;
+      const a = (spin.current.get(i) ?? 0) + Math.min(dt, 0.5) * 7;
       spin.current.set(i, a);
       mesh.setMatrixAt(i, place(p, a));
       moved = true;

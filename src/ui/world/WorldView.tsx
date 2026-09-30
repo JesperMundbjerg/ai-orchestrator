@@ -16,6 +16,8 @@ import { CallerCard, CallerNote } from "./Caller.tsx";
 import { Office } from "./Office.tsx";
 import { AgentPanel, AnswerModal, Legend, TeamPanel, TeamsPanel } from "./Panels.tsx";
 import { Helpers } from "./Helpers.tsx";
+import { Pace, PaceContext } from "./Pace.tsx";
+import { Pacer } from "./pace.ts";
 import { Player, type FlyTarget } from "./Player.tsx";
 import { calls, GRACE_MS, plan as planTalk, walkMs, type Bubble, type Call, type Visit } from "./visits.ts";
 
@@ -46,6 +48,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
   const [answering, setAnswering] = useState<string | null>(null);
   const [fly, setFly] = useState<FlyTarget | null>(null);
   const [layout, setLayout] = useState<Layout>(savedLayout);
+  const pacer = useMemo(() => new Pacer(), []);
   const detail = useItemDetail(answering, tick);
 
   useEffect(() => {
@@ -128,8 +131,12 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
 
   return (
     <div className="world">
-      <Canvas shadows camera={{ fov: 62, near: 0.1, far: 160 }} onPointerMissed={() => setSelected(null)}>
-        <Scene office={office!} plan={plan} world={world} agents={agents} teams={teams} waiting={waiting} arrivals={arrivals} talk={talk} calling={calling} selected={selected} onSelect={select} fly={fly} />
+      {/* Drawn on demand at the pacer's rate, and at no more than 1.5 device pixels a pixel. */}
+      <Canvas shadows frameloop="demand" dpr={[1, 1.5]} camera={{ fov: 62, near: 0.1, far: 160 }} onPointerMissed={() => setSelected(null)}>
+        <Pace pacer={pacer} />
+        <PaceContext value={pacer}>
+          <Scene office={office!} plan={plan} world={world} agents={agents} teams={teams} waiting={waiting} arrivals={arrivals} talk={talk} calling={calling} selected={selected} onSelect={select} fly={fly} />
+        </PaceContext>
       </Canvas>
 
       <header className="world-top">

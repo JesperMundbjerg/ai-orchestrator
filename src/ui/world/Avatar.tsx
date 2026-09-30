@@ -9,6 +9,7 @@ import { lookFor, type Look } from "./look.ts";
 import { route, type Spot, type Vec2 } from "./layout.ts";
 import type { Craft } from "./crafts.ts";
 import { craftPose, HandTool } from "./Crafts.tsx";
+import { usePace } from "./Pace.tsx";
 
 const WALK_SPEED = 1.9;
 /** Strolling round the garden, taking it easy. */
@@ -71,6 +72,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     phase: Math.random() * 10,
   });
   const [hovered, setHovered] = useState(false);
+  const pace = usePace();
 
   // A new spot sends the avatar walking there from wherever it is now.
   useEffect(() => {
@@ -148,6 +150,8 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
       if (move >= d) m.path.shift();
     }
     if (!walking) m.yaw = turn(m.yaw, m.spot.facing, TURN_RATE * 0.5 * step);
+    // Someone walking somewhere is drawn smoothly; walks round the garden, less so.
+    if (walking) m.spot.zone === "garden" ? pace?.ambled(performance.now()) : pace?.moved(performance.now());
     g.position.set(m.pos[0], 0, m.pos[1]);
     g.rotation.y = m.yaw;
     const sitting = !walking && !!m.spot.sit;

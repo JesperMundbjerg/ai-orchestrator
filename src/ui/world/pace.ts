@@ -1,0 +1,56 @@
+// How often the office is drawn. It is drawn on demand, not at the display's rate: often enough
+// to look smooth while anyone walks or the view moves, a few times a second when all is still
+// (so lamps, crafts and the garden stay gently alive), and not at all while the tab is hidden.
+// Shadows are drawn again at most a few times a second, whatever the frame rate.
+
+/** While you or anyone walks, the view turns or zooms, or a flight is under way. */
+export const MOVING_FPS = 20;
+/** While someone out in the garden walks to their next pastime, and nothing else moves. */
+export const AMBLING_FPS = 10;
+/** When nothing moves but the small things: breathing, lamps, tools, wheels, ducks. */
+export const STILL_FPS = 5;
+/** How long after the last movement frames stay at the moving rate, so an ease comes to rest smoothly. */
+export const LINGER_MS = 600;
+/** How often the shadows are drawn again. */
+export const SHADOW_MS = 200;
+
+/** The pace of one office's frames, on a clock in milliseconds (performance.now in the browser). */
+export class Pacer {
+  lastMotion = -Infinity;
+  lastAmble = -Infinity;
+  lastFrame = -Infinity;
+  lastShadow = -Infinity;
+
+  /** Something moved in this frame, or you just asked it to. */
+  moved(now: number): void {
+    this.lastMotion = Math.max(this.lastMotion, now);
+  }
+
+  /** Someone out in the garden walked in this frame: worth drawing, but no hurry. */
+  ambled(now: number): void {
+    this.lastAmble = Math.max(this.lastAmble, now);
+  }
+
+  moving(now: number): boolean {
+    return now - this.lastMotion < LINGER_MS;
+  }
+
+  /** A frame was drawn. */
+  drew(now: number): void {
+    this.lastFrame = now;
+  }
+
+  /** How long until the next frame should be drawn, or null for none while the office cannot be seen. */
+  nextFrameIn(now: number, visible: boolean): number | null {
+    if (!visible) return null;
+    const every = 1000 / (this.moving(now) ? MOVING_FPS : now - this.lastAmble < LINGER_MS ? AMBLING_FPS : STILL_FPS);
+    return Math.max(0, Math.min(every, this.lastFrame + every - now));
+  }
+
+  /** Whether this frame should draw the shadows again; asking counts as drawing them when it says yes. */
+  shadowsDue(now: number): boolean {
+    if (now - this.lastShadow < SHADOW_MS) return false;
+    this.lastShadow = now;
+    return true;
+  }
+}
