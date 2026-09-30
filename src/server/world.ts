@@ -24,6 +24,7 @@ import { SessionFiles } from "./models.ts";
 import { EFFORT_TIMEOUT_MS, Efforts } from "./effort.ts";
 import type { EffortReport } from "../shared/types.ts";
 import { whyStuck } from "../shared/stuck.ts";
+import { Unpresented } from "./unpresented.ts";
 import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
 
 /** An agent a terminal multiplexer reports as running. */
@@ -101,7 +102,7 @@ const FIRST_MATE = [
   "Close a member's pane when its work is done: `herdr pane close <pane id>`.",
   "Tell crew to close every browser they open: close its pages, `browser.close()` in a `finally`, one shared browser per task, and never leave a dev server's probe browser running; the office closes a headless browser left running (its script gone, or unused for 10 minutes) and tells you, and lists the ones still in use when they load the machine.",
   "Tell crew never to open a visible browser window: it makes the founder's screen jump to it. They use headless browsers (Playwright headless, which can still use the GPU with `--use-angle=metal`), and to show the founder a page they add it to the review inbox with `--page \"Label=URL\"`, never `open URL`; if a real window is unavoidable, `open -g URL` (macOS: in the background, without taking focus).",
-  "Bring the founder only real decisions (`inbox decide`) and finished milestones (`inbox milestone`); to show what changed in the app, add the pages to step through in order (`--page \"Label=URL\"`).",
+  "Bring the founder only real decisions (`inbox decide`) and finished, checked increments they can look at (`inbox milestone`): present every visible step as soon as it is done, even if the project is not finished, with a milestone per visible step. Attach screenshots (`--screenshot`), pages to step through (`--page \"Label=URL\"`), or a video (`--video`). The office reminds you about commits you have not shown; if they are not ready, tell the founder why in one line with `inbox say founder`.",
   'Answer each message from the founder in one or two sentences with `inbox say founder "…"`, and follow up the same way when the job is done or something new happens, such as a crew member finishing.',
   "Ask a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers, options read \"Label: consequence\", and the recommendation gives your pick and why; `inbox --help` has an example.",
 ].join(" ");
@@ -140,10 +141,12 @@ export class World {
   private files: SessionFiles;
   private activityTimer: NodeJS.Timeout | null = null;
   private adapters = new Adapters();
+  private unpresented: Unpresented;
   onChange: (reason: string) => void = () => {};
 
   constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date(), files = new SessionFiles()) {
     this.db = db;
+    this.unpresented = new Unpresented(db);
     this.source = source;
     this.inbox = inbox;
     this.now = now;
@@ -214,7 +217,7 @@ export class World {
 
     return {
       agents: world,
-      teams: teams.map((team) => ({ ...team, ...teamStatus(world.filter((a) => a.teamId === team.id)) })),
+      teams: teams.map((team) => ({ ...team, unpresentedCommits: team.standing ? 0 : this.unpresented.count(team.path), ...teamStatus(world.filter((a) => a.teamId === team.id)) })),
       messages: this.messages.list(),
       withFounder: this.messages.withFounder(),
       work: this.messages.work(),
@@ -468,6 +471,8 @@ export class World {
    */
   async react(): Promise<void> {
     const state = this.state();
+    const changed = this.unpresented.tick(state, this.now().getTime(), (lead, text) => { this.messages.notice(lead, text); });
+    if (changed) this.onChange("activity"); // redraw only; do not recursively react
     const first = this.announced === null;
     const before = this.announced ?? new Map<string, TeamStatus>();
     this.announced = new Map(state.teams.map((t) => [t.id, t.status]));

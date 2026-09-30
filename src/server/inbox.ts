@@ -15,6 +15,7 @@ import {
 } from "../shared/types.ts";
 import { MAX_PAGES, pageUrlProblem, parsePage } from "../shared/pages.ts";
 import { Uploads } from "./uploads.ts";
+import { presentedPoint, recordPresented } from "./unpresented.ts";
 
 /** Live session facts from a terminal multiplexer (herdr); absent sessions simply have none. */
 export interface PresenceSource {
@@ -71,6 +72,8 @@ export class Inbox {
   private typing = new Set<string>();
   /** Images you paste into an answer or a message, kept beside the attachments in the data directory. */
   readonly uploads: Uploads;
+  /** The office's assigned project, if known; otherwise the submitting session's worktree. */
+  presentationPath: (session: Binding) => string | null = (session) => session.cwd;
   onChange: (reason: string) => void = () => {};
 
   constructor(db: DatabaseSync, filesDir: string, presence: PresenceSource, now: () => Date = () => new Date()) {
@@ -183,7 +186,10 @@ export class Inbox {
     if (raw.type === "try" && !fields.preview && !attachments.some((a) => a.kind === "video" && a.file)) {
       throw new InboxError(400, "a try-it request needs a preview url or pages, or an attached video");
     }
-    const hash = sha256(JSON.stringify([fields, attachments.map((a) => [a.kind, a.sha256 ?? a.url, a.caption])]));
+    const point = presentedPoint(this.presentationPath({ ...binding, cwd: binding.cwd ?? nullable(this.taskRow(binding)?.cwd) }));
+    const presenting = raw.type === "milestone" || raw.type === "try";
+    // Showing a different commit is new evidence, even when the prose and attachments match.
+    const hash = sha256(JSON.stringify([fields, attachments.map((a) => [a.kind, a.sha256 ?? a.url, a.caption]), ...(presenting && point ? [point] : [])]));
 
     const result = this.tx(() => {
       const taskId = this.upsertTask(binding, input.project, input.task, raw.title.trim());
@@ -215,9 +221,10 @@ export class Inbox {
           .run(...values, itemId, taskId, key, now, now);
         this.log("agent", "item.submitted", { taskId, itemId }, { type: fields.type, title: fields.title });
       }
+      recordPresented(this.db, itemId, point, presenting);
       this.db
         .prepare("INSERT INTO item_revisions (item_id, revision, snapshot, created_at) VALUES (?, ?, ?, ?)")
-        .run(itemId, revision, JSON.stringify(fields), now);
+        .run(itemId, revision, JSON.stringify({ ...fields, presentedHead: point?.head ?? null }), now);
       for (const a of attachments) {
         this.db
           .prepare(`INSERT INTO evidence (id, item_id, revision, kind, file, url, sha256, caption, source_revision, captured_at)
@@ -704,6 +711,7 @@ function toItem(r: Row): Item {
   return {
     id: str(r.id),
     taskId: str(r.task_id),
+    presentedHead: nullable(r.presented_head),
     key: str(r.key),
     type: str(r.type) as Item["type"],
     revision: Number(r.revision),

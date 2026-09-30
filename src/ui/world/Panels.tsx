@@ -122,6 +122,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
         <span className="muted" title={team.path ?? undefined}> · {team.standing ? "always on" : `worktree on ${team.branch ?? "an unknown branch"}`}</span>
       </div>
 
+      {!!team.unpresentedCommits && <p className="muted small-note">{team.unpresentedCommits} {team.unpresentedCommits === 1 ? "commit" : "commits"} not shown to you yet</p>}
       {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}
       {team.handsTo ? <div className="muted small-note">Hands its finished work to {world.teams.find((t) => t.id === team.handsTo)?.name ?? "another team"}.</div> : null}
 

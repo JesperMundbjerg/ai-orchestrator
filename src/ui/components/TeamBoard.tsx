@@ -164,6 +164,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, onFinish }:
           </div>
           <span className={team.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
           <span className="muted small-note" title={team.path ?? undefined}>{team.standing ? "Always on" : `Worktree on ${team.branch ?? "an unknown branch"}`}</span>
+          {!!team.unpresentedCommits && <span className="muted small-note">{team.unpresentedCommits} {team.unpresentedCommits === 1 ? "commit" : "commits"} not shown to you yet</span>}
           {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}
           {handsTo || toReview ? (
             <div className="team-flow">

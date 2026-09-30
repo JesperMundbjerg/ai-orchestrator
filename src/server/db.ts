@@ -2,6 +2,7 @@
 // directory, never in a project worktree, so switching or deleting a worktree keeps history.
 
 import { DatabaseSync } from "node:sqlite";
+import { migrateUnpresented } from "./unpresented.ts";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -202,6 +203,7 @@ export function openDatabase(file: string): DatabaseSync {
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;");
   db.exec(SCHEMA);
   migrate(db);
+  migrateUnpresented(db);
   return db;
 }
 

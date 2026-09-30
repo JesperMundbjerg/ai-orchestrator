@@ -21,13 +21,23 @@ const inbox = new Inbox(db, join(dir, "files"), herdr);
 const world = new World(db, herdr, () => inbox.state());
 world.messages.replies = inbox;
 world.messages.uploads = inbox.uploads;
+inbox.presentationPath = (session) => {
+  try {
+    const agent = world.resolve({ ...session, cwd: session.cwd ?? undefined });
+    const team = world.state().teams.find((t) => t.id === agent.teamId);
+    return team ? (team.standing ? null : team.path) : session.cwd;
+  } catch { return session.cwd; }
+};
 const machine = new Machine(() => world.state());
 machine.tellLead = (teamId, text) => world.tellLead(teamId, text);
 const dist = fileURLToPath(new URL("../../dist", import.meta.url));
 
 herdr.start();
 machine.start();
-setInterval(() => inbox.wakeDue(), 30_000).unref();
+setInterval(() => {
+  inbox.wakeDue();
+  void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
+}, 30_000).unref();
 
 createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine }).listen(port, "127.0.0.1", () => {
   console.log(`Review inbox on http://localhost:${port}  (data: ${dir})`);

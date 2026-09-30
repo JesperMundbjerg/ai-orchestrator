@@ -130,6 +130,8 @@ export interface Evidence {
 }
 
 export interface Item {
+  /** Worktree HEAD when this revision was put in front of the founder. */
+  presentedHead?: string | null;
   id: string;
   taskId: string;
   key: string;
@@ -389,6 +391,8 @@ export interface Helper {
 export type TeamStatus = "blocked" | "working" | "idle" | "offline";
 
 export interface WorldTeam extends Team {
+  /** Branch commits outside base and the most recently presented HEAD. */
+  unpresentedCommits?: number;
   status: TeamStatus;
   /** Who holds the team up, when it is blocked. */
   blockedBy: string[];
