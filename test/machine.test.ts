@@ -224,7 +224,7 @@ test("a browser whose starter is gone closes after a minute, keeping its project
   // The dev server that started the probe browser exits: launchd takes the browser over.
   const orphaned = PS.replace("76099 40703", "76099     1");
   let ps = PS;
-  const { m, killed, told, advance } = machine(() => ps, WORLD_BUSY);
+  const { m, killed, told, advance } = machine(() => ps, WORLD);
   await m.read();
   ps = orphaned;
   advance(15_000);
@@ -234,7 +234,7 @@ test("a browser whose starter is gone closes after a minute, keeping its project
   assert.equal(killed.length, 0, "not before a minute");
   advance(1);
   await m.read();
-  // Even though someone on the project is working: its starter is gone, so nothing is waiting for it.
+  // Nobody on its project is working, and its starter is gone: nothing is waiting for it.
   assert.deepEqual(killed.slice(0, 1), [[76099, "SIGTERM"]]);
   assert.deepEqual(m.state().browsers.map((b) => b.pid).sort((a, b) => a - b), [901, 1200]);
   assert.equal(m.state().closedToday, 1);
@@ -246,6 +246,38 @@ test("a browser whose starter is gone closes after a minute, keeping its project
   advance(15_000);
   await m.read();
   assert.deepEqual(killed.map(([pid]) => pid), [76099, 76099]);
+});
+
+test("an orphan of a project that is working is not closed after a minute (it may be detached on purpose), nor one of no project that is busy", async () => {
+  const orphaned = PS.replace("76099 40703", "76099     1");
+  const working = machine(() => orphaned, WORLD_BUSY);
+  for (let t = 0; t < (3 * 60 * MIN) / 15_000; t++) {
+    await working.m.read();
+    working.advance(15_000);
+  }
+  assert.equal(working.killed.length, 0, "it is in use as far as the office can tell, however long its starter has been gone");
+  assert.equal(working.m.state().closedToday, 0);
+  // Nobody on the project works, and its starter went a minute ago: closed.
+  let ps = PS;
+  const quiet = machine(() => ps, WORLD);
+  await quiet.m.read();
+  ps = orphaned;
+  quiet.advance(1);
+  await quiet.m.read();
+  quiet.advance(ORPHAN_MS);
+  await quiet.m.read();
+  assert.deepEqual(quiet.killed.slice(0, 1), [[76099, "SIGTERM"]]);
+
+  // An orphan of no project is closed after a minute only if it uses under 5% CPU.
+  const base = browserTrees(parsePs(PS)).find((t) => t.pid === 1200)!;
+  const orphan = { ...base, orphan: true, elapsed: 30 };
+  const run = (cpu: number) => {
+    const seen = new Map();
+    assess({ trees: [{ ...orphan, cpu }], owners: new Map(), busy: () => false, now: 0 }, seen, { since: null });
+    return assess({ trees: [{ ...orphan, cpu }], owners: new Map(), busy: () => false, now: ORPHAN_MS }, seen, { since: null }).forgotten.map((f) => f.why);
+  };
+  assert.deepEqual(run(1), ["orphaned"]);
+  assert.deepEqual(run(60), []);
 });
 
 test("a browser of an idle project closes after 10 minutes; one whose owner is alive and whose project is working never does", async () => {
@@ -291,8 +323,13 @@ test("a browser that ignores SIGTERM gets SIGKILL 10 s later, to its main proces
   const orphaned = PS.replace("76099 40703", "76099     1");
   const slept: number[] = [];
   // Ignores SIGTERM: still listed when the wait is over.
-  const stubborn = machine(() => orphaned, WORLD);
+  const first = (after: () => string) => {
+    let n = 0;
+    return () => (n++ ? after() : PS);
+  };
+  const stubborn = machine(first(() => orphaned), WORLD);
   (stubborn.m as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => void slept.push(ms);
+  await stubborn.m.read();
   await stubborn.m.read();
   stubborn.advance(ORPHAN_MS);
   await stubborn.m.read();
@@ -301,8 +338,9 @@ test("a browser that ignores SIGTERM gets SIGKILL 10 s later, to its main proces
   assert.deepEqual(stubborn.killed, [[76099, "SIGTERM"], [76099, "SIGKILL"]]);
 
   // Quits on SIGTERM: gone from the process list by then.
-  const quits = machine(() => (quitsKilled.length ? orphaned.split("\n").filter((l) => !/^\s*761\d\d|^\s*76099|^\s*81453|^\s*82263/.test(l)).join("\n") : orphaned), WORLD);
+  const quits = machine(first(() => (quitsKilled.length ? orphaned.split("\n").filter((l) => !/^\s*761\d\d|^\s*76099|^\s*81453|^\s*82263/.test(l)).join("\n") : orphaned)), WORLD);
   const quitsKilled = quits.killed;
+  await quits.m.read();
   await quits.m.read();
   quits.advance(ORPHAN_MS);
   await quits.m.read();
@@ -310,8 +348,9 @@ test("a browser that ignores SIGTERM gets SIGKILL 10 s later, to its main proces
   assert.deepEqual(quits.killed, [[76099, "SIGTERM"]]);
 
   // The pid now belongs to something else: a different command is not signalled again.
-  const reused = machine(() => (reusedKilled.length ? orphaned.replace(SHELL + " --disable-field-trial-config", "/usr/bin/vim") : orphaned), WORLD);
+  const reused = machine(first(() => (reusedKilled.length ? orphaned.replace(SHELL + " --disable-field-trial-config", "/usr/bin/vim") : orphaned)), WORLD);
   const reusedKilled = reused.killed;
+  await reused.m.read();
   await reused.m.read();
   reused.advance(ORPHAN_MS);
   await reused.m.read();
@@ -322,7 +361,10 @@ test("a browser that ignores SIGTERM gets SIGKILL 10 s later, to its main proces
 test("a browser the office may not signal stays listed as a warning for the founder", async () => {
   const denied = Object.assign(new Error("not permitted"), { code: "EPERM" });
   const orphaned = PS.replace("76099 40703", "76099     1");
-  const { m, advance, told } = machine(() => orphaned, WORLD, denied);
+  let ps = PS;
+  const { m, advance, told } = machine(() => ps, WORLD, denied);
+  await m.read();
+  ps = orphaned;
   await m.read();
   advance(ORPHAN_MS);
   await m.read();

@@ -24,7 +24,7 @@ export const HOT_MS = 60_000;
 export const LEFT_MS = 10 * 60_000;
 /** …where doing nothing is its project having no busy agent, or, for a browser of no project, using under IDLE_CPU. */
 export const IDLE_CPU = 5;
-/** A browser whose starter has exited, for this long, was forgotten. */
+/** A browser whose starter has exited for this long, while its project has no busy agent, was forgotten. */
 export const ORPHAN_MS = 60_000;
 /** An auto-closed browser still running this long after SIGTERM gets SIGKILL (its main process only). */
 export const KILL_AFTER_MS = 10_000;
@@ -239,11 +239,13 @@ export function assess(reading: Reading, seen: Map<number, Seen>, hot: { since: 
     s.orphanedSince = t.orphan ? s.orphanedSince ?? now : null;
     if (s.closingAt !== null && now - s.closingAt >= GIVE_UP_MS) s.gaveUp = true;
 
-    // Forgotten: its starter has been gone for a minute, or it is over 10 minutes old and its owner has
-    // done nothing with it that long. A browser whose owner is alive and whose project has a busy agent
-    // is neither: it may be mid-screenshot.
+    // Forgotten: its starter has been gone for a minute and its project has had no busy agent that
+    // long (a browser of no project: it uses under IDLE_CPU), or it is over 10 minutes old and its owner has done nothing
+    // with it that long. A browser of a working project is neither, orphan or not: it may be mid-screenshot,
+    // or deliberately detached and reused.
     const unusedSince = owner ? s.ownerIdleSince : s.lowCpuSince;
-    const why = s.orphanedSince !== null && now - s.orphanedSince >= ORPHAN_MS ? "orphaned" : t.elapsed * 1000 >= LEFT_MS && unusedSince !== null && now - unusedSince >= LEFT_MS ? "left" : null;
+    const unused = owner ? s.ownerIdleSince !== null && now - s.ownerIdleSince >= ORPHAN_MS : t.cpu < IDLE_CPU;
+    const why = s.orphanedSince !== null && now - s.orphanedSince >= ORPHAN_MS && unused ? "orphaned" : t.elapsed * 1000 >= LEFT_MS && unusedSince !== null && now - unusedSince >= LEFT_MS ? "left" : null;
     if (why && !s.gaveUp) {
       if (s.closingAt === null) forgotten.push({ tree: t, owner, why, idleMinutes: Math.floor((now - (why === "orphaned" ? s.orphanedSince! : unusedSince!)) / 60_000) });
       continue;
