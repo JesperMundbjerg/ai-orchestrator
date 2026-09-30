@@ -10,7 +10,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
@@ -22,7 +22,7 @@ import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
 import { SessionFiles } from "./models.ts";
 import { whyStuck } from "../shared/stuck.ts";
-import { checkoutOf, currentBranch, deleteMergedBranch, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
+import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
 
 /** An agent a terminal multiplexer reports as running. */
 export interface LiveAgent {
@@ -65,6 +65,9 @@ const NAMES = [
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? "" : String(v));
+
+/** How long the folders beside known repositories are trusted before they are read again. */
+const SCAN_CACHE_MS = 3000;
 
 /** A first mate's model: it plans, splits and supervises, which is the deep thinking. */
 const FIRST_MATE_ARGS = ["--model", "opus", "--effort", "medium"];
@@ -123,6 +126,7 @@ export class World {
   private inbox: Inbox;
   private now: () => Date;
   private checkouts = new Map<string, Checkout | null>();
+  private scanned = new Map<string, { at: number; found: ReturnType<typeof checkoutsIn> }>();
   /** The last status seen per team, so a team is announced when it becomes blocked, not while it stays so. */
   private announced: Map<string, TeamStatus> | null = null;
   readonly messages: Messages;
@@ -277,14 +281,32 @@ export class World {
     }
   }
 
-  /** The repositories agents work in, where a new project can be made. */
+  /**
+   * The repositories a new project can be made in: those agents work in, then the other main
+   * checkouts beside them, so a repository made today shows without anyone working in it yet.
+   */
   private repositories(world: WorldAgent[], teams: Team[]): Repository[] {
-    const out = new Map<string, Repository>();
+    const known = new Map<string, Repository>();
     for (const cwd of [...world.map((a) => a.cwd), ...teams.map((t) => t.path)]) {
       const checkout = cwd ? this.checkout(cwd) : null;
-      if (checkout && !out.has(checkout.repoRoot)) out.set(checkout.repoRoot, this.repository(checkout.repoName, checkout.repoRoot, this.checkout(checkout.repoRoot)?.branch ?? null));
+      if (checkout && !known.has(checkout.repoRoot)) known.set(checkout.repoRoot, this.repository(checkout.repoName, checkout.repoRoot, this.checkout(checkout.repoRoot)?.branch ?? null));
     }
-    return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const beside = new Map<string, Repository>();
+    for (const parent of new Set([...known.keys()].map((root) => dirname(root)))) {
+      for (const found of this.siblings(parent)) if (!known.has(found.root)) beside.set(found.root, this.repository(found.name, found.root, found.branch));
+    }
+    const byName = (a: Repository, b: Repository) => a.name.localeCompare(b.name);
+    return [...[...known.values()].sort(byName), ...[...beside.values()].sort(byName)];
+  }
+
+  /** The main checkouts in a folder, scanned at most once per few seconds: one level, never a walk. */
+  private siblings(parent: string): ReturnType<typeof checkoutsIn> {
+    const now = this.now().getTime();
+    const cached = this.scanned.get(parent);
+    if (cached && now - cached.at < SCAN_CACHE_MS) return cached.found;
+    const found = isProjectsFolder(parent) ? checkoutsIn(parent) : [];
+    this.scanned.set(parent, { at: now, found });
+    return found;
   }
 
   private repository(name: string, root: string, base: string | null): Repository {

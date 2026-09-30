@@ -1,15 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeHookEvents, describeTool } from "../src/server/activity.ts";
 import { openDatabase } from "../src/server/db.ts";
 import { Inbox, type PresenceSource } from "../src/server/inbox.ts";
 import { World, type AgentSource, type LiveAgent } from "../src/server/world.ts";
+import { checkoutsIn, placeFor } from "../src/server/worktrees.ts";
 
-function setup() {
+function setup(now?: () => Date) {
   const db = openDatabase(":memory:");
   let live: LiveAgent[] = [];
   // Presence the way herdr gives it: a task's session found running in a pane.
@@ -50,7 +51,7 @@ function setup() {
     closePane: async (pane) => void closed.push(pane),
     removeWorktree: async (repoRoot, path) => void git(repoRoot, "worktree", "remove", path),
   };
-  const world = new World(db, source, () => inbox.state());
+  const world = new World(db, source, () => inbox.state(), now);
   return { db, inbox, world, prompts, notices, started, closed, setLive: (next: LiveAgent[]) => void (live = next), refuse: (why: string | null) => void (refuse = why), failStart: (why: string | null) => void (startFails = why), whenStarted: (fn: () => void) => void (onStart = fn) };
 }
 
@@ -190,6 +191,68 @@ test("starting a project makes its worktree beside the repository and starts a f
   await assert.rejects(world.createTeam({ name: "Inside", repository: other.atoms }), /pick the repository/);
   const fresh = await world.createTeam({ name: "Agent office", repository: other.root });
   assert.equal(fresh.path, join(other.dir, "repo-agent-office"));
+});
+
+/** A main checkout with one commit, in any folder. */
+function initRepository(root: string, branch = "main") {
+  execFileSync("git", ["init", "-q", "-b", branch, root]);
+  writeFileSync(join(root, "a.txt"), "a\n");
+  git(root, "add", ".");
+  git(root, "commit", "-qm", "init");
+}
+
+test("a project's worktree and branch for a repository with a space in its name", () => {
+  assert.deepEqual(placeFor("/Users/me/projects/motion video", "Atoms light!"), {
+    slug: "atoms-light",
+    path: "/Users/me/projects/motion video-atoms-light",
+    branch: "worktree-atoms-light",
+  });
+});
+
+test("checkoutsIn lists the main checkouts one level down, not worktrees, plain folders or nested repositories", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "world-scan-")));
+  initRepository(join(dir, "motion video"));
+  initRepository(join(dir, "alpha"), "dev");
+  git(join(dir, "alpha"), "worktree", "add", "-q", "-b", "worktree-x", join(dir, "alpha-x"));
+  mkdirSync(join(dir, "notes"));
+  mkdirSync(join(dir, "group"));
+  initRepository(join(dir, "group", "deep"));
+  initRepository(join(dir, ".hidden"));
+  assert.deepEqual(checkoutsIn(dir).map((c) => [c.name, c.root, c.branch]), [
+    ["alpha", join(dir, "alpha"), "dev"],
+    ["motion video", join(dir, "motion video"), "main"],
+  ]);
+  assert.deepEqual(checkoutsIn(join(dir, "missing")), []);
+});
+
+test("a new repository beside the ones agents work in is offered, known ones first; a project there works with a space in its name", async () => {
+  const { dir, root, atoms } = repository();
+  initRepository(join(dir, "motion video"));
+  initRepository(join(dir, "aardvark"));
+  mkdirSync(join(dir, "plain"));
+  let clock = Date.parse("2026-01-01T00:00:00Z");
+  const t = setup(() => new Date(clock));
+  const { world } = t;
+  t.setLive([lane("p1", atoms, "s1")]);
+  const names = () => world.state().repositories.map((r) => r.name);
+  assert.deepEqual(names(), ["repo", "aardvark", "motion video"], "the repository in use first, then the others by name; worktrees and plain folders are not repositories");
+
+  initRepository(join(dir, "brand new"));
+  assert.ok(!names().includes("brand new"), "the scan is cached for a few seconds");
+  clock += 10_000;
+  assert.deepEqual(names(), ["repo", "aardvark", "brand new", "motion video"]);
+
+  const motion = world.state().repositories.find((r) => r.name === "motion video")!;
+  assert.deepEqual([motion.root, motion.base], [join(dir, "motion video"), "main"]);
+  const team = await world.createTeam({ name: "Title cards", repository: motion.root });
+  assert.deepEqual([team.path, team.branch], [join(dir, "motion video-title-cards"), "worktree-title-cards"]);
+  assert.equal(git(team.path!, "rev-parse", "--abbrev-ref", "HEAD"), "worktree-title-cards");
+  const [lead] = t.started;
+  assert.equal(lead!.name, "lead-title-cards");
+  const settings = lead!.args.indexOf("--settings");
+  if (settings >= 0) JSON.parse(lead!.args[settings + 1]!);
+  assert.equal(world.state().teams.find((x) => x.id === team.id)?.name, "Title cards");
+  assert.ok(names().includes("motion video"), "the repository stays listed once it has a project");
 });
 
 test("finishing a project closes its agents and removes the worktree, but never loses work", async () => {

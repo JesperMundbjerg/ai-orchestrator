@@ -2,7 +2,8 @@
 // branch it is on, and whether finishing a project there would lose anything.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { projectSlug } from "../shared/slug.ts";
 
@@ -118,4 +119,36 @@ export function nameFor(checkout: Checkout): string {
   const rest = folder.startsWith(`${checkout.repoName}-`) ? folder.slice(checkout.repoName.length + 1) : folder;
   const words = rest.replace(/[-_]+/g, " ").trim() || folder;
   return words[0]!.toUpperCase() + words.slice(1);
+}
+
+/**
+ * The main checkouts directly inside a folder: a subfolder whose `.git` is a directory. A linked
+ * worktree (its `.git` is a file) is left out, so `space-shuttle-einstein` is not offered beside
+ * `space-shuttle`. One level only, and no git process: a readdir and a stat per folder.
+ */
+export function checkoutsIn(parent: string): Array<{ name: string; root: string; branch: string | null }> {
+  let names: string[];
+  try {
+    names = readdirSync(parent);
+  } catch {
+    return [];
+  }
+  const found: Array<{ name: string; root: string; branch: string | null }> = [];
+  for (const name of names.sort()) {
+    if (name.startsWith(".")) continue;
+    const root = join(parent, name);
+    try {
+      if (!statSync(join(root, ".git")).isDirectory()) continue;
+      const branch = readFileSync(join(root, ".git", "HEAD"), "utf8").match(/^ref: refs\/heads\/(.+)$/m)?.[1] ?? null;
+      found.push({ name, root, branch });
+    } catch {
+      continue;
+    }
+  }
+  return found;
+}
+
+/** Whether a folder's repositories are worth listing: not the home folder or the root, which hold everything and are noise. */
+export function isProjectsFolder(parent: string): boolean {
+  return parent !== "/" && parent !== homedir();
 }

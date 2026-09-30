@@ -72,7 +72,7 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
                 {repo && slug ? <span className="muted small-note">Worktree {repo.name}-{slug} on branch worktree-{slug}, from {repo.base ?? "the main checkout"}.</span> : null}
               </label>
             ) : (
-              <p className="warn small-note">No repository yet: a project's worktree is made in a repository an agent already works in.</p>
+              <p className="warn small-note">No repository yet: a project's worktree is made in a repository an agent works in, or one beside it.</p>
             )
           ) : null}
         </>

@@ -188,6 +188,8 @@ export class Herdr implements PresenceSource, AgentSource {
   }
 
   async startAgent(paneId: string, name: string, harness: Harness, args: string[]): Promise<void> {
+    // herdr types the command at once, so a pane whose shell is still loading takes only its first kilobyte (the tty's line limit) and the agent never starts.
+    await run(this.bin, ["pane", "wait-output", "--regex", "\\S", "--timeout", "15000", paneId], { timeout: 20_000 }).catch(() => {});
     try {
       await this.call(["agent", "start", name, "--kind", harness, "--pane", paneId, "--timeout", "30000", "--", ...args], 40_000);
     } catch (err) {
