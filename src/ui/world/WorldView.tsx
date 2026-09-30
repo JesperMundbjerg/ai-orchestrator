@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
+import { Color } from "three";
 import type { InboxState, ItemType, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { useItemDetail } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
 import { Avatar } from "./Avatar.tsx";
+import { lookFor } from "./look.ts";
 import { CALLER, planOffice, queueOrder, SPAWN, YOUR_VIEW, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
-import { callerIn, isBuilding, planBuilding, routeIn, savedLayout, saveLayout, viewIn, type Layout } from "./building.ts";
+import { callerIn, isBuilding, planBuilding, routeIn, savedLayout, saveLayout, viewIn, type BuildingPlan, type Layout } from "./building.ts";
+import { IDLE_MS, inPark, nextPastime, outForABreak, parkPlan, type Park } from "./park.ts";
 import { BuildingOffice } from "./BuildingOffice.tsx";
 import { CallerCard, CallerNote } from "./Caller.tsx";
 import { Office } from "./Office.tsx";
@@ -52,7 +55,9 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
 
   const entries = useMemo(() => needsYou(state, "all", null), [state]);
   const queue = useMemo(() => (world ? queueOrder(world.agents, entries.map((e) => e.task.id)) : []), [world, entries]);
-  const plan = useMemo(() => (world ? (layout === "building" ? planBuilding : planOffice)(world.agents, world.teams, queue) : null), [world, queue, layout]);
+  // The office as drawn, and where everyone is in it: in the building, whoever is idle is out in the garden.
+  const office = useMemo(() => (world ? (layout === "building" ? planBuilding : planOffice)(world.agents, world.teams, queue) : null), [world, queue, layout]);
+  const plan = usePark(world, office);
   const waiting = useMemo(() => {
     const out = new Map<string, Waiting>();
     if (!world) return out;
@@ -116,14 +121,14 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
     return () => removeEventListener("keydown", onKey);
   }, [answering, selected, openTeam, caller, sendBack]);
 
-  if (!world || !plan) {
+  if (!world || !plan || !office) {
     return <div className="empty-page">{error ? `The office did not open (${error}).` : "Opening the office…"}</div>;
   }
 
   return (
     <div className="world">
       <Canvas shadows camera={{ fov: 62, near: 0.1, far: 160 }} onPointerMissed={() => setSelected(null)}>
-        <Scene plan={plan} world={world} agents={agents} teams={teams} waiting={waiting} arrivals={arrivals} talk={talk} calling={calling} selected={selected} onSelect={select} fly={fly} />
+        <Scene office={office!} plan={plan} world={world} agents={agents} teams={teams} waiting={waiting} arrivals={arrivals} talk={talk} calling={calling} selected={selected} onSelect={select} fly={fly} />
       </Canvas>
 
       <header className="world-top">
@@ -186,7 +191,13 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
           onAnswer={setAnswering}
           onGo={() => {
             const spot = plan.spots.get(selectedAgent.id);
-            if (spot) flyTo([spot.pos[0] + Math.sin(spot.facing) * 2.6, spot.pos[1] + Math.cos(spot.facing) * 2.6], -spot.facing);
+            if (!spot) return;
+            // In the garden whoever it is faces a bed, a tree or the path, so you stand beside them along the path instead of in front.
+            if (spot.zone === "garden") {
+              const f = spot.facing;
+              const at: Vec2 = [spot.pos[0] + Math.cos(f) * 2.4 + Math.sin(f) * 0.3, spot.pos[1] - Math.sin(f) * 2.4 + Math.cos(f) * 0.3];
+              flyTo(at, Math.atan2(spot.pos[0] - at[0], at[1] - spot.pos[1]));
+            } else flyTo([spot.pos[0] + Math.sin(spot.facing) * 2.6, spot.pos[1] + Math.cos(spot.facing) * 2.6], -spot.facing);
           }}
           onClose={() => setSelected(null)}
           onTeam={openTeam && selectedAgent.teamId === openTeam ? () => setSelected(null) : null}
@@ -273,6 +284,43 @@ function useCalls(world: WorldState | null, agents: Map<string, WorldAgent>, off
 }
 
 /**
+ * The plan with whoever is idle out in the garden, at what they are doing there now. A member
+ * idle when the office opens is out there already; one who goes idle later goes out once idle
+ * for IDLE_MS. It changes as they take up something new, a few at a time.
+ */
+function usePark(world: WorldState | null, office: OfficePlan | null): OfficePlan | null {
+  const since = useRef<Map<string, number> | null>(null);
+  const [now, setNow] = useState(Date.now);
+  const idleSince = useMemo(() => {
+    const t = Date.now();
+    const first = !since.current;
+    const next = new Map<string, number>();
+    for (const a of world?.agents ?? []) if (a.status === "idle") next.set(a.id, since.current?.get(a.id) ?? (first ? -Infinity : t));
+    if (world) since.current = next;
+    return next;
+  }, [world]);
+  const building = office && isBuilding(office) ? office : null;
+  const out = useMemo(() => (world && building ? outForABreak(world.agents, idleSince, now, building.queue) : new Set<string>()), [world, building, idleSince, now]);
+  // Look again when the next member has been idle long enough, or the next one in the garden takes up something new.
+  useEffect(() => {
+    if (!building) return;
+    const t = Date.now();
+    const due = Math.min(...[...idleSince.values()].map((s) => s + IDLE_MS).filter((d) => d > t), nextPastime(inPark(building, out), t));
+    if (!Number.isFinite(due)) return;
+    const timer = setTimeout(() => setNow(Date.now()), due - t + 50);
+    return () => clearTimeout(timer);
+  }, [building, idleSince, out, now]);
+  // Who was where, so those not changing stay put.
+  const park = useRef<Park>(new Map());
+  return useMemo(() => {
+    if (!building) return office;
+    const next = parkPlan(building as BuildingPlan, out, now, idleSince, park.current);
+    park.current = next.park;
+    return next.plan;
+  }, [building, office, out, now, idleSince]);
+}
+
+/**
  * Who is walking over to whom and what is being said, from the messages that arrive while the
  * office is open. Messages already there when it opens are history, not a scene.
  */
@@ -306,7 +354,14 @@ function useTalk(world: WorldState | null, office: OfficePlan | null): { visits:
   return talk;
 }
 
-function Scene({ plan, world, agents, teams, waiting, arrivals, talk, calling, selected, onSelect, fly }: {
+/** A team's colour, light enough to read on a name tag. */
+function tagColor(teamId: string): string {
+  return `#${new Color(lookFor(teamId).shirt).lerp(new Color("#ffffff"), 0.35).getHexString()}`;
+}
+
+function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, calling, selected, onSelect, fly }: {
+  /** The office as drawn; `plan` has where everyone is in it. */
+  office: OfficePlan;
   plan: OfficePlan;
   world: WorldState;
   agents: Map<string, WorldState["agents"][number]>;
@@ -344,8 +399,8 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, talk, calling, s
         shadow-camera-far={120}
         shadow-bias={-0.0005}
       />
-      {isBuilding(plan) ? (
-        <BuildingOffice plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
+      {isBuilding(office) ? (
+        <BuildingOffice plan={office} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
       ) : (
         <Office plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
       )}
@@ -367,6 +422,7 @@ function Scene({ plan, world, agents, teams, waiting, arrivals, talk, calling, s
               onSelect={onSelect}
               bubble={call ? null : visit?.text ?? talk.bubbles.findLast((b) => b.agentId === a.id)?.text ?? null}
               carrying={!call && visit?.kind === "handoff"}
+              team={a.teamId && teams.has(a.teamId) ? { name: teams.get(a.teamId)!.name, color: tagColor(a.teamId) } : null}
               walk={walk}
             />
             {a.helpers.length ? <Helpers helpers={a.helpers} spot={home} /> : null}

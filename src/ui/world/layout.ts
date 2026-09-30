@@ -17,6 +17,8 @@ export type Vec2 = [number, number];
 
 export type Zone = "team" | "queue" | "lounge" | "caller" | "garden";
 
+export type Pose = "look" | "pick" | "watch" | "chat" | "stretch";
+
 export interface Spot {
   pos: Vec2;
   /** Yaw the avatar faces when it has arrived (0 faces south, towards you). */
@@ -28,6 +30,8 @@ export interface Spot {
   approach: Vec2[];
   /** Sitting down once there, on a bench. */
   sit?: boolean;
+  /** Once there, standing in the garden: looking up at a tree, picking a flower, watching the ducks, chatting or stretching. */
+  pose?: Pose;
   /** A stroll: once there, round these waypoints and back to the spot, again and again. */
   stroll?: Vec2[];
 }

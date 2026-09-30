@@ -15,6 +15,10 @@ const TURN_RATE = 8;
 /** Sitting on a bench: the hips drop to its seat and the legs reach forward. */
 const HIP = 0.86;
 const SEAT_H = 0.47;
+/** Bending down to pick a flower: a short step, the hips as low as that brings them, and bent this far forward at the hips. */
+const STEP = 0.3;
+const STEP_DROP = HIP * (1 - Math.cos(STEP));
+const BEND = 0.95;
 
 export const CARD: Record<ItemType, { color: string; glyph: string }> = {
   decide: { color: "#8a4fd8", glyph: "?" },
@@ -34,11 +38,13 @@ interface Props {
   bubble: string | null;
   /** A folder in hand, for work being handed over. */
   carrying: boolean;
+  /** Their team, named on their tag in its colour while they are out in the garden, so it stays clear whose they are. */
+  team?: { name: string; color: string } | null;
   /** How to walk in this office: round the ring, or along the building's walkway. */
   walk?: (from: Vec2, fromSpot: Spot | null, to: Spot) => Vec2[];
 }
 
-export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bubble, carrying, walk = route }: Props) {
+export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bubble, carrying, team = null, walk = route }: Props) {
   const look = useMemo(() => lookFor(agent.id), [agent.id]);
   const root = useRef<Group>(null);
   const legs = useRef<[Group | null, Group | null]>([null, null]);
@@ -46,6 +52,9 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const lamp = useRef<Mesh>(null);
   const halo = useRef<Mesh>(null);
   const speech = useRef<Group>(null);
+  const head = useRef<Group>(null);
+  const upper = useRef<Group>(null);
+  const flower = useRef<Group>(null);
   const motion = useRef({
     pos: [...(enterFrom ?? spot.pos)] as Vec2,
     yaw: spot.facing,
@@ -74,17 +83,18 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const close = spot.zone === "caller";
   const tag = useMemo(() => {
     if (close) return textTexture([{ text: agent.name, size: 46, color: "#ffffff", weight: 700 }], { width: 320, height: 80, background: "rgba(16,20,28,0.72)", radius: 40 });
-    const sub = [agent.project, HARNESS_INFO[agent.harness].label].filter(Boolean).join(" · ");
+    const out = spot.zone === "garden" && team;
+    const sub = [out ? team.name : agent.project, HARNESS_INFO[agent.harness].label].filter(Boolean).join(" · ");
     return textTexture(
       [
         { text: agent.name, size: 46, color: "#ffffff", weight: 700 },
         waiting
           ? { text: `waiting for you${waiting.count > 1 ? ` · ${waiting.count}` : ""}`, size: 26, color: "#ffc658" }
-          : { text: sub, size: 26, color: "#c8d0da", weight: 500 },
+          : { text: sub, size: 26, color: out ? team.color : "#c8d0da", weight: out ? 700 : 500 },
       ],
       { width: 512, height: 128, background: "rgba(16,20,28,0.72)", radius: 40 },
     );
-  }, [close, agent.name, agent.project, agent.harness, waiting?.count]);
+  }, [close, agent.name, agent.project, agent.harness, waiting?.count, spot.zone === "garden" && team ? `${team.name}${team.color}` : null]);
   useEffect(() => () => tag.dispose(), [tag]);
 
   const card = useMemo(
@@ -134,6 +144,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     g.position.set(m.pos[0], 0, m.pos[1]);
     g.rotation.y = m.yaw;
     const sitting = !walking && !!m.spot.sit;
+    const pose = walking ? undefined : m.spot.pose;
 
     const t = state.clock.elapsedTime + m.phase;
     const typing = !walking && m.spot.zone === "team" && agent.status === "working";
@@ -143,12 +154,36 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     const swing = walking ? Math.sin(t * (m.strolling ? 6 : 9)) * (m.strolling ? 0.4 : 0.55) : 0;
     const [ll, lr] = legs.current;
     const [al, ar] = arms.current;
+    const picking = pose === "pick";
     if (ll && lr) {
-      ll.rotation.x = sitting ? -1.4 : swing;
-      lr.rotation.x = sitting ? -1.4 : -swing;
+      ll.rotation.x = sitting ? -1.4 : picking ? -STEP : swing;
+      lr.rotation.x = sitting ? -1.4 : picking ? STEP : -swing;
+    }
+    // Picking a flower: bend down to it for a few seconds, then stand up and hold it up to look at it.
+    const holdingFlower = picking && (t % 8) > 3.5;
+    if (upper.current) upper.current.rotation.x = picking && !holdingFlower ? BEND : pose === "look" || pose === "stretch" ? -0.08 : 0;
+    if (flower.current) flower.current.visible = holdingFlower;
+    if (head.current) {
+      head.current.rotation.x = pose === "look" ? -0.5 + Math.sin(t * 0.5) * 0.06 : picking ? (holdingFlower ? 0.1 : -0.4) : pose === "watch" ? 0.3 : pose === "chat" ? Math.sin(t * 1.7) * 0.07 : 0;
+      head.current.rotation.y = pose === "look" ? Math.sin(t * 0.3) * 0.35 : pose === "watch" ? Math.sin(t * 0.4) * 0.3 : 0;
     }
     if (al && ar) {
-      if (typing) {
+      if (pose === "pick") {
+        // Bent over, the arms hang to the ground and one reaches for the flower.
+        al.rotation.x = holdingFlower ? 0 : -BEND + 0.1;
+        ar.rotation.x = holdingFlower ? -1.9 : -BEND - 0.35 + Math.sin(t * 3) * 0.12;
+      } else if (pose === "watch") {
+        // Hands clasped behind the back.
+        al.rotation.x = 0.35;
+        ar.rotation.x = 0.35;
+      } else if (pose === "chat") {
+        al.rotation.x = Math.sin(t * 1.3) * 0.04;
+        ar.rotation.x = -0.35 + Math.max(0, Math.sin(t * 0.9)) * Math.sin(t * 5) * 0.3;
+      } else if (pose === "stretch" && (t % 9) < 3.5) {
+        // Arms up over the head for a long stretch, then down again.
+        al.rotation.x = -2.9;
+        ar.rotation.x = -2.9;
+      } else if (typing) {
         al.rotation.x = -1.15 + Math.sin(t * 14) * 0.08;
         ar.rotation.x = -1.15 + Math.sin(t * 14 + 1.7) * 0.08;
       } else if (sitting) {
@@ -160,7 +195,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
       }
     }
     // Walking bob, and a gentle breath at rest.
-    g.position.y = sitting ? SEAT_H - HIP * look.height : walking ? Math.abs(Math.sin(t * 9)) * 0.035 : Math.sin(t * 1.6) * 0.006;
+    g.position.y = sitting ? SEAT_H - HIP * look.height : picking ? -STEP_DROP * look.height : walking ? Math.abs(Math.sin(t * 9)) * 0.035 : Math.sin(t * 1.6) * 0.006;
 
     const status = LAMP[agent.status];
     const pulse = agent.status === "working" ? 0.75 + 0.25 * Math.sin(t * 4) : agent.status === "blocked" ? (Math.sin(t * 6) > 0 ? 1 : 0.35) : 1;
@@ -189,7 +224,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
       onPointerOut={() => setHovered(false)}
     >
       <group scale={look.height}>
-        <Body look={look} legs={legs} arms={arms} card={card} folder={carrying} />
+        <Body look={look} legs={legs} arms={arms} card={card} folder={carrying} head={head} upper={upper} flower={flower} />
       </group>
       <mesh ref={lamp} position={[0, 2.18, 0]}>
         <sphereGeometry args={[0.08, 20, 16]} />
@@ -226,12 +261,18 @@ function turn(from: number, to: number, max: number): number {
   return from + Math.max(-max, Math.min(max, d));
 }
 
-export function Body({ look, legs, arms, card, folder = false }: {
+export function Body({ look, legs, arms, card, folder = false, head, upper, flower }: {
   look: Look;
   legs: RefObject<[Group | null, Group | null]>;
   arms: RefObject<[Group | null, Group | null]>;
   card: Texture | null;
   folder?: boolean;
+  /** To tilt and turn the head. */
+  head?: RefObject<Group | null>;
+  /** Everything above the hips, to bend forward or back at them. */
+  upper?: RefObject<Group | null>;
+  /** A flower in the right hand, shown once picked. */
+  flower?: RefObject<Group | null>;
 }) {
   const skin = <meshStandardMaterial color={look.skin} roughness={0.7} />;
   const shirt = <meshStandardMaterial color={look.shirt} roughness={0.8} />;
@@ -250,59 +291,74 @@ export function Body({ look, legs, arms, card, folder = false }: {
           </mesh>
         </group>
       ))}
-      <mesh position={[0, 1.16, 0]} scale={[look.build, 1, 0.72]} castShadow>
-        <capsuleGeometry args={[0.2, 0.34, 6, 16]} />
-        {shirt}
-      </mesh>
-      {/* A small badge in the agent's accent colour. */}
-      <mesh position={[0.1 * look.build, 1.3, 0.15]}>
-        <circleGeometry args={[0.035, 16]} />
-        <meshStandardMaterial color={look.accent} emissive={look.accent} emissiveIntensity={0.25} />
-      </mesh>
-      {([-1, 1] as const).map((side, i) => (
-        <group key={side} ref={(g) => void (arms.current[i] = g)} position={[side * 0.27 * look.build, 1.42, 0]}>
-          <mesh position={[0, -0.27, 0]} castShadow>
-            <capsuleGeometry args={[0.058, 0.42, 4, 10]} />
+      <group ref={upper} position={[0, HIP, 0]}>
+        <group position={[0, -HIP, 0]}>
+          <mesh position={[0, 1.16, 0]} scale={[look.build, 1, 0.72]} castShadow>
+            <capsuleGeometry args={[0.2, 0.34, 6, 16]} />
             {shirt}
           </mesh>
-          <mesh position={[0, -0.54, 0]}>
-            <sphereGeometry args={[0.066, 12, 10]} />
+          {/* A small badge in the agent's accent colour. */}
+          <mesh position={[0.1 * look.build, 1.3, 0.15]}>
+            <circleGeometry args={[0.035, 16]} />
+            <meshStandardMaterial color={look.accent} emissive={look.accent} emissiveIntensity={0.25} />
+          </mesh>
+          {([-1, 1] as const).map((side, i) => (
+            <group key={side} ref={(g) => void (arms.current[i] = g)} position={[side * 0.27 * look.build, 1.42, 0]}>
+              <mesh position={[0, -0.27, 0]} castShadow>
+                <capsuleGeometry args={[0.058, 0.42, 4, 10]} />
+                {shirt}
+              </mesh>
+              <mesh position={[0, -0.54, 0]}>
+                <sphereGeometry args={[0.066, 12, 10]} />
+                {skin}
+              </mesh>
+              {side === 1 && folder ? (
+                <mesh position={[0, -0.6, 0.14]} rotation={[Math.PI / 2 - 0.9, 0, 0]} castShadow>
+                  <boxGeometry args={[0.3, 0.38, 0.04]} />
+                  <meshStandardMaterial color="#e3b95f" roughness={0.8} />
+                </mesh>
+              ) : side === 1 && card ? (
+                <mesh position={[0, -0.6, 0.12]} rotation={[Math.PI / 2 - 0.9, 0, 0]}>
+                  <planeGeometry args={[0.26, 0.26]} />
+                  <meshBasicMaterial map={card} toneMapped={false} side={2} />
+                </mesh>
+              ) : side === 1 && flower ? (
+                <group ref={flower} position={[0, -0.62, 0.04]} visible={false}>
+                  <mesh position={[0, -0.08, 0]}>
+                    <cylinderGeometry args={[0.008, 0.008, 0.2, 5]} />
+                    <meshStandardMaterial color="#4f8a3a" />
+                  </mesh>
+                  <mesh position={[0, -0.19, 0]}>
+                    <sphereGeometry args={[0.045, 8, 6]} />
+                    <meshStandardMaterial color={look.accent} emissive={look.accent} emissiveIntensity={0.2} />
+                  </mesh>
+                </group>
+              ) : null}
+            </group>
+          ))}
+          <mesh position={[0, 1.55, 0]}>
+            <cylinderGeometry args={[0.06, 0.07, 0.1, 12]} />
             {skin}
           </mesh>
-          {side === 1 && folder ? (
-            <mesh position={[0, -0.6, 0.14]} rotation={[Math.PI / 2 - 0.9, 0, 0]} castShadow>
-              <boxGeometry args={[0.3, 0.38, 0.04]} />
-              <meshStandardMaterial color="#e3b95f" roughness={0.8} />
+          <group ref={head} position={[0, 1.73, 0]}>
+            <mesh castShadow>
+              <sphereGeometry args={[0.165, 24, 20]} />
+              {skin}
             </mesh>
-          ) : side === 1 && card ? (
-            <mesh position={[0, -0.6, 0.12]} rotation={[Math.PI / 2 - 0.9, 0, 0]}>
-              <planeGeometry args={[0.26, 0.26]} />
-              <meshBasicMaterial map={card} toneMapped={false} side={2} />
+            {([-1, 1] as const).map((side) => (
+              <mesh key={side} position={[side * 0.058, 0.02, 0.152]}>
+                <sphereGeometry args={[0.02, 10, 8]} />
+                <meshStandardMaterial color="#15171b" roughness={0.3} />
+              </mesh>
+            ))}
+            <mesh position={[0, -0.06, 0.155]} rotation={[0, 0, Math.PI]}>
+              <torusGeometry args={[0.035, 0.008, 6, 12, Math.PI]} />
+              <meshStandardMaterial color="#6d3b33" />
             </mesh>
-          ) : null}
+            <Hair look={look} />
+            <Accessory look={look} />
+          </group>
         </group>
-      ))}
-      <mesh position={[0, 1.55, 0]}>
-        <cylinderGeometry args={[0.06, 0.07, 0.1, 12]} />
-        {skin}
-      </mesh>
-      <group position={[0, 1.73, 0]}>
-        <mesh castShadow>
-          <sphereGeometry args={[0.165, 24, 20]} />
-          {skin}
-        </mesh>
-        {([-1, 1] as const).map((side) => (
-          <mesh key={side} position={[side * 0.058, 0.02, 0.152]}>
-            <sphereGeometry args={[0.02, 10, 8]} />
-            <meshStandardMaterial color="#15171b" roughness={0.3} />
-          </mesh>
-        ))}
-        <mesh position={[0, -0.06, 0.155]} rotation={[0, 0, Math.PI]}>
-          <torusGeometry args={[0.035, 0.008, 6, 12, Math.PI]} />
-          <meshStandardMaterial color="#6d3b33" />
-        </mesh>
-        <Hair look={look} />
-        <Accessory look={look} />
       </group>
     </group>
   );

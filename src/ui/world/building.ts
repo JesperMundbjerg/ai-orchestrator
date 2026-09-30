@@ -10,8 +10,8 @@
 //            agents waiting for you gather. What grows where is planting.ts
 //   loop     a walkway round the hall, just inside the rooms' fronts; everyone walking
 //            between rooms follows it, so nobody cuts across the garden
-//   garden   agents on no project spend their idle time here, on the benches or strolling
-//            round the walk; they come and go by the clearing, and never cross a bed or water
+//   garden   agents on no project, and project members idle a while, spend their time here
+//            (park.ts says doing what); they come and go by the clearing, and never cross a bed or water
 //   bays     an open team area per project and standing team, behind low planters, along the
 //            north side, then down the east and west sides, the first straight ahead, the next
 //            ones alternately right and left. Each has benches of facing desks, four a side
@@ -356,29 +356,42 @@ function gardenGate(garden: Garden, loop: Rect): Vec2[] {
   return [[0, loop.maxZ], [0, garden.area.maxZ], [0, garden.walk.maxZ]];
 }
 
+/** From the walkway to a point on the walk: in by the gate, then along the walk the short way. */
+export function intoGarden(garden: Garden, loop: Rect, p: Vec2): Vec2[] {
+  const gate = gardenGate(garden, loop);
+  return [...gate.slice(0, 2), ...aroundEdge(garden.walk, gate[2]!, p)];
+}
+
+/** Every seat on the garden's benches, two to a bench: the left-hand ones first, then the right. */
+export function benchSeats(garden: Garden): Array<{ pos: Vec2; facing: number }> {
+  return [0, 1].flatMap((side) => garden.benches.map((b) => ({ pos: place(b.pos, b.facing, [(side ? 1 : -1) * SEAT_SIDE, 0]), facing: b.facing })));
+}
+
+/** On a bench's seat, come in along the walk. */
+export function seatSpot(garden: Garden, loop: Rect, seat: { pos: Vec2; facing: number }): Spot {
+  return { pos: seat.pos, facing: seat.facing, zone: "garden", group: "garden", approach: intoGarden(garden, loop, onEdge(garden.walk, seat.pos)), sit: true };
+}
+
+/** Strolling round the walk: where they join it, this share of the way round, and once round from there. */
+export function strollSpot(garden: Garden, loop: Rect, share: number): Spot {
+  const { minX, maxX, minZ, maxZ } = garden.walk;
+  const round = 2 * (maxX - minX + maxZ - minZ);
+  const pos = atAlong(garden.walk, share * round);
+  const next = loopFrom(garden.walk, pos);
+  return { pos, facing: yawTo(pos, next[0]!), zone: "garden", group: "garden", approach: intoGarden(garden, loop, pos), stroll: next };
+}
+
 /**
  * The agents on no project in the garden: every other one on a bench while there are seats, the
  * rest strolling round the walk, spread evenly along it, however many there are. A stroller's
- * spot is where they join the walk, and they keep going round it.
+ * spot is where they join the walk, and they keep going round it. What they do there once the
+ * office runs is park.ts.
  */
 export function gardenSpots(garden: Garden, loop: Rect, n: number): Spot[] {
-  const seats = [0, 1].flatMap((side) => garden.benches.map((b) => ({ pos: place(b.pos, b.facing, [(side ? 1 : -1) * SEAT_SIDE, 0]), facing: b.facing })));
+  const seats = benchSeats(garden);
   const sitting = Math.min(seats.length, Math.ceil(n / 2));
-  const gate = gardenGate(garden, loop);
-  const into = (p: Vec2) => [...gate.slice(0, 2), ...aroundEdge(garden.walk, gate[2]!, p)];
-  const out: Spot[] = [];
-  for (let i = 0; i < sitting; i++) {
-    const seat = seats[i]!;
-    out.push({ pos: seat.pos, facing: seat.facing, zone: "garden", group: "garden", approach: into(onEdge(garden.walk, seat.pos)), sit: true });
-  }
-  const strolling = n - sitting;
-  const { minX, maxX, minZ, maxZ } = garden.walk;
-  const round = 2 * (maxX - minX + maxZ - minZ);
-  for (let k = 0; k < strolling; k++) {
-    const pos = atAlong(garden.walk, ((k + 0.5) / strolling) * round);
-    const next = loopFrom(garden.walk, pos);
-    out.push({ pos, facing: yawTo(pos, next[0]!), zone: "garden", group: "garden", approach: into(pos), stroll: next });
-  }
+  const out: Spot[] = seats.slice(0, sitting).map((seat) => seatSpot(garden, loop, seat));
+  for (let k = 0; k < n - sitting; k++) out.push(strollSpot(garden, loop, (k + 0.5) / (n - sitting)));
   return out;
 }
 

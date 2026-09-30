@@ -5,6 +5,7 @@ import { LOUNGE_TABLE, YOUR_VIEW, type Spot, type Vec2 } from "../src/ui/world/l
 import { buildingPipelines, buildingRoute, callerIn, doorway, DOOR_WIDTH, MIN_CONSOLES, PATH_HALF, place, planBuilding, teamDesks, type BuildingPlan, type Garden, type Rect, type Room } from "../src/ui/world/building.ts";
 import { groundOf, HEADROOM, inWater, plantGarden, type Planting } from "../src/ui/world/planting.ts";
 import { visitSpot } from "../src/ui/world/visits.ts";
+import { GAP, IDLE_MS, inPark, outForABreak, parkPlaces, parkPlan, parkSpots as parkedAt, PASTIME_MS, shiftOf, type Park } from "../src/ui/world/park.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
   id, identity: id, name: id, harness: "pi", cwd: null, project: null, branch: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra,
@@ -442,5 +443,174 @@ test("leads who come to you and agents waiting for you stand apart on the cleari
     // The callers stand left of the way in, those waiting right of it, so the way in stays open.
     for (const c of callers) assert.ok(c.pos[0] < -0.6, `${what}: caller left of the way in`);
     for (const w of waiting) assert.ok(w.pos[0] > 0.6, `${what}: waiting right of the way in`);
+  }
+});
+
+test("a project member goes out to the garden once idle a while; busy, just finished, waiting on you or in line, they stay at their desk", () => {
+  const now = 10 * IDLE_MS;
+  const long = now - IDLE_MS;
+  const agents = [
+    agent("idle", { teamId: "t0" }),
+    agent("lead", { teamId: "t0", role: "lead" }),
+    agent("fresh", { teamId: "t0" }),
+    agent("unknown", { teamId: "t0" }),
+    agent("working", { teamId: "t0", status: "working" }),
+    agent("done", { teamId: "t0", status: "done" }),
+    agent("prompt", { teamId: "t0", status: "blocked" }),
+    agent("asking", { teamId: "t0", waitingOnYou: true }),
+    agent("queued", { teamId: "t0" }),
+    agent("offline", { teamId: "t0", status: "offline" }),
+    agent("loose"),
+  ];
+  const since = new Map([["idle", long], ["lead", -Infinity], ["fresh", now - IDLE_MS + 1000], ["asking", long], ["queued", long], ["loose", long]]);
+  assert.deepEqual([...outForABreak(agents, since, now, ["queued"])].sort(), ["idle", "lead"]);
+});
+
+/** Where each is in the garden. */
+const spotsOf = (park: Park) => new Map([...park].map(([id, x]) => [id, x.spot]));
+const parkSpots = (...args: Parameters<typeof parkedAt>) => spotsOf(parkedAt(...args));
+
+/** A building with two teams, some members out for a break, some working, agents on no project and one in line. */
+function park(idle: number, now = 5 * PASTIME_MS, out = ["t0-c0", "t0-lead", "t1-c1"]) {
+  const plan = building(2, () => 3, ["q1"], idle);
+  return { plan, parked: parkPlan(plan, new Set(out), now).plan };
+}
+
+test("whoever is out for a break is in the garden, their desk kept; the rest of their team and the line stay put", () => {
+  const { plan, parked } = park(3);
+  for (const id of ["t0-c0", "t0-lead", "t1-c1", "l1", "l2", "l3"]) assert.equal(parked.spots.get(id)?.zone, "garden", id);
+  for (const id of ["t0-c1", "t0-c2", "t1-lead", "t1-c0"]) assert.deepEqual(parked.spots.get(id), plan.spots.get(id), id);
+  assert.equal(parked.spots.get("q1")?.zone, "queue");
+  // The office is drawn from the same desks: the one out keeps theirs.
+  assert.deepEqual(parked.corners, plan.corners);
+  assert.ok(plan.corners[0]!.desks.some((d) => d.occupantId === "t0-c0"));
+  // Nobody out, nobody on no project: the plan as it was.
+  const quiet = building(2, () => 3, [], 0);
+  assert.equal(parkPlan(quiet, new Set(), 0).plan, quiet);
+});
+
+test("the garden's places each stand on a path facing what they are for, clear of planting, benches, water and each other", () => {
+  for (const n of [1, 4, 9, 12]) {
+    const plan = building(n);
+    const places = parkPlaces(plan.garden, plan.loop);
+    const { planting } = planted(plan.garden);
+    const what = `${n} teams`;
+    const standing = [...places.tree, ...places.flower, ...places.ducks, ...places.stretch, ...places.chat.flat()];
+    assert.ok(places.tree.length >= 3 && places.flower.length >= 3 && places.ducks.length >= 1 && places.chat.length >= 2 && places.stretch.length >= 3, `${what}: some of every kind`);
+    const seats = places.seats.map((s) => s.pos);
+    for (const s of standing) {
+      const here = `${what}: ${s.pose} at ${s.pos}`;
+      assert.ok(plan.garden.paths.some((p) => inRect(p, s.pos, PERSON)), `${here} stands on a path`);
+      assert.ok(!inBedOrWater(plan, s.pos) && !plantAt(plan, s.pos), `${here} is in ${inBedOrWater(plan, s.pos) ?? plantAt(plan, s.pos)}`);
+      assert.ok(!inRect(plan.garden.clearing, s.pos, -PERSON), `${here} is off the clearing`);
+      for (const seat of seats) assert.ok(dist(seat, s.pos) >= GAP, `${here} leaves the bench at ${seat} free`);
+      // Someone who comes over to talk stands on the path too.
+      const v = visitSpot(s);
+      assert.ok(plan.garden.paths.some((p) => inRect(p, v.pos)) && !inBedOrWater(plan, v.pos), `${here}: a visitor at ${v.pos} stands on a path`);
+      assert.ok(s.approach.length >= 3 && s.zone === "garden" && s.group === "garden", `${here} is reached by the garden's way in`);
+    }
+    const all = [...standing.map((s) => s.pos), ...seats];
+    all.forEach((a, i) => all.slice(i + 1).forEach((b) => assert.ok(dist(a, b) >= Math.min(GAP, 0.8) - 1e-9, `${what}: ${a} and ${b} too close`)));
+    const partners = (s: Spot, o: Spot) => places.chat.some((c) => c.includes(s) && c.includes(o));
+    for (const s of standing) for (const o of standing) if (s !== o && !partners(s, o)) assert.ok(dist(s.pos, o.pos) >= GAP - 1e-9, `${what}: ${s.pos} and ${o.pos} are GAP apart`);
+    // Each faces what it is for.
+    const faces = (s: Spot, at: Vec2) => Math.abs(Math.atan2(Math.sin(s.facing - Math.atan2(at[0] - s.pos[0], at[1] - s.pos[1])), Math.cos(s.facing - Math.atan2(at[0] - s.pos[0], at[1] - s.pos[1])))) < 1e-6;
+    for (const s of places.tree) assert.ok(planting.trees.some((t) => dist(t.pos, s.pos) <= 3.5 && faces(s, t.pos)), `${what}: looks up at a tree from ${s.pos}`);
+    for (const s of places.flower) assert.ok(planting.plants.some((p) => p.kind === "flowers" && dist(p.pos, s.pos) <= 1.1 && faces(s, p.pos)), `${what}: picks a flower from ${s.pos}`);
+    for (const s of places.ducks) assert.ok(faces(s, plan.garden.pond.center) && dist(s.pos, plan.garden.pond.center) - plan.garden.pond.radius < 3, `${what}: watches the pond from ${s.pos}`);
+    for (const [a, b] of places.chat) assert.ok(faces(a, b.pos) && faces(b, a.pos) && dist(a.pos, b.pos) < 1.5, `${what}: two chat face to face at ${a.pos}`);
+    // Nobody in the garden stands between "Your desk" and those who come to you or wait for you.
+    const seen = [...Array.from({ length: 12 }, (_, i) => callerIn(plan)(i)), ...plan.queue.map((id) => plan.spots.get(id)!)];
+    for (const s of standing) for (const c of seen) assert.ok(segmentGap(YOUR_VIEW, c.pos, s.pos, s.pos) > 0.6, `${what}: ${s.pos} hides the ${c.zone} at ${c.pos}`);
+  }
+});
+
+test("any number in the garden fits, no two in one place, each at one thing: a bench, a tree, a flower, the ducks, a chat, a stretch or a stroll", () => {
+  for (const idle of [0, 1, 2, 5, 12, 30, 60, 120]) {
+    const plan = building(3, () => 3, ["q1"], idle);
+    const who = inPark(plan, new Set());
+    const spots = parkSpots(plan.garden, plan.loop, who, 7 * PASTIME_MS);
+    const what = `${idle} in the garden`;
+    assert.equal(spots.size, idle, what);
+    const placed = [...spots.values()].map((s) => s.pos.map((v) => v.toFixed(3)).join(","));
+    assert.equal(new Set(placed).size, placed.length, `${what}: no two share a place`);
+    for (const s of spots.values()) {
+      assert.equal([s.sit, s.pose, s.stroll].filter(Boolean).length, 1, `${what}: one thing at a time at ${s.pos}`);
+      assert.ok(plan.garden.paths.some((p) => inRect(p, s.pos)) && !inBedOrWater(plan, s.pos), `${what}: ${s.pos} on a path`);
+    }
+    // Chatting is in twos.
+    const chats = [...spots.values()].filter((s) => s.pose === "chat");
+    assert.equal(chats.length % 2, 0, `${what}: nobody chats alone`);
+    for (const c of chats) assert.ok(chats.some((o) => o !== c && dist(o.pos, c.pos) < 1.5), `${what}: a partner faces ${c.pos}`);
+    if (idle >= 30) {
+      const kinds = new Set([...spots.values()].map((s) => (s.sit ? "sit" : s.stroll ? "stroll" : s.pose)));
+      assert.ok(kinds.size >= 5, `${what}: a mix of pastimes, not just ${[...kinds]}`);
+    }
+  }
+});
+
+test("everyone takes up something new every minute or so, a few at a time, the same every time for the same moment", () => {
+  const plan = building(3, () => 3, [], 30);
+  const who = inPark(plan, new Set());
+  const at = (now: number) => parkSpots(plan.garden, plan.loop, who, now);
+  const key = (s: Spot) => `${s.sit ? "sit" : s.stroll ? "stroll" : s.pose}@${s.pos.join(",")}`;
+  const t0 = 100 * PASTIME_MS + 1;
+  assert.deepEqual([...at(t0)].map(([id, s]) => [id, key(s)]), [...at(t0)].map(([id, s]) => [id, key(s)]));
+  // Every shift comes round once a minute, each a sixth of everyone or so.
+  for (const id of who) {
+    const s = shiftOf(id, t0);
+    assert.ok(s.since <= t0 && t0 < s.next && s.next - s.since === PASTIME_MS, id);
+  }
+  const changing = (from: number, to: number) => who.filter((id) => shiftOf(id, from).turn !== shiftOf(id, to).turn);
+  const step = PASTIME_MS / 6;
+  const firsts = Array.from({ length: 6 }, (_, k) => changing(t0 + k * step, t0 + (k + 1) * step).length);
+  assert.ok(firsts.every((n) => n < who.length / 2), `staggered: ${firsts}`);
+  // Over ten minutes most do several different things.
+  const seen = new Map<string, Set<string>>(who.map((id) => [id, new Set()]));
+  for (let k = 0; k < 10; k++) for (const [id, s] of at(t0 + k * PASTIME_MS)) seen.get(id)!.add(s.sit ? "sit" : s.stroll ? "stroll" : s.pose!);
+  assert.ok([...seen.values()].filter((s) => s.size >= 3).length > who.length / 2, "most change what they do");
+  // Between shifts nothing changes.
+  const shiftless = who.every((id) => shiftOf(id, t0).turn === shiftOf(id, t0 + 1000).turn);
+  if (shiftless) assert.deepEqual([...at(t0)].map(([id, s]) => [id, key(s)]), [...at(t0 + 1000)].map(([id, s]) => [id, key(s)]));
+});
+
+test("someone coming out, going back or taking up something new moves nobody else: the rest stay where they are until their own turn", () => {
+  const plan = building(2, () => 3, [], 20);
+  const who = inPark(plan, new Set());
+  const now = 40 * PASTIME_MS + 5;
+  const before = parkedAt(plan.garden, plan.loop, who, now);
+  const since = new Map([["t0-c0", now - 1000]]);
+  const after = parkedAt(plan.garden, plan.loop, [...who, "t0-c0"], now, since, before);
+  assert.equal(after.get("t0-c0")?.spot.zone, "garden");
+  for (const id of who) assert.deepEqual(after.get(id)!.spot.pos, before.get(id)!.spot.pos, id);
+  // Ten minutes, a second at a time, with someone going back to work and coming out again.
+  let park = before;
+  const at = (t: number) => (Math.floor(t / (3 * PASTIME_MS)) % 2 ? who.filter((id) => id !== "l3") : who);
+  for (let t = now + 1000; t < now + 10 * PASTIME_MS; t += 1000) {
+    const next = parkedAt(plan.garden, plan.loop, at(t), t, new Map(), park);
+    for (const [id, { spot }] of next) {
+      const was = park.get(id)?.spot;
+      if (!was || (was.pos[0] === spot.pos[0] && was.pos[1] === spot.pos[1])) continue;
+      const own = shiftOf(id, t).turn !== shiftOf(id, t - 1000).turn;
+      // A chat ends when the other goes: they then do something else.
+      const partner = was.pose === "chat" ? [...park].find(([o, x]) => o !== id && x.spot.pose === "chat" && Math.abs(dist(x.spot.pos, was.pos) - 1) < 1e-6)?.[0] : undefined;
+      const partnerGone = !!partner && next.get(partner)?.spot.pos.join() !== park.get(partner)!.spot.pos.join();
+      assert.ok(own || partnerGone, `${id} moved at ${t - now} ms without their turn coming round`);
+    }
+    park = next;
+  }
+});
+
+test("from any place in the garden to any other, back to a desk or over to your desk, the walk keeps to the paths", () => {
+  const { parked } = park(10);
+  const plan = parked;
+  const places = parkPlaces(plan.garden, plan.loop);
+  const standing = [...places.tree, ...places.flower, ...places.ducks, ...places.stretch, ...places.chat.flat()];
+  const desks = [...plan.spots.entries()].filter(([, s]) => s.zone === "team").slice(0, 4).map(([, s]) => s);
+  for (const [i, s] of standing.entries()) {
+    assertClearWalk(plan, plan.entrance, buildingRoute(plan, plan.entrance, null, s), `in to ${s.pose} at ${s.pos}`);
+    for (const to of [...standing.filter((_, k) => k % 5 === i % 5 && k !== i), ...places.seats.slice(0, 3), ...desks, callerIn(plan)(0)]) {
+      assertClearWalk(plan, s.pos, buildingRoute(plan, s.pos, s, to), `${s.pose} at ${s.pos} to ${to.zone} at ${to.pos}`);
+    }
   }
 });

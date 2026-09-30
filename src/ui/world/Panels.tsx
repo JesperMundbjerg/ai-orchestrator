@@ -23,6 +23,8 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const lounge = world.agents.filter((a) => !a.teamId).length;
+  // Project members idle a while are out in the garden too.
+  const onBreak = world.agents.filter((a) => a.teamId && plan.spots.get(a.id)?.zone === "garden").length;
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
 
   return (
@@ -76,7 +78,7 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
         })}
         {!plan.corners.length ? <li className="muted">No projects yet. Start one, or start an agent in a worktree.</li> : null}
       </ul>
-      <div className="muted small-note">{lounge} in the {isBuilding(plan) ? "garden" : "lounge"}, not working in a project's worktree. Click someone to move them.</div>
+      <div className="muted small-note">{lounge} in the {isBuilding(plan) ? "garden" : "lounge"}, not working in a project's worktree{onBreak ? `; ${onBreak} from projects on a break there` : ""}. Click someone to move them.</div>
       {error ? <div className="warn">{error}</div> : null}
     </aside>
   );
