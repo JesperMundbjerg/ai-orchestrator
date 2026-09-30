@@ -27,6 +27,7 @@ export const acknowledge = (session: SessionInput, deliveryId: string, error?: s
 
 const ACTION_LEAD: Record<PendingReply["action"], string> = {
   choose: "Decision",
+  answer: "Answer",
   accept: "Milestone accepted",
   request_changes: "Changes requested",
   tried: "Tried it", // an old try-it reply, still handed over if one was queued
@@ -46,8 +47,9 @@ export function formatReply(r: PendingReply): string {
   const lines = [`[Review inbox] Reply to your ${r.itemType} request "${r.itemTitle}" (key ${r.itemKey}, revision ${r.revision}).`];
   const lead = (r.itemType === "try" ? TRY_LEAD[r.action] : undefined) ?? ACTION_LEAD[r.action];
   if (r.action === "choose") lines.push(`${lead}: ${r.choiceLabel ?? r.choice}`);
+  else if (r.action === "answer") lines.push(`${lead}: ${r.text}`);
   else lines.push(`${lead}.`);
-  if (r.text) lines.push("", r.text);
+  if (r.text && r.action !== "answer") lines.push("", r.text);
   if (r.images?.length) lines.push("", imageLines(r.images));
   lines.push("", "This is the user's answer. It authorizes only what it says; act on it, then submit a new review item when there is something new to look at.");
   return lines.join("\n");

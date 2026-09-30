@@ -53,15 +53,18 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
     );
   }
 
+  // A decision with no options is an open question: the words are the answer.
+  const open = item.type === "decide" && !item.options.length;
+
   const note = (
     <>
       <textarea
         className="note"
-        placeholder={item.type === "decide" ? "Add a note (optional). Paste or drop images to show it." : "Add a note (optional to approve, required if it needs changes). Paste or drop images to show it."}
+        placeholder={open ? "Write your answer. Paste or drop images to show it." : item.type === "decide" ? "Add a note (optional). Paste or drop images to show it." : "Add a note (optional to approve, required if it needs changes). Paste or drop images to show it."}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
-        rows={2}
+        rows={open ? 4 : 2}
       />
       <AttachedImages attachments={attachments} />
     </>
@@ -94,7 +97,7 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
           {item.type === "decide" ? (
             <>
               {item.recommendation ? <p className="recommendation">Agent recommends: {item.recommendation}</p> : null}
-              <div className="options" role="radiogroup">
+              {open ? null : <div className="options" role="radiogroup">
                 {item.options.map((o) => (
                   <button key={o.id} role="radio" aria-checked={choice === o.id} className={`option ${choice === o.id ? "on" : ""}`} onClick={() => setChoice(o.id)}>
                     <span className="option-label">
@@ -103,10 +106,14 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
                     {o.consequence ? <span className="option-consequence">{o.consequence}</span> : null}
                   </button>
                 ))}
-              </div>
+              </div>}
               {note}
               <div className="row">
-                <button className="primary" disabled={!choice || waiting} onClick={() => choice && void send("choose", { choice })}>Send decision</button>
+                {open ? (
+                  <button className="primary" disabled={!text.trim() || waiting} onClick={() => void send("answer")}>Answer</button>
+                ) : (
+                  <button className="primary" disabled={!choice || waiting} onClick={() => choice && void send("choose", { choice })}>Send decision</button>
+                )}
                 {secondary}
               </div>
             </>

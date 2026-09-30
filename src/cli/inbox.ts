@@ -15,6 +15,7 @@ import type { EvidenceInput, Item, ItemType, Message, Page, SessionInput, Submit
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
 
   inbox decide  "The question?" --request "…" --option "Label: consequence" --option "…" --recommend "…"
+  inbox decide  "The open question?" --request "…"        (no options: the founder answers in words)
   inbox try     "Title" --preview URL [--check "what to do and expect"] [--viewport phone] [--setup "…"]
   inbox try     "Title" --page "Label=URL" [--look "what to look at"] --page … [--check "…"]
   inbox milestone "Title" [--context "what changed"] [--limitations "…"]
@@ -32,6 +33,13 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
       --option "Overlay: tutor covers the right third; slider hidden while it talks" \\
       --option "Docked: the stage narrows; everything stays visible" \\
       --recommend "Docked, because the lesson depends on the slider staying in view"
+
+  Options are optional. Give two or more when the choice is between things you can name; give none
+  for an open question that needs words, such as a held question with no fixed answers. The founder
+  then answers in a text box and you get "Answer: <their text>". One option is refused (that is not a
+  choice), and --recommend needs options, since it picks one. Resubmit with the same --key to revise either kind.
+
+    inbox decide "Which lesson should the demo open on?" --request "I need it to finish the landing page; until you answer I'll use the pendulum." --key comment:42
 
   To show what you did in the app itself, line up the pages to go through in order: the founder
   sees each one live in a frame and presses Next. --page works on decide and milestone too.

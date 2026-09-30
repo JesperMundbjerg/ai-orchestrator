@@ -4,6 +4,7 @@ export const TYPE_LABEL: Record<ItemType, string> = { decide: "Decide", try: "Tr
 
 export const ACTION_LABEL: Record<ReplyAction, string> = {
   choose: "Decided",
+  answer: "Answered",
   accept: "Accepted",
   request_changes: "Requested changes",
   tried: "Tried it",

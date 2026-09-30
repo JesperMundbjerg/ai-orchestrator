@@ -157,7 +157,12 @@ export class Inbox {
     if (!raw.title?.trim()) throw new InboxError(400, "item.title is required");
     const binding = this.resolveSession(input.session ?? {});
     const fields = normalizeItem(raw);
-    if (raw.type === "decide" && fields.options.length < 2) throw new InboxError(400, "a decision needs at least two options");
+    if (raw.type === "decide" && fields.options.length === 1) {
+      throw new InboxError(400, "a decision with one option is not a choice: give two or more options, or none for an open question the user answers in words");
+    }
+    if (raw.type === "decide" && !fields.options.length && fields.recommendation) {
+      throw new InboxError(400, "a recommendation picks one of the options: give options, or drop it for an open question");
+    }
     if (raw.type === "try" && !fields.preview) throw new InboxError(400, "a try-it request needs a preview url or pages");
     const attachments = (raw.evidence ?? []).map((e) => this.prepareEvidence(e));
     const hash = sha256(JSON.stringify([fields, attachments.map((a) => [a.kind, a.sha256 ?? a.url, a.caption])]));
@@ -373,7 +378,7 @@ export class Inbox {
     }
     if (!REPLY_ACTIONS.includes(input.action)) throw new InboxError(400, `unknown action "${input.action}"`);
     const allowed: Record<ReplyAction, Item["type"][]> = {
-      choose: ["decide"], accept: ["milestone", "try"], request_changes: ["milestone", "try"], tried: [], discuss: ["decide", "try", "milestone"],
+      choose: ["decide"], answer: ["decide"], accept: ["milestone", "try"], request_changes: ["milestone", "try"], tried: [], discuss: ["decide", "try", "milestone"],
     };
     if (input.action === "tried") throw new InboxError(400, `"tried" is no longer an answer: approve, or say what needs changing`);
     if (!allowed[input.action].includes(item.type)) throw new InboxError(400, `"${input.action}" does not answer a ${item.type} item`);
@@ -382,6 +387,10 @@ export class Inbox {
     const choice = input.action === "choose" ? input.choice ?? null : null;
     const option = choice ? item.options.find((o) => o.id === choice) : undefined;
     if (input.action === "choose" && !option) throw new InboxError(400, "choose needs one of the item's options");
+    // An open question has no options to pick from, so words are the answer; a decision with options is chosen, never answered.
+    if (input.action === "answer" && item.options.length) throw new InboxError(400, "this decision has options: choose one");
+    if (input.action === "choose" && !item.options.length) throw new InboxError(400, "this is an open question: answer it in words");
+    if (input.action === "answer" && !text) throw new InboxError(400, "write your answer");
     if ((input.action === "discuss" || input.action === "request_changes") && !text && !images.length) throw new InboxError(400, "write what you want to say");
 
     const task = this.task(item.taskId);

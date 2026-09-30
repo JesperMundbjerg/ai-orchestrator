@@ -75,7 +75,7 @@ export default function reviewInbox(pi: PiApi): void {
     label: "Review inbox",
     description:
       "Put a result in front of the user in their Review Inbox and get their answer back in this conversation. " +
-      "Use at a meaningful point, not for every turn: `decide` for a concrete question with 2-3 options, " +
+      "Use at a meaningful point, not for every turn: `decide` for a concrete question with 2-3 options (or none, for an open question the user answers in words: you get \"Answer: <text>\"; one option is refused), " +
       "`try` for a preview the user should interact with (or `pages`, a walkthrough of live pages they step through), `milestone` for an increment to accept or send back. A `try` comes back as \"Approved\" or \"Needs changes\" with a note saying what. " +
       "Write a decision the way an engineer asks a colleague, e.g. title \"Should the tutor cover the slider or push it aside?\", " +
       "request \"I need this to finish the isotope step. Until you answer I'll keep it docked.\", " +
@@ -88,7 +88,7 @@ export default function reviewInbox(pi: PiApi): void {
       request: Type.Optional(Type.String({ description: `1-2 sentences: what you need from the user and what happens if nobody answers. About ${SOFT_CAPS.request} characters` })),
       context: Type.Optional(Type.String({ description: "Only what matters for choosing or checking, not a report of what you did; a few sentences" })),
       recommendation: Type.Optional(Type.String({ description: "Your pick and the reason for it" })),
-      options: Type.Optional(Type.Array(Type.String({ description: "\"Label: consequence in plain words\"" }), { description: "For decide: 2-3 options" })),
+      options: Type.Optional(Type.Array(Type.String({ description: "\"Label: consequence in plain words\"" }), { description: "For decide: 2-3 options, or none for an open question answered in words. Never one; a recommendation needs options" })),
       check: Type.Optional(Type.String({ description: "For try: the interaction to perform and the expected behaviour" })),
       preview_url: Type.Optional(Type.String()),
       pages: Type.Optional(Type.Array(

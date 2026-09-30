@@ -13,10 +13,10 @@ export const REPLY_STATES = ["queued", "delivered", "failed", "stale"] as const;
 export type ReplyState = (typeof REPLY_STATES)[number];
 
 /** What the user did. `accept` / `request_changes` answer a milestone or a try-it request (Approve /
- * Needs changes), `choose` a decision; `discuss` is free conversation on any type. `tried` is what a
+ * Needs changes), `choose` a decision, `answer` an open question (a decision with no options); `discuss` is free conversation on any type. `tried` is what a
  * try-it request used to be answered with: old replies keep it and stay readable, but it is no longer
  * accepted. */
-export const REPLY_ACTIONS = ["choose", "accept", "request_changes", "tried", "discuss"] as const;
+export const REPLY_ACTIONS = ["choose", "answer", "accept", "request_changes", "tried", "discuss"] as const;
 export type ReplyAction = (typeof REPLY_ACTIONS)[number];
 
 export const HARNESSES = ["pi", "claude", "codex", "manual"] as const;

@@ -34,8 +34,11 @@ Two things are typed into a pane instead: a reply to an idle session nothing els
 | Type | You get | Primary actions |
 |---|---|---|
 | **Decide** | the question as the title, what the agent needs and what happens if nobody answers, 2+ options with consequences, the agent's pick and why, screenshots | pick an option (plus an optional note) |
+| **Decide, open question** | the same with no options: a question that has no fixed answers | write the answer (text required; the button says **Answer**) |
 | **Try it** | what to check, a live preview or a walkthrough of pages (each checked for reachability and framing, shown at desktop or phone width), setup notes | open it, then **Approve** (an optional note) or **Needs changes** (a note saying what, required) |
 | **Review milestone** | what was finished, evidence at the exact revision | Accept, or Request changes (text required) |
+
+A decision has two or more options, or none. With none it is an **open question**: the answer is words (`answer`, worded to the agent as "Answer: …", and an empty one is refused), so a held question with no structured choices needs no invented ones. Exactly one option is refused, since it is not a choice, and a recommendation needs options, since it picks one. Revising by key works the same for both, and adding or removing the options makes a new revision that turns an answer written for the old one stale.
 
 A try-it request is answered with the milestone's two actions, `accept` and `request_changes`, worded to the agent as "Approved" and "Needs changes". Approving does not update the task's last accepted milestone, since a try is not one. `tried`, what a try was answered with before, is no longer accepted; the replies that carry it stay in the database and the conversation reads "Tried it".
 

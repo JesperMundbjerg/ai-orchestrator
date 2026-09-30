@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/server/db.ts";
 import { Inbox, type PresenceSource } from "../src/server/inbox.ts";
+import { formatReply } from "../src/shared/agent-client.ts";
 import type { SessionInput, SubmitInput } from "../src/shared/types.ts";
 
 const noPresence: PresenceSource = { available: () => false, forSession: () => null, resolvePane: () => null };
@@ -176,4 +177,65 @@ test("a Pi session is addressed by its session file path: the header id for the 
   const [pending] = inbox.pendingReplies({ ...voice }, "live");
   assert.equal(pending?.deliveryId, reply.id);
   assert.equal(inbox.acknowledge(voice, reply.id).state, "delivered");
+});
+
+const openQuestion = (extra: Partial<SubmitInput["item"]> = {}) =>
+  decision({ title: "Which lesson should the demo open on?", key: "comment:42", options: [], ...extra });
+
+test("a decision with no options is an open question, answered with text the agent reads as 'Answer: …'", () => {
+  const { inbox } = setup();
+  const { itemId } = inbox.submit(openQuestion());
+  assert.equal(inbox.item(itemId).options.length, 0);
+  assert.equal(inbox.item(itemId).state, "needs_attention");
+
+  const reply = inbox.answer(itemId, { revision: 1, action: "answer", text: "  The pendulum, then the isotopes.  " });
+  assert.equal(reply.action, "answer");
+  assert.equal(reply.choice, null);
+  assert.equal(inbox.item(itemId).state, "answer_queued");
+
+  const [pending] = inbox.pendingReplies(voice, "pull");
+  assert.equal(pending!.text, "The pendulum, then the isotopes.");
+  assert.match(formatReply(pending!), /Reply to your decide request "Which lesson should the demo open on\?" \(key comment:42, revision 1\)\.\nAnswer: The pendulum, then the isotopes\.\n/);
+});
+
+test("an open question needs words, and a decision with options cannot be answered with them", () => {
+  const { inbox } = setup();
+  const open = inbox.submit(openQuestion()).itemId;
+  assert.throws(() => inbox.answer(open, { revision: 1, action: "answer", text: "   " }), /write your answer/);
+  assert.throws(() => inbox.answer(open, { revision: 1, action: "answer" }), /write your answer/);
+  assert.throws(() => inbox.answer(open, { revision: 1, action: "choose", choice: "a" }), /options|open question/);
+  assert.equal(inbox.item(open).state, "needs_attention", "nothing was queued");
+  // Discuss stays available on an open question.
+  inbox.answer(open, { revision: 1, action: "discuss", text: "Which lessons exist?" });
+
+  const choice = inbox.submit(decision()).itemId;
+  assert.throws(() => inbox.answer(choice, { revision: 1, action: "answer", text: "whatever" }), /has options/);
+});
+
+test("exactly one option is refused, and a recommendation needs options", () => {
+  const { inbox } = setup();
+  assert.throws(() => inbox.submit(decision({ options: ["Only this"] })), /one option.*two or more.*none for an open question/);
+  assert.throws(() => inbox.submit(openQuestion({ recommendation: "The pendulum" })), /recommendation needs|recommendation picks/);
+  assert.equal(inbox.state().items.length, 0);
+  inbox.submit(decision({ recommendation: "Immediately" })); // with options, a recommendation is fine
+});
+
+test("an open question is revised by its key: the same text changes nothing, new text is a new revision that stales an old answer", () => {
+  const { inbox } = setup();
+  const first = inbox.submit(openQuestion());
+  assert.equal(inbox.submit(openQuestion()).changed, false);
+  const queued = inbox.answer(first.itemId, { revision: 1, action: "answer", text: "The pendulum" });
+
+  const second = inbox.submit(openQuestion({ title: "Which lesson should the demo open on, given the isotopes one is longer?" }));
+  assert.equal(second.itemId, first.itemId);
+  assert.equal(second.revision, 2);
+  assert.equal(inbox.reply(queued.id).state, "stale");
+  assert.throws(() => inbox.answer(first.itemId, { revision: 1, action: "answer", text: "old" }), /stale/);
+  inbox.answer(first.itemId, { revision: 2, action: "answer", text: "The isotopes" });
+
+  // Giving it options later revises the same item into an ordinary decision.
+  const third = inbox.submit(openQuestion({ options: ["Pendulum: short", "Isotopes: long"] }));
+  assert.equal(third.itemId, first.itemId);
+  assert.equal(third.revision, 3);
+  assert.equal(inbox.item(first.itemId).options.length, 2);
 });
