@@ -3,10 +3,14 @@
 // desks), plus the building's rooms and walls, and the walking route between two spots.
 // Coordinates are metres on the floor as [x, z], your desk at the origin, north (-z) ahead.
 //
-//   hall     an open hall round your desk: the line in front of it (north), callers on your
-//            side of it, the front door behind you (south)
+//   hall     an open hall with an indoor garden in its middle, open to the sky: planted beds,
+//            trees, a pond with a fountain, benches along a walk round the beds, and at its
+//            front, towards the front door (south), a paved clearing where leads who come to
+//            you stand and agents waiting for you gather
 //   loop     a walkway round the hall, just inside the rooms' fronts; everyone walking
-//            between rooms follows it, so nobody cuts across your desk or the line
+//            between rooms follows it, so nobody cuts across the garden
+//   garden   agents on no project spend their idle time here, on the benches or strolling
+//            round the walk; they come and go by the clearing, and never cross a bed or water
 //   bays     an open team area per project and standing team, behind low planters, along the
 //            north side, then down the east and west sides, the first straight ahead, the next
 //            ones alternately right and left. Each has benches of facing desks, four a side
@@ -15,9 +19,11 @@
 //            is as deep as the deepest one needs, so the building stays square; places no team
 //            has yet have their desks free.
 //   south    the lounge and kitchen west of the front door, two glass meeting rooms east of it
+//
+// Where your desk stood, the origin, is now the clearing: you stand there, facing north.
 
 import type { Team, WorldAgent } from "../../shared/types.ts";
-import { queueSpot, route, viewOf, yawTo, type Corner, type Desk, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
+import { CALLER, callerSpot, route, SPAWN, viewOf, YOUR_VIEW, yawTo, type Corner, type Desk, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
 
 export type Layout = "ring" | "building";
 
@@ -48,14 +54,38 @@ export interface Wall {
   kind: "outer" | "glass" | "planter";
 }
 
+/** A bench, as where its middle is and the way someone sitting on it faces. */
+export interface Bench {
+  pos: Vec2;
+  facing: number;
+}
+
+/**
+ * The garden in the hall's middle. Its walk is a loop given by its middle line; the walk's sides,
+ * and the middle path between the inner beds, are paths PATH_HALF either side of their line.
+ * Nobody walks on a bed; the pond lies in the west lawn.
+ */
+export interface Garden {
+  area: Rect;
+  /** Paved, at the garden's front: where leads who come to you stand and those waiting for you gather. */
+  clearing: Rect;
+  walk: Rect;
+  paths: Rect[];
+  beds: Rect[];
+  pond: { center: Vec2; radius: number };
+  benches: Bench[];
+  trees: Array<{ pos: Vec2; size: number }>;
+}
+
 export interface BuildingPlan extends OfficePlan {
   layout: "building";
   rooms: Room[];
   walls: Wall[];
   /** The outside of the building. */
   outline: Rect;
-  /** The open hall round your desk, between the rooms' fronts. */
+  /** The open hall between the rooms' fronts, the garden in its middle. */
   hall: Rect;
+  garden: Garden;
   /** The walkway round the hall everyone walks along between rooms. */
   loop: Rect;
   /** The lane handed-over work runs along, just inside the walkway. */
@@ -91,10 +121,27 @@ const INSIDE = 0.6;
 /** The lobby between the lounge and the meeting rooms, and the front door in it. */
 const LOBBY = 4;
 const FRONT_DOOR = 2.4;
-/** The least hall that has room for your desk, the line, the callers and the walkway round them. */
+/** The least hall that has room for the garden, its clearing and the walkway round them. */
 const MIN_ACROSS = 3;
 const MIN_DOWN = 2;
 const NORTH = Math.PI;
+/** The garden starts this far in from the hall's edge, clear of the walkway and the work lane. */
+const GARDEN_INSET = 2.6;
+/** Paths are twice this wide; the walk's middle line runs this far in from the garden's edge. */
+export const PATH_HALF = 0.9;
+const WALK_IN = 1.3;
+/** The walk's front runs here, along the back of the clearing; the garden ends at GARDEN_FRONT, in front of where you stand, however big the hall. */
+const FRONT_Z = -2.4;
+const GARDEN_FRONT = 6;
+/** The lawns either side of the clearing are this wide. */
+const LAWN = 4.7;
+/** Benches along the walk: this far apart, their seats this far off the walk's middle line and this far either side of the bench's. */
+const BENCH_PITCH = 3.4;
+const SEAT_OFF = PATH_HALF - 0.32;
+const SEAT_SIDE = 0.42;
+/** Leads who come to you stand in rows of this many, and those waiting for you gather in rows of this many. */
+const CALLER_ROW = 5;
+const WAIT_ROW = 5;
 
 /** How deep a bay is for this many rows of desks, two rows facing each other to a bench. */
 export const bayDepth = (rows: number) => BACK_ROOM + (Math.ceil(rows / 2) - 1) * BENCH_GAP + FRONT_ROOM;
@@ -166,10 +213,11 @@ export function planBuilding(agents: WorldAgent[], teams: Team[], queue: string[
     rooms.push({ kind: "meeting", teamId: null, center: [LOBBY / 2 + (k + 0.5) * (wing / 2), southZ], facing: NORTH, half: [wing / 4, depth / 2], doors: [0] });
   }
 
+  const garden = planGarden(hall);
   const queued = new Set(queue);
-  queue.forEach((id, i) => spots.set(id, queueSpot(i)));
-  const lounging = agents.filter((a) => !queued.has(a.id) && !spots.has(a.id));
-  lounging.forEach((a, i) => spots.set(a.id, loungeSpot(i, lounging.length, lounge)));
+  queue.forEach((id, i) => spots.set(id, waitingSpot(garden, loop, i)));
+  const idle = agents.filter((a) => !queued.has(a.id) && !spots.has(a.id));
+  gardenSpots(garden, loop, idle.length).forEach((spot, i) => spots.set(idle[i]!.id, spot));
 
   const frontDoor = { x: 0, z: outline.maxZ, width: FRONT_DOOR };
   const margin = 3;
@@ -188,6 +236,7 @@ export function planBuilding(agents: WorldAgent[], teams: Team[], queue: string[
     walls: walls(rooms, outline, frontDoor),
     outline,
     hall,
+    garden,
     loop,
     lane,
     frontDoor,
@@ -245,20 +294,150 @@ export function teamDesks(room: Room, members: WorldAgent[]): { seats: Array<[st
   return { seats, desks };
 }
 
-/** Round the lounge's table, facing it: in by its door, and round the table inside the sofas. */
-function loungeSpot(i: number, n: number, room: Room): Spot {
-  const ring = Math.max(1, Math.ceil(n / 8));
-  const r = 2.2 + 1.3 * Math.floor(i / 8);
-  const inRing = Math.min(8, n - Math.floor(i / 8) * 8);
-  const angle = ((i % 8) / inRing) * Math.PI * 2 + (ring > 1 ? Math.floor(i / 8) * 0.4 : 0);
-  const local = (a: number, d: number) => place(room.center, room.facing, [Math.sin(a) * d, Math.cos(a) * d]);
-  const pos = local(angle, r);
-  let turn = angle;
-  while (turn > Math.PI) turn -= Math.PI * 2;
-  const steps = Math.ceil(Math.abs(turn) / (Math.PI / 6));
-  const around = Array.from({ length: steps + 1 }, (_, k) => local((turn * k) / Math.max(1, steps), 1.5));
-  const { out, inside } = doorway(room, 0);
-  return { pos, facing: yawTo(pos, room.center), zone: "lounge", group: "lounge", approach: [out, inside, ...around] };
+/**
+ * The garden in a hall: a walk round two inner beds split by a middle path, a strip of flowers
+ * round the back and sides, and at the front the clearing between two lawns, the pond in the
+ * west one. Benches stand along the walk, at its edge: at the back and the sides on its outer
+ * edge facing in, at the front on its inner edge facing the clearing.
+ */
+export function planGarden(hall: Rect): Garden {
+  const inside = inset(hall, GARDEN_INSET);
+  const area: Rect = { ...inside, maxZ: Math.min(inside.maxZ, GARDEN_FRONT) };
+  const walk: Rect = { minX: area.minX + WALK_IN, maxX: area.maxX - WALK_IN, minZ: area.minZ + WALK_IN, maxZ: FRONT_Z };
+  const cx = area.maxX - LAWN;
+  const front = walk.maxZ + PATH_HALF;
+  const clearing: Rect = { minX: -cx, maxX: cx, minZ: front, maxZ: area.maxZ };
+  const band = (a: Vec2, b: Vec2): Rect => ({ minX: Math.min(a[0], b[0]) - PATH_HALF, maxX: Math.max(a[0], b[0]) + PATH_HALF, minZ: Math.min(a[1], b[1]) - PATH_HALF, maxZ: Math.max(a[1], b[1]) + PATH_HALF });
+  const nw: Vec2 = [walk.minX, walk.minZ];
+  const ne: Vec2 = [walk.maxX, walk.minZ];
+  const se: Vec2 = [walk.maxX, walk.maxZ];
+  const sw: Vec2 = [walk.minX, walk.maxZ];
+  const middle: Rect = { minX: -PATH_HALF, maxX: PATH_HALF, minZ: walk.minZ, maxZ: walk.maxZ };
+  const paths = [band(nw, ne), band(ne, se), band(sw, se), band(nw, sw), middle];
+  const inner = inset(walk, PATH_HALF);
+  const lawnW: Rect = { minX: area.minX, maxX: -cx, minZ: front, maxZ: area.maxZ };
+  const lawnE: Rect = { minX: cx, maxX: area.maxX, minZ: front, maxZ: area.maxZ };
+  const beds: Rect[] = [
+    { minX: area.minX, maxX: area.maxX, minZ: area.minZ, maxZ: walk.minZ - PATH_HALF },
+    { minX: area.minX, maxX: walk.minX - PATH_HALF, minZ: area.minZ, maxZ: front },
+    { minX: walk.maxX + PATH_HALF, maxX: area.maxX, minZ: area.minZ, maxZ: front },
+    { ...inner, maxX: -PATH_HALF },
+    { ...inner, minX: PATH_HALF },
+    lawnW,
+    lawnE,
+  ];
+  const pond = { center: mid(lawnW), radius: Math.min(lawnW.maxX - lawnW.minX, lawnW.maxZ - lawnW.minZ) / 2 - 0.6 };
+
+  // Benches: along the front and the back, clear of the middle path and the corners, then the sides.
+  const runs = (from: number, to: number) => {
+    const length = to - from - 3.2;
+    if (length < 0) return [];
+    const n = Math.floor(length / BENCH_PITCH) + 1;
+    const start = (from + to) / 2 - ((n - 1) * BENCH_PITCH) / 2;
+    return Array.from({ length: n }, (_, k) => start + k * BENCH_PITCH);
+  };
+  const across = runs(walk.minX, walk.maxX).filter((x) => Math.abs(x) > PATH_HALF + 1.2);
+  const down = runs(walk.minZ, walk.maxZ);
+  const benches: Bench[] = [
+    ...across.map((x) => ({ pos: [x, walk.maxZ - SEAT_OFF] as Vec2, facing: 0 })),
+    ...across.map((x) => ({ pos: [x, walk.minZ - SEAT_OFF] as Vec2, facing: 0 })),
+    ...down.map((z) => ({ pos: [walk.minX - SEAT_OFF, z] as Vec2, facing: Math.PI / 2 })),
+    ...down.map((z) => ({ pos: [walk.maxX + SEAT_OFF, z] as Vec2, facing: -Math.PI / 2 })),
+  ];
+
+  // Trees down the middle of the inner beds, in the east lawn, and behind the pond.
+  const trees: Garden["trees"] = [];
+  for (const bed of [beds[3]!, beds[4]!]) {
+    const [x0, x1] = [bed.minX + 1.2, bed.maxX - 1.2];
+    const n = Math.max(1, Math.round((x1 - x0) / 3.6) + 1);
+    const size = Math.min(0.8, (bed.maxZ - bed.minZ) / 2.9);
+    for (let k = 0; k < n; k++) trees.push({ pos: [x0 + ((x1 - x0) * k) / Math.max(1, n - 1), (bed.minZ + bed.maxZ) / 2], size });
+  }
+  const [ex, ez] = mid(lawnE);
+  trees.push({ pos: [ex + 0.9, ez - 1.6], size: 1 }, { pos: [ex - 0.8, ez + 1.9], size: 0.85 });
+  trees.push({ pos: [lawnW.minX + 0.7, lawnW.minZ + 0.9], size: 0.7 });
+  return { area, clearing, walk, paths, beds, pond, benches, trees };
+}
+
+const mid = (r: Rect): Vec2 => [(r.minX + r.maxX) / 2, (r.minZ + r.maxZ) / 2];
+
+/** The way into the garden: off the walkway at the clearing's front, across it, and onto the walk. */
+function gardenGate(garden: Garden, loop: Rect): Vec2[] {
+  return [[0, loop.maxZ], [0, garden.area.maxZ], [0, garden.walk.maxZ]];
+}
+
+/**
+ * The agents on no project in the garden: every other one on a bench while there are seats, the
+ * rest strolling round the walk, spread evenly along it, however many there are. A stroller's
+ * spot is where they join the walk, and they keep going round it.
+ */
+export function gardenSpots(garden: Garden, loop: Rect, n: number): Spot[] {
+  const seats = [0, 1].flatMap((side) => garden.benches.map((b) => ({ pos: place(b.pos, b.facing, [(side ? 1 : -1) * SEAT_SIDE, 0]), facing: b.facing })));
+  const sitting = Math.min(seats.length, Math.ceil(n / 2));
+  const gate = gardenGate(garden, loop);
+  const into = (p: Vec2) => [...gate.slice(0, 2), ...aroundEdge(garden.walk, gate[2]!, p)];
+  const out: Spot[] = [];
+  for (let i = 0; i < sitting; i++) {
+    const seat = seats[i]!;
+    out.push({ pos: seat.pos, facing: seat.facing, zone: "garden", group: "garden", approach: into(onEdge(garden.walk, seat.pos)), sit: true });
+  }
+  const strolling = n - sitting;
+  const { minX, maxX, minZ, maxZ } = garden.walk;
+  const round = 2 * (maxX - minX + maxZ - minZ);
+  for (let k = 0; k < strolling; k++) {
+    const pos = atAlong(garden.walk, ((k + 0.5) / strolling) * round);
+    const next = loopFrom(garden.walk, pos);
+    out.push({ pos, facing: yawTo(pos, next[0]!), zone: "garden", group: "garden", approach: into(pos), stroll: next });
+  }
+  return out;
+}
+
+/** The point this far along a rectangle's edge, clockwise from its north-west corner as seen from above. */
+function atAlong(r: Rect, d: number): Vec2 {
+  const w = r.maxX - r.minX;
+  const h = r.maxZ - r.minZ;
+  if (d < w) return [r.minX + d, r.minZ];
+  if (d < w + h) return [r.maxX, r.minZ + d - w];
+  if (d < 2 * w + h) return [r.maxX - (d - w - h), r.maxZ];
+  return [r.minX, r.maxZ - (d - 2 * w - h)];
+}
+
+/** Once round a rectangle's edge clockwise from a point on it: its four corners in turn, and back to the point. */
+function loopFrom(r: Rect, p: Vec2): Vec2[] {
+  const corners: Vec2[] = [[r.minX, r.minZ], [r.maxX, r.minZ], [r.maxX, r.maxZ], [r.minX, r.maxZ]];
+  const at = along(r, p);
+  const w = r.maxX - r.minX;
+  const h = r.maxZ - r.minZ;
+  const marks = [0, w, w + h, 2 * w + h];
+  const first = marks.findIndex((m) => m > at + 1e-6);
+  const from = first < 0 ? 0 : first;
+  return [...corners.slice(from), ...corners.slice(0, from), p];
+}
+
+/**
+ * The i-th lead who came to you: on the clearing, where your desk's callers stood, to your left
+ * and facing you, side by side; more rows behind them and then in front. They come straight in
+ * off the walkway.
+ */
+export function gardenCaller(plan: BuildingPlan, i: number): Spot {
+  const k = i % CALLER_ROW;
+  const row = Math.floor(i / CALLER_ROW);
+  const dz = row === 0 ? 0 : row === 1 ? -1.1 : 1.1 * (row - 1);
+  const pos: Vec2 = [CALLER[0] - 1.1 * k - (row % 2) * 0.55, CALLER[1] - 0.2 * k + dz];
+  return { pos, facing: yawTo(pos, SPAWN), zone: "caller", group: "caller", approach: [[pos[0], plan.loop.maxZ], [pos[0], plan.garden.clearing.maxZ]] };
+}
+
+/**
+ * The i-th agent waiting for you: a loose group on the clearing, right of the path into the
+ * garden, the first nearest you and the rest behind in rows, turned towards you. Beyond three
+ * rows the next ones stand in front of the group instead, nearer the door.
+ */
+export function waitingSpot(garden: Garden, loop: Rect, i: number): Spot {
+  const k = i % WAIT_ROW;
+  const row = Math.floor(i / WAIT_ROW);
+  const dz = row < 3 ? -0.95 * row : 0.95 * (row - 2);
+  const pos: Vec2 = [1.6 + 1.0 * k + (row % 3) * 0.33 + (((i * 37) % 7) - 3) * 0.04, 1.4 + dz + (((i * 53) % 5) - 2) * 0.05];
+  return { pos, facing: yawTo(pos, YOUR_VIEW), zone: "queue", group: "queue", approach: [[pos[0], loop.maxZ], [pos[0], garden.clearing.maxZ]] };
 }
 
 /**
@@ -347,17 +526,28 @@ const distance = (a: Vec2, b: Vec2) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 /**
  * The waypoints from where an avatar is to its new spot in the building: out of its room by its
  * door to the walkway, round the hall along it, and in by the new spot's approach. Moves inside
- * one room stay inside it; moves in the line go straight there.
+ * one room stay inside it; moves in the line go straight there. In the garden, from wherever on
+ * the walk someone is (a stroller is never at their spot), along the walk.
  */
 export function buildingRoute(plan: BuildingPlan, from: Vec2, fromSpot: Spot | null, to: Spot): Vec2[] {
+  const onWalk = fromSpot?.zone === "garden" && nearEdge(plan.garden.walk, from);
   if (fromSpot && fromSpot.group === to.group) {
     if (to.zone === "queue" || to.zone === "caller") return [to.pos];
+    if (onWalk) return [...aroundEdge(plan.garden.walk, from, to.approach.at(-1)!), to.pos];
     return [...fromSpot.approach.slice(1).reverse(), ...to.approach.slice(1), to.pos];
   }
-  const leave = fromSpot ? [...fromSpot.approach].reverse() : [];
+  const leave = onWalk
+    ? [...aroundEdge(plan.garden.walk, from, [0, plan.garden.walk.maxZ]), ...fromSpot!.approach.slice(0, 2).reverse()]
+    : fromSpot ? [...fromSpot.approach].reverse() : [];
   const exit = leave.at(-1) ?? from;
   const entry = to.approach[0] ?? to.pos;
   return [...leave, ...aroundEdge(plan.loop, exit, entry), ...to.approach, to.pos];
+}
+
+/** Whether a point is on a path along a rectangle's edge: within a path's width of it, or on the clearing in front of it. */
+function nearEdge(r: Rect, p: Vec2): boolean {
+  const e = onEdge(r, p);
+  return distance(e, p) <= PATH_HALF + 0.05;
 }
 
 export type RouteFn = (from: Vec2, fromSpot: Spot | null, to: Spot) => Vec2[];
@@ -366,6 +556,9 @@ export const isBuilding = (plan: OfficePlan): plan is BuildingPlan => (plan as P
 
 /** How to walk in this plan's office. */
 export const routeIn = (plan: OfficePlan): RouteFn => (isBuilding(plan) ? (from, fromSpot, to) => buildingRoute(plan, from, fromSpot, to) : route);
+
+/** Where the i-th lead who came to you stands in this plan's office. */
+export const callerIn = (plan: OfficePlan): ((i: number) => Spot) => (isBuilding(plan) ? (i) => gardenCaller(plan, i) : callerSpot);
 
 /** Where to stand to look into a team's place: out in the hall in front of its glass, or in front of its corner. */
 export function viewIn(plan: OfficePlan, corner: Corner): { pos: Vec2; yaw: number } {

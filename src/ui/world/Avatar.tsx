@@ -9,7 +9,12 @@ import { lookFor, type Look } from "./look.ts";
 import { route, type Spot, type Vec2 } from "./layout.ts";
 
 const WALK_SPEED = 1.9;
+/** Strolling round the garden, taking it easy. */
+const STROLL_SPEED = 0.8;
 const TURN_RATE = 8;
+/** Sitting on a bench: the hips drop to its seat and the legs reach forward. */
+const HIP = 0.86;
+const SEAT_H = 0.47;
 
 export const CARD: Record<ItemType, { color: string; glyph: string }> = {
   decide: { color: "#8a4fd8", glyph: "?" },
@@ -46,6 +51,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     yaw: spot.facing,
     path: enterFrom ? walk(enterFrom, null, spot) : ([] as Vec2[]),
     spot,
+    strolling: false,
     phase: Math.random() * 10,
   });
   const [hovered, setHovered] = useState(false);
@@ -56,6 +62,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     if (m.spot.pos[0] === spot.pos[0] && m.spot.pos[1] === spot.pos[1] && m.spot.group === spot.group) return;
     m.path = walk(m.pos, m.spot, spot);
     m.spot = spot;
+    m.strolling = false;
   }, [spot]);
 
   useEffect(() => {
@@ -99,8 +106,13 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     const g = root.current;
     if (!g) return;
     const step = Math.min(dt, 0.1);
+    // There, and out for a stroll: once more round it.
+    if (!m.path.length && m.spot.stroll?.length) {
+      m.path = [...m.spot.stroll];
+      m.strolling = true;
+    }
     let walking = false;
-    let remaining = WALK_SPEED * step;
+    let remaining = (m.strolling ? STROLL_SPEED : WALK_SPEED) * step;
     while (remaining > 0 && m.path.length) {
       const [tx, tz] = m.path[0]!;
       const dx = tx - m.pos[0];
@@ -121,29 +133,34 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     if (!walking) m.yaw = turn(m.yaw, m.spot.facing, TURN_RATE * 0.5 * step);
     g.position.set(m.pos[0], 0, m.pos[1]);
     g.rotation.y = m.yaw;
+    const sitting = !walking && !!m.spot.sit;
 
     const t = state.clock.elapsedTime + m.phase;
     const typing = !walking && m.spot.zone === "team" && agent.status === "working";
     const holding = m.spot.zone === "queue" || carrying;
-    if (speech.current) speech.current.visible = !walking;
-    const swing = walking ? Math.sin(t * 9) * 0.55 : 0;
+    // A stroller never stops, so they say it on the way.
+    if (speech.current) speech.current.visible = !walking || m.strolling;
+    const swing = walking ? Math.sin(t * (m.strolling ? 6 : 9)) * (m.strolling ? 0.4 : 0.55) : 0;
     const [ll, lr] = legs.current;
     const [al, ar] = arms.current;
     if (ll && lr) {
-      ll.rotation.x = swing;
-      lr.rotation.x = -swing;
+      ll.rotation.x = sitting ? -1.4 : swing;
+      lr.rotation.x = sitting ? -1.4 : -swing;
     }
     if (al && ar) {
       if (typing) {
         al.rotation.x = -1.15 + Math.sin(t * 14) * 0.08;
         ar.rotation.x = -1.15 + Math.sin(t * 14 + 1.7) * 0.08;
+      } else if (sitting) {
+        al.rotation.x = -0.55 + Math.sin(t * 1.3) * 0.03;
+        ar.rotation.x = -0.55 + Math.sin(t * 1.3 + 1) * 0.03;
       } else {
         al.rotation.x = walking ? -swing * 0.8 : Math.sin(t * 1.3) * 0.04;
         ar.rotation.x = holding ? -0.9 : walking ? swing * 0.8 : Math.sin(t * 1.3 + 1) * 0.04;
       }
     }
     // Walking bob, and a gentle breath at rest.
-    g.position.y = walking ? Math.abs(Math.sin(t * 9)) * 0.035 : Math.sin(t * 1.6) * 0.006;
+    g.position.y = sitting ? SEAT_H - HIP * look.height : walking ? Math.abs(Math.sin(t * 9)) * 0.035 : Math.sin(t * 1.6) * 0.006;
 
     const status = LAMP[agent.status];
     const pulse = agent.status === "working" ? 0.75 + 0.25 * Math.sin(t * 4) : agent.status === "blocked" ? (Math.sin(t * 6) > 0 ? 1 : 0.35) : 1;

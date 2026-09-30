@@ -5,6 +5,7 @@ import { api } from "../api.ts";
 import { ItemDetailView } from "../components/ItemDetail.tsx";
 import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
+import { isBuilding } from "./building.ts";
 import type { OfficePlan, Vec2 } from "./layout.ts";
 import { agentMessages, Conversation, conversation, BetweenAgents, HiddenLine, MessageRow, teamMessages, teamWork, TellAgent, TellTeam, ThreadToggle, useThreadView, withMe, WorkRow } from "./Talk.tsx";
 import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "./status.ts";
@@ -75,7 +76,7 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
         })}
         {!plan.corners.length ? <li className="muted">No projects yet. Start one, or start an agent in a worktree.</li> : null}
       </ul>
-      <div className="muted small-note">{lounge} in the lounge, not working in a project's worktree. Click someone to move them.</div>
+      <div className="muted small-note">{lounge} in the {isBuilding(plan) ? "garden" : "lounge"}, not working in a project's worktree. Click someone to move them.</div>
       {error ? <div className="warn">{error}</div> : null}
     </aside>
   );

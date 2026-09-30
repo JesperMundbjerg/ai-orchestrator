@@ -81,13 +81,14 @@ export const GRACE_MS = 6 * 60 * 1000;
  * A lead who is blocked, and anyone waiting on your answer, bring the lead at once. A crew member
  * at a prompt does so only once `blockedSince` (when each agent became blocked) says they have
  * been there GRACE_MS by `now`; one it does not know counts as just blocked. Without `grace`
- * nobody waits.
+ * nobody waits. `spotAt` says where the i-th of them stands (see callerIn).
  */
 export function calls(
   teams: WorldTeam[],
   agents: Map<string, WorldAgent>,
   sentBack: ReadonlySet<string>,
   grace?: { blockedSince: ReadonlyMap<string, number>; now: number },
+  spotAt: (i: number) => Spot = callerSpot,
 ): Call[] {
   const out: Call[] = [];
   for (const team of teams) {
@@ -102,7 +103,7 @@ export function calls(
     if (!stuck.length) continue;
     const key = `${team.id}:${[...stuck].sort().map((id) => `${id}${agents.get(id)!.waitingOnYou ? "?" : "!"}`).join(",")}`;
     if (sentBack.has(key)) continue;
-    out.push({ teamId: team.id, leadId: lead.id, stuckIds: stuck, key, spot: callerSpot(out.length) });
+    out.push({ teamId: team.id, leadId: lead.id, stuckIds: stuck, key, spot: spotAt(out.length) });
   }
   return out;
 }

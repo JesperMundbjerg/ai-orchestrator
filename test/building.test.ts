@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Team, WorldAgent } from "../src/shared/types.ts";
-import { callerSpot, DESK, LOUNGE_TABLE, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
-import { buildingPipelines, buildingRoute, doorway, DOOR_WIDTH, MIN_CONSOLES, place, planBuilding, teamDesks, type BuildingPlan, type Rect, type Room } from "../src/ui/world/building.ts";
+import { LOUNGE_TABLE, YOUR_VIEW, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
+import { buildingPipelines, buildingRoute, callerIn, doorway, DOOR_WIDTH, MIN_CONSOLES, PATH_HALF, place, planBuilding, teamDesks, type BuildingPlan, type Rect, type Room } from "../src/ui/world/building.ts";
 import { visitSpot } from "../src/ui/world/visits.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
@@ -10,12 +10,12 @@ const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
 });
 const team = (id: string, handsTo: string | null = null): Team => ({ id, name: id, purpose: "", handsTo, path: `/repo-${id}`, branch: `worktree-${id}`, standing: false, createdAt: "" });
 
-/** A building with n teams, each a lead and `crew(i)` crew, three agents in the lounge and two in line. */
-function building(n: number, crew: (i: number) => number = () => 3, queued = ["q1", "q2"]): BuildingPlan {
+/** A building with n teams, each a lead and `crew(i)` crew, `idle` agents in the garden and two in line. */
+function building(n: number, crew: (i: number) => number = () => 3, queued = ["q1", "q2"], idle = 3): BuildingPlan {
   const teams = Array.from({ length: n }, (_, i) => team(`t${i}`, n > 1 ? `t${(i + 1) % n}` : null));
   const agents = [
     ...teams.flatMap((t, i) => [agent(`${t.id}-lead`, { teamId: t.id, role: "lead" }), ...Array.from({ length: crew(i) }, (_, k) => agent(`${t.id}-c${k}`, { teamId: t.id }))]),
-    ...["l1", "l2", "l3", ...queued].map((id) => agent(id)),
+    ...[...Array.from({ length: idle }, (_, i) => `l${i + 1}`), ...queued].map((id) => agent(id)),
   ];
   return planBuilding(agents, teams, queued);
 }
@@ -49,14 +49,33 @@ const edges = (r: Rect): Array<[Vec2, Vec2]> => {
   return c.map((p, i) => [p, c[(i + 1) % 4]!]);
 };
 
-/** Every desk's top, the founder's desk and the lounge's table, as rectangles the walkers must keep off. */
+/** Every desk's top and the lounge's table, as rectangles the walkers must keep off. */
 function furniture(plan: BuildingPlan): Rect[] {
   const desks = plan.corners.flatMap((c) => c.desks.map((d) => footprint({ center: d.pos, facing: d.facing, half: d.kind === "lead" ? [1, 0.35] : [0.7, 0.35] })));
   const [lx, lz] = plan.lounge.center;
-  return [...desks, { minX: DESK[0] - 1.3, maxX: DESK[0] + 1.3, minZ: DESK[1] - 0.45, maxZ: DESK[1] + 0.45 }, { minX: lx - LOUNGE_TABLE, maxX: lx + LOUNGE_TABLE, minZ: lz - LOUNGE_TABLE, maxZ: lz + LOUNGE_TABLE }];
+  return [...desks, { minX: lx - LOUNGE_TABLE, maxX: lx + LOUNGE_TABLE, minZ: lz - LOUNGE_TABLE, maxZ: lz + LOUNGE_TABLE }];
 }
 
-/** The walk from `from` along `path` keeps inside the building, off every wall and every desk. */
+/** Whether a point is in one of the garden's beds or its pond (a hand's breadth in from their edge). */
+function inBedOrWater(plan: BuildingPlan, p: Vec2): string | null {
+  const bed = plan.garden.beds.findIndex((b) => inRect(b, p, 0.1));
+  if (bed >= 0) return `bed ${bed}`;
+  return dist(p, plan.garden.pond.center) < plan.garden.pond.radius + 0.1 ? "the pond" : null;
+}
+
+/** Every point along a walk, a hand's breadth apart. */
+function along(from: Vec2, path: Vec2[]): Vec2[] {
+  const points = [from, ...path];
+  const out: Vec2[] = [from];
+  for (let i = 1; i < points.length; i++) {
+    const [a, b] = [points[i - 1]!, points[i]!];
+    const n = Math.ceil(dist(a, b) / 0.1);
+    for (let k = 1; k <= n; k++) out.push([a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n]);
+  }
+  return out;
+}
+
+/** The walk from `from` along `path` keeps inside the building, off every wall and every desk, and out of the garden's beds and water. */
 function assertClearWalk(plan: BuildingPlan, from: Vec2, path: Vec2[], what: string) {
   const points = [from, ...path];
   const { minX, maxX, minZ, maxZ } = plan.outline;
@@ -67,15 +86,19 @@ function assertClearWalk(plan: BuildingPlan, from: Vec2, path: Vec2[], what: str
     for (const w of plan.walls) assert.ok(segmentGap(a, b, w.a, w.b) >= PERSON, `${what}: ${a} → ${b} runs into the wall ${w.a} → ${w.b}`);
     for (const t of things) for (const [p, q] of edges(t)) assert.ok(segmentGap(a, b, p, q) > 0.05, `${what}: ${a} → ${b} runs into furniture at ${t.minX},${t.minZ}`);
   }
+  for (const p of along(from, path)) {
+    const hit = inBedOrWater(plan, p);
+    assert.ok(!hit, `${what}: walks through ${hit} at ${p}`);
+  }
 }
 
 const inRect = (r: Rect, [x, z]: Vec2, pad = 0) => x >= r.minX + pad && x <= r.maxX - pad && z >= r.minZ + pad && z <= r.maxZ - pad;
 
-test("everyone has a place in the building: team seats, the line at your desk, or the lounge", () => {
+test("everyone has a place in the building: team seats, waiting for you on the clearing, or the garden", () => {
   const plan = building(2, () => 3, ["q1"]);
   assert.equal(plan.spots.size, 2 * 4 + 3 + 1);
   assert.equal(plan.spots.get("q1")?.zone, "queue");
-  assert.equal(plan.spots.get("l1")?.zone, "lounge");
+  assert.equal(plan.spots.get("l1")?.zone, "garden");
   assert.equal(plan.spots.get("t0-lead")?.zone, "team");
   const places = [...plan.spots.values()].map((s) => s.pos.map((v) => v.toFixed(2)).join(","));
   assert.equal(new Set(places).size, places.length, "no two agents share a place");
@@ -118,8 +141,9 @@ test("rooms never overlap each other, and stay inside the building off the hall"
         assert.ok(!overlap, `${n} teams: rooms ${i} and ${i + 1 + j} overlap`);
       });
     });
-    // Your desk, the line and the callers are in the hall, with the walkway round them.
-    for (const p of [DESK, ...plan.queue.map((id) => plan.spots.get(id)!.pos), ...[0, 1, 2, 3].map((i) => callerSpot(i).pos)]) assert.ok(inRect(plan.loop, p, 0.5), `${p} inside the walkway`);
+    // The garden, and so the line and the callers on its clearing, are in the hall, with the walkway round them.
+    const g = plan.garden.area;
+    assert.ok(inRect(plan.loop, [g.minX, g.minZ], 0.5) && inRect(plan.loop, [g.maxX, g.maxZ], 0.5), `${n} teams: the garden inside the walkway`);
   }
 });
 
@@ -155,6 +179,7 @@ test("every seat is reached from the front door through a doorway, along the wal
 test("walks between any two places, visits and calls to your desk keep off walls and desks", () => {
   const plan = building(7, (i) => (i === 2 ? 10 : 3), ["q1", "q2", "q3"]);
   const spots = [...plan.spots.entries()];
+  const callerSpot = callerIn(plan);
   const targets: Array<[string, Spot]> = [...spots, ...spots.map(([id, s]) => [`visiting ${id}`, visitSpot(s)] as [string, Spot]), ...[0, 1, 2].map((i) => [`caller ${i}`, callerSpot(i)] as [string, Spot])];
   for (const [fromId, from] of spots) {
     for (const [toId, to] of targets) {
@@ -238,4 +263,97 @@ test("the outside walls have windows, the meeting rooms glass, and the bays and 
     else assert.equal(w.kind === "glass", meetings.some((m) => edgeOf(m, mid)), `${w.a} → ${w.b} is ${w.kind}`);
   }
   assert.ok(plan.walls.some((w) => w.kind === "planter") && plan.walls.some((w) => w.kind === "glass"));
+});
+
+test("the garden lies in the middle of the hall: paths, beds and the pond inside it, the clearing at its front", () => {
+  for (const n of [1, 4, 9, 12]) {
+    const plan = building(n);
+    const g = plan.garden;
+    const what = `${n} teams`;
+    for (const r of [...g.paths, ...g.beds, g.clearing]) assert.ok(inRect(g.area, [r.minX, r.minZ], -1e-9) && inRect(g.area, [r.maxX, r.maxZ], -1e-9), `${what}: inside the garden`);
+    assert.ok(inRect(plan.hall, [g.area.minX, g.area.minZ]) && inRect(plan.hall, [g.area.maxX, g.area.maxZ]), `${what}: the garden in the hall`);
+    // The pond is in a lawn, with room round it; no path crosses it.
+    const [px, pz] = g.pond.center;
+    const r = g.pond.radius;
+    assert.ok(r > 1, `${what}: a pond, not a puddle`);
+    assert.ok(g.beds.some((b) => inRect(b, [px - r, pz - r], 0.2) && inRect(b, [px + r, pz + r], 0.2)), `${what}: the pond lies in a bed`);
+    // Where you stand is on the clearing, and the clearing is in front, towards the door.
+    assert.ok(inRect(g.clearing, [0, 0], 1) && inRect(g.clearing, [0.3, 3.7], 0.5), `${what}: you stand on the clearing`);
+    assert.ok(YOUR_VIEW[1] > g.area.maxZ && YOUR_VIEW[1] < plan.loop.maxZ + 1.5, `${what}: "Your desk" looks at the garden from its front`);
+    assert.ok(g.clearing.minZ > g.walk.maxZ, `${what}: the clearing is in front of the walk`);
+    // Paths and beds do not overlap: nothing planted where people walk.
+    for (const p of [...g.paths, g.clearing]) for (const b of g.beds) {
+      const overlap = Math.min(p.maxX, b.maxX) - Math.max(p.minX, b.minX) > 1e-6 && Math.min(p.maxZ, b.maxZ) - Math.max(p.minZ, b.minZ) > 1e-6;
+      assert.ok(!overlap, `${what}: a path runs over a bed`);
+    }
+    // Benches stand on the walk, off its middle line, and trees in beds.
+    for (const b of g.benches) assert.ok(!inBedOrWater(plan, b.pos) && g.paths.some((p) => inRect(p, b.pos, 0.2)), `${what}: bench at ${b.pos} on a path`);
+    for (const t of g.trees) assert.ok(g.beds.some((b) => inRect(b, t.pos, 0.3)), `${what}: tree at ${t.pos} in a bed`);
+  }
+});
+
+test("any number of idle agents fits in the garden: on a bench or strolling round the walk, never on a bed or in the water", () => {
+  for (const idle of [0, 1, 2, 3, 7, 20, 45, 120]) {
+    const plan = building(3, () => 3, ["q1"], idle);
+    const what = `${idle} idle`;
+    const here = [...plan.spots.values()].filter((s) => s.zone === "garden");
+    assert.equal(here.length, idle, what);
+    const places = here.map((s) => s.pos.map((v) => v.toFixed(3)).join(","));
+    assert.equal(new Set(places).size, places.length, `${what}: no two share a place`);
+    const sitting = here.filter((s) => s.sit);
+    if (idle >= 2) assert.ok(sitting.length >= 1 && sitting.length < idle, `${what}: some sit and some stroll`);
+    for (const s of here) {
+      assert.ok(inRect(plan.garden.area, s.pos), `${what}: ${s.pos} in the garden`);
+      assert.ok(!inBedOrWater(plan, s.pos), `${what}: ${s.pos} is ${inBedOrWater(plan, s.pos)}`);
+      assert.ok(plan.garden.paths.some((p) => inRect(p, s.pos)), `${what}: ${s.pos} on a path`);
+      if (s.sit) {
+        // On a bench, facing the way it faces.
+        assert.ok(plan.garden.benches.some((b) => dist(b.pos, s.pos) < 0.5 && Math.abs(Math.sin(b.facing - s.facing)) < 1e-9), `${what}: sits on a bench`);
+      } else {
+        // Strolling round the walk and back to where they joined it, never onto a bed or the pond.
+        assert.ok(s.stroll && s.stroll.length >= 4, `${what}: a stroller strolls`);
+        assert.equal(s.stroll!.at(-1), s.pos);
+        for (const p of along(s.pos, s.stroll!)) assert.ok(!inBedOrWater(plan, p) && plan.garden.paths.some((r) => inRect(r, p, PATH_HALF - 0.05)), `${what}: the stroll keeps to the walk at ${p}`);
+      }
+    }
+  }
+});
+
+test("walks into, round and out of the garden keep to its paths, from a bench or from anywhere on a stroll", () => {
+  const plan = building(4, () => 3, ["q1", "q2", "q3"], 12);
+  const garden = [...plan.spots.entries()].filter(([, s]) => s.zone === "garden");
+  const others = [...plan.spots.entries()].filter(([, s]) => s.zone !== "garden").slice(0, 8);
+  for (const [id, spot] of garden) {
+    assertClearWalk(plan, plan.entrance, buildingRoute(plan, plan.entrance, null, spot), `in to ${id}`);
+    // A stroller is anywhere round their walk when they are called away or the garden fills.
+    const starts = spot.stroll ? along(spot.pos, spot.stroll).filter((_, i) => i % 17 === 0) : [spot.pos];
+    for (const from of starts) {
+      for (const [toId, to] of [...others, ...garden.filter(([o]) => o !== id).slice(0, 4), ["caller 0", callerIn(plan)(0)] as [string, Spot]]) {
+        assertClearWalk(plan, from, buildingRoute(plan, from, spot, to), `${id} at ${from} to ${toId}`);
+      }
+    }
+  }
+});
+
+test("leads who come to you and agents waiting for you stand apart on the clearing, in order, clear of beds and water", () => {
+  for (const n of [1, 6, 12]) {
+    const plan = building(n, () => 3, Array.from({ length: 20 }, (_, i) => `q${i}`));
+    const callers = Array.from({ length: 12 }, (_, i) => callerIn(plan)(i));
+    const waiting = plan.queue.map((id) => plan.spots.get(id)!);
+    const what = `${n} teams`;
+    for (const s of [...callers, ...waiting]) {
+      assert.ok(inRect(plan.garden.clearing, s.pos, 0.4), `${what}: ${s.zone} at ${s.pos} on the clearing`);
+      assert.ok(!inBedOrWater(plan, s.pos), `${what}: ${s.pos} off beds and water`);
+      assertClearWalk(plan, plan.entrance, buildingRoute(plan, plan.entrance, null, s), `${what}: to ${s.zone} at ${s.pos}`);
+    }
+    const all = [...callers, ...waiting];
+    all.forEach((a, i) => all.slice(i + 1).forEach((b) => assert.ok(dist(a.pos, b.pos) > 0.6, `${what}: ${a.pos} and ${b.pos} have room`)));
+    // The first lead stands where your desk's callers stood, so turning to face them still works; the first in line stands nearest you.
+    assert.deepEqual(callers[0]!.pos, [-1.2, 1]);
+    const toYou = (s: Spot) => dist(s.pos, YOUR_VIEW);
+    assert.ok(waiting.slice(1, 10).every((s) => toYou(s) > toYou(waiting[0]!)), `${what}: the first in line is nearest you`);
+    // The callers stand left of the way in, those waiting right of it, so the way in stays open.
+    for (const c of callers) assert.ok(c.pos[0] < -0.6, `${what}: caller left of the way in`);
+    for (const w of waiting) assert.ok(w.pos[0] > 0.6, `${what}: waiting right of the way in`);
+  }
 });

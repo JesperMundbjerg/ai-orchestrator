@@ -7,7 +7,7 @@ import type { Desk, Vec2 } from "./layout.ts";
 // chairs and planters there are, is one draw call. A piece is built from boxes in its own frame
 // and put down on the floor by `Kit`.
 
-export type Finish = "white" | "wood" | "metal" | "fabric" | "screen" | "leaf" | "hedge" | "pot" | "wall" | "frame" | "window" | "glass" | "frosted";
+export type Finish = "white" | "wood" | "metal" | "fabric" | "screen" | "leaf" | "hedge" | "pot" | "wall" | "frame" | "window" | "glass" | "frosted" | "petal" | "stone";
 
 export interface Piece {
   at: [number, number, number];
@@ -32,11 +32,13 @@ const FINISH: Record<Finish, { color: string; roughness: number; metalness?: num
   window: { color: "#d6ecff", roughness: 0.05, opacity: 0.45, glow: 0.55 },
   glass: { color: "#d9ecf8", roughness: 0.05, opacity: 0.18 },
   frosted: { color: "#ffffff", roughness: 0.6, opacity: 0.55 },
+  petal: { color: "#ffffff", roughness: 0.8, flat: true },
+  stone: { color: "#cfc6b6", roughness: 0.95 },
 };
 
 /** Collects the boxes of the furniture, each placed in the frame of the thing it belongs to. */
 export class Kit {
-  pieces: Pieces = { white: [], wood: [], metal: [], fabric: [], screen: [], leaf: [], hedge: [], pot: [], wall: [], frame: [], window: [], glass: [], frosted: [] };
+  pieces: Pieces = { white: [], wood: [], metal: [], fabric: [], screen: [], leaf: [], hedge: [], pot: [], wall: [], frame: [], window: [], glass: [], frosted: [], petal: [], stone: [] };
 
   /** A frame on the floor at `pos`, turned by `yaw`: `box` then takes coordinates in it. */
   at(pos: Vec2, yaw: number) {
@@ -117,7 +119,7 @@ export function Furniture({ pieces }: { pieces: Pieces }) {
 }
 
 const unitBox = new BoxGeometry(1, 1, 1);
-/** Leaves are round: a ball as wide as the box it stands in for. */
+/** Leaves and flowers are round: a ball as wide as the box it stands in for. */
 const unitBall = new IcosahedronGeometry(0.5, 1);
 
 function Boxes({ finish, pieces }: { finish: Finish; pieces: Piece[] }) {
@@ -141,7 +143,7 @@ function Boxes({ finish, pieces }: { finish: Finish; pieces: Piece[] }) {
   }, [pieces, look]);
   const shadows = look.opacity === undefined && !look.basic;
   return (
-    <instancedMesh ref={ref} args={[finish === "leaf" ? unitBall : unitBox, undefined, pieces.length]} castShadow={shadows} receiveShadow={shadows}>
+    <instancedMesh ref={ref} args={[finish === "leaf" || finish === "petal" ? unitBall : unitBox, undefined, pieces.length]} castShadow={shadows} receiveShadow={shadows}>
       {look.basic ? (
         <meshBasicMaterial toneMapped={false} />
       ) : (
@@ -151,8 +153,8 @@ function Boxes({ finish, pieces }: { finish: Finish; pieces: Piece[] }) {
   );
 }
 
-/** Trees round the outside of the building, seen through its windows: a trunk and a crown each, all in two meshes. */
-export function Trees({ spots }: { spots: Vec2[] }) {
+/** Trees round the outside of the building, seen through its windows, and in its garden: a trunk and a crown each, all in two meshes. `sizes` scales each one (1 by default). */
+export function Trees({ spots, sizes }: { spots: Vec2[]; sizes?: number[] }) {
   const trunk = useMemo(() => new CylinderGeometry(0.12, 0.16, 1.6, 8), []);
   const crown = useMemo(() => new IcosahedronGeometry(1.1, 1), []);
   const trunks = useRef<InstancedMesh>(null);
@@ -160,15 +162,18 @@ export function Trees({ spots }: { spots: Vec2[] }) {
   useLayoutEffect(() => {
     const m = new Matrix4();
     spots.forEach(([x, z], i) => {
-      const s = 0.85 + ((Math.abs(Math.sin(x * 12.9898 + z * 78.233)) * 43758.5453) % 1) * 0.4;
-      trunks.current!.setMatrixAt(i, m.makeTranslation(x, 0.8, z));
-      crowns.current!.setMatrixAt(i, m.makeScale(s, s * 1.15, s).setPosition(x, 1.6 + s, z));
+      // Indoors the crowns are smaller and higher, over the heads of whoever walks past.
+      const k = sizes?.[i] ?? 1;
+      const tall = sizes ? 1.4 : 1;
+      const s = (0.85 + ((Math.abs(Math.sin(x * 12.9898 + z * 78.233)) * 43758.5453) % 1) * 0.4) * k;
+      trunks.current!.setMatrixAt(i, m.makeScale(k, tall, k).setPosition(x, 0.8 * tall, z));
+      crowns.current!.setMatrixAt(i, m.makeScale(s, s * 1.15, s).setPosition(x, 1.6 * tall + s, z));
     });
     trunks.current!.instanceMatrix.needsUpdate = true;
     crowns.current!.instanceMatrix.needsUpdate = true;
     trunks.current!.computeBoundingSphere();
     crowns.current!.computeBoundingSphere();
-  }, [spots]);
+  }, [spots, sizes]);
   return (
     <group key={spots.length}>
       <instancedMesh ref={trunks} args={[trunk, undefined, spots.length]} castShadow>

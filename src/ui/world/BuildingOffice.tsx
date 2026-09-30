@@ -3,9 +3,9 @@ import { Color, type Texture } from "three";
 import type { Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
 import { textTexture, type Line } from "./label.ts";
 import { lookFor } from "./look.ts";
-import { buildingPipelines, place, teamDesks, type BuildingPlan, type Rect, type Room, type Wall } from "./building.ts";
+import { buildingPipelines, place, teamDesks, type BuildingPlan, type Garden, type Rect, type Room, type Wall } from "./building.ts";
 import { deskUnit, Furniture, Kit, officeChair, plant, sofa, Trees } from "./Furniture.tsx";
-import { boardLines, Pipeline, useTexture, YourDesk } from "./Office.tsx";
+import { boardLines, Pipeline, useTexture } from "./Office.tsx";
 import { LOUNGE_SOFAS, LOUNGE_TABLE, type Corner, type Vec2 } from "./layout.ts";
 
 /** Ceiling height, as far as the outside walls go: an open ceiling, high enough for the teams' signs. */
@@ -30,8 +30,9 @@ const GLASS_H = 2.9;
 const SIGN_X = -1.2;
 
 const CHAIRS = ["#3c4a5c", "#5b6b7d", "#40576b"];
+const FLOWERS = ["#e8604c", "#f2b134", "#f4e9d8", "#c46bd1", "#ef8fb1", "#6f8fe8", "#f47c2c"];
 
-/** The office as one building: an ordinary open-plan office, a team area per team round the hall with your desk, the lounge and kitchen, meeting rooms and reception. */
+/** The office as one building: an ordinary open-plan office, a team area per team round the hall with its garden, the lounge and kitchen, meeting rooms and reception. */
 export function BuildingOffice({ plan, agents, teams, work, queueLength }: { plan: BuildingPlan; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; queueLength: number }) {
   const { outline, hall } = plan;
   const lounge = plan.rooms.find((r) => r.kind === "lounge")!;
@@ -39,6 +40,7 @@ export function BuildingOffice({ plan, agents, teams, work, queueLength }: { pla
   const working = [...agents.values()].filter((a) => a.status === "working").map((a) => a.id).join(",");
   const pieces = useMemo(() => furnish(plan, new Set(working.split(","))), [plan, working]);
   const trees = useMemo(() => treesRound(outline), [outline]);
+  const gardenTrees = useMemo(() => ({ spots: plan.garden.trees.map((t) => t.pos), sizes: plan.garden.trees.map((t) => t.size) }), [plan.garden]);
   return (
     <group>
       <Floor rect={plan.bounds} y={-0.01} color="#b9cba9" />
@@ -49,9 +51,11 @@ export function BuildingOffice({ plan, agents, teams, work, queueLength }: { pla
         <Carpet key={i} room={r} color={r.teamId ? carpetFor(r.teamId) : r.kind === "lounge" ? "#a9a08f" : "#9aa0a6"} />
       ))}
       {meetings.map((r, i) => <Carpet key={i} room={r} color="#8e959c" />)}
+      <GardenGround garden={plan.garden} />
       <Furniture pieces={pieces} />
       <Reception plan={plan} />
-      <YourDesk queueLength={queueLength} />
+      <Pond garden={plan.garden} />
+      <WaitingSign garden={plan.garden} queueLength={queueLength} />
       <LoungeSign room={lounge} />
       {plan.corners.map((c) => (
         <TeamTv key={c.team.id} corner={c} room={plan.rooms.find((r) => r.teamId === c.team.id)!} agents={agents} teams={teams} work={work} />
@@ -62,6 +66,7 @@ export function BuildingOffice({ plan, agents, teams, work, queueLength }: { pla
         <Pipeline key={p.fromTeamId} path={p.path} busy={work.some((w) => w.fromTeamId === p.fromTeamId && w.toTeamId === p.toTeamId && w.state === "in_review")} />
       ))}
       <Trees spots={trees} />
+      <Trees spots={gardenTrees.spots} sizes={gardenTrees.sizes} />
     </group>
   );
 }
@@ -73,7 +78,8 @@ function carpetFor(teamId: string): string {
 
 /**
  * Everything that stands on the floor, as boxes: the desks and chairs in every bay, planters,
- * the lounge's sofas and kitchen, the meeting rooms' tables, reception, and plants.
+ * the lounge's sofas and kitchen, the meeting rooms' tables, reception, plants, and the garden's
+ * beds, flowers and benches.
  */
 function furnish(plan: BuildingPlan, working: Set<string>) {
   const kit = new Kit();
@@ -178,6 +184,7 @@ function furnish(plan: BuildingPlan, working: Set<string>) {
 
   outerWalls(kit, plan);
   for (const w of plan.walls.filter((x) => x.kind === "glass")) glassWall(kit, w);
+  plantGarden(kit, plan.garden);
 
   // The hall: a plant in each corner, clear of the walkway.
   for (const [x, z] of [[hall.minX + 0.5, hall.minZ + 0.5], [hall.maxX - 0.5, hall.minZ + 0.5], [hall.minX + 0.5, hall.maxZ - 0.5], [hall.maxX - 0.5, hall.maxZ - 0.5]] as Vec2[]) {
@@ -223,6 +230,123 @@ function glassWall(kit: Kit, w: Wall) {
   add("frosted", [0, 1.3, 0], [length, 0.28, 0.05]);
   for (const y of [0.03, GLASS_H]) add("frame", [0, y, 0], [length + 0.06, 0.06, 0.08]);
   for (const s of [-1, 1]) add("frame", [(s * length) / 2, GLASS_H / 2, 0], [0.06, GLASS_H, 0.08]);
+}
+
+/** A number from 0 to 1 that stays the same for the same place, so the garden grows the same every time. */
+const hash = (x: number, z: number) => (Math.abs(Math.sin(x * 12.9898 + z * 78.233)) * 43758.5453) % 1;
+
+/**
+ * The garden's boxes: a stone kerb round every bed but the lawns, flowers in the beds and along
+ * the lawns' edges, and benches of wooden slats. The ceiling is open over it: the view from where
+ * you stand is above ceiling height, so a skylight's frame would cut across it.
+ */
+function plantGarden(kit: Kit, garden: Garden) {
+  const add = kit.at([0, 0], 0);
+  const lawns = garden.beds.slice(-2);
+  for (const bed of garden.beds) {
+    const lawn = lawns.includes(bed);
+    const w = bed.maxX - bed.minX;
+    const d = bed.maxZ - bed.minZ;
+    const [cx, cz] = [(bed.minX + bed.maxX) / 2, (bed.minZ + bed.maxZ) / 2];
+    if (!lawn) {
+      for (const [z, len] of [[bed.minZ, w], [bed.maxZ, w]] as const) add("stone", [cx, 0.06, z], [len, 0.12, 0.12]);
+      for (const x of [bed.minX, bed.maxX]) add("stone", [x, 0.06, cz], [0.12, 0.12, d]);
+    }
+    // Flowers: in a loose grid across a bed; on a lawn, only along its edge by the path.
+    const pitch = 0.62;
+    for (let x = bed.minX + pitch / 2; x < bed.maxX - 0.2; x += pitch) {
+      for (let z = bed.minZ + pitch / 2; z < bed.maxZ - 0.2; z += pitch) {
+        if (lawn && z > bed.minZ + 0.8 && x > bed.minX + 0.5 && x < bed.maxX - 0.5) continue;
+        const h = hash(x, z);
+        if (h < 0.25) continue;
+        const jx = x + (hash(z, x) - 0.5) * 0.3;
+        const jz = z + (h - 0.5) * 0.3;
+        if (garden.trees.some((t) => Math.hypot(t.pos[0] - jx, t.pos[1] - jz) < 0.5) || Math.hypot(garden.pond.center[0] - jx, garden.pond.center[1] - jz) < garden.pond.radius + 0.4) continue;
+        add("leaf", [jx, 0.12, jz], [0.34, 0.22, 0.34], h * 6);
+        if (h > 0.45) add("petal", [jx, 0.26 + h * 0.08, jz], [0.2, 0.14, 0.2], 0, FLOWERS[Math.floor(h * 97) % FLOWERS.length]);
+      }
+    }
+  }
+  // A few big clumps by the pond.
+  for (let k = 0; k < 7; k++) {
+    const a = (k / 7) * Math.PI * 2 + 0.4;
+    const r = garden.pond.radius + 0.35;
+    add("hedge", [garden.pond.center[0] + Math.sin(a) * r, 0.2, garden.pond.center[1] + Math.cos(a) * r], [0.5, 0.4, 0.5]);
+  }
+  for (const b of garden.benches) {
+    const at = kit.at(b.pos, b.facing);
+    at("wood", [0, 0.45, 0.02], [1.7, 0.05, 0.44]);
+    at("wood", [0, 0.72, -0.24], [1.7, 0.3, 0.05]);
+    for (const sx of [-0.75, 0.75]) {
+      at("metal", [sx, 0.22, 0.02], [0.06, 0.44, 0.4]);
+      at("metal", [sx, 0.6, -0.24], [0.06, 0.4, 0.06]);
+    }
+  }
+}
+
+/** The garden's floor: grass, the beds' soil, and the paved walk, middle path and clearing. */
+function GardenGround({ garden }: { garden: Garden }) {
+  const lawns = garden.beds.slice(-2);
+  return (
+    <group>
+      <Floor rect={garden.area} y={0.004} color="#8fb56c" shadows />
+      {garden.beds.filter((b) => !lawns.includes(b)).map((b, i) => <Floor key={i} rect={b} y={0.006} color="#6f5a45" shadows />)}
+      {[...garden.paths, garden.clearing].map((p, i) => <Floor key={i} rect={p} y={0.008} color="#ded4c1" shadows />)}
+    </group>
+  );
+}
+
+/** The pond in the west lawn: water in a stone rim, a few lily pads, and a small fountain in the middle. */
+function Pond({ garden }: { garden: Garden }) {
+  const { center: [x, z], radius } = garden.pond;
+  return (
+    <group position={[x, 0, z]}>
+      <mesh position={[0, 0.07, 0]} rotation-x={-Math.PI / 2}>
+        <ringGeometry args={[radius, radius + 0.25, 40]} />
+        <meshStandardMaterial color="#cfc6b6" roughness={0.95} />
+      </mesh>
+      <mesh position={[0, 0.035, 0]} receiveShadow>
+        <cylinderGeometry args={[radius, radius, 0.07, 40]} />
+        <meshStandardMaterial color="#4f93b8" roughness={0.15} metalness={0.1} />
+      </mesh>
+      {[0.6, 2.2, 3.9, 5.1].map((a, i) => (
+        <mesh key={i} position={[Math.sin(a) * radius * 0.6, 0.075, Math.cos(a) * radius * 0.6]} rotation-x={-Math.PI / 2}>
+          <circleGeometry args={[0.16 + (i % 2) * 0.05, 12]} />
+          <meshStandardMaterial color="#5e9a4f" roughness={0.8} />
+        </mesh>
+      ))}
+      <mesh position={[0, 0.3, 0]} castShadow>
+        <cylinderGeometry args={[0.12, 0.2, 0.5, 14]} />
+        <meshStandardMaterial color="#cfc6b6" roughness={0.9} />
+      </mesh>
+      <mesh position={[0, 0.58, 0]} castShadow>
+        <cylinderGeometry args={[0.45, 0.3, 0.1, 20]} />
+        <meshStandardMaterial color="#cfc6b6" roughness={0.9} />
+      </mesh>
+      <mesh position={[0, 0.85, 0]}>
+        <cylinderGeometry args={[0.04, 0.09, 0.55, 10]} />
+        <meshStandardMaterial color="#cfe7f5" transparent opacity={0.7} roughness={0.1} depthWrite={false} />
+      </mesh>
+    </group>
+  );
+}
+
+/** A small garden sign by the clearing, turned to you: how many are waiting for you. */
+function WaitingSign({ garden, queueLength }: { garden: Garden; queueLength: number }) {
+  const lines: Line[] = [
+    { text: queueLength ? `${queueLength} waiting for you` : "Nobody is waiting", size: 50, color: queueLength ? "#ffc658" : "#ffffff", weight: 800 },
+  ];
+  const x = 0.8;
+  const z = garden.area.maxZ - 0.4;
+  return (
+    <group>
+      <mesh position={[x, 0.55, z]} castShadow>
+        <boxGeometry args={[0.07, 1.1, 0.07]} />
+        <meshStandardMaterial color="#7a5a40" roughness={0.9} />
+      </mesh>
+      <Sign lines={lines} size={[512, 110]} width={0.8} height={0.2} position={[x, 1.2, z + 0.04]} />
+    </group>
+  );
 }
 
 /** Trees on the lawn round the building, a few metres out. */
@@ -345,7 +469,7 @@ function MeetingRoom({ room, n }: { room: Room; n: number }) {
 function LoungeSign({ room }: { room: Room }) {
   return (
     <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
-      <Sign lines={[{ text: "Lounge & kitchen", size: 60, color: "#ffffff", weight: 800 }, { text: "agents not on a project", size: 32, color: "#b8c2cc" }]} size={[640, 180]} width={2.2} height={0.62} position={[SIGN_X, 2.3, 0.2 - room.half[1]]} />
+      <Sign lines={[{ text: "Lounge & kitchen", size: 60, color: "#ffffff", weight: 800 }, { text: "coffee and a break", size: 32, color: "#b8c2cc" }]} size={[640, 180]} width={2.2} height={0.62} position={[SIGN_X, 2.3, 0.2 - room.half[1]]} />
     </group>
   );
 }

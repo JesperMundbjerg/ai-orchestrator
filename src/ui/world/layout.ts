@@ -15,7 +15,7 @@ import type { Team, WorldAgent } from "../../shared/types.ts";
 
 export type Vec2 = [number, number];
 
-export type Zone = "team" | "queue" | "lounge" | "caller";
+export type Zone = "team" | "queue" | "lounge" | "caller" | "garden";
 
 export interface Spot {
   pos: Vec2;
@@ -26,6 +26,10 @@ export interface Spot {
   group: string;
   /** Waypoints from the path around the desk to the spot, in walking order. */
   approach: Vec2[];
+  /** Sitting down once there, on a bench. */
+  sit?: boolean;
+  /** A stroll: once there, round these waypoints and back to the spot, again and again. */
+  stroll?: Vec2[];
 }
 
 export interface Desk {
@@ -68,6 +72,8 @@ export const QUEUE_SLANT = 0.8;
 /** Where the side lane to the line starts, coming in from the path. */
 const QUEUE_HEAD: Vec2 = [QUEUE_SIDE_X, QUEUE_FRONT[1] - 1.05 * (QUEUE_ROW - 1) - 0.8];
 export const SPAWN: Vec2 = [0, 3.3];
+/** Where "Your desk" puts you: just behind your chair, facing north. */
+export const YOUR_VIEW: Vec2 = [SPAWN[0], SPAWN[1] + 5.5];
 
 /** A corner is this wide and deep (the lounge fits the same space), with a metre between corners. */
 export const CORNER_HALF_WIDTH = 4.7;

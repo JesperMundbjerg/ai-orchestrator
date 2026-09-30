@@ -5,8 +5,8 @@ import { api } from "../api.ts";
 import { useItemDetail } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
 import { Avatar } from "./Avatar.tsx";
-import { CALLER, planOffice, queueOrder, SPAWN, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
-import { isBuilding, planBuilding, routeIn, savedLayout, saveLayout, viewIn, type Layout } from "./building.ts";
+import { CALLER, planOffice, queueOrder, SPAWN, YOUR_VIEW, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
+import { callerIn, isBuilding, planBuilding, routeIn, savedLayout, saveLayout, viewIn, type Layout } from "./building.ts";
 import { BuildingOffice } from "./BuildingOffice.tsx";
 import { CallerCard, CallerNote } from "./Caller.tsx";
 import { Office } from "./Office.tsx";
@@ -25,14 +25,14 @@ export interface Waiting {
  * Just behind your chair and a little above it, facing the first team straight ahead: from
  * here the desk, the line and the corners either side of the first are all in view.
  */
-const START: FlyTarget = { pos: [SPAWN[0], SPAWN[1] + 5.5], yaw: 0, lift: 0.15, seq: 0 };
+const START: FlyTarget = { pos: YOUR_VIEW, yaw: 0, lift: 0.15, seq: 0 };
 /** From your desk, turned so a lead who came over stands left of the card they bring. */
 const FACE_CALLER: Vec2 = [SPAWN[0] + 0.3, SPAWN[1] + 0.4];
 const FACE_CALLER_YAW = Math.atan2(CALLER[0] - FACE_CALLER[0], FACE_CALLER[1] - CALLER[1]) + 0.05;
 
 /**
  * The office: every agent as a person you can walk up to. Each project (and standing team) has its own corner, the
- * rest wait in the lounge, and anyone with something for you queues at your desk.
+ * rest wait in the lounge (in the building, the garden), and anyone with something for you queues at your desk.
  */
 export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: number; onLeave: () => void }) {
   const [world, setWorld] = useState<WorldState | null>(null);
@@ -246,7 +246,7 @@ function useCalls(world: WorldState | null, agents: Map<string, WorldAgent>, off
     const timer = setTimeout(() => setNow(Date.now()), due - t + 50);
     return () => clearTimeout(timer);
   }, [blockedSince, now]);
-  const calling = useMemo(() => (world ? calls(world.teams, agents, sentBack, { blockedSince, now }) : []), [world, agents, sentBack, blockedSince, now]);
+  const calling = useMemo(() => (world ? calls(world.teams, agents, sentBack, { blockedSince, now }, office ? callerIn(office) : undefined) : []), [world, agents, sentBack, blockedSince, now, office]);
   // When each lead is at your desk. Kept per lead, so a call that changes while they stand there does not walk them again.
   const at = useRef<Map<string, number> | null>(null);
   const [seen, setSeen] = useState(0);
