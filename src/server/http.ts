@@ -10,6 +10,7 @@ import type { ActivityEvent, ActivityInput, AgentModel, PageCheck, SessionInput,
 import { claudeHookEvents, claudeModel } from "./activity.ts";
 import { Inbox, InboxError } from "./inbox.ts";
 import { projectQueue } from "./queue.ts";
+import { UPLOAD_BODY_LIMIT } from "./uploads.ts";
 import type { Herdr } from "./herdr.ts";
 import type { World } from "./world.ts";
 
@@ -65,6 +66,8 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
       return { ok: true };
     }],
     ["POST", /^\/api\/projects\/([\w-]+)\/pin$/, (_r, b, [id]) => inbox.setPinned(id!, Boolean(b.pinned))],
+    // An image you paste or drop, as base64 JSON (so the same-origin JSON guard holds); answers and messages name it by id.
+    ["POST", /^\/api\/uploads$/, (_r, b) => inbox.uploads.save(b)],
     // The office world
     ["GET", /^\/api\/world$/, () => needWorld().state()],
     ["GET", /^\/api\/p\/([a-z][a-z0-9-]*)\/queue$/, (_r, _b, [project]) => projectQueue(needWorld().state(), project!)],
@@ -138,10 +141,17 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
         return sendFile(res, found.path, { "content-disposition": "inline", "x-content-type-options": "nosniff", "content-security-policy": "sandbox" });
       }
 
+      const upload = url.pathname.match(/^\/uploads\/([\w.-]+)$/);
+      if (upload && method === "GET") {
+        const path = inbox.uploads.path(upload[1]!);
+        if (!path) throw new InboxError(404, "no such image");
+        return sendFile(res, path, { "content-disposition": "inline", "x-content-type-options": "nosniff", "content-security-policy": "sandbox", "cache-control": "private, max-age=31536000, immutable" });
+      }
+
       for (const [m, pattern, handler] of routes) {
         const match = m === method ? url.pathname.match(pattern) : null;
         if (!match) continue;
-        const body = method === "GET" ? {} : await readJson(req);
+        const body = method === "GET" ? {} : await readJson(req, url.pathname === "/api/uploads" ? UPLOAD_BODY_LIMIT : undefined);
         const out = await handler(req, body, match.slice(1));
         return sendJson(res, 200, out);
       }
@@ -185,12 +195,12 @@ async function checkPreview(url: string | undefined, officeOrigin?: string): Pro
   }
 }
 
-async function readJson(req: IncomingMessage): Promise<any> {
+async function readJson(req: IncomingMessage, limit = 1_000_000): Promise<any> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > 1_000_000) throw new InboxError(413, "request body too large");
+    if (size > limit) throw new InboxError(413, limit > 1_000_000 ? "images are limited to 10 MB" : "request body too large");
     chunks.push(chunk as Buffer);
   }
   if (!size) return {};

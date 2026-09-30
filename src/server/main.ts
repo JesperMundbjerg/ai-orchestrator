@@ -19,6 +19,7 @@ const db = openDatabase(join(dir, "inbox.sqlite"));
 const inbox = new Inbox(db, join(dir, "files"), herdr);
 const world = new World(db, herdr, () => inbox.state());
 world.messages.replies = inbox;
+world.messages.uploads = inbox.uploads;
 const dist = fileURLToPath(new URL("../../dist", import.meta.url));
 
 herdr.start();

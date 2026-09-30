@@ -152,6 +152,8 @@ export interface Reply {
   action: ReplyAction;
   choice: string | null;
   text: string;
+  /** Images you attached: upload ids, served at /uploads/<id>. */
+  images: string[];
   state: ReplyState;
   error: string | null;
   createdAt: string;
@@ -258,6 +260,8 @@ export interface PendingReply {
   choice: string | null;
   choiceLabel: string | null;
   text: string;
+  /** Absolute paths of the images you attached, for the agent to read. */
+  images: string[];
   createdAt: string;
 }
 
@@ -463,6 +467,8 @@ export interface Message {
   /** The team it was addressed to, when it was addressed to a team. */
   teamId: string | null;
   text: string;
+  /** Images you attached: upload ids, served at /uploads/<id>. */
+  images: string[];
   workId: string | null;
   createdAt: string;
   deliveries: Delivery[];

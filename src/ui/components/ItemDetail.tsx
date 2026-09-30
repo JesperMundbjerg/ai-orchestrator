@@ -3,6 +3,7 @@ import { DELIVERY_LABEL } from "../../shared/harnesses.ts";
 import type { Evidence, ItemDetail } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ACTION_LABEL, ago, clock, deliveryLabel, TYPE_LABEL } from "../format.ts";
+import { Images } from "./Attach.tsx";
 import { Owner } from "./Owner.tsx";
 import { PageWalk } from "./PageWalk.tsx";
 import { Respond } from "./Respond.tsx";
@@ -187,6 +188,7 @@ function ConversationTab({ detail: { history, replies } }: { detail: ItemDetail 
               <div className="msg-head">You · {ACTION_LABEL[reply.action]} · {clock(h.at)} · revision {reply.revision}</div>
               {reply.choice ? <div className="msg-choice">Option {reply.choice.toUpperCase()}</div> : null}
               {reply.text ? <Prose text={reply.text} /> : null}
+              <Images ids={reply.images} />
               <div className={`delivery ${reply.state}`}>{deliveryLabel(reply)}</div>
               {reply.state === "failed" ? <button className="ghost small" onClick={() => void api.retry(reply.id)}>Retry delivery</button> : null}
             </li>

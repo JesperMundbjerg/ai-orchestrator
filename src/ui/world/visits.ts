@@ -40,7 +40,10 @@ const LEAD: Record<MessageKind, string> = { instruction: "You: ", message: "", h
 
 /** A short line of what was said, for a speech bubble. */
 export function bubbleText(message: Message): string {
-  const text = `${LEAD[message.kind]}${message.text.replace(/\s+/g, " ").trim()}`;
+  const n = message.images.length;
+  // An image said on its own still gets a bubble.
+  const said = message.text.replace(/\s+/g, " ").trim() || (n ? (n === 1 ? "(an image)" : `(${n} images)`) : "");
+  const text = `${LEAD[message.kind]}${said}`;
   return text.length > 70 ? `${text.slice(0, 69)}…` : text;
 }
 

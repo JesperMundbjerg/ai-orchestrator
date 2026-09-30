@@ -20,7 +20,7 @@ export const HARNESS_INFO: Record<Harness, HarnessInfo> = {
 
 export const DELIVERY_LABEL: Record<ReplyDelivery, string> = {
   live: "Replies arrive in the running session",
-  boundary: "Replies arrive when the session next stops or is prompted",
-  pull: "Replies wait until the agent asks for them",
+  boundary: "Replies arrive when the session next stops or is prompted, or are typed into its terminal when it is free in herdr",
+  pull: "Replies wait until the agent asks for them, or are typed into its terminal when it is free in herdr",
   none: "This session cannot receive replies",
 };

@@ -96,7 +96,9 @@ CREATE TABLE IF NOT EXISTS replies (
   error TEXT,
   claimed_at TEXT,
   created_at TEXT NOT NULL,
-  delivered_at TEXT
+  delivered_at TEXT,
+  -- Images you attached (upload ids, JSON), handed to the agent as file paths.
+  images TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -150,7 +152,9 @@ CREATE TABLE IF NOT EXISTS messages (
   client_id TEXT UNIQUE,
   created_at TEXT NOT NULL,
   -- An agent's answer to the founder: shown in the office, typed into nobody's terminal.
-  to_founder INTEGER NOT NULL DEFAULT 0
+  to_founder INTEGER NOT NULL DEFAULT 0,
+  -- Images you attached (upload ids, JSON), typed to the agent as file paths.
+  images TEXT
 );
 
 CREATE TABLE IF NOT EXISTS message_deliveries (
@@ -214,7 +218,10 @@ function migrate(db: DatabaseSync): void {
     `);
   }
 
-  if (!columns("messages").has("to_founder")) db.exec("ALTER TABLE messages ADD COLUMN to_founder INTEGER NOT NULL DEFAULT 0");
+  const messages = columns("messages");
+  if (!messages.has("to_founder")) db.exec("ALTER TABLE messages ADD COLUMN to_founder INTEGER NOT NULL DEFAULT 0");
+  if (!messages.has("images")) db.exec("ALTER TABLE messages ADD COLUMN images TEXT");
+  if (!columns("replies").has("images")) db.exec("ALTER TABLE replies ADD COLUMN images TEXT");
   // An item's walkthrough of pages; before it, an item had one preview, which reads as a one-page walkthrough.
   const agents = columns("world_agents");
   if (!agents.has("ran_at")) db.exec("ALTER TABLE world_agents ADD COLUMN ran_at TEXT");

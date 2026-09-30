@@ -14,6 +14,7 @@ import {
   type SessionInput, type SubmitInput, type SubmitResult, type Task,
 } from "../shared/types.ts";
 import { MAX_PAGES, pageUrlProblem, parsePage } from "../shared/pages.ts";
+import { Uploads } from "./uploads.ts";
 
 /** Live session facts from a terminal multiplexer (herdr); absent sessions simply have none. */
 export interface PresenceSource {
@@ -52,6 +53,8 @@ export class Inbox {
   private now: () => Date;
   /** Replies being typed into a pane right now (kept in memory: a restart mid-typing leaves the reply claimed, shown as uncertain). */
   private typing = new Set<string>();
+  /** Images you paste into an answer or a message, kept beside the attachments in the data directory. */
+  readonly uploads: Uploads;
   onChange: (reason: string) => void = () => {};
 
   constructor(db: DatabaseSync, filesDir: string, presence: PresenceSource, now: () => Date = () => new Date()) {
@@ -60,6 +63,7 @@ export class Inbox {
     this.presence = presence;
     this.now = now;
     mkdirSync(filesDir, { recursive: true });
+    this.uploads = new Uploads(join(filesDir, "..", "uploads"));
   }
 
   private iso(): string {
@@ -268,7 +272,7 @@ export class Inbox {
     if (out.length) {
       this.db.prepare(`UPDATE replies SET claimed_at = coalesce(claimed_at, ?) WHERE id IN (${out.map(() => "?").join(",")})`).run(now, ...out.map((r) => str(r.id)));
     }
-    return out.map(toPending);
+    return out.map((r) => toPending(r, this.uploads));
   }
 
   /**
@@ -285,7 +289,7 @@ export class Inbox {
     return rows.flatMap((r) => {
       if (isFresh(nullable(r.listener_seen_at), this.now())) return [];
       const presence = this.presence.forSession(str(r.harness) as Harness, str(r.session_id));
-      return presence ? [{ paneId: presence.paneId, reply: toPending(r) }] : [];
+      return presence ? [{ paneId: presence.paneId, reply: toPending(r, this.uploads) }] : [];
     });
   }
 
@@ -358,7 +362,7 @@ export class Inbox {
 
   // ── User actions ──────────────────────────────────────────────────────────────────────
 
-  answer(itemId: string, input: { id?: string; revision: number; action: ReplyAction; choice?: string | null; text?: string }): Reply {
+  answer(itemId: string, input: { id?: string; revision: number; action: ReplyAction; choice?: string | null; text?: string; images?: string[] }): Reply {
     const deliveryId = input.id ?? randomUUID();
     const prior = this.db.prepare("SELECT id FROM replies WHERE id = ?").get(deliveryId) as Row | undefined;
     if (prior) return this.reply(deliveryId); // a retried request, not a second answer
@@ -373,17 +377,18 @@ export class Inbox {
     };
     if (!allowed[input.action].includes(item.type)) throw new InboxError(400, `"${input.action}" does not answer a ${item.type} item`);
     const text = input.text?.trim() ?? "";
+    const images = this.uploads.check(input.images);
     const choice = input.action === "choose" ? input.choice ?? null : null;
     const option = choice ? item.options.find((o) => o.id === choice) : undefined;
     if (input.action === "choose" && !option) throw new InboxError(400, "choose needs one of the item's options");
-    if ((input.action === "discuss" || input.action === "request_changes") && !text) throw new InboxError(400, "write what you want to say");
+    if ((input.action === "discuss" || input.action === "request_changes") && !text && !images.length) throw new InboxError(400, "write what you want to say");
 
     const task = this.task(item.taskId);
     this.tx(() => {
       const now = this.iso();
       this.db
-        .prepare("INSERT INTO replies (id, item_id, revision, action, choice, text, state, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)")
-        .run(deliveryId, itemId, item.revision, input.action, choice, text, now);
+        .prepare("INSERT INTO replies (id, item_id, revision, action, choice, text, images, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)")
+        .run(deliveryId, itemId, item.revision, input.action, choice, text, images.length ? JSON.stringify(images) : null, now);
       this.db.prepare("UPDATE items SET state = 'answer_queued', snoozed_until = NULL, updated_at = ? WHERE id = ?").run(now, itemId);
       if (option) this.db.prepare("UPDATE tasks SET last_decision = ? WHERE id = ?").run(`${option.label} (${item.title})`, task.id);
       if (input.action === "accept") this.db.prepare("UPDATE tasks SET last_accepted_milestone = ? WHERE id = ?").run(item.title, task.id);
@@ -562,6 +567,7 @@ export class Inbox {
       action: str(r.action) as ReplyAction,
       choice: nullable(r.choice),
       text: str(r.text),
+      images: imageIds(r.images),
       state: str(r.state) as Reply["state"],
       error: uncertain ? "picked up by the session but not confirmed" : nullable(r.error),
       createdAt: str(r.created_at),
@@ -580,7 +586,12 @@ function isFresh(at: string | null, now: Date): boolean {
   return at !== null && now.getTime() - Date.parse(at) < LISTENER_FRESH_MS;
 }
 
-function toPending(r: Row): PendingReply {
+/** The upload ids stored with a reply or a message. */
+export function imageIds(v: unknown): string[] {
+  return v == null ? [] : (JSON.parse(String(v)) as string[]);
+}
+
+function toPending(r: Row, uploads: Uploads): PendingReply {
   const options = JSON.parse(str(r.options)) as Option[];
   return {
     deliveryId: str(r.id),
@@ -593,6 +604,7 @@ function toPending(r: Row): PendingReply {
     choice: nullable(r.choice),
     choiceLabel: options.find((o) => o.id === r.choice)?.label ?? null,
     text: str(r.text),
+    images: imageIds(r.images).map((id) => join(uploads.dir, id)),
     createdAt: str(r.created_at),
   };
 }

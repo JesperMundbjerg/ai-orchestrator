@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Message, MessageKind, WorkState, Work, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ago } from "../format.ts";
+import { AttachedImages, Images, useAttachments } from "../components/Attach.tsx";
 
 const DELIVERY_LABEL = { queued: "waiting until free", sending: "typing…", delivered: "took it up", failed: "not delivered" } as const;
 
@@ -71,7 +72,8 @@ export function MessageRow({ message, agents }: { message: Message; agents: Map<
         <span className="muted"> · {ago(message.createdAt)}</span>
       </div>
       {/* Anything said to or by you is shown whole; only agents' talk to each other folds. */}
-      {message.toFounder || !message.fromAgentId ? <div className="order-text">{message.text}</div> : <Clamp text={message.text} className="order-text" />}
+      {message.toFounder || !message.fromAgentId ? (message.text ? <div className="order-text">{message.text}</div> : null) : <Clamp text={message.text} className="order-text" />}
+      <Images ids={message.images} />
       <div className="order-meta">
         {message.deliveries.map((d) => (
           <span key={d.agentId} className={`delivery ${d.state}`} title={d.error ?? undefined}>
@@ -111,19 +113,22 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lead = members.find((m) => m.role === "lead") ?? null;
+  const attachments = useAttachments();
+  const ready = (text.trim() || attachments.ids.length) && !attachments.uploading;
   const send = () => {
     setSending(true);
-    api.instructTeam(team.id, text).then(
-      () => (setText(""), setError(null)),
+    api.instructTeam(team.id, text, attachments.ids).then(
+      () => (setText(""), attachments.clear(), setError(null)),
       (e: Error) => setError(e.message),
     ).finally(() => setSending(false));
   };
   return (
     <form
-      className="instruct"
+      className={`instruct${attachments.dragging ? " dropping" : ""}`}
+      {...attachments.drop}
       onSubmit={(e) => {
         e.preventDefault();
-        if (text.trim() && !sending) send();
+        if (ready && !sending) send();
       }}
     >
       <div className="section-label">Tell {team.name}</div>
@@ -132,11 +137,13 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
         rows={3}
         placeholder={`What should ${team.name} do? ${lead?.name ?? (team.standing ? "The lead" : "The first mate")} ${team.standing ? "divides it among the crew" : "plans it and runs the crew"}.`}
         onChange={(e) => setText(e.target.value)}
+        onPaste={attachments.onPaste}
         onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && e.currentTarget.form?.requestSubmit()}
       />
+      <AttachedImages attachments={attachments} />
       <div className="row">
-        <button className="primary small" type="submit" disabled={!text.trim() || sending || !lead}>Send to {team.name}</button>
-        <span className="muted small-note">{lead ? `Typed into ${lead.name}'s terminal once free.` : "Nobody on it yet."}</span>
+        <button className="primary small" type="submit" disabled={!ready || sending || !lead}>Send to {team.name}</button>
+        <span className="muted small-note">{lead ? `Typed into ${lead.name}'s terminal once free. Paste or drop images to show them.` : "Nobody on it yet."}</span>
       </div>
       {error ? <div className="warn">{error}</div> : null}
     </form>
@@ -169,7 +176,8 @@ export function Conversation({ agent, messages }: { agent: WorldAgent; messages:
               {m.kind === "instruction" ? " to the project" : ""} · {ago(m.createdAt)}
               {delivery && delivery.state !== "delivered" ? ` · ${DELIVERY_LABEL[delivery.state]}` : ""}
             </div>
-            <div className="say-text">{m.text}</div>
+            {m.text ? <div className="say-text">{m.text}</div> : null}
+            <Images ids={m.images} />
           </li>
         );
       })}
@@ -203,19 +211,22 @@ export function TellAgent({ agent }: { agent: WorldAgent }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const attachments = useAttachments();
+  const ready = (text.trim() || attachments.ids.length) && !attachments.uploading;
   const send = () => {
     setSending(true);
-    api.tellAgent(agent.id, text).then(
-      () => (setText(""), setError(null)),
+    api.tellAgent(agent.id, text, attachments.ids).then(
+      () => (setText(""), attachments.clear(), setError(null)),
       (e: Error) => setError(e.message),
     ).finally(() => setSending(false));
   };
   return (
     <form
-      className="instruct"
+      className={`instruct${attachments.dragging ? " dropping" : ""}`}
+      {...attachments.drop}
       onSubmit={(e) => {
         e.preventDefault();
-        if (text.trim() && !sending) send();
+        if (ready && !sending) send();
       }}
     >
       <textarea
@@ -223,15 +234,17 @@ export function TellAgent({ agent }: { agent: WorldAgent }) {
         rows={3}
         autoFocus
         aria-label={`Message ${agent.name}`}
-        placeholder={`Write to ${agent.name}…`}
+        placeholder={`Write to ${agent.name}… Paste or drop images to show them.`}
         onChange={(e) => setText(e.target.value)}
+        onPaste={attachments.onPaste}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) e.currentTarget.form?.requestSubmit();
           if (e.key === "Escape") e.currentTarget.blur();
         }}
       />
+      <AttachedImages attachments={attachments} />
       <div className="row">
-        <button className="primary small" type="submit" disabled={!text.trim() || sending}>Send</button>
+        <button className="primary small" type="submit" disabled={!ready || sending}>Send</button>
         <span className="muted small-note">{agent.paneId ? `Typed into ${agent.name}'s terminal once free · ⌘↵` : `${agent.name} is not running; it waits until they are.`}</span>
       </div>
       {error ? <div className="warn">{error}</div> : null}

@@ -17,5 +17,5 @@ export default defineConfig({
   plugins: [react()],
   // The office view carries three.js in its own lazily loaded chunk of about 1 MB.
   build: { outDir: "../../dist", emptyOutDir: true, chunkSizeWarningLimit: 1200 },
-  server: { port: 4871, proxy: { "/api": proxy, "/files": proxy } },
+  server: { port: 4871, proxy: { "/api": proxy, "/files": proxy, "/uploads": proxy } },
 });

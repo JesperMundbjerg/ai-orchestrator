@@ -14,7 +14,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
   state: () => request<InboxState>("GET", "/api/state"),
   detail: (itemId: string) => request<ItemDetail>("GET", `/api/items/${itemId}`),
-  answer: (itemId: string, body: { id: string; revision: number; action: ReplyAction; choice?: string; text?: string }) =>
+  answer: (itemId: string, body: { id: string; revision: number; action: ReplyAction; choice?: string; text?: string; images?: string[] }) =>
     request<Reply>("POST", `/api/items/${itemId}/replies`, body),
   snooze: (itemId: string, until: Date) => request<Item>("POST", `/api/items/${itemId}/snooze`, { until: until.toISOString() }),
   resolve: (itemId: string) => request<Item>("POST", `/api/items/${itemId}/resolve`, {}),
@@ -29,7 +29,9 @@ export const api = {
   deleteTeam: (teamId: string) => request<{ ok: true; note: string }>("DELETE", `/api/world/teams/${teamId}`, {}),
   updateAgent: (agentId: string, patch: { name?: string; teamId?: string | null; role?: "lead" | "member"; takeName?: boolean }) => request<WorldAgent>("PATCH", `/api/world/agents/${agentId}`, patch),
   removeAgent: (agentId: string) => request<{ removed: string }>("DELETE", `/api/world/agents/${agentId}`, {}),
-  instructTeam: (teamId: string, text: string) => request<Message>("POST", `/api/world/teams/${teamId}/messages`, { text, clientId: crypto.randomUUID() }),
+  instructTeam: (teamId: string, text: string, images: string[] = []) => request<Message>("POST", `/api/world/teams/${teamId}/messages`, { text, images, clientId: crypto.randomUUID() }),
   retryDelivery: (messageId: string, agentId: string) => request<Message>("POST", `/api/world/messages/${messageId}/deliveries/${agentId}/retry`, {}),
-  tellAgent: (agentId: string, text: string) => request<Message>("POST", `/api/world/agents/${agentId}/messages`, { text, clientId: crypto.randomUUID() }),
+  tellAgent: (agentId: string, text: string, images: string[] = []) => request<Message>("POST", `/api/world/agents/${agentId}/messages`, { text, images, clientId: crypto.randomUUID() }),
+  /** An image you pasted or dropped, sent as base64; answers and messages then name it by id. */
+  upload: (data: string) => request<{ id: string; url: string; size: number }>("POST", "/api/uploads", { data }),
 };

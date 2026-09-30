@@ -33,6 +33,11 @@ const ACTION_LEAD: Record<PendingReply["action"], string> = {
   discuss: "Message",
 };
 
+/** Attached images as the agent reads them: one absolute path per line, never the bytes, since the text may be typed into a terminal. */
+export function imageLines(paths: string[]): string {
+  return paths.map((p) => `Image: ${p}`).join("\n");
+}
+
 /** A reply as the owning agent reads it: which request it answers, what was chosen, what was said. */
 export function formatReply(r: PendingReply): string {
   const lines = [`[Review inbox] Reply to your ${r.itemType} request "${r.itemTitle}" (key ${r.itemKey}, revision ${r.revision}).`];
@@ -40,6 +45,7 @@ export function formatReply(r: PendingReply): string {
   if (r.action === "choose") lines.push(`${lead}: ${r.choiceLabel ?? r.choice}`);
   else lines.push(`${lead}.`);
   if (r.text) lines.push("", r.text);
+  if (r.images?.length) lines.push("", imageLines(r.images));
   lines.push("", "This is the user's answer. It authorizes only what it says; act on it, then submit a new review item when there is something new to look at.");
   return lines.join("\n");
 }

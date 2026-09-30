@@ -7,9 +7,11 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import type { Delivery, DeliveryState, Message, MessageKind, PendingReply, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
-import { formatReply } from "../shared/agent-client.ts";
-import { InboxError, type Inbox } from "./inbox.ts";
+import { formatReply, imageLines } from "../shared/agent-client.ts";
+import { imageIds, InboxError, type Inbox } from "./inbox.ts";
+import type { Uploads } from "./uploads.ts";
 import { laneRecipient } from "./queue.ts";
 import type { AgentSource } from "./world.ts";
 
@@ -37,6 +39,8 @@ export class Messages {
   private changed: () => void;
   /** The inbox's replies waiting for a pane, when the service wires them in. */
   replies: Pick<Inbox, "typeable" | "claimTyping" | "typed"> | null = null;
+  /** Where images you attach are stored, when the service wires them in; without it a message carries none. */
+  uploads: Uploads | null = null;
   /** Agents a reply is being typed into; like a message being sent, it keeps them busy. */
   private typingTo = new Set<string>();
 
@@ -71,21 +75,30 @@ export class Messages {
   }
 
   /** Your instruction to a team, heard by its lead. Retrying with the same client id returns the first message. */
-  instruct(teamId: string, input: { text?: string; clientId?: string }): Message {
+  instruct(teamId: string, input: { text?: string; images?: string[]; clientId?: string }): Message {
     const repeat = this.byClientId(input.clientId);
     if (repeat) return repeat;
     const state = this.world();
     const team = teamOf(state, teamId);
-    return this.store("instruction", null, team.id, text(input.text), null, recipients(state, team, null), input.clientId);
+    const images = this.images(input.images);
+    return this.store("instruction", null, team.id, text(input.text, images.length > 0), null, recipients(state, team, null), input.clientId, false, images);
   }
 
   /** Your message to one agent, typed into its terminal once it is free. */
-  tell(agentId: string, input: { text?: string; clientId?: string }): Message {
+  tell(agentId: string, input: { text?: string; images?: string[]; clientId?: string }): Message {
     const repeat = this.byClientId(input.clientId);
     if (repeat) return repeat;
     const agent = this.world().agents.find((a) => a.id === agentId);
     if (!agent) throw new InboxError(404, `no agent ${agentId}`);
-    return this.store("message", null, null, text(input.text), null, [agent.id], input.clientId);
+    const images = this.images(input.images);
+    return this.store("message", null, null, text(input.text, images.length > 0), null, [agent.id], input.clientId, false, images);
+  }
+
+  /** The images you attached, each a stored upload. */
+  private images(ids: unknown): string[] {
+    if (ids === undefined || ids === null || (Array.isArray(ids) && !ids.length)) return [];
+    if (!this.uploads) throw new InboxError(400, "this office takes no images");
+    return this.uploads.check(ids);
   }
 
   /** One agent to another agent or a team, named as the office shows it, or its answer to you. */
@@ -228,7 +241,8 @@ export class Messages {
     this.changed();
     let error: string | null = null;
     try {
-      await this.source.prompt(agent.paneId!, prompt(message, agent, state, message.workId ? this.workById(message.workId) : null));
+      const images = message.images.map((id) => join(this.uploads?.dir ?? "", id));
+      await this.source.prompt(agent.paneId!, prompt(message, agent, state, message.workId ? this.workById(message.workId) : null, images));
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     }
@@ -238,14 +252,14 @@ export class Messages {
     this.changed();
   }
 
-  private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false): Message {
+  private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false, images: string[] = []): Message {
     const id = randomUUID();
     const at = this.now().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
-        .prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, kind, fromAgentId, teamId, body, workId, clientId ?? null, at, toFounder ? 1 : 0);
+        .prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder, images) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, kind, fromAgentId, teamId, body, workId, clientId ?? null, at, toFounder ? 1 : 0, images.length ? JSON.stringify(images) : null);
       for (const agentId of to) {
         this.db.prepare("INSERT INTO message_deliveries (message_id, agent_id, state, updated_at) VALUES (?, ?, 'queued', ?)").run(id, agentId, at);
       }
@@ -292,9 +306,10 @@ export class Messages {
   }
 }
 
-function text(value: string | undefined): string {
-  const out = value?.trim();
-  if (!out) throw new InboxError(400, "the message needs some text");
+/** A message's text; one that carries images may say nothing else. */
+function text(value: string | undefined, withImages = false): string {
+  const out = value?.trim() ?? "";
+  if (!out && !withImages) throw new InboxError(400, "the message needs some text");
   if (out.length > MAX_TEXT) throw new InboxError(413, `keep it under ${MAX_TEXT} characters`);
   return out;
 }
@@ -320,8 +335,8 @@ export function recipients(state: WorldState, team: Team, speaker: string | null
   return out;
 }
 
-/** What the agent reads: who it is from, the agent's part in it, the text, and how to answer. */
-export function prompt(message: Message, agent: WorldAgent, state: WorldState, work: Work | null): string {
+/** What the agent reads: who it is from, the agent's part in it, the text (with the paths of any images), and how to answer. */
+export function prompt(message: Message, agent: WorldAgent, state: WorldState, work: Work | null, images: string[] = []): string {
   const agents = new Map(state.agents.map((a) => [a.id, a]));
   const teams = new Map(state.teams.map((t) => [t.id, t]));
   const from = message.fromAgentId ? agents.get(message.fromAgentId) : null;
@@ -330,6 +345,7 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
   const ownTeam = agent.teamId ? teams.get(agent.teamId) ?? null : null;
   const purpose = ownTeam?.purpose ? ` The project: ${ownTeam.purpose}` : "";
   const footer = "(From the office. `inbox team` shows your project and who else is here.)";
+  const said = [message.text, imageLines(images)].filter(Boolean).join("\n\n");
   const answerFounder = `Answer the founder in one or two sentences: inbox say ${FOUNDER} "…". When the job is done or something new happens (a crew member finishes, say), follow up the same way. For a decision, use the review inbox (\`inbox decide\`); to show what you changed, add the pages to step through (\`--page "Label=URL"\`, repeated).`;
 
   switch (message.kind) {
@@ -339,10 +355,10 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
       const part = team?.standing
         ? `You lead ${team.name}. Divide this among your crew${named ? ` (${named})` : ""} and keep them moving.`
         : `You are the first mate of ${team?.name ?? "the project"}: plan this, give it to your crew${named ? ` (${named})` : ""} or start more in herdr (\`inbox team\` shows how), supervise them, and report the outcome.`;
-      return `[From the founder to ${team?.name ?? ""}] ${part}${purpose}\n\n${message.text}\n\n${answerFounder}\n${footer}`;
+      return `[From the founder to ${team?.name ?? ""}] ${part}${purpose}\n\n${said}\n\n${answerFounder}\n${footer}`;
     }
     case "message": {
-      if (!message.fromAgentId) return `[Message from the founder]\n\n${message.text}\n\n${answerFounder}\n${footer}`;
+      if (!message.fromAgentId) return `[Message from the founder]\n\n${said}\n\n${answerFounder}\n${footer}`;
       const to = team ? ` to ${team.name}` : "";
       return `[Message from ${who(from)}${to}]\n\n${message.text}\n\nAnswer with: inbox say "${from?.name ?? ""}" "…"\n${footer}`;
     }
@@ -369,6 +385,7 @@ function toMessage(r: Row, deliveries: Delivery[]): Message {
     fromAgentId: opt(r.from_agent_id),
     teamId: opt(r.team_id),
     text: str(r.text),
+    images: imageIds(r.images),
     workId: opt(r.work_id),
     createdAt: str(r.created_at),
     deliveries,
