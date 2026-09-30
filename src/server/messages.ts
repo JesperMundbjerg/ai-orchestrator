@@ -1,7 +1,8 @@
 // What is said in the office: your instructions to a team, agents' messages to each other and
 // their answers to you, finished work handed to another team, and that team's verdict. Every message is stored with
 // one delivery row per agent it is meant for. A delivery is typed into the agent's terminal
-// only once herdr reports the agent free, one message at a time per agent, oldest first. The
+// only once herdr reports the agent free, one prompt at a time per agent: what queued up while it
+// was busy goes in that one prompt, oldest first, each with its sender and age. The
 // founder's answer to a review item goes the same way to a session nothing else would hand it to
 // while it is idle (no live integration): typed in the words the hook uses.
 
@@ -30,6 +31,13 @@ const MAX_TEXT = 8000;
 const AGENT_MESSAGES_PER_HOUR = 30;
 /** An agent is free for a new prompt when it has finished its turn and is not asking anything. */
 const FREE: ReadonlySet<WorldAgent["status"]> = new Set(["idle", "done"]);
+/** What queued up while an agent was busy is typed as one prompt; this many at most, the rest in the next. */
+const MAX_BATCHED = 50;
+/** A combined prompt keeps its newest messages in full up to about this many characters; older ones shrink to a line. */
+const BATCH_FULL_CHARS = 6000;
+/** How much of an older message its one line keeps. */
+const BATCH_LINE_CHARS = 160;
+const FOOTER = "(From the office. `inbox team` shows your project and who else is here.)";
 
 export class Messages {
   private db: DatabaseSync;
@@ -190,8 +198,9 @@ export class Messages {
   }
 
   /**
-   * Types what waits for every agent that has become free, one thing per agent: the founder's
-   * answer to something it asked first, then messages, oldest first.
+   * Types what waits for every agent that has become free, one prompt per agent: the founder's
+   * answer to something it asked first, on its own, then the messages that queued up, together,
+   * oldest first.
    */
   async deliver(state: WorldState): Promise<void> {
     const agents = new Map(state.agents.map((a) => [a.id, a]));
@@ -199,7 +208,12 @@ export class Messages {
       .prepare("SELECT d.agent_id, d.state, m.* FROM message_deliveries d JOIN messages m ON m.id = d.message_id WHERE d.state IN ('queued', 'sending') ORDER BY m.rowid")
       .all() as Row[];
     const busy = new Set<string>(this.typingTo);
-    for (const row of pending) if (row.state === "sending") busy.add(str(row.agent_id));
+    const queued = new Map<string, Row[]>();
+    for (const row of pending) {
+      const agentId = str(row.agent_id);
+      if (row.state === "sending") busy.add(agentId);
+      else queued.set(agentId, [...(queued.get(agentId) ?? []), row]);
+    }
     const sends: Array<Promise<void>> = [];
     for (const { paneId, reply } of this.replies?.typeable() ?? []) {
       const agent = state.agents.find((a) => a.paneId === paneId);
@@ -207,12 +221,11 @@ export class Messages {
       busy.add(agent.id);
       if (FREE.has(agent.status)) sends.push(this.typeReply(reply, agent));
     }
-    for (const row of pending) {
-      const agentId = str(row.agent_id);
+    for (const [agentId, rows] of queued) {
       if (busy.has(agentId)) continue;
       busy.add(agentId);
       const agent = agents.get(agentId);
-      if (agent?.paneId && FREE.has(agent.status)) sends.push(this.send(toMessage(row, []), agent, state));
+      if (agent?.paneId && FREE.has(agent.status)) sends.push(this.send(rows.slice(0, MAX_BATCHED), agent, state));
     }
     await Promise.all(sends);
   }
@@ -232,24 +245,55 @@ export class Messages {
     this.replies!.typed(reply.deliveryId, error);
   }
 
-  private async send(message: Message, agent: WorldAgent, state: WorldState): Promise<void> {
+  /** One prompt for everything that waited, acknowledged for all of it or failed for all of it. */
+  private async send(rows: Row[], agent: WorldAgent, state: WorldState): Promise<void> {
+    if (!this.source) return;
     // Claimed before typing, so two deliveries running at once never type the same message twice.
-    const claimed = this.db
-      .prepare("UPDATE message_deliveries SET state = 'sending', updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'queued'")
-      .run(this.now().toISOString(), message.id, agent.id);
-    if (!claimed.changes || !this.source) return;
+    const claim = this.db.prepare("UPDATE message_deliveries SET state = 'sending', updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'queued'");
+    const messages = rows.filter((row) => claim.run(this.now().toISOString(), str(row.id), agent.id).changes > 0).map((row) => toMessage(row, []));
+    if (!messages.length) return;
     this.changed();
     let error: string | null = null;
     try {
-      const images = message.images.map((id) => join(this.uploads?.dir ?? "", id));
-      await this.source.prompt(agent.paneId!, prompt(message, agent, state, message.workId ? this.workById(message.workId) : null, images));
+      await this.source.prompt(agent.paneId!, this.combined(messages, agent, state));
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     }
-    this.db
-      .prepare("UPDATE message_deliveries SET state = ?, error = ?, updated_at = ? WHERE message_id = ? AND agent_id = ?")
-      .run(error ? "failed" : "delivered", error, this.now().toISOString(), message.id, agent.id);
+    const done = this.db.prepare("UPDATE message_deliveries SET state = ?, error = ?, updated_at = ? WHERE message_id = ? AND agent_id = ?");
+    for (const message of messages) done.run(error ? "failed" : "delivered", error, this.now().toISOString(), message.id, agent.id);
     this.changed();
+  }
+
+  /** What one prompt says: a single message as it is, several as one list with who sent each and how long ago. */
+  private combined(messages: Message[], agent: WorldAgent, state: WorldState): string {
+    const at = this.now().getTime();
+    const entries = messages.map((message) => {
+      const images = message.images.map((id) => join(this.uploads?.dir ?? "", id));
+      const work = message.workId ? this.workById(message.workId) : null;
+      const sender = message.fromAgentId ? state.agents.find((a) => a.id === message.fromAgentId)?.name ?? "someone" : "The founder";
+      return { label: `${sender}, ${ago(at - Date.parse(message.createdAt))}`, message, images, work };
+    });
+    if (entries.length === 1) {
+      const { message, images, work } = entries[0]!;
+      return prompt(message, agent, state, work, images);
+    }
+    // The newest are kept in full while there is room; older ones shrink to a line, so a long queue stays one readable prompt.
+    let room = BATCH_FULL_CHARS;
+    const parts: string[] = [];
+    for (const entry of entries.reverse()) {
+      const full = `${entry.label}:\n${compose(entry.message, agent, state, entry.work, entry.images)}`;
+      if (!parts.length || full.length <= room) {
+        parts.push(full);
+        room -= full.length;
+        continue;
+      }
+      room = 0;
+      const said = entry.message.text.replace(/\s+/g, " ").trim();
+      const line = said.length > BATCH_LINE_CHARS ? `${said.slice(0, BATCH_LINE_CHARS).trimEnd()}…` : said;
+      parts.push([`${entry.label}: ${line}`, ...entry.images.map((path) => `Image: ${path}`)].join(" "));
+    }
+    const header = `${entries.length} messages arrived while you were busy; later ones may supersede earlier ones. Reply once to what still matters.`;
+    return `${header}\n\n${parts.reverse().join("\n\n")}\n${FOOTER}`;
   }
 
   private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false, images: string[] = []): Message {
@@ -337,6 +381,20 @@ export function recipients(state: WorldState, team: Team, speaker: string | null
 
 /** What the agent reads: who it is from, the agent's part in it, the text (with the paths of any images), and how to answer. */
 export function prompt(message: Message, agent: WorldAgent, state: WorldState, work: Work | null, images: string[] = []): string {
+  return `${compose(message, agent, state, work, images)}\n${FOOTER}`;
+}
+
+/** How long ago, in the words an agent reads: "just now", "42 min ago", "3 h ago", "2 days ago". */
+function ago(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 48 * 60) return `${Math.floor(minutes / 60)} h ago`;
+  return `${Math.floor(minutes / 1440)} days ago`;
+}
+
+/** A message as the agent reads it, without the footer that closes a prompt. */
+function compose(message: Message, agent: WorldAgent, state: WorldState, work: Work | null, images: string[]): string {
   const agents = new Map(state.agents.map((a) => [a.id, a]));
   const teams = new Map(state.teams.map((t) => [t.id, t]));
   const from = message.fromAgentId ? agents.get(message.fromAgentId) : null;
@@ -344,7 +402,6 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
   const team = message.teamId ? teams.get(message.teamId) ?? null : null;
   const ownTeam = agent.teamId ? teams.get(agent.teamId) ?? null : null;
   const purpose = ownTeam?.purpose ? ` The project: ${ownTeam.purpose}` : "";
-  const footer = "(From the office. `inbox team` shows your project and who else is here.)";
   const said = [message.text, imageLines(images)].filter(Boolean).join("\n\n");
   const answerFounder = `Answer the founder in one or two sentences: inbox say ${FOUNDER} "…". When the job is done or something new happens (a crew member finishes, say), follow up the same way. For a decision, use the review inbox (\`inbox decide\`); to show what you changed, add the pages to step through (\`--page "Label=URL"\`, repeated).`;
 
@@ -355,12 +412,12 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
       const part = team?.standing
         ? `You lead ${team.name}. Divide this among your crew${named ? ` (${named})` : ""} and keep them moving.`
         : `You are the first mate of ${team?.name ?? "the project"}: plan this, give it to your crew${named ? ` (${named})` : ""} or start more in herdr (\`inbox team\` shows how), supervise them, and report the outcome.`;
-      return `[From the founder to ${team?.name ?? ""}] ${part}${purpose}\n\n${said}\n\n${answerFounder}\n${footer}`;
+      return `[From the founder to ${team?.name ?? ""}] ${part}${purpose}\n\n${said}\n\n${answerFounder}`;
     }
     case "message": {
-      if (!message.fromAgentId) return `[Message from the founder]\n\n${said}\n\n${answerFounder}\n${footer}`;
+      if (!message.fromAgentId) return `[Message from the founder]\n\n${said}\n\n${answerFounder}`;
       const to = team ? ` to ${team.name}` : "";
-      return `[Message from ${who(from)}${to}]\n\n${message.text}\n\nAnswer with: inbox say "${from?.name ?? ""}" "…"\n${footer}`;
+      return `[Message from ${who(from)}${to}]\n\n${message.text}\n\nAnswer with: inbox say "${from?.name ?? ""}" "…"`;
     }
     case "handoff": {
       const id = work?.id ?? message.workId ?? "";
@@ -369,11 +426,11 @@ export function prompt(message: Message, agent: WorldAgent, state: WorldState, w
       const part = agent.role === "lead"
         ? `You lead ${team?.name ?? "your team"}: have it reviewed${others.length ? ` by your crew (${others.join(", ")})` : ""} or review it yourself, then give the verdict.`
         : `Review it with ${others.length ? others.join(", ") : "your team"}; one of you gives the verdict.`;
-      return `[Handoff to ${team?.name ?? "your team"} from ${who(from)}] Work ${id}${round}: "${work?.title ?? ""}"\n\n${message.text}\n\n${part}${purpose}\nVerdict: inbox review ${id} accept --notes "…"   or   inbox review ${id} changes --notes "what must change"\n${footer}`;
+      return `[Handoff to ${team?.name ?? "your team"} from ${who(from)}] Work ${id}${round}: "${work?.title ?? ""}"\n\n${message.text}\n\n${part}${purpose}\nVerdict: inbox review ${id} accept --notes "…"   or   inbox review ${id} changes --notes "what must change"`;
     }
     case "review": {
       const next = work?.state === "changes_requested" ? `\n\nWhen it is fixed, hand it over again: inbox handoff --work ${work.id} --summary "what changed"` : "";
-      return `[Review of your handoff "${work?.title ?? ""}" (work ${work?.id ?? ""}) by ${who(from)}]\n\n${message.text}${next}\n${footer}`;
+      return `[Review of your handoff "${work?.title ?? ""}" (work ${work?.id ?? ""}) by ${who(from)}]\n\n${message.text}${next}`;
     }
   }
 }

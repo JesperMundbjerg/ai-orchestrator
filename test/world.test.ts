@@ -485,23 +485,24 @@ test("an instruction goes to the team's lead once it is free, with its crew name
   assert.equal(world.messages.instruct(team.id, { text: "Ship the login page", clientId: "c1" }).id, order.id, "a retried request is the same order");
 });
 
-test("a lead speaking to its own team is heard by its crew, one message at a time, and a failed delivery can be retried", async () => {
+test("a lead speaking to its own team is heard by its crew, and a failed delivery can be retried", async () => {
   const { world, prompts, setLive, refuse } = setup();
   setLive([lane("p1", "/lead", "s1"), lane("p2", "/a", "s2"), lane("p3", "/b", "s3")]);
   const { agents } = await seat(world, ["/lead", "/a", "/b"]);
   const lead = agents[0]!;
   refuse("agent_blocked");
   const first = world.messages.say(lead, { to: "Mission Control", text: "first" });
-  world.messages.say(lead, { to: "Mission Control", text: "second" });
+  const second = world.messages.say(lead, { to: "Mission Control", text: "second" });
   await world.react();
   const failed = world.state().messages.find((m) => m.id === first.id)!;
   assert.deepEqual(failed.deliveries.map((d) => [d.state, d.error]), [["failed", "agent_blocked"], ["failed", "agent_blocked"]]);
+  assert.deepEqual(world.state().messages.find((m) => m.id === second.id)!.deliveries.map((d) => d.state), ["failed", "failed"], "what was typed together fails together");
   refuse(null);
   await world.react();
-  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]).sort(), [["p2", "second"], ["p3", "second"]], "a failed message does not hold up the next");
+  assert.equal(prompts.length, 0, "a failed delivery waits for Retry");
   world.messages.retry(first.id, agents[1]!.id);
   await world.react();
-  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]).at(-1), ["p2", "first"]);
+  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]), [["p2", "first"]]);
   assert.throws(() => world.messages.retry(first.id, agents[1]!.id), /only a failed delivery/);
 });
 
@@ -515,16 +516,17 @@ test("an instruction needs someone to hear it", async () => {
   assert.throws(() => world.messages.instruct(team.id, { text: " " }), /needs some text/);
 });
 
-test("an agent hears its messages in the order they were sent, even while another is still busy", async () => {
+test("an agent hears its messages in the order they were sent, in one prompt, even while another is still busy", async () => {
   const { world, prompts, setLive } = setup();
   setLive([lane("p0", "/lead", "s0"), lane("p1", "/a", "s1", "working"), lane("p2", "/b", "s2", "idle")]);
   const { agents } = await seat(world, ["/lead", "/a", "/b"]);
   world.messages.say(agents[0]!, { to: "Mission Control", text: "first" });
   world.messages.say(agents[0]!, { to: "Mission Control", text: "second" });
   await world.react();
-  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]), [["p2", "first"]], "p1 is busy; p2 gets only the first");
+  assert.equal(prompts.length, 1, "p2 is free, so it hears both, in one prompt; p1 is busy and hears nothing yet");
+  assert.equal(prompts[0]!.pane, "p2");
+  assert.match(prompts[0]!.text, /2 messages arrived[\s\S]*first[\s\S]*second/);
   await world.react();
-  assert.deepEqual(prompts.map((p) => [p.pane, body(p.text)]).at(-1), ["p2", "second"]);
   assert.equal(prompts.filter((p) => p.pane === "p1").length, 0);
 });
 
