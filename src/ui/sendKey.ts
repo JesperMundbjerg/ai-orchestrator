@@ -21,3 +21,21 @@ export function sendOnEnter(send: () => void) {
     send();
   };
 }
+
+/** What Enter does in the answer box, by kind of item. */
+export type EnterKind = "answer" | "choose" | "approve";
+
+/**
+ * Whether Enter in the answer box acts, and the hint that says so. An open question needs words
+ * and a decision needs an option. A try item or milestone is approved by Enter only while the
+ * note is empty (words or images): with a note typed, Enter does nothing, so a note is never
+ * approved by accident and Approve or Needs changes is a click.
+ */
+export function enterPlan(kind: EnterKind, label: string, { text, choice, said }: { text: string; choice: string | null; said: boolean }, changes = "Needs changes") {
+  const newLine = "Shift+Enter for a new line";
+  if (kind === "approve" && said) {
+    return { enabled: false, hint: `Type a note, then click ${label} or ${changes} · ${newLine}` };
+  }
+  const enabled = kind === "answer" ? Boolean(text.trim()) : kind === "choose" ? Boolean(choice) : true;
+  return { enabled, hint: `Enter to ${label.toLowerCase()} · ${newLine}` };
+}

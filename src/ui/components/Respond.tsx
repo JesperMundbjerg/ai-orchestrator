@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { ItemDetail, ReplyAction } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { deliveryLabel, snoozeChoices } from "../format.ts";
-import { SEND_HINT, sendOnEnter } from "../sendKey.ts";
+import { enterPlan, SEND_HINT, sendOnEnter } from "../sendKey.ts";
 import { AttachedImages, useAttachments, type Attachments } from "./Attach.tsx";
 
 /**
@@ -58,14 +58,12 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
   const open = item.type === "decide" && !item.options.length;
 
   // Enter in the note box does the highlighted action; when that needs words or a choice that
-  // are missing, Enter does nothing.
-  const primary =
-    item.type === "decide"
-      ? open
-        ? { label: "Answer", run: text.trim() ? () => void send("answer") : null }
-        : { label: "Send decision", run: choice ? () => void send("choose", { choice }) : null }
-      : { label: item.type === "milestone" ? "Accept milestone" : "Approve", run: () => void send("accept") };
-  const submit = waiting ? undefined : primary.run ?? undefined;
+  // are missing, or a note is typed on an item that is approved, Enter does nothing.
+  const kind = item.type === "decide" ? (open ? "answer" : "choose") : "approve";
+  const label = open ? "Answer" : item.type === "decide" ? "Send decision" : item.type === "milestone" ? "Accept milestone" : "Approve";
+  const enter = enterPlan(kind, label, { text, choice, said }, item.type === "milestone" ? "Request changes" : "Needs changes");
+  const run = () => (kind === "answer" ? void send("answer") : kind === "choose" ? choice && void send("choose", { choice }) : void send("accept"));
+  const submit = waiting || !enter.enabled ? undefined : run;
 
   const note = (
     <>
@@ -78,7 +76,7 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
         onKeyDown={sendOnEnter(() => submit?.())}
         rows={open ? 4 : 2}
       />
-      <div className="muted small-note">Enter to {primary.label.toLowerCase()} · Shift+Enter for a new line</div>
+      <div className="muted small-note">{enter.hint}</div>
       <AttachedImages attachments={attachments} />
     </>
   );
