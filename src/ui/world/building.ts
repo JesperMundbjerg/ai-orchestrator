@@ -3,10 +3,11 @@
 // desks), plus the building's rooms and walls, and the walking route between two spots.
 // Coordinates are metres on the floor as [x, z], your desk at the origin, north (-z) ahead.
 //
-//   hall     an open hall with an indoor garden in its middle, open to the sky: planted beds,
-//            trees, a pond with a fountain, benches along a walk round the beds, and at its
-//            front, towards the front door (south), a paved clearing where leads who come to
-//            you stand and agents waiting for you gather
+//   hall     an open hall with an indoor garden in its middle, open to the sky: a walk with
+//            benches round a planted bed that a stepping-stone trail winds through, borders
+//            behind it, a lawn with a pond either side of the front, and at its front, towards
+//            the front door (south), a paved clearing where leads who come to you stand and
+//            agents waiting for you gather. What grows where is planting.ts
 //   loop     a walkway round the hall, just inside the rooms' fronts; everyone walking
 //            between rooms follows it, so nobody cuts across the garden
 //   garden   agents on no project spend their idle time here, on the benches or strolling
@@ -61,9 +62,9 @@ export interface Bench {
 }
 
 /**
- * The garden in the hall's middle. Its walk is a loop given by its middle line; the walk's sides,
- * and the middle path between the inner beds, are paths PATH_HALF either side of their line.
- * Nobody walks on a bed; the pond lies in the west lawn.
+ * The garden in the hall's middle. Its walk is a loop given by its middle line; the walk's sides
+ * are paths PATH_HALF either side of their line. Nobody walks on a bed (the lawns are beds too);
+ * the pond lies in the west lawn.
  */
 export interface Garden {
   area: Rect;
@@ -71,10 +72,13 @@ export interface Garden {
   clearing: Rect;
   walk: Rect;
   paths: Rect[];
+  /** Everything planted: the borders behind and beside the walk, the bed inside it, and the two lawns. */
   beds: Rect[];
+  /** The bed inside the walk, and the lawns either side of the clearing, west then east. */
+  inner: Rect;
+  lawns: [Rect, Rect];
   pond: { center: Vec2; radius: number };
   benches: Bench[];
-  trees: Array<{ pos: Vec2; size: number }>;
 }
 
 export interface BuildingPlan extends OfficePlan {
@@ -126,7 +130,7 @@ const MIN_ACROSS = 3;
 const MIN_DOWN = 2;
 const NORTH = Math.PI;
 /** The garden starts this far in from the hall's edge, clear of the walkway and the work lane. */
-const GARDEN_INSET = 2.6;
+export const GARDEN_INSET = 2.6;
 /** Paths are twice this wide; the walk's middle line runs this far in from the garden's edge. */
 export const PATH_HALF = 0.9;
 const WALK_IN = 1.3;
@@ -295,10 +299,10 @@ export function teamDesks(room: Room, members: WorldAgent[]): { seats: Array<[st
 }
 
 /**
- * The garden in a hall: a walk round two inner beds split by a middle path, a strip of flowers
- * round the back and sides, and at the front the clearing between two lawns, the pond in the
- * west one. Benches stand along the walk, at its edge: at the back and the sides on its outer
- * edge facing in, at the front on its inner edge facing the clearing.
+ * The garden in a hall: a walk round the inner bed, a border round the back and sides, and at
+ * the front the clearing between two lawns, the pond in the west one. Benches stand along the
+ * walk, at its edge: at the back and the sides on its outer edge facing in, at the front on its
+ * inner edge facing the clearing; none where the trail through the inner bed meets the walk.
  */
 export function planGarden(hall: Rect): Garden {
   const inside = inset(hall, GARDEN_INSET);
@@ -312,8 +316,7 @@ export function planGarden(hall: Rect): Garden {
   const ne: Vec2 = [walk.maxX, walk.minZ];
   const se: Vec2 = [walk.maxX, walk.maxZ];
   const sw: Vec2 = [walk.minX, walk.maxZ];
-  const middle: Rect = { minX: -PATH_HALF, maxX: PATH_HALF, minZ: walk.minZ, maxZ: walk.maxZ };
-  const paths = [band(nw, ne), band(ne, se), band(sw, se), band(nw, sw), middle];
+  const paths = [band(nw, ne), band(ne, se), band(sw, se), band(nw, sw)];
   const inner = inset(walk, PATH_HALF);
   const lawnW: Rect = { minX: area.minX, maxX: -cx, minZ: front, maxZ: area.maxZ };
   const lawnE: Rect = { minX: cx, maxX: area.maxX, minZ: front, maxZ: area.maxZ };
@@ -321,14 +324,13 @@ export function planGarden(hall: Rect): Garden {
     { minX: area.minX, maxX: area.maxX, minZ: area.minZ, maxZ: walk.minZ - PATH_HALF },
     { minX: area.minX, maxX: walk.minX - PATH_HALF, minZ: area.minZ, maxZ: front },
     { minX: walk.maxX + PATH_HALF, maxX: area.maxX, minZ: area.minZ, maxZ: front },
-    { ...inner, maxX: -PATH_HALF },
-    { ...inner, minX: PATH_HALF },
+    inner,
     lawnW,
     lawnE,
   ];
   const pond = { center: mid(lawnW), radius: Math.min(lawnW.maxX - lawnW.minX, lawnW.maxZ - lawnW.minZ) / 2 - 0.6 };
 
-  // Benches: along the front and the back, clear of the middle path and the corners, then the sides.
+  // Benches: along the front and the back, clear of the trail's ends and the corners, then the sides.
   const runs = (from: number, to: number) => {
     const length = to - from - 3.2;
     if (length < 0) return [];
@@ -344,19 +346,7 @@ export function planGarden(hall: Rect): Garden {
     ...down.map((z) => ({ pos: [walk.minX - SEAT_OFF, z] as Vec2, facing: Math.PI / 2 })),
     ...down.map((z) => ({ pos: [walk.maxX + SEAT_OFF, z] as Vec2, facing: -Math.PI / 2 })),
   ];
-
-  // Trees down the middle of the inner beds, in the east lawn, and behind the pond.
-  const trees: Garden["trees"] = [];
-  for (const bed of [beds[3]!, beds[4]!]) {
-    const [x0, x1] = [bed.minX + 1.2, bed.maxX - 1.2];
-    const n = Math.max(1, Math.round((x1 - x0) / 3.6) + 1);
-    const size = Math.min(0.8, (bed.maxZ - bed.minZ) / 2.9);
-    for (let k = 0; k < n; k++) trees.push({ pos: [x0 + ((x1 - x0) * k) / Math.max(1, n - 1), (bed.minZ + bed.maxZ) / 2], size });
-  }
-  const [ex, ez] = mid(lawnE);
-  trees.push({ pos: [ex + 0.9, ez - 1.6], size: 1 }, { pos: [ex - 0.8, ez + 1.9], size: 0.85 });
-  trees.push({ pos: [lawnW.minX + 0.7, lawnW.minZ + 0.9], size: 0.7 });
-  return { area, clearing, walk, paths, beds, pond, benches, trees };
+  return { area, clearing, walk, paths, beds, inner, lawns: [lawnW, lawnE], pond, benches };
 }
 
 const mid = (r: Rect): Vec2 => [(r.minX + r.maxX) / 2, (r.minZ + r.maxZ) / 2];
