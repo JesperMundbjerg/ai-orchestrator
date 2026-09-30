@@ -9,7 +9,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { Delivery, DeliveryState, Message, MessageKind, PendingReply, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
+import type { AllLeadsResult, Delivery, DeliveryState, Message, MessageKind, PendingReply, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
 import { formatReply, imageLines } from "../shared/agent-client.ts";
 import { imageIds, InboxError, type Inbox } from "./inbox.ts";
 import type { Uploads } from "./uploads.ts";
@@ -90,6 +90,36 @@ export class Messages {
     const team = teamOf(state, teamId);
     const images = this.images(input.images);
     return this.store("instruction", null, team.id, text(input.text, images.length > 0), null, recipients(state, team, null), input.clientId, false, images);
+  }
+
+  /** One founder instruction, atomically queued for the selected leads through the usual delivery path. */
+  tellAllLeads(input: { text?: string; images?: string[]; clientId?: string; leadIds?: string[] }): AllLeadsResult {
+    if (typeof input.clientId !== "string" || !input.clientId.trim()) throw new InboxError(400, "a broadcast needs a client id");
+    const state = this.world();
+    const repeat = this.byClientId(input.clientId);
+    if (repeat && !repeat.allLeads) throw new InboxError(409, "that client id belongs to another message");
+    const leads = state.agents.filter((a) => a.role === "lead" && state.teams.some((t) => t.id === a.teamId));
+    let message = repeat;
+    if (!message) {
+      if (input.leadIds !== undefined && (!Array.isArray(input.leadIds) || input.leadIds.some((id) => typeof id !== "string"))) {
+        throw new InboxError(400, "leadIds must be a list of lead ids");
+      }
+      const selected = input.leadIds === undefined ? leads.map((a) => a.id) : [...new Set(input.leadIds)];
+      if (!selected.length) throw new InboxError(400, "select at least one lead");
+      if (selected.some((id) => !leads.some((a) => a.id === id))) throw new InboxError(409, "the leads have changed; reopen Tell all leads and check the recipients");
+      // Resolve teams just as instruct does, but store once so no partial fan-out or duplicate prompt is possible.
+      const to = [...new Set(selected.flatMap((id) => {
+        const lead = leads.find((a) => a.id === id)!;
+        return recipients(state, teamOf(state, lead.teamId!), null);
+      }))];
+      const images = this.images(input.images);
+      message = this.store("instruction", null, null, text(input.text, images.length > 0), null, to, input.clientId, false, images, false, true);
+    }
+    return {
+      message,
+      queuedOffline: message.deliveries.filter((d) => d.state === "queued" && !state.agents.find((a) => a.id === d.agentId)?.paneId).map((d) => d.agentId),
+      skippedTeams: state.teams.filter((t) => !leads.some((a) => a.teamId === t.id)).map((t) => t.id),
+    };
   }
 
   /** Your message to one agent, typed into its terminal once it is free. */
@@ -301,14 +331,14 @@ export class Messages {
     return `${header}\n\n${parts.reverse().join("\n\n")}\n${FOOTER}`;
   }
 
-  private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false, images: string[] = [], fromOffice = false): Message {
+  private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false, images: string[] = [], fromOffice = false, allLeads = false): Message {
     const id = randomUUID();
     const at = this.now().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
-        .prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder, images, from_office) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, kind, fromAgentId, teamId, body, workId, clientId ?? null, at, toFounder ? 1 : 0, images.length ? JSON.stringify(images) : null, fromOffice ? 1 : 0);
+        .prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder, images, from_office, all_leads) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, kind, fromAgentId, teamId, body, workId, clientId ?? null, at, toFounder ? 1 : 0, images.length ? JSON.stringify(images) : null, fromOffice ? 1 : 0, allLeads ? 1 : 0);
       for (const agentId of to) {
         this.db.prepare("INSERT INTO message_deliveries (message_id, agent_id, state, updated_at) VALUES (?, ?, 'queued', ?)").run(id, agentId, at);
       }
@@ -404,7 +434,8 @@ function compose(message: Message, agent: WorldAgent, state: WorldState, work: W
   const teams = new Map(state.teams.map((t) => [t.id, t]));
   const from = message.fromAgentId ? agents.get(message.fromAgentId) : null;
   const who = (a: WorldAgent | null | undefined) => (a ? `${a.name}${a.teamId && teams.get(a.teamId) ? ` of ${teams.get(a.teamId)!.name}` : ""}` : "someone");
-  const team = message.teamId ? teams.get(message.teamId) ?? null : null;
+  const teamId = message.allLeads ? agent.teamId : message.teamId;
+  const team = teamId ? teams.get(teamId) ?? null : null;
   const ownTeam = agent.teamId ? teams.get(agent.teamId) ?? null : null;
   const purpose = ownTeam?.purpose ? ` The project: ${ownTeam.purpose}` : "";
   const said = [message.text, imageLines(images)].filter(Boolean).join("\n\n");
@@ -417,7 +448,7 @@ function compose(message: Message, agent: WorldAgent, state: WorldState, work: W
       const part = team?.standing
         ? `You lead ${team.name}. Divide this among your crew${named ? ` (${named})` : ""} and keep them moving.`
         : `You are the first mate of ${team?.name ?? "the project"}: plan this, give it to your crew${named ? ` (${named})` : ""} or start more in herdr (\`inbox team\` shows how), supervise them, and report the outcome.`;
-      return `[From the founder to ${team?.name ?? ""}] ${part}${purpose}\n\n${said}\n\n${answerFounder}`;
+      return `[From the founder to ${team?.name ?? ""}${message.allLeads ? "; broadcast to selected leads" : ""}] ${part}${purpose}\n\n${said}\n\n${answerFounder}`;
     }
     case "message": {
       if (message.fromOffice) return `[From the office]\n\n${said}`;
@@ -454,6 +485,7 @@ function toMessage(r: Row, deliveries: Delivery[]): Message {
     deliveries,
     toFounder: Number(r.to_founder) === 1,
     fromOffice: Number(r.from_office) === 1,
+    allLeads: Number(r.all_leads) === 1,
   };
 }
 

@@ -126,6 +126,7 @@ export function MessageRow({ message, agents }: { message: Message; agents: Map<
     <li className={`order ${message.kind}${message.toFounder ? " to-you" : mine ? " from-you" : ""}`}>
       <div className="order-head">
         {message.toFounder ? <span className="for-you">answer to you</span> : mine ? <span className="for-you mine">you said</span> : null}
+        {message.allLeads ? <span className="for-you mine">All-leads broadcast</span> : null}
         <strong>{from}</strong>
         <span className="muted"> {VERB[message.kind]} {to}</span>
         <span className="muted"> · {ago(message.createdAt)}</span>
@@ -237,7 +238,7 @@ export function Conversation({ agent, messages, between }: { agent: WorldAgent; 
           <li key={m.id} className={`say ${mine ? "you" : "them"}`}>
             <div className="say-head">
               {mine ? "You" : <>{agent.name} <span className="for-you">to you</span></>}
-              {m.kind === "instruction" ? " to the project" : ""} · {ago(m.createdAt)}
+              {m.allLeads ? " · All-leads broadcast" : m.kind === "instruction" ? " to the project" : ""} · {ago(m.createdAt)}
               {delivery && delivery.state !== "delivered" ? ` · ${DELIVERY_LABEL[delivery.state]}` : ""}
             </div>
             {m.text ? <div className="say-text">{m.text}</div> : null}

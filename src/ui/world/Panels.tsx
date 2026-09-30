@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import type { InboxState, ItemDetail, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
+import { TellAllLeads } from "../components/TellAllLeads.tsx";
 import { ItemDetailView } from "../components/ItemDetail.tsx";
 import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
@@ -33,6 +34,7 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
         <strong>Projects</strong>
         <button className="ghost small" onClick={() => setAdding(!adding)}>{adding ? "Cancel" : "+ New project"}</button>
       </div>
+      <TellAllLeads world={world} />
       {adding ? (
         <TeamForm
           submit="Start"

@@ -4,6 +4,7 @@ import type { InboxState, WorldAgent, WorldState, WorldTeam } from "../../shared
 import { api } from "../api.ts";
 import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "../world/status.ts";
 import { HiddenLine, MessageRow, TellTeam, ThreadToggle, useThreadView, withMe, WorkRow } from "../world/Talk.tsx";
+import { TellAllLeads } from "./TellAllLeads.tsx";
 import { MachineWarning } from "./MachineWarning.tsx";
 import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
 
@@ -61,6 +62,7 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
         </div>
         <span className="spacer" />
         <button className="ghost small" onClick={onOffice}>Walk into the office →</button>
+        <TellAllLeads world={world} />
         <button className="primary small" onClick={() => setAdding(!adding)}>{adding ? "Cancel" : "+ New project"}</button>
       </header>
       <MachineWarning tick={tick} note />

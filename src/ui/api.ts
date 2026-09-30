@@ -1,4 +1,4 @@
-import type { InboxState, Item, ItemDetail, MachineState, PageCheck, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
+import type { AllLeadsResult, InboxState, Item, ItemDetail, MachineState, PageCheck, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -30,6 +30,7 @@ export const api = {
   updateAgent: (agentId: string, patch: { name?: string; teamId?: string | null; role?: "lead" | "member"; takeName?: boolean }) => request<WorldAgent>("PATCH", `/api/world/agents/${agentId}`, patch),
   removeAgent: (agentId: string) => request<{ removed: string }>("DELETE", `/api/world/agents/${agentId}`, {}),
   instructTeam: (teamId: string, text: string, images: string[] = []) => request<Message>("POST", `/api/world/teams/${teamId}/messages`, { text, images, clientId: crypto.randomUUID() }),
+  tellAllLeads: (body: { text: string; images: string[]; leadIds: string[]; clientId: string }) => request<AllLeadsResult>("POST", "/api/world/all-leads/messages", body),
   retryDelivery: (messageId: string, agentId: string) => request<Message>("POST", `/api/world/messages/${messageId}/deliveries/${agentId}/retry`, {}),
   tellAgent: (agentId: string, text: string, images: string[] = []) => request<Message>("POST", `/api/world/agents/${agentId}/messages`, { text, images, clientId: crypto.randomUUID() }),
   machine: () => request<MachineState>("GET", "/api/machine"),

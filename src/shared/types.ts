@@ -482,6 +482,16 @@ export interface Message {
   toFounder: boolean;
   /** Said by the office itself (such as a browser left running), not by you, though it has no agent as sender. */
   fromOffice?: boolean;
+  /** One founder instruction shared with the selected project and standing-team leads. */
+  allLeads?: boolean;
+}
+
+export interface AllLeadsResult {
+  message: Message;
+  /** Selected offline leads still have a queued delivery, never silently skipped. */
+  queuedOffline: string[];
+  /** Teams without a lead cannot receive an instruction. */
+  skippedTeams: string[];
 }
 
 export const WORK_STATES = ["in_review", "accepted", "changes_requested"] as const;

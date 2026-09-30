@@ -1,0 +1,19 @@
+.all-leads-dialog {
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  overflow: auto;
+  padding: 24px;
+  border: 1px solid var(--line, #d8d6d0);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 80px #0004;
+}
+.all-leads-dialog::backdrop { background: #17221e80; }
+.all-leads-dialog h2 { margin: 0; }
+.all-leads-dialog p { line-height: 1.5; }
+.all-leads-list { border: 0; padding: 0; margin: 0 0 12px; }
+.all-leads-list legend { font-size: 12px; color: var(--muted, #666); margin-bottom: 8px; }
+.all-leads-list label { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+.all-leads-list input { width: auto; flex: 0 0 auto; }
+.all-leads-dialog textarea { width: 100%; }
