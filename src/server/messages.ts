@@ -14,6 +14,7 @@ import { formatReply, imageLines } from "../shared/agent-client.ts";
 import { imageIds, InboxError, type Inbox } from "./inbox.ts";
 import type { Uploads } from "./uploads.ts";
 import { laneRecipient } from "./queue.ts";
+import { WaitingMessages } from "./waiting.ts";
 import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { AgentSource } from "./world.ts";
 
@@ -52,6 +53,18 @@ export class Messages {
   uploads: Uploads | null = null;
   /** Agents a reply is being typed into; like a message being sent, it keeps them busy. */
   private typingTo = new Set<string>();
+  private waiting = new WaitingMessages();
+
+  /** Only queued recipients need immediate screen sampling; never scan unrelated panes. */
+  queuedPanes(state: WorldState): Set<string> {
+    const rows = this.db.prepare("SELECT m.*, d.agent_id, d.updated_at AS queued_at FROM message_deliveries d JOIN messages m ON m.id = d.message_id WHERE d.state = 'queued'").all() as Row[];
+    this.waiting.check(rows.map((r) => toMessage(r, [{ agentId: str(r.agent_id), state: "queued", updatedAt: str(r.queued_at), error: null }])), this.now().getTime());
+    const ids = new Set(rows.map((r) => str(r.agent_id)));
+    return new Set([
+      ...state.agents.filter((a) => ids.has(a.id) && a.paneId).map((a) => a.paneId!),
+      ...(this.replies?.typeable() ?? []).map((r) => r.paneId),
+    ]);
+  }
 
   constructor(db: DatabaseSync, source: AgentSource | null, world: () => WorldState, now: () => Date, changed: () => void) {
     this.db = db;

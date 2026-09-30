@@ -8,6 +8,7 @@ import { leftBeforeArrival } from "../../shared/delivery.ts";
 import { ago } from "../format.ts";
 import { AttachedImages, Images, useAttachments } from "../components/Attach.tsx";
 import { SEND_HINT, sendOnEnter } from "../sendKey.ts";
+import { WaitingMessage } from "../components/WaitingMessage.tsx";
 
 const DELIVERY_LABEL = { queued: "waiting until free", sending: "typing…", delivered: "took it up", failed: "not delivered" } as const;
 
@@ -135,6 +136,7 @@ export function MessageRow({ message, agents }: { message: Message; agents: Map<
       {/* Anything said to or by you is shown whole; only agents' talk to each other folds. */}
       {message.toFounder || !message.fromAgentId ? (message.text ? <div className="order-text">{message.text}</div> : null) : <Clamp text={message.text} className="order-text" />}
       <Images ids={message.images} />
+      <WaitingMessage message={message} />
       <div className="order-meta">
         {message.deliveries.map((d) => (
           <span key={d.agentId} className={`delivery ${d.state}`} title={d.error ?? undefined}>
@@ -246,6 +248,7 @@ export function Conversation({ agent, messages, between }: { agent: WorldAgent; 
             </div>
             {m.text ? <div className="say-text">{m.text}</div> : null}
             <Images ids={m.images} />
+            <WaitingMessage message={m} agentId={agent.id} />
           </li>
         );
       })}

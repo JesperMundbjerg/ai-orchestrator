@@ -21,6 +21,7 @@ const inbox = new Inbox(db, join(dir, "files"), herdr);
 const world = new World(db, herdr, () => inbox.state());
 world.messages.replies = inbox;
 world.messages.uploads = inbox.uploads;
+herdr.queuedPanes = () => world.messages.queuedPanes(world.state());
 inbox.presentationPath = (session) => {
   try {
     const agent = world.resolve({ ...session, cwd: session.cwd ?? undefined });

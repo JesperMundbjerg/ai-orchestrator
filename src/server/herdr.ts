@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import { HARNESSES, type Harness, type Presence } from "../shared/types.ts";
 import type { PresenceSource } from "./inbox.ts";
 import type { AgentSource, LiveAgent } from "./world.ts";
+import { StaleWorking } from "./stale.ts";
 
 const run = promisify(execFile);
 const POLL_MS = 3000;
@@ -38,9 +39,14 @@ export class Herdr implements PresenceSource, AgentSource {
   private events: { socket: Socket; panes: string; live: boolean } | null = null;
   private pending: NodeJS.Timeout | null = null;
   onChange: () => void = () => {};
+  queuedPanes: () => ReadonlySet<string> = () => new Set();
+  private stale = new StaleWorking();
+  private refreshing: Promise<void> | null = null;
+  private now: () => number;
 
   /** The socket is the session the CLI talks to: `HERDR_SOCKET_PATH` inside herdr, else the default session. */
-  constructor(bin = process.env.HERDR_BIN_PATH ?? "herdr", socketPath = process.env.HERDR_SOCKET_PATH ?? join(homedir(), ".config/herdr/herdr.sock")) {
+  constructor(bin = process.env.HERDR_BIN_PATH ?? "herdr", socketPath = process.env.HERDR_SOCKET_PATH ?? join(homedir(), ".config/herdr/herdr.sock"), now = Date.now) {
+    this.now = now;
     this.bin = bin;
     this.socketPath = socketPath;
   }
@@ -115,6 +121,13 @@ export class Herdr implements PresenceSource, AgentSource {
   }
 
   async refresh(): Promise<void> {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = this.refreshOnce();
+    try { await this.refreshing; } finally { this.refreshing = null; }
+  }
+
+  private async refreshOnce(): Promise<void> {
+    const before = JSON.stringify([this.ok, this.agents.map((a) => fingerprint(this.effective(a)))]);
     let next: HerdrAgent[] = [];
     let ok = false;
     try {
@@ -124,10 +137,17 @@ export class Herdr implements PresenceSource, AgentSource {
     } catch {
       // herdr not installed or not running: no presence, which is a valid state.
     }
-    const before = JSON.stringify([this.ok, this.agents.map(fingerprint)]);
+    await this.stale.sample(next, this.queuedPanes(), async (paneId) => {
+      const { stdout } = await run(this.bin, ["pane", "read", paneId, "--source", "visible", "--lines", "80", "--format", "text", "--raw"], { timeout: 2500, maxBuffer: 256_000 });
+      return stdout;
+    }, this.now);
     this.agents = next;
     this.ok = ok;
-    if (JSON.stringify([ok, next.map(fingerprint)]) !== before) this.onChange();
+    if (JSON.stringify([ok, next.map((a) => fingerprint(this.effective(a)))]) !== before) this.onChange();
+  }
+
+  private effective(a: HerdrAgent): HerdrAgent {
+    return a.agent_status === "working" && this.stale.isStale(a.pane_id) ? { ...a, agent_status: "idle" } : a;
   }
 
   available(): boolean {
@@ -136,7 +156,7 @@ export class Herdr implements PresenceSource, AgentSource {
 
   forSession(harness: Harness, sessionId: string): Presence | null {
     const a = this.agents.find((x) => x.agent === harness && x.agent_session?.value === sessionId);
-    return a ? toPresence(a) : null;
+    return a ? toPresence(this.effective(a)) : null;
   }
 
   resolvePane(paneId: string): { harness: Harness; sessionId: string; cwd: string | null } | null {
@@ -157,7 +177,7 @@ export class Herdr implements PresenceSource, AgentSource {
         harness,
         sessionId: a.agent_session?.value ?? null,
         cwd: a.cwd ?? null,
-        status: a.agent_status ?? "unknown",
+        status: this.effective(a).agent_status ?? "unknown",
         title: a.terminal_title_stripped ?? null,
         name: a.name ?? null,
       }];
@@ -174,6 +194,8 @@ export class Herdr implements PresenceSource, AgentSource {
    * until the agent is seen working (or asking), so success means the agent took it up.
    */
   async prompt(paneId: string, text: string): Promise<void> {
+    // The previous quiet screen says nothing about this new turn. Reserve it before typing.
+    this.stale.reset(paneId);
     try {
       await run(this.bin, ["agent", "prompt", paneId, text, "--wait", "--until", "working", "--until", "blocked", "--timeout", "15000"], { timeout: 20_000 });
     } catch (err) {

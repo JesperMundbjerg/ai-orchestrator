@@ -29,6 +29,8 @@ The UI shows the route as one sentence under the answer area, so you know what "
 
 Two things are typed into a pane instead: a reply to an idle session nothing else would hand it to (above), and a **message in the office** (below): your instruction to a team, or one agent to another. Neither can wait for a turn boundary an idle agent never reaches. Both are typed with `herdr agent prompt`, one prompt per agent at a time (your answer to something it asked first, as its own prompt, then the messages: see Messages below), under three guards: it is sent only when herdr reports the agent idle or done, herdr itself refuses an agent that is asking something, and herdr must see the agent start working within seconds for the delivery to count.
 
+A reported `working` status is not trusted forever. The service samples the visible pane (at most once per 30 seconds) only for queued recipients or agents observed working for three minutes. Three minutes of unchanged sampled content makes that presence `idle`, both for the office and the same guarded, batched delivery path. Changed output, an unreadable pane, a session change or a new prompt clears that evidence; elapsed working time alone never makes an agent free. With no queued delivery, observation starts after three minutes working, so the earliest stale verdict is six minutes. A founder message still queued after ten minutes shows its waiting age in the thread and is logged once per queued attempt.
+
 ## The three item types
 
 | Type | You get | Primary actions |
