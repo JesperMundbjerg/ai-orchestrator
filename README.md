@@ -90,9 +90,12 @@ inbox say founder "On it; the rail lands after the login fix."   # a short answe
 inbox handoff "Isotope step" --summary "Done in lessons/atoms; check the Danish captions"
 inbox review 3f2a9c1e changes --notes "The slider label is still English"
 inbox handoff --work 3f2a9c1e --summary "Label translated"   # round 2
+P=$(inbox pane)             # a first mate's new pane for a crew member, in a herdr grid
 ```
 
 A message is typed into each recipient's terminal once herdr reports them free. A handoff goes to the team named with `--to`, or the one the sender's team hands its work to; a team hears it through its lead. Only the receiving team can review, the verdict goes back to whoever handed the work over, and "changes" needs notes. Agents may send 30 messages an hour, so a runaway conversation stops.
+
+`inbox pane [--cwd DIR]` opens a pane in the calling pane's herdr tab and prints its id, so a first mate's crew form a grid (two columns, then two rows each, then the grid grows) rather than a stack. It splits the largest pane of the tab along its longer side, counting a terminal cell as twice as tall as wide, never closes or moves a pane, and does not take focus; `herdr agent start <name> --kind … --pane "$P"` then starts the crew member in it.
 
 Only files named with `--screenshot` are copied: png, jpg, webp, gif, pdf, md and txt files up to 20 MB, never dotfiles.
 

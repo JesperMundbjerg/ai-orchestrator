@@ -169,7 +169,9 @@ test("starting a project makes its worktree beside the repository and starts a f
   const brief = lead!.args[lead!.args.indexOf("--append-system-prompt") + 1]!;
   assert.match(brief, /first mate/);
   assert.match(brief, /You do not write the code yourself/);
-  assert.match(brief, /herdr agent start <name> --kind <kind> --pane <pane id> -- <model>/);
+  assert.match(brief, /herdr agent start <name> --kind <kind> --pane "\$P" -- <model>/);
+  assert.match(brief, /`P=\$\('[^']*bin\/inbox' pane\)` opens a pane in your tab, laid out with the others as a grid/);
+  assert.ok(!brief.includes("herdr pane split"), "crew panes come from inbox pane, which lays them out");
   assert.match(brief, /Sonnet 5\.5, high effort, for most tasks: `--kind claude -- --model sonnet --effort high`/);
   assert.match(brief, /Opus 5\.5, medium effort, for work that needs deep thinking: `--kind claude -- --model opus --effort medium`/);
   assert.match(brief, /GPT-6 Astra, high effort, inside Pi, when a second model's view helps: `--kind pi -- --model openai-codex\/gpt-6-astra:high`/);

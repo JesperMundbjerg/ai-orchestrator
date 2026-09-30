@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { openPane } from "./pane.ts";
 import { acknowledge, call, fetchReplies, formatReply } from "../shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
@@ -66,6 +67,7 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox handoff "Title" --summary "what was done, where, how to check it" [--to TEAM]
   inbox handoff --work ID --summary "what changed"      hand it over again after changes
   inbox review ID accept|changes --notes "…"            your team's verdict on work handed to it
+  inbox pane [--cwd DIR]          open a pane in your herdr tab (a grid: 2x2 first, then it grows) and print its id: P=$(inbox pane)
 
 The session comes from CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or HERDR_PANE_ID, or --harness/--session.
   --session must be the id the harness registered its session under, or the reply goes to a session nobody listens to:
@@ -98,6 +100,7 @@ const OPTIONS = {
   summary: { type: "string" },
   to: { type: "string" },
   work: { type: "string" },
+  cwd: { type: "string" },
   notes: { type: "string" },
   ack: { type: "boolean" },
   harness: { type: "string" },
@@ -253,6 +256,8 @@ async function main(argv: string[]): Promise<void> {
       const { work } = await call<{ work: Work }>("/api/agent/review", { session: session(), work: arg, verdict, notes: flags.notes });
       return console.log(`Work ${work.id} is ${work.state === "accepted" ? "accepted" : "sent back with your notes"}; whoever handed it over is told.`);
     }
+    case "pane":
+      return console.log(await openPane(resolve(flags.cwd ?? process.cwd())));
     case "hook":
       if (arg !== "claude") throw new Error("supported hooks: claude");
       return claudeHook();

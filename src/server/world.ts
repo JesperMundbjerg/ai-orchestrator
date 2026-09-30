@@ -69,6 +69,12 @@ const str = (v: unknown): string => (v == null ? "" : String(v));
 /** A first mate's model: it plans, splits and supervises, which is the deep thinking. */
 const FIRST_MATE_ARGS = ["--model", "opus", "--effort", "medium"];
 
+/** A string as one shell word. */
+const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+
+/** The CLI of the checkout the service runs from; a lead's pane need not have `inbox` on its PATH. */
+const INBOX_BIN = fileURLToPath(new URL("../../bin/inbox", import.meta.url));
+
 /**
  * What a project's lead is, in the sense of firstmate (github.com/kunchenguid/firstmate): the
  * founder's one contact for the project, who runs a crew rather than doing the work itself.
@@ -78,8 +84,8 @@ const FIRST_MATE = [
   "You are the project's first mate: the founder's one contact for it.",
   "You do not write the code yourself. Split the work into tasks, start a crew member for each in herdr, supervise them to completion, check what they deliver, and report plain outcomes.",
   "Start crew in this worktree:",
-  '`herdr pane split --current --direction down --cwd "$PWD" --no-focus` gives a pane (.result.pane.pane_id);',
-  "`herdr agent start <name> --kind <kind> --pane <pane id> -- <model>` starts a crew member in it (a unique lowercase name), as exactly one of three choices:",
+  `\`P=$(${quote(INBOX_BIN)} pane)\` opens a pane in your tab, laid out with the others as a grid, and prints its id (never split panes yourself);`,
+  '`herdr agent start <name> --kind <kind> --pane "$P" -- <model>` starts a crew member in it (a unique lowercase name), as exactly one of three choices:',
   "Sonnet 5.5, high effort, for most tasks: `--kind claude -- --model sonnet --effort high`;",
   "Opus 5.5, medium effort, for work that needs deep thinking: `--kind claude -- --model opus --effort medium`;",
   "GPT-6 Astra, high effort, inside Pi, when a second model's view helps: `--kind pi -- --model openai-codex/gpt-6-astra:high`.",
@@ -93,9 +99,6 @@ const FIRST_MATE = [
   "Ask a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers, options read \"Label: consequence\", and the recommendation gives your pick and why; `inbox --help` has an example.",
 ].join(" ");
 
-/** The CLI of the checkout the service runs from; a lead's pane need not have `inbox` on its PATH. */
-const INBOX_BIN = fileURLToPath(new URL("../../bin/inbox", import.meta.url));
-
 /**
  * Claude Code settings, for this session only, that run the inbox hook in a lead the office
  * starts, so the founder's answers reach it at its turn boundaries. Nothing is written to anyone's
@@ -106,7 +109,6 @@ export function hookSettings(cwd: string): string[] {
   const config = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
   const files = [join(config, "settings.json"), join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")];
   if (files.some((f) => existsSync(f) && /\bhook claude\b/.test(readFileSync(f, "utf8")))) return [];
-  const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
   const hook = [{ hooks: [{ type: "command", command: `INBOX_URL=${quote(serviceUrl())} ${quote(INBOX_BIN)} hook claude` }] }];
   return ["--settings", JSON.stringify({ hooks: { SessionStart: hook, UserPromptSubmit: hook, Stop: hook } })];
 }
