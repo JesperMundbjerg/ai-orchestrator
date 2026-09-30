@@ -69,7 +69,7 @@ export class Messages {
   /** What you said to agents and they answered you, newest first. */
   withFounder(): Message[] {
     const rows = this.db
-      .prepare(`SELECT * FROM messages WHERE to_founder = 1 OR (from_agent_id IS NULL AND kind IN ('instruction', 'message')) ORDER BY rowid DESC LIMIT ${WITH_FOUNDER_SHOWN}`)
+      .prepare(`SELECT * FROM messages WHERE to_founder = 1 OR (from_agent_id IS NULL AND from_office = 0 AND kind IN ('instruction', 'message')) ORDER BY rowid DESC LIMIT ${WITH_FOUNDER_SHOWN}`)
       .all() as Row[];
     return this.withDeliveries(rows);
   }
@@ -100,6 +100,11 @@ export class Messages {
     if (!agent) throw new InboxError(404, `no agent ${agentId}`);
     const images = this.images(input.images);
     return this.store("message", null, null, text(input.text, images.length > 0), null, [agent.id], input.clientId, false, images);
+  }
+
+  /** The office itself telling an agent what it saw, such as a browser left running: typed like any message, never shown as yours. */
+  notice(agentId: string, body: string): Message {
+    return this.store("message", null, null, text(body), null, [agentId], undefined, false, [], true);
   }
 
   /** The images you attached, each a stored upload. */
@@ -270,7 +275,7 @@ export class Messages {
     const entries = messages.map((message) => {
       const images = message.images.map((id) => join(this.uploads?.dir ?? "", id));
       const work = message.workId ? this.workById(message.workId) : null;
-      const sender = message.fromAgentId ? state.agents.find((a) => a.id === message.fromAgentId)?.name ?? "someone" : "The founder";
+      const sender = message.fromAgentId ? state.agents.find((a) => a.id === message.fromAgentId)?.name ?? "someone" : message.fromOffice ? "The office" : "The founder";
       return { label: `${sender}, ${ago(at - Date.parse(message.createdAt))}`, message, images, work };
     });
     if (entries.length === 1) {
@@ -296,14 +301,14 @@ export class Messages {
     return `${header}\n\n${parts.reverse().join("\n\n")}\n${FOOTER}`;
   }
 
-  private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false, images: string[] = []): Message {
+  private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false, images: string[] = [], fromOffice = false): Message {
     const id = randomUUID();
     const at = this.now().toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db
-        .prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder, images) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, kind, fromAgentId, teamId, body, workId, clientId ?? null, at, toFounder ? 1 : 0, images.length ? JSON.stringify(images) : null);
+        .prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder, images, from_office) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(id, kind, fromAgentId, teamId, body, workId, clientId ?? null, at, toFounder ? 1 : 0, images.length ? JSON.stringify(images) : null, fromOffice ? 1 : 0);
       for (const agentId of to) {
         this.db.prepare("INSERT INTO message_deliveries (message_id, agent_id, state, updated_at) VALUES (?, ?, 'queued', ?)").run(id, agentId, at);
       }
@@ -415,6 +420,7 @@ function compose(message: Message, agent: WorldAgent, state: WorldState, work: W
       return `[From the founder to ${team?.name ?? ""}] ${part}${purpose}\n\n${said}\n\n${answerFounder}`;
     }
     case "message": {
+      if (message.fromOffice) return `[From the office]\n\n${said}`;
       if (!message.fromAgentId) return `[Message from the founder]\n\n${said}\n\n${answerFounder}`;
       const to = team ? ` to ${team.name}` : "";
       return `[Message from ${who(from)}${to}]\n\n${message.text}\n\nAnswer with: inbox say "${from?.name ?? ""}" "…"`;
@@ -447,6 +453,7 @@ function toMessage(r: Row, deliveries: Delivery[]): Message {
     createdAt: str(r.created_at),
     deliveries,
     toFounder: Number(r.to_founder) === 1,
+    fromOffice: Number(r.from_office) === 1,
   };
 }
 

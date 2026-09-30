@@ -4,6 +4,7 @@ import type { InboxState, WorldAgent, WorldState, WorldTeam } from "../../shared
 import { api } from "../api.ts";
 import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "../world/status.ts";
 import { HiddenLine, MessageRow, TellTeam, ThreadToggle, useThreadView, withMe, WorkRow } from "../world/Talk.tsx";
+import { MachineWarning } from "./MachineWarning.tsx";
 import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
 
 const LOUNGE = "lounge";
@@ -62,6 +63,7 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
         <button className="ghost small" onClick={onOffice}>Walk into the office →</button>
         <button className="primary small" onClick={() => setAdding(!adding)}>{adding ? "Cancel" : "+ New project"}</button>
       </header>
+      <MachineWarning tick={tick} />
       {error || loadError ? <p className="warn">{error ?? `The office did not answer (${loadError}).`}</p> : null}
       {note ? <p className="board-note">{note} <button className="ghost small" onClick={() => setNote(null)}>OK</button></p> : null}
       {adding ? (

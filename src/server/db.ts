@@ -154,7 +154,9 @@ CREATE TABLE IF NOT EXISTS messages (
   -- An agent's answer to the founder: shown in the office, typed into nobody's terminal.
   to_founder INTEGER NOT NULL DEFAULT 0,
   -- Images you attached (upload ids, JSON), typed to the agent as file paths.
-  images TEXT
+  images TEXT,
+  -- Said by the office itself, such as a browser left running: no sender, and not yours.
+  from_office INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS message_deliveries (
@@ -221,6 +223,7 @@ function migrate(db: DatabaseSync): void {
   const messages = columns("messages");
   if (!messages.has("to_founder")) db.exec("ALTER TABLE messages ADD COLUMN to_founder INTEGER NOT NULL DEFAULT 0");
   if (!messages.has("images")) db.exec("ALTER TABLE messages ADD COLUMN images TEXT");
+  if (!messages.has("from_office")) db.exec("ALTER TABLE messages ADD COLUMN from_office INTEGER NOT NULL DEFAULT 0");
   if (!columns("replies").has("images")) db.exec("ALTER TABLE replies ADD COLUMN images TEXT");
   // An item's walkthrough of pages; before it, an item had one preview, which reads as a one-page walkthrough.
   const agents = columns("world_agents");

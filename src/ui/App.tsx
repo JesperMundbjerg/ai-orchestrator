@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { ItemDetailView } from "./components/ItemDetail.tsx";
+import { MachineWarning } from "./components/MachineWarning.tsx";
 import { Queue } from "./components/Queue.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { TaskBoard } from "./components/TaskBoard.tsx";
@@ -45,6 +46,8 @@ export function App() {
     return (
       <Suspense fallback={<div className="empty-page">Opening the office…</div>}>
         <WorldView state={state} tick={tick} onLeave={() => navigate({ view: "needs", itemId: null })} />
+        {/* Under the office's top bar, drawn here so the office itself need not know about the machine. */}
+        <MachineWarning tick={tick} floating />
       </Suspense>
     );
   }

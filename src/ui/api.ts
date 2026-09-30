@@ -1,4 +1,4 @@
-import type { InboxState, Item, ItemDetail, PageCheck, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
+import type { InboxState, Item, ItemDetail, MachineState, PageCheck, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -32,6 +32,8 @@ export const api = {
   instructTeam: (teamId: string, text: string, images: string[] = []) => request<Message>("POST", `/api/world/teams/${teamId}/messages`, { text, images, clientId: crypto.randomUUID() }),
   retryDelivery: (messageId: string, agentId: string) => request<Message>("POST", `/api/world/messages/${messageId}/deliveries/${agentId}/retry`, {}),
   tellAgent: (agentId: string, text: string, images: string[] = []) => request<Message>("POST", `/api/world/agents/${agentId}/messages`, { text, images, clientId: crypto.randomUUID() }),
+  machine: () => request<MachineState>("GET", "/api/machine"),
+  closeBrowser: (pid: number) => request<{ ok: true; closed: number }>("POST", `/api/machine/browsers/${pid}/close`, {}),
   /** An image you pasted or dropped, sent as base64; answers and messages then name it by id. */
   upload: (data: string) => request<{ id: string; url: string; size: number }>("POST", "/api/uploads", { data }),
 };

@@ -12,6 +12,7 @@ import { Inbox, InboxError } from "./inbox.ts";
 import { projectQueue } from "./queue.ts";
 import { UPLOAD_BODY_LIMIT } from "./uploads.ts";
 import type { Herdr } from "./herdr.ts";
+import type { Machine } from "./machine.ts";
 import type { World } from "./world.ts";
 
 const TYPES: Record<string, string> = {
@@ -22,7 +23,7 @@ const TYPES: Record<string, string> = {
 
 type Handler = (req: IncomingMessage, body: any, params: string[]) => unknown | Promise<unknown>;
 
-export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World }): Server {
+export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine }): Server {
   const clients = new Set<ServerResponse>();
   const broadcast = (reason: string) => {
     for (const res of clients) res.write(`event: changed\ndata: ${JSON.stringify({ reason })}\n\n`);
@@ -41,6 +42,8 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
       if (reason !== "activity") react();
     };
   }
+  // Browsers coming, going or needing a look change only what is drawn.
+  if (opts.machine) opts.machine.onChange = () => broadcast("machine");
   if (herdr) {
     herdr.onChange = () => {
       broadcast("presence");
@@ -87,6 +90,9 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["PATCH", /^\/api\/world\/agents\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateAgent(id!, b)],
     ["DELETE", /^\/api\/world\/agents\/([\w-]+)$/, (_r, _b, [id]) => (needWorld().removeAgent(id!), { removed: id })],
     ["POST", /^\/api\/world\/agents\/([\w-]+)\/messages$/, (_r, b, [id]) => needWorld().messages.tell(id!, b)],
+    // What agents left running on the machine; Close is refused for anything but a listed headless browser.
+    ["GET", /^\/api\/machine$/, () => needMachine().state()],
+    ["POST", /^\/api\/machine\/browsers\/(\d+)\/close$/, (_r, _b, [pid]) => needMachine().close(Number(pid))],
     // Agent protocol
     ["POST", /^\/api\/agent\/items$/, (r, b: SubmitInput) => submitWithWarnings(r, b)],
     ["POST", /^\/api\/agent\/activity$/, (_r, b: ActivityInput) => inbox.activity(b)],
@@ -115,6 +121,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   function needWorld(): World {
     if (!world) throw new InboxError(404, "this service runs without the office world");
     return world;
+  }
+
+  function needMachine(): Machine {
+    if (!opts.machine) throw new InboxError(404, "this service does not watch the machine");
+    return opts.machine;
   }
 
   const allowedHosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);

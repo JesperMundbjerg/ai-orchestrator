@@ -32,7 +32,7 @@ export function conversation(world: WorldState, agentId: string): Message[] {
 }
 
 /** Whether a message is part of your own thread: something you said, or an answer addressed to you. */
-export const withMe = (m: Message) => Boolean(m.toFounder) || !m.fromAgentId;
+export const withMe = (m: Message) => Boolean(m.toFounder) || (!m.fromAgentId && !m.fromOffice);
 
 /** "With me" shows only your own thread; "Everything" adds what agents said to each other. */
 export type ThreadView = "me" | "all";
@@ -118,13 +118,14 @@ function Clamp({ text, className }: { text: string; className: string }) {
 
 export function MessageRow({ message, agents }: { message: Message; agents: Map<string, WorldAgent> }) {
   const [error, setError] = useState<string | null>(null);
-  const from = message.fromAgentId ? (agents.get(message.fromAgentId)?.name ?? "someone who left") : "You";
+  const from = message.fromAgentId ? (agents.get(message.fromAgentId)?.name ?? "someone who left") : message.fromOffice ? "The office" : "You";
+  const mine = !message.fromAgentId && !message.fromOffice;
   const to = message.toFounder ? "you" : message.deliveries.map((d) => agents.get(d.agentId)?.name ?? "someone").join(", ");
   const failure = message.deliveries.find((d) => d.error)?.error;
   return (
-    <li className={`order ${message.kind}${message.toFounder ? " to-you" : !message.fromAgentId ? " from-you" : ""}`}>
+    <li className={`order ${message.kind}${message.toFounder ? " to-you" : mine ? " from-you" : ""}`}>
       <div className="order-head">
-        {message.toFounder ? <span className="for-you">answer to you</span> : !message.fromAgentId ? <span className="for-you mine">you said</span> : null}
+        {message.toFounder ? <span className="for-you">answer to you</span> : mine ? <span className="for-you mine">you said</span> : null}
         <strong>{from}</strong>
         <span className="muted"> {VERB[message.kind]} {to}</span>
         <span className="muted"> · {ago(message.createdAt)}</span>

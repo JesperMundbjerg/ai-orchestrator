@@ -480,6 +480,8 @@ export interface Message {
   deliveries: Delivery[];
   /** An agent answering you: it goes to nobody's terminal. */
   toFounder: boolean;
+  /** Said by the office itself (such as a browser left running), not by you, though it has no agent as sender. */
+  fromOffice?: boolean;
 }
 
 export const WORK_STATES = ["in_review", "accepted", "changes_requested"] as const;
@@ -521,3 +523,34 @@ export interface TeamBrief {
   text: string;
 }
 
+
+/** A headless browser running on this machine, with everything under it, and whose it is. */
+export interface HeadlessBrowser {
+  /** Its main process; Close signals this one only. */
+  pid: number;
+  /** "Cosmology lesson browser", numbered when a project has several. */
+  label: string;
+  /** The project (or agent) it was started from, or null when nobody in the office did. */
+  project: string | null;
+  teamId: string | null;
+  /** Percent of one core, all its processes together. */
+  cpu: number;
+  memoryMb: number;
+  pages: number;
+  processes: number;
+  ageSeconds: number;
+  /** Someone on its project is working now. */
+  ownerBusy: boolean;
+  /** How long its project has had nobody working while it ran. */
+  idleMinutes: number;
+  /** Why it is one to look at: part of a sustained load, or left behind. */
+  reasons: Array<"hot" | "forgotten">;
+}
+
+export interface MachineState {
+  browsers: HeadlessBrowser[];
+  totalCpu: number;
+  /** Set when headless browsers need looking at: using a lot together, one left behind, or too many. */
+  warning: { why: Array<"hot" | "forgotten" | "many"> } | null;
+  checkedAt: string;
+}
