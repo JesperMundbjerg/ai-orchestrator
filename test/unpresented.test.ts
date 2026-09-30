@@ -150,6 +150,126 @@ test("prompt, offline, blocked team and waiting on founder never accrue eligible
   assert.equal(f.notices().length, 0);
 });
 
+test("a whole idle team with no commits gets one office message at five minutes, never again without work", async (t) => {
+  const f = setup(t);
+  f.live.push({ ...f.live[0]!, paneId: "p2", sessionId: "crew", name: "crew", status: "done" });
+  await f.world.react(); f.advance(5 * minute - 1); await f.world.react();
+  assert.equal(f.notices().length, 0);
+  f.advance(1); await f.world.react();
+  assert.equal(f.notices().length, 1);
+  assert.match(f.prompts[0]!, /\[From the office\]/);
+  assert.match(f.prompts[0]!, /Your whole team has been idle for 5 minutes/);
+  assert.match(f.prompts[0]!, /inbox milestone.*inbox decide.*open question.*inbox say founder/s);
+  assert.doesNotMatch(f.prompts[0]!, /Unpresented work/);
+  assert.equal(f.notices()[0]!.deliveries[0]!.state, "delivered");
+  f.advance(120 * minute); await f.world.react();
+  assert.equal(f.notices().length, 1);
+});
+
+test("both reminders are merged into one delivery; unpresented reminders remain independently eligible", async (t) => {
+  const f = setup(t); f.commit(); await f.world.react();
+  f.advance(5 * minute); await f.world.react();
+  assert.equal(f.prompts.length, 1);
+  assert.match(f.prompts[0]!, /Your whole team has been idle.*Unpresented work: 1 commit/s);
+  f.advance(30 * minute); await f.world.react();
+  assert.equal(f.prompts.length, 2);
+  assert.match(f.prompts[1]!, /Unpresented work/);
+  assert.doesNotMatch(f.prompts[1]!, /Your whole team/);
+});
+
+test("whole-team reminder merges a commit made inside the zero-count cache window", async (t) => {
+  const f = setup(t); await f.world.react(); f.advance(5 * minute - 1); await f.world.react();
+  f.commit("Just finished"); f.advance(1); await f.world.react();
+  assert.equal(f.prompts.length, 1);
+  assert.match(f.prompts[0]!, /Your whole team has been idle.*Unpresented work: 1 commit.*Just finished/s);
+});
+
+test("a crew answer and another project's open item do not suppress the lead's whole-team reminder", async (t) => {
+  const f = setup(t); f.world.state();
+  f.live.push({ ...f.live[0]!, paneId: "p2", sessionId: "crew", name: "crew" });
+  f.inbox.submit({ session: { harness: "pi", sessionId: "elsewhere", cwd: f.root }, item: { type: "decide", title: "Unrelated question" } });
+  await f.world.react();
+  const crew = f.world.state().agents.find((a) => a.role === "member" && a.teamId)!;
+  f.advance(minute); f.world.messages.say(crew, { to: "founder", text: "My part is done." });
+  f.advance(4 * minute); await f.world.react();
+  assert.equal(f.notices().length, 1);
+  assert.match(f.prompts[0]!, /Your whole team has been idle/);
+});
+
+test("every member must be continuously idle/done and not waiting on the founder", (t) => {
+  const f = setup(t);
+  const state = f.world.state();
+  const lead = state.agents[0]!;
+  const crew = { ...lead, id: "crew", role: "member" as const };
+  state.agents.push(crew);
+  const tracker = new Unpresented(f.db);
+  const sent: string[] = [];
+  const tick = () => tracker.tick(state, f.now(), (_id, text) => { sent.push(text); });
+  for (const status of ["working", "blocked", "unknown", "offline"] as const) {
+    crew.status = status; tick(); f.advance(6 * minute); tick();
+    assert.equal(sent.length, 0, status);
+    crew.status = "idle"; tick(); f.advance(4 * minute); tick();
+    assert.equal(sent.length, 0, `only four idle minutes after ${status}`);
+  }
+  crew.waitingOnYou = true; tick(); f.advance(6 * minute); tick();
+  assert.equal(sent.length, 0);
+  crew.waitingOnYou = false; crew.status = "done"; tick(); f.advance(5 * minute); tick();
+  assert.equal(sent.length, 1);
+});
+
+test("any unanswered project item suppresses whole-team idle, including older HEADs, snoozed and legacy items", async (t) => {
+  const f = setup(t);
+  const item = f.post("decide", "A question before the last commit", "lead");
+  // No unpresented commits: merge base forward while the question retains the older HEAD.
+  f.commit(); git(f.root, "merge", "--ff-only", "worktree-video");
+  await f.world.react(); f.advance(6 * minute); await f.world.react();
+  assert.equal(f.notices().length, 0);
+  f.inbox.snooze(item.itemId, new Date(f.now() + 60 * minute).toISOString());
+  f.advance(6 * minute); await f.world.react(); assert.equal(f.notices().length, 0);
+  f.db.prepare("UPDATE items SET presented_path = NULL, presented_head = NULL WHERE id = ?").run(item.itemId);
+  f.advance(6 * minute); await f.world.react(); assert.equal(f.notices().length, 0);
+  f.inbox.resolve(item.itemId); await f.world.react();
+  assert.equal(f.notices().length, 1);
+});
+
+test("a lead's say founder during the idle episode suppresses it, including across restart; earlier messages do not", async (t) => {
+  const f = setup(t);
+  const lead = f.world.state().agents[0]!;
+  f.world.messages.say(lead, { to: "founder", text: "Before going idle" });
+  await f.world.react();
+  f.advance(minute);
+  f.world.messages.say(lead, { to: "founder", text: "Next we will check the captions tomorrow." });
+  f.advance(5 * minute); await f.world.react(); assert.equal(f.notices().length, 0);
+  const tracker = new Unpresented(f.db);
+  const sent: string[] = [];
+  const tick = () => tracker.tick(f.world.state(), f.now(), (_id, text) => { sent.push(text); });
+  tick(); f.advance(40 * minute); tick(); assert.equal(sent.length, 0);
+  f.live[0]!.status = "working"; tick();
+  f.live[0]!.status = "idle"; tick(); f.advance(5 * minute); tick();
+  assert.equal(sent.length, 1, "previous episode's explanation does not suppress a new idle episode");
+});
+
+test("whole-team latch survives restart, prompt and crew changes; only work rearms it, with shared 30m cooldown", async (t) => {
+  const f = setup(t); await f.world.react(); f.advance(5 * minute); await f.world.react();
+  assert.equal(f.notices().length, 1);
+  const tracker = new Unpresented(f.db);
+  const sent: string[] = [];
+  const tick = () => tracker.tick(f.world.state(), f.now(), (_id, text) => { sent.push(text); });
+  tick(); f.advance(6 * minute); tick(); assert.equal(sent.length, 0);
+  f.live[0]!.status = "blocked"; tick();
+  f.live[0]!.status = "idle";
+  f.live.push({ ...f.live[0]!, paneId: "p2", sessionId: "crew", name: "crew" });
+  tick(); f.advance(6 * minute); tick(); assert.equal(sent.length, 0);
+  f.live[1]!.status = "working"; tick(); f.live[1]!.status = "done"; tick();
+  f.advance(5 * minute); tick(); assert.equal(sent.length, 0, "still within the 30-minute cooldown");
+  f.advance(13 * minute); tick(); assert.equal(sent.length, 1);
+  // A whole-team reminder also throttles a newly eligible unpresented reminder.
+  f.commit(); f.advance(minute); tick(); assert.equal(sent.length, 1);
+  f.advance(29 * minute); tick(); assert.equal(sent.length, 2);
+  assert.match(sent[1]!, /Unpresented work/);
+  assert.doesNotMatch(sent[1]!, /Your whole team/);
+});
+
 test("the additive migration keeps existing items and is safe to run again", (t) => {
   const f = setup(t);
   const existing = f.post("decide", "Existing question");
@@ -170,6 +290,7 @@ test("first mates are told to present each checked visible increment, not wait f
   assert.match(brief, /even if the project is not finished/);
   assert.match(brief, /--screenshot.*--page.*--video/);
   assert.match(brief, /office reminds you about commits you have not shown/);
+  assert.match(brief, /whole team is idle.*inbox decide.*inbox say founder.*five idle minutes/);
 });
 
 test("standing teams without a worktree are excluded even when their lead works in one", async (t) => {
