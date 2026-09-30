@@ -107,6 +107,8 @@ export interface PageCheck {
   reachable: boolean;
   status: number | null;
   framable: boolean | null;
+  /** The page is the Review Inbox's own app, which is never shown inside itself. */
+  own: boolean;
   checkedAt: string;
 }
 
@@ -241,6 +243,8 @@ export interface SubmitResult {
   revision: number;
   /** false when an identical resubmission changed nothing. */
   changed: boolean;
+  /** Things the agent should know now, e.g. a page that will not show inline. */
+  warnings?: string[];
 }
 
 export interface ActivityInput {

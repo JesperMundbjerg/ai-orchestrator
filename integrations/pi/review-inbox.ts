@@ -127,7 +127,7 @@ export default function reviewInbox(pi: PiApi): void {
           evidence: (p.screenshots ?? []).map((path: string) => ({ path })),
         },
       });
-      const hints = lengthHints({ title: p.title, request: p.request }).map((h) => `\nHint: ${h}`).join("");
+      const hints = lengthHints({ title: p.title, request: p.request }).map((h) => `\nHint: ${h}`).join("") + (result.warnings ?? []).map((w) => `\nWarning: ${w}`).join("");
       return text((result.changed
         ? `In the review inbox (revision ${result.revision}). The user's answer will arrive in this conversation; carry on with other work unless you are blocked on it.`
         : `Unchanged: the inbox already shows revision ${result.revision} of this item.`) + hints);

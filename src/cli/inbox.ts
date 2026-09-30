@@ -141,6 +141,7 @@ async function submit(type: ItemType, title: string | undefined): Promise<void> 
     item,
   });
   for (const hint of lengthHints(item)) console.error(`inbox: hint: ${hint}`);
+  for (const warning of result.warnings ?? []) console.error(`inbox: warning: ${warning}`);
   console.log(result.changed ? `Submitted "${itemTitle}" (revision ${result.revision}, item ${result.itemId}).` : `No change: "${itemTitle}" is already in the inbox as revision ${result.revision}.`);
 }
 

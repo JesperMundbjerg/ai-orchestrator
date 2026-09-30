@@ -236,6 +236,8 @@ h1, h2, h3 { margin: 0; }
 .walk-stage { position: relative; display: flex; flex-direction: column; }
 .walk-fallback { margin: 0; padding: 14px; border: 1px dashed var(--line); border-radius: 10px; background: var(--bg); font-size: 13.5px; }
 .walk-fallback.over { position: absolute; left: 12px; right: 12px; top: 12px; border-style: solid; background: var(--panel); }
+.walk-own { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 18px; }
+.walk-own p { margin: 0; }
 .frame { border: 1px solid var(--line); border-radius: 10px; background: white; width: 100%; height: min(560px, 58vh); }
 .frame.phone { width: 375px; max-width: 100%; height: min(700px, 62vh); align-self: center; }
 

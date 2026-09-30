@@ -5,7 +5,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
-import { frameAllowed } from "../shared/pages.ts";
+import { frameAllowed, inlineProblem, ownAppPage } from "../shared/pages.ts";
 import type { ActivityEvent, ActivityInput, AgentModel, PageCheck, SessionInput, SubmitInput } from "../shared/types.ts";
 import { claudeHookEvents, claudeModel } from "./activity.ts";
 import { Inbox, InboxError } from "./inbox.ts";
@@ -48,6 +48,14 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     };
   }
 
+  // A page that will not show inline is said at submit time, not discovered by the founder.
+  const submitWithWarnings = (req: IncomingMessage, body: SubmitInput) => {
+    const result = inbox.submit(body);
+    const origin = `http://${req.headers.host ?? "localhost"}`;
+    const warnings = inbox.item(result.itemId).pages.map((p) => inlineProblem(p.url, origin)).filter((w): w is string => w !== null);
+    return warnings.length ? { ...result, warnings } : result;
+  };
+
   const routes: Array<[string, RegExp, Handler]> = [
     // UI
     ["GET", /^\/api\/state$/, () => inbox.state()],
@@ -80,7 +88,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["DELETE", /^\/api\/world\/agents\/([\w-]+)$/, (_r, _b, [id]) => (needWorld().removeAgent(id!), { removed: id })],
     ["POST", /^\/api\/world\/agents\/([\w-]+)\/messages$/, (_r, b, [id]) => needWorld().messages.tell(id!, b)],
     // Agent protocol
-    ["POST", /^\/api\/agent\/items$/, (_r, b: SubmitInput) => inbox.submit(b)],
+    ["POST", /^\/api\/agent\/items$/, (r, b: SubmitInput) => submitWithWarnings(r, b)],
     ["POST", /^\/api\/agent\/activity$/, (_r, b: ActivityInput) => inbox.activity(b)],
     ["POST", /^\/api\/agent\/replies$/, (_r, b: { session: SessionInput; mode?: "live" | "boundary" | "pull" }) => inbox.pendingReplies(b.session, b.mode ?? "pull")],
     // Agent protocol: the office
@@ -179,7 +187,8 @@ function pickTaskPatch(b: Record<string, unknown>) {
 
 /**
  * Is the item's preview, or one of its pages, answering right now, and will it let the office
- * frame it? Only the item's own http(s) URLs are ever fetched. `framable` is null when unknown.
+ * frame it? Only the item's own http(s) URLs are ever fetched. `framable` is null when unknown,
+ * and false for the inbox's own app (`own`), which shows a card instead of itself.
  */
 async function checkPreview(url: string | undefined, officeOrigin?: string): Promise<PageCheck> {
   const checkedAt = new Date().toISOString();
@@ -188,10 +197,11 @@ async function checkPreview(url: string | undefined, officeOrigin?: string): Pro
     const res = await fetch(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(4000) });
     await res.body?.cancel();
     const headers = { xFrameOptions: res.headers.get("x-frame-options"), csp: res.headers.get("content-security-policy") };
-    const framable = officeOrigin ? frameAllowed(headers, new URL(url).origin, officeOrigin) : null;
-    return { reachable: res.status < 500, status: res.status, framable, checkedAt };
+    const own = officeOrigin ? ownAppPage(url, officeOrigin) : false;
+    const framable = officeOrigin ? !own && frameAllowed(headers, new URL(url).origin, officeOrigin) : null;
+    return { reachable: res.status < 500, status: res.status, framable, own, checkedAt };
   } catch {
-    return { reachable: false, status: null, framable: null, checkedAt };
+    return { reachable: false, status: null, framable: null, own: false, checkedAt };
   }
 }
 
