@@ -63,7 +63,7 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
         <button className="ghost small" onClick={onOffice}>Walk into the office →</button>
         <button className="primary small" onClick={() => setAdding(!adding)}>{adding ? "Cancel" : "+ New project"}</button>
       </header>
-      <MachineWarning tick={tick} />
+      <MachineWarning tick={tick} note />
       {error || loadError ? <p className="warn">{error ?? `The office did not answer (${loadError}).`}</p> : null}
       {note ? <p className="board-note">{note} <button className="ghost small" onClick={() => setNote(null)}>OK</button></p> : null}
       {adding ? (

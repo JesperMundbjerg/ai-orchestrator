@@ -543,14 +543,16 @@ export interface HeadlessBrowser {
   ownerBusy: boolean;
   /** How long its project has had nobody working while it ran. */
   idleMinutes: number;
-  /** Why it is one to look at: part of a sustained load, or left behind. */
+  /** Why it is one to look at: part of a sustained load, or forgotten but one the office could not close. */
   reasons: Array<"hot" | "forgotten">;
 }
 
 export interface MachineState {
   browsers: HeadlessBrowser[];
   totalCpu: number;
-  /** Set when headless browsers need looking at: using a lot together, one left behind, or too many. */
+  /** Set when headless browsers need looking at: using a lot together, one the office could not close, or too many. */
   warning: { why: Array<"hot" | "forgotten" | "many"> } | null;
+  /** Forgotten browsers the office closed today (kept in memory, so since the service started). */
+  closedToday: number;
   checkedAt: string;
 }

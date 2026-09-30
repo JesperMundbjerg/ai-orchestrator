@@ -467,6 +467,7 @@ button.link { background: none; border: 0; padding: 0; font: inherit; color: var
 .machine-warning li { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .machine-warning li.flagged > span:first-child { font-weight: 600; }
 .machine-warning .warn { margin: 6px 0 0; }
+.machine-note { margin: 0 0 12px; font-size: 12px; }
 .machine-warning.floating {
   position: fixed; top: 64px; left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 32px)); margin: 0; z-index: 5;
   box-shadow: 0 6px 24px rgba(16, 24, 40, 0.14); backdrop-filter: blur(8px);

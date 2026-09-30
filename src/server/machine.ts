@@ -1,9 +1,11 @@
 // What agents leave running on the machine: headless browsers (a script's or a dev server's
 // probe) that nobody closed. Every 15 s the process list is read and each browser is grouped with
 // its child processes (pages, GPU, network), summed and attributed to a project by the working
-// folder of the process that started it. The office shows them when together they use a lot, or
-// one outlives its owner's work, and tells the project's lead once. Nothing is ever killed
-// automatically: Close is the founder's click, and only a listed browser can be closed.
+// folder of the process that started it. A browser that was forgotten (its starter is gone, or its
+// project has done nothing with it for 10 minutes) is closed by the office, which tells the
+// project's lead and keeps a count; one that may still be in use is only shown when together they
+// use a lot, and closed by the founder's click. Only a listed headless browser's main process is
+// ever signalled, and nothing else is ever closed automatically.
 
 import { execFile } from "node:child_process";
 import { readlink } from "node:fs/promises";
@@ -18,8 +20,16 @@ export const MACHINE_POLL_MS = 15_000;
 export const HOT_CPU = 150;
 /** …for this long are a warning. */
 export const HOT_MS = 60_000;
-/** A browser whose project nobody has worked on for this long was probably forgotten. */
-export const FORGOTTEN_MS = 20 * 60_000;
+/** A browser this old whose owner has done nothing with it for this long was forgotten… */
+export const LEFT_MS = 10 * 60_000;
+/** …where doing nothing is its project having no busy agent, or, for a browser of no project, using under IDLE_CPU. */
+export const IDLE_CPU = 5;
+/** A browser whose starter has exited, for this long, was forgotten. */
+export const ORPHAN_MS = 60_000;
+/** An auto-closed browser still running this long after SIGTERM gets SIGKILL (its main process only). */
+export const KILL_AFTER_MS = 10_000;
+/** One still running this long after that is left to the founder: it is listed again. */
+const GIVE_UP_MS = 45_000;
 /** More browsers than this at once is a warning by itself. */
 export const MANY = 5;
 /** A browser flagged this long is worth telling its project's lead about… */
@@ -89,6 +99,8 @@ function isPage(command: string): boolean {
 export interface BrowserTree {
   pid: number;
   ppid: number;
+  /** Whatever started it has exited: its parent is launchd or init, or is not running. */
+  orphan: boolean;
   pids: number[];
   cpu: number;
   rssKb: number;
@@ -118,6 +130,7 @@ export function browserTrees(procs: Proc[]): BrowserTree[] {
     return {
       pid: root.pid,
       ppid: root.ppid,
+      orphan: root.ppid <= 1 || !byPid.has(root.ppid),
       pids: all.map((p) => p.pid),
       cpu: Math.round(all.reduce((s, p) => s + p.cpu, 0)),
       rssKb: all.reduce((s, p) => s + p.rssKb, 0),
@@ -172,8 +185,27 @@ export function attribute(chain: number[], cwds: Map<number, string | null>, pla
 interface Seen {
   /** Since when its project has had nobody working, while it runs. */
   ownerIdleSince: number | null;
+  /** Since when it has used under IDLE_CPU. */
+  lowCpuSince: number | null;
+  /** Since when its starter has been gone. */
+  orphanedSince: number | null;
+  /** Whose it was while its starter lived: an orphan keeps the project it had. */
+  owner: Place | null;
   flaggedSince: number | null;
   told: boolean;
+  /** When the office asked it to quit. */
+  closingAt: number | null;
+  /** The office could not close it, so it is listed for the founder. */
+  gaveUp: boolean;
+}
+
+/** A browser nobody is using, for the office to close. */
+export interface Forgotten {
+  tree: BrowserTree;
+  owner: Place | null;
+  why: "orphaned" | "left";
+  /** Minutes it has gone unused (for an orphan, since its starter exited). */
+  idleMinutes: number;
 }
 
 export interface Reading {
@@ -187,25 +219,48 @@ export interface Reading {
 
 /**
  * The machine's state from one reading and what the earlier ones left: which browsers are
- * flagged and why, and the warning. Pure apart from updating `seen` and `hot`.
+ * flagged and why, the warning, and the forgotten ones to close now (which are not listed, nor
+ * counted in the load). Pure apart from updating `seen` and `hot`.
  */
-export function assess(reading: Reading, seen: Map<number, Seen>, hot: { since: number | null }): MachineState {
+export function assess(reading: Reading, seen: Map<number, Seen>, hot: { since: number | null }): { state: MachineState; forgotten: Forgotten[] } {
   const { trees, owners, busy, now } = reading;
-  const totalCpu = trees.reduce((s, t) => s + t.cpu, 0);
-  hot.since = totalCpu > HOT_CPU ? hot.since ?? now : null;
-  const isHot = hot.since !== null && now - hot.since >= HOT_MS;
   for (const pid of seen.keys()) if (!trees.some((t) => t.pid === pid)) seen.delete(pid);
 
-  const count = new Map<string, number>();
-  const browsers = trees.map((t): HeadlessBrowser => {
-    const owner = owners.get(t.pid) ?? null;
-    const s = seen.get(t.pid) ?? { ownerIdleSince: null, flaggedSince: null, told: false };
+  const forgotten: Forgotten[] = [];
+  const kept: Array<{ t: BrowserTree; owner: Place | null; s: Seen; ownerBusy: boolean }> = [];
+  for (const t of trees) {
+    const s = seen.get(t.pid) ?? { ownerIdleSince: null, lowCpuSince: null, orphanedSince: null, owner: null, flaggedSince: null, told: false, closingAt: null, gaveUp: false };
     seen.set(t.pid, s);
+    const owner = owners.get(t.pid) ?? s.owner;
+    s.owner = owner;
     const ownerBusy = busy(owner);
     s.ownerIdleSince = ownerBusy ? null : s.ownerIdleSince ?? now;
+    s.lowCpuSince = t.cpu < IDLE_CPU ? s.lowCpuSince ?? now : null;
+    s.orphanedSince = t.orphan ? s.orphanedSince ?? now : null;
+    if (s.closingAt !== null && now - s.closingAt >= GIVE_UP_MS) s.gaveUp = true;
+
+    // Forgotten: its starter has been gone for a minute, or it is over 10 minutes old and its owner has
+    // done nothing with it that long. A browser whose owner is alive and whose project has a busy agent
+    // is neither: it may be mid-screenshot.
+    const unusedSince = owner ? s.ownerIdleSince : s.lowCpuSince;
+    const why = s.orphanedSince !== null && now - s.orphanedSince >= ORPHAN_MS ? "orphaned" : t.elapsed * 1000 >= LEFT_MS && unusedSince !== null && now - unusedSince >= LEFT_MS ? "left" : null;
+    if (why && !s.gaveUp) {
+      if (s.closingAt === null) forgotten.push({ tree: t, owner, why, idleMinutes: Math.floor((now - (why === "orphaned" ? s.orphanedSince! : unusedSince!)) / 60_000) });
+      continue;
+    }
+    kept.push({ t, owner, s, ownerBusy });
+  }
+
+  const shown = kept.map((k) => k.t);
+  const totalCpu = shown.reduce((sum, t) => sum + t.cpu, 0);
+  hot.since = totalCpu > HOT_CPU ? hot.since ?? now : null;
+  const isHot = hot.since !== null && now - hot.since >= HOT_MS;
+
+  const count = new Map<string, number>();
+  const browsers = kept.map(({ t, owner, s, ownerBusy }): HeadlessBrowser => {
     const reasons: HeadlessBrowser["reasons"] = [];
     if (isHot && t.cpu >= HOT_SHARE) reasons.push("hot");
-    if (s.ownerIdleSince !== null && now - s.ownerIdleSince >= FORGOTTEN_MS) reasons.push("forgotten");
+    if (s.gaveUp) reasons.push("forgotten");
     s.flaggedSince = reasons.length ? s.flaggedSince ?? now : null;
     const label = owner?.label ?? "Unknown";
     count.set(label, (count.get(label) ?? 0) + 1);
@@ -238,7 +293,14 @@ export function assess(reading: Reading, seen: Map<number, Seen>, hot: { since: 
   if (isHot) why.push("hot");
   if (browsers.some((b) => b.reasons.includes("forgotten"))) why.push("forgotten");
   if (browsers.length > MANY) why.push("many");
-  return { browsers, totalCpu, warning: why.length ? { why } : null, checkedAt: new Date(now).toISOString() };
+  return { state: { browsers, totalCpu, warning: why.length ? { why } : null, closedToday: 0, checkedAt: new Date(now).toISOString() }, forgotten };
+}
+
+/** What a project's lead is told when the office closed a browser it left running. */
+export function closedNote(f: Forgotten): string {
+  const what = `${f.tree.pages} ${f.tree.pages === 1 ? "page" : "pages"}`;
+  const since = f.why === "orphaned" ? "the process that started it had exited" : `${f.idleMinutes} min idle`;
+  return `Closed a headless browser left running by ${f.owner?.label ?? "your project"}: ${what}, ${since}; close browsers in a finally (browser.close()), one shared browser per task.`;
 }
 
 /** What a project's lead is told about its browser: which, how much, and what to do. */
@@ -262,6 +324,8 @@ export interface MachineDeps {
   /** Sends a signal to a process. */
   kill?: (pid: number, signal: NodeJS.Signals) => void;
   now?: () => number;
+  /** Waits; the office waits KILL_AFTER_MS between SIGTERM and SIGKILL. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** The headless browsers running on this machine, read every 15 s while the service runs. */
@@ -271,13 +335,20 @@ export class Machine {
   private readCwds: (pids: number[]) => Promise<Map<number, string | null>>;
   private kill: (pid: number, signal: NodeJS.Signals) => void;
   private now: () => number;
+  private sleep: (ms: number) => Promise<void>;
   /** Working folders, read once per process: a new browser costs one lookup for its lineage, a known one none. */
   private cwds = new Map<number, string | null>();
   private seen = new Map<number, Seen>();
   private hot = { since: null as number | null };
   /** When each project's lead was last told, so a project that keeps starting browsers is not told every time. */
   private toldTeam = new Map<string, number>();
-  private last: MachineState = { browsers: [], totalCpu: 0, warning: null, checkedAt: new Date(0).toISOString() };
+  /** The same for what was closed, which is told apart from a warning. */
+  private toldClosed = new Map<string, number>();
+  /** When the office closed a browser, for the day's count. */
+  private closedAt: number[] = [];
+  /** SIGKILLs waiting for their browser to quit on its own. */
+  private escalations = new Set<Promise<void>>();
+  private last: MachineState = { browsers: [], totalCpu: 0, warning: null, closedToday: 0, checkedAt: new Date(0).toISOString() };
   private timer: NodeJS.Timeout | null = null;
   private reading: Promise<MachineState> | null = null;
   /** Called when what the office shows changes. */
@@ -291,6 +362,7 @@ export class Machine {
     this.readCwds = deps.cwds ?? readCwds;
     this.kill = deps.kill ?? ((pid, signal) => process.kill(pid, signal));
     this.now = deps.now ?? Date.now;
+    this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms).unref()));
   }
 
   start(): void {
@@ -334,7 +406,14 @@ export class Machine {
       !!place && world.agents.some((a) => a.status === "working" && (place.teamId ? a.teamId === place.teamId : a.id === place.agentId));
     const now = this.now();
     const before = fingerprint(this.last);
-    this.last = assess({ trees, owners, busy, now }, this.seen, this.hot);
+    const reading: Reading = { trees, owners, busy, now };
+    let { state, forgotten } = assess(reading, this.seen, this.hot);
+    for (const f of forgotten) await this.autoClose(f, now);
+    // One the office could not close is listed at once, for the founder.
+    if (forgotten.some((f) => this.seen.get(f.tree.pid)?.gaveUp)) ({ state } = assess(reading, this.seen, this.hot));
+    this.closedAt = this.closedAt.filter((at) => now - at < 48 * 3_600_000);
+    const midnight = new Date(now).setHours(0, 0, 0, 0);
+    this.last = { ...state, closedToday: this.closedAt.filter((at) => at >= midnight).length };
     this.tell(now);
     if (fingerprint(this.last) !== before) this.onChange();
     return this.last;
@@ -352,6 +431,50 @@ export class Machine {
         this.toldTeam.set(b.teamId, now);
       }
     }
+  }
+
+  /** The main process of a headless browser now running, if it is still the one that was seen. */
+  private async rootNow(seen: BrowserTree): Promise<BrowserTree | undefined> {
+    const trees = browserTrees(parsePs(await this.ps()));
+    return trees.find((t) => t.pid === seen.pid && t.ppid === seen.ppid && t.command === seen.command);
+  }
+
+  /**
+   * Closes a forgotten browser: the process list is read again (only a headless browser's main
+   * process, still the one seen, and for an orphan still without its starter, is signalled),
+   * SIGTERM, and SIGKILL to that process only if it is still there KILL_AFTER_MS later. Then the
+   * project's lead is told, at most every 15 minutes.
+   */
+  private async autoClose(f: Forgotten, now: number): Promise<void> {
+    const s = this.seen.get(f.tree.pid);
+    if (!s) return;
+    const root = await this.rootNow(f.tree);
+    if (!root || (f.why === "orphaned" && !root.orphan)) return;
+    try {
+      this.kill(root.pid, "SIGTERM");
+    } catch (err) {
+      // Already gone is what was wanted; anything else (not ours to signal) leaves it to the founder.
+      if ((err as NodeJS.ErrnoException).code !== "ESRCH") s.gaveUp = true;
+      return;
+    }
+    s.closingAt = now;
+    this.closedAt.push(now);
+    const escalation: Promise<void> = this.sleep(KILL_AFTER_MS)
+      .then(async () => {
+        const still = await this.rootNow(f.tree);
+        if (still) this.kill(still.pid, "SIGKILL");
+      })
+      .catch(() => {})
+      .finally(() => void this.escalations.delete(escalation));
+    this.escalations.add(escalation);
+    const teamId = f.owner?.teamId;
+    const last = teamId ? this.toldClosed.get(teamId) : undefined;
+    if (teamId && (last === undefined || now - last >= TELL_EVERY_MS) && this.tellLead(teamId, closedNote(f))) this.toldClosed.set(teamId, now);
+  }
+
+  /** Waits for the SIGKILLs still pending. */
+  async settled(): Promise<void> {
+    while (this.escalations.size) await Promise.all([...this.escalations]);
   }
 
   /**
@@ -375,7 +498,7 @@ export class Machine {
 
 /** What the office shows, without the numbers that move every reading. */
 function fingerprint(s: MachineState): string {
-  return JSON.stringify([s.warning, s.browsers.map((b) => [b.pid, b.label, b.reasons, b.pages, Math.round(b.cpu / 25)])]);
+  return JSON.stringify([s.warning, s.closedToday, s.browsers.map((b) => [b.pid, b.label, b.reasons, b.pages, Math.round(b.cpu / 25)])]);
 }
 
 async function readPs(): Promise<string> {

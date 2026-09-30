@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { openDatabase } from "../src/server/db.ts";
 import { Inbox } from "../src/server/inbox.ts";
 import {
-  assess, attribute, browserTrees, elapsedSeconds, FORGOTTEN_MS, HOT_MS, isAutomatedBrowser, lineage, Machine, parseLsofCwds, parsePs, placeFor, TELL_AFTER_MS, TELL_EVERY_MS,
+  assess, attribute, browserTrees, elapsedSeconds, HOT_MS, isAutomatedBrowser, KILL_AFTER_MS, LEFT_MS, lineage, Machine, ORPHAN_MS, parseLsofCwds, parsePs, placeFor, TELL_AFTER_MS, TELL_EVERY_MS,
   type Place,
 } from "../src/server/machine.ts";
 import { World, type AgentSource, type LiveAgent } from "../src/server/world.ts";
@@ -87,7 +87,7 @@ test("a browser belongs to the project where whatever started it works", () => {
   assert.deepEqual([...parseLsofCwds("p12\nfcwd\nn/a/b\np13\nfcwd\nn/c\n")], [[12, "/a/b"], [13, "/c"]]);
 });
 
-test("a warning needs a sustained load, a browser left behind, or too many of them", () => {
+test("a warning needs a sustained load or too many browsers; a browser nobody uses for 10 minutes is for closing, not for the warning", () => {
   const trees = browserTrees(parsePs(PS));
   const owner: Place = { path: "/p", teamId: "t1", agentId: null, label: "Cosmology lesson" };
   const owners = new Map(trees.map((t) => [t.pid, t.pid === 76099 ? owner : null]));
@@ -97,8 +97,8 @@ test("a warning needs a sustained load, a browser left behind, or too many of th
   const at = (now: number) => assess({ trees, owners, busy: (p) => busy && p === owner, now }, seen, hot);
 
   // Over 150% together, but not yet for a minute.
-  assert.equal(at(0).warning, null);
-  const hotNow = at(HOT_MS);
+  assert.equal(at(0).state.warning, null);
+  const hotNow = at(HOT_MS).state;
   assert.deepEqual(hotNow.warning, { why: ["hot"] });
   const probe = hotNow.browsers[0]!;
   assert.equal(probe.label, "Cosmology lesson browser");
@@ -107,21 +107,42 @@ test("a warning needs a sustained load, a browser left behind, or too many of th
   assert.deepEqual(hotNow.browsers.find((b) => b.pid === 901)!.reasons, []);
   assert.deepEqual(hotNow.browsers.filter((b) => !b.project).map((b) => b.label).sort(), ["Unknown browser 1", "Unknown browser 2"]);
 
-  // Cooling down clears it; a browser whose project has nobody working for 20 min is flagged by itself.
-  const cool = trees.map((t) => ({ ...t, cpu: 5 }));
+  // Cooling down clears it. With nobody working on the project for 10 minutes its browser is
+  // forgotten: handed over to be closed, not listed, and not part of the load.
+  const cool = trees.map((t) => ({ ...t, cpu: 6 }));
   const calm = (now: number) => assess({ trees: cool, owners, busy: (p) => busy && p === owner, now }, seen, hot);
-  assert.equal(calm(HOT_MS + 1).warning, null);
+  assert.equal(calm(HOT_MS + 1).state.warning, null);
   busy = false;
-  assert.equal(calm(HOT_MS + 2).warning, null);
-  const left = calm(HOT_MS + 2 + FORGOTTEN_MS);
-  assert.deepEqual(left.warning, { why: ["forgotten"] });
-  assert.deepEqual(left.browsers.find((b) => b.pid === 76099)!.reasons, ["forgotten"]);
+  assert.deepEqual(calm(HOT_MS + 2).forgotten, []);
+  assert.deepEqual(calm(HOT_MS + 2 + LEFT_MS - 1).forgotten, []);
+  const left = calm(HOT_MS + 2 + LEFT_MS);
+  assert.deepEqual(left.forgotten.map((f) => [f.tree.pid, f.why, f.idleMinutes]), [[76099, "left", 10]]);
+  assert.equal(left.state.warning, null);
+  assert.equal(left.state.browsers.some((b) => b.pid === 76099), false);
 
   const many = Array.from({ length: 6 }, (_, i) => ({ ...cool[0]!, pid: 10 + i }));
-  assert.deepEqual(assess({ trees: many, owners: new Map(), busy: () => false, now: 0 }, new Map(), { since: null }).warning, { why: ["many"] });
+  assert.deepEqual(assess({ trees: many, owners: new Map(), busy: () => false, now: 0 }, new Map(), { since: null }).state.warning, { why: ["many"] });
 });
 
-function machine(ps: () => string, world: Pick<WorldState, "teams" | "agents">) {
+test("a browser of no project is left after 10 minutes under 5% CPU, and a young one or a working one is not", () => {
+  const base = browserTrees(parsePs(PS)).find((t) => t.pid === 1200)!;
+  const run = (tree: typeof base, steps: Array<[number, number]>) => {
+    const seen = new Map();
+    let last = assess({ trees: [tree], owners: new Map(), busy: () => false, now: 0 }, seen, { since: null });
+    for (const [now, cpu] of steps) last = assess({ trees: [{ ...tree, cpu }], owners: new Map(), busy: () => false, now }, seen, { since: null });
+    return last.forgotten.map((f) => f.why);
+  };
+  const old = { ...base, elapsed: 3600, cpu: 1 };
+  assert.deepEqual(run(old, [[LEFT_MS - 1, 1]]), []);
+  assert.deepEqual(run(old, [[LEFT_MS, 1]]), ["left"]);
+  // Busy once in between: the ten minutes start over.
+  assert.deepEqual(run(old, [[LEFT_MS - 1, 40], [LEFT_MS, 1], [2 * LEFT_MS - 1, 1]]), []);
+  assert.deepEqual(run(old, [[LEFT_MS - 1, 40], [LEFT_MS, 1], [2 * LEFT_MS, 1]]), ["left"]);
+  // Not yet ten minutes old, however long it has been watched.
+  assert.deepEqual(run({ ...old, elapsed: 120 }, [[LEFT_MS, 1]]), []);
+});
+
+function machine(ps: () => string, world: Pick<WorldState, "teams" | "agents">, failKill?: NodeJS.ErrnoException) {
   let now = 0;
   const lookedUp: number[][] = [];
   const killed: Array<[number, string]> = [];
@@ -132,8 +153,12 @@ function machine(ps: () => string, world: Pick<WorldState, "teams" | "agents">) 
       lookedUp.push(pids);
       return new Map(pids.map((pid) => [pid, pid === 40703 ? "/Users/me/projects/space-shuttle-cosmology-lesson/space-app" : "/"]));
     },
-    kill: (pid, signal) => void killed.push([pid, signal]),
+    kill: (pid, signal) => {
+      if (failKill) throw failKill;
+      killed.push([pid, signal]);
+    },
     now: () => now,
+    sleep: async () => {},
   });
   m.tellLead = (teamId, text) => (told.push([teamId, text]), true);
   return { m, lookedUp, killed, told, advance: (ms: number) => (now += ms) };
@@ -143,6 +168,10 @@ const WORLD = {
   teams: [{ id: "t1", name: "Cosmology lesson", purpose: "", handsTo: null, path: "/Users/me/projects/space-shuttle-cosmology-lesson", branch: null, standing: false, createdAt: "", status: "idle", blockedBy: [] }],
   agents: [],
 } as unknown as Pick<WorldState, "teams" | "agents">;
+
+/** Someone on the Cosmology lesson project is working. */
+const WORLD_BUSY = { ...WORLD, agents: [{ id: "a1", teamId: "t1", status: "working", cwd: null, name: "rowan" }] } as unknown as Pick<WorldState, "teams" | "agents">;
+const MIN = 60_000;
 
 test("Close signals only a listed browser's main process; nothing else can be signalled", async () => {
   const { m, killed } = machine(() => PS, WORLD);
@@ -161,7 +190,7 @@ test("Close signals only a listed browser's main process; nothing else can be si
 
 test("a flagged browser's lead is told once, a project at most every 15 minutes, and folders are looked up once", async () => {
   let ps = PS;
-  const { m, lookedUp, told, advance } = machine(() => ps, WORLD);
+  const { m, lookedUp, told, advance } = machine(() => ps, WORLD_BUSY);
   await m.read();
   assert.equal(lookedUp.length, 1);
   assert.equal(m.state().browsers[0]!.label, "Cosmology lesson browser");
@@ -189,6 +218,120 @@ test("a flagged browser's lead is told once, a project at most every 15 minutes,
     await m.read();
   }
   assert.equal(told.length, 2);
+});
+
+test("a browser whose starter is gone closes after a minute, keeping its project, and its lead is told once", async () => {
+  // The dev server that started the probe browser exits: launchd takes the browser over.
+  const orphaned = PS.replace("76099 40703", "76099     1");
+  let ps = PS;
+  const { m, killed, told, advance } = machine(() => ps, WORLD_BUSY);
+  await m.read();
+  ps = orphaned;
+  advance(15_000);
+  await m.read();
+  advance(ORPHAN_MS - 1);
+  await m.read();
+  assert.equal(killed.length, 0, "not before a minute");
+  advance(1);
+  await m.read();
+  // Even though someone on the project is working: its starter is gone, so nothing is waiting for it.
+  assert.deepEqual(killed.slice(0, 1), [[76099, "SIGTERM"]]);
+  assert.deepEqual(m.state().browsers.map((b) => b.pid).sort((a, b) => a - b), [901, 1200]);
+  assert.equal(m.state().closedToday, 1);
+  assert.equal(told.length, 1);
+  assert.equal(told[0]![0], "t1");
+  assert.match(told[0]![1], /^Closed a headless browser left running by Cosmology lesson: 3 pages, the process that started it had exited; close browsers in a finally/);
+  await m.settled();
+  // Nothing but that one browser's main process was signalled, and no more on later readings.
+  advance(15_000);
+  await m.read();
+  assert.deepEqual(killed.map(([pid]) => pid), [76099, 76099]);
+});
+
+test("a browser of an idle project closes after 10 minutes; one whose owner is alive and whose project is working never does", async () => {
+  const idle = machine(() => PS, WORLD);
+  await idle.m.read();
+  idle.advance(LEFT_MS - 15_000);
+  await idle.m.read();
+  assert.deepEqual(idle.killed, []);
+  idle.advance(15_000);
+  await idle.m.read();
+  assert.deepEqual(idle.killed.slice(0, 1), [[76099, "SIGTERM"]]);
+  assert.equal(idle.m.state().closedToday, 1);
+  assert.equal(idle.told.length, 1);
+  assert.match(idle.told[0]![1], /3 pages, 10 min idle/);
+  await idle.m.settled();
+
+  const busy = machine(() => PS, WORLD_BUSY);
+  for (let t = 0; t < (3 * 60 * MIN) / 15_000; t++) {
+    await busy.m.read();
+    busy.advance(15_000);
+  }
+  assert.deepEqual(busy.killed, [], "a working project's browser may be mid-screenshot");
+  assert.equal(busy.m.state().closedToday, 0);
+  assert.deepEqual(busy.told.filter(([, text]) => text.startsWith("Closed")), []);
+});
+
+test("nothing that is not a headless browser's main process is ever closed automatically", async () => {
+  // A dev server and your own Chrome, both orphans for hours, beside browsers that are also forgotten.
+  const ps = `${PS}\n 7000     1   0.0  50000 05:00:00 next-server (v16.3.4)\n 7001     1   0.0  50000 05:00:00 /opt/homebrew/bin/node /x/dev.js`;
+  const { m, killed, advance } = machine(() => ps, WORLD);
+  for (let t = 0; t < 40; t++) {
+    await m.read();
+    advance(MIN);
+  }
+  await m.settled();
+  const signalled = new Set(killed.map(([pid]) => pid));
+  // Only the probe (its project is idle) may be closed; the other browsers use over 5% CPU and have no project.
+  assert.deepEqual([...signalled].filter((pid) => ![76099].includes(pid)), []);
+  for (const pid of [500, 501, 7000, 7001, 40703, 76156, 902]) assert.equal(signalled.has(pid), false);
+});
+
+test("a browser that ignores SIGTERM gets SIGKILL 10 s later, to its main process only; one that quit, or a reused pid, does not", async () => {
+  const orphaned = PS.replace("76099 40703", "76099     1");
+  const slept: number[] = [];
+  // Ignores SIGTERM: still listed when the wait is over.
+  const stubborn = machine(() => orphaned, WORLD);
+  (stubborn.m as unknown as { sleep: (ms: number) => Promise<void> }).sleep = async (ms) => void slept.push(ms);
+  await stubborn.m.read();
+  stubborn.advance(ORPHAN_MS);
+  await stubborn.m.read();
+  await stubborn.m.settled();
+  assert.deepEqual(slept, [KILL_AFTER_MS]);
+  assert.deepEqual(stubborn.killed, [[76099, "SIGTERM"], [76099, "SIGKILL"]]);
+
+  // Quits on SIGTERM: gone from the process list by then.
+  const quits = machine(() => (quitsKilled.length ? orphaned.split("\n").filter((l) => !/^\s*761\d\d|^\s*76099|^\s*81453|^\s*82263/.test(l)).join("\n") : orphaned), WORLD);
+  const quitsKilled = quits.killed;
+  await quits.m.read();
+  quits.advance(ORPHAN_MS);
+  await quits.m.read();
+  await quits.m.settled();
+  assert.deepEqual(quits.killed, [[76099, "SIGTERM"]]);
+
+  // The pid now belongs to something else: a different command is not signalled again.
+  const reused = machine(() => (reusedKilled.length ? orphaned.replace(SHELL + " --disable-field-trial-config", "/usr/bin/vim") : orphaned), WORLD);
+  const reusedKilled = reused.killed;
+  await reused.m.read();
+  reused.advance(ORPHAN_MS);
+  await reused.m.read();
+  await reused.m.settled();
+  assert.deepEqual(reused.killed, [[76099, "SIGTERM"]]);
+});
+
+test("a browser the office may not signal stays listed as a warning for the founder", async () => {
+  const denied = Object.assign(new Error("not permitted"), { code: "EPERM" });
+  const orphaned = PS.replace("76099 40703", "76099     1");
+  const { m, advance, told } = machine(() => orphaned, WORLD, denied);
+  await m.read();
+  advance(ORPHAN_MS);
+  await m.read();
+  assert.equal(m.state().browsers.some((b) => b.pid === 76099), true, "listed at once");
+  const state = m.state();
+  assert.equal(state.closedToday, 0);
+  assert.deepEqual(state.browsers.find((b) => b.pid === 76099)!.reasons.includes("forgotten"), true);
+  assert.deepEqual(state.warning?.why.includes("forgotten"), true);
+  assert.equal(told.length, 0);
 });
 
 test("the office's note reaches the lead as the office's, typed like a message, not as yours", async () => {
