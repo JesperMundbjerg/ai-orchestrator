@@ -3,7 +3,7 @@ import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import type { InboxState, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "../world/status.ts";
-import { MessageRow, TellTeam, WorkRow } from "../world/Talk.tsx";
+import { HiddenLine, MessageRow, TellTeam, ThreadToggle, useThreadView, withMe, WorkRow } from "../world/Talk.tsx";
 import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
 
 const LOUNGE = "lounge";
@@ -29,6 +29,7 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
     return () => void (live = false);
   }, [tick]);
 
+  const [view] = useThreadView();
   const agents = useMemo(() => new Map((world?.agents ?? []).map((a) => [a.id, a])), [world]);
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
   const finish = (team: WorldTeam) => run(finishTeam(team).then((said) => said && setNote(said)));
@@ -48,6 +49,7 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
     onDrop: drop(column),
   });
   const lounge = world.agents.filter((a) => !a.teamId);
+  const shown = view === "me" ? world.messages.filter(withMe) : world.messages;
 
   return (
     <main className="board team-board">
@@ -101,12 +103,16 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
           </ul>
         </section>
         <section>
-          <h2>What was said</h2>
+          <div className="thread-head">
+            <h2>What was said</h2>
+            <ThreadToggle />
+          </div>
           <p className="muted small-note said-key"><span className="for-you">answer to you</span> and <span className="for-you mine">you said</span> mark your own thread; the rest was between agents.</p>
           <ul className="order-list">
-            {world.messages.slice(0, 30).map((m) => <MessageRow key={m.id} message={m} agents={agents} />)}
+            {shown.slice(0, 30).map((m) => <MessageRow key={m.id} message={m} agents={agents} />)}
             {!world.messages.length ? <li className="muted small-note">Nobody has said anything yet.</li> : null}
           </ul>
+          <HiddenLine count={world.messages.length - shown.length} />
         </section>
       </div>
     </main>

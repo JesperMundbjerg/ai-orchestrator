@@ -443,6 +443,13 @@ span.lead-toggle { border-radius: 6px; justify-self: start; }
 .order.to-you { border-left: 3px solid var(--accent); background: var(--accent-soft); }
 .order.from-you { border-left: 3px solid var(--accent-soft); }
 .said-key { margin: 0 0 6px; }
+.thread-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.thread-head h2 { margin-bottom: 0; }
+.thread-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; flex: none; }
+.thread-toggle button { background: transparent; border: 0; padding: 2px 10px; font: inherit; font-size: 12px; color: var(--muted); cursor: pointer; }
+.thread-toggle button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); font-weight: 600; }
+.hidden-line { padding: 2px 0; }
+button.link { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline; }
 .between { display: flex; flex-direction: column; gap: 4px; opacity: 0.85; }
 .between-title { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: var(--muted); font-size: 11px; }
 .between .order { font-size: 12px; }

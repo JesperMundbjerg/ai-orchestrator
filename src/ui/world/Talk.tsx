@@ -1,7 +1,7 @@
 // What people in the office say to each other and the work they hand over, as rows the team
 // panel and the board both show.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Message, MessageKind, WorkState, Work, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ago } from "../format.ts";
@@ -29,6 +29,63 @@ export function agentMessages(world: WorldState, agentId: string): Message[] {
 /** You and an agent talking: what you said to it (or to the team it leads) and its answers, oldest first. */
 export function conversation(world: WorldState, agentId: string): Message[] {
   return world.withFounder.filter((m) => (m.toFounder ? m.fromAgentId === agentId : m.deliveries.some((d) => d.agentId === agentId))).reverse();
+}
+
+/** Whether a message is part of your own thread: something you said, or an answer addressed to you. */
+export const withMe = (m: Message) => Boolean(m.toFounder) || !m.fromAgentId;
+
+/** "With me" shows only your own thread; "Everything" adds what agents said to each other. */
+export type ThreadView = "me" | "all";
+const VIEW_KEY = "review-inbox.thread-view";
+const viewListeners = new Set<() => void>();
+let view: ThreadView | null = null;
+
+const currentView = (): ThreadView => {
+  if (view === null) {
+    try {
+      view = localStorage.getItem(VIEW_KEY) === "all" ? "all" : "me";
+    } catch {
+      view = "me";
+    }
+  }
+  return view;
+};
+
+/** The choice is one for the browser, so every thread (panels and board) follows the same toggle. */
+export function useThreadView(): [ThreadView, (next: ThreadView) => void] {
+  const now = useSyncExternalStore((cb) => (viewListeners.add(cb), () => void viewListeners.delete(cb)), currentView);
+  const set = (next: ThreadView) => {
+    view = next;
+    try {
+      localStorage.setItem(VIEW_KEY, next);
+    } catch {
+      // Private windows and blocked storage: the choice still holds until the page is closed.
+    }
+    viewListeners.forEach((cb) => cb());
+  };
+  return [now, set];
+}
+
+/** The small switch at the top of a thread. */
+export function ThreadToggle() {
+  const [now, set] = useThreadView();
+  return (
+    <span className="thread-toggle" role="group" aria-label="Which messages to show">
+      <button type="button" aria-pressed={now === "me"} onClick={() => set("me")}>With me</button>
+      <button type="button" aria-pressed={now === "all"} onClick={() => set("all")}>Everything</button>
+    </span>
+  );
+}
+
+/** The quiet line where agent-to-agent talk was left out, with a way to show it. */
+export function HiddenLine({ count }: { count: number }) {
+  const [now, set] = useThreadView();
+  if (now !== "me" || !count) return null;
+  return (
+    <div className="muted small-note hidden-line">
+      {count} {count === 1 ? "message" : "messages"} between agents hidden · <button type="button" className="link" onClick={() => set("all")}>Show</button>
+    </div>
+  );
 }
 
 /** Work a team handed over or has to review, open work first. */
@@ -154,7 +211,7 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
 }
 
 /** The thread between you and an agent, newest at the bottom, kept in view as it grows. */
-export function Conversation({ agent, messages }: { agent: WorldAgent; messages: Message[] }) {
+export function Conversation({ agent, messages, between }: { agent: WorldAgent; messages: Message[]; between: number }) {
   const list = useRef<HTMLOListElement>(null);
   const last = messages.at(-1)?.id;
   // The thread is as tall as it is; the panel scrolls. Bring the newest line into view on open and on a reply.
@@ -165,7 +222,10 @@ export function Conversation({ agent, messages }: { agent: WorldAgent; messages:
   const answered = messages.some((m) => m.fromAgentId);
   return (
     <>
-      <div className="section-label thread-title">You and {agent.name}</div>
+      <div className="thread-head">
+        <div className="section-label thread-title">You and {agent.name}</div>
+        <ThreadToggle />
+      </div>
       {wrote && !answered ? <div className="muted small-note thread-empty">{agent.name} hasn't answered you yet.</div> : null}
       {messages.length ? (
     <ol ref={list} className="chat" aria-label={`You and ${agent.name}`}>
@@ -186,15 +246,17 @@ export function Conversation({ agent, messages }: { agent: WorldAgent; messages:
       })}
     </ol>
       ) : null}
+      <HiddenLine count={between} />
     </>
   );
 }
 
 /** What agents said to each other about one agent: quieter than your thread, folded away when long. */
 export function BetweenAgents({ messages, agents }: { messages: Message[]; agents: Map<string, WorldAgent> }) {
+  const [view] = useThreadView();
   const long = messages.length > 3;
   const [open, setOpen] = useState(!long);
-  if (!messages.length) return null;
+  if (!messages.length || view === "me") return null;
   return (
     <section className="between">
       <button type="button" className="section-label between-title" aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -202,7 +264,7 @@ export function BetweenAgents({ messages, agents }: { messages: Message[]; agent
       </button>
       {open ? (
         <ul className="order-list">
-          {messages.map((m) => <MessageRow key={m.id} message={m} agents={agents} />)}
+          {messages.slice(0, 30).map((m) => <MessageRow key={m.id} message={m} agents={agents} />)}
         </ul>
       ) : null}
     </section>

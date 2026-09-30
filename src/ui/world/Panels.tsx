@@ -6,7 +6,7 @@ import { ItemDetailView } from "../components/ItemDetail.tsx";
 import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
 import type { OfficePlan, Vec2 } from "./layout.ts";
-import { agentMessages, Conversation, conversation, BetweenAgents, MessageRow, teamMessages, teamWork, TellAgent, TellTeam, WorkRow } from "./Talk.tsx";
+import { agentMessages, Conversation, conversation, BetweenAgents, HiddenLine, MessageRow, teamMessages, teamWork, TellAgent, TellTeam, ThreadToggle, useThreadView, withMe, WorkRow } from "./Talk.tsx";
 import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "./status.ts";
 import type { Waiting } from "./WorldView.tsx";
 
@@ -99,7 +99,10 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
   const line = teamLine(team, agents);
   const doing = (a: WorldAgent) => a.doing ?? state.tasks.find((t) => a.taskIds.includes(t.id) && t.activity)?.activity ?? a.title ?? "";
   const work = teamWork(world, team.id);
-  const talk = teamMessages(world, team.id).slice(0, 15);
+  const [view] = useThreadView();
+  const said = teamMessages(world, team.id);
+  const talk = (view === "me" ? said.filter(withMe) : said).slice(0, 15);
+  const between = said.filter((m) => !withMe(m)).length;
 
   return (
     <aside className="world-panel agent">
@@ -160,12 +163,16 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
         </div>
       ) : null}
 
-      {talk.length ? (
+      {said.length ? (
         <div>
-          <div className="section-label">Said in and to {team.name}</div>
+          <div className="thread-head">
+            <div className="section-label">Said in and to {team.name}</div>
+            <ThreadToggle />
+          </div>
           <ul className="order-list">
             {talk.map((m) => <MessageRow key={m.id} message={m} agents={agents} />)}
           </ul>
+          <HiddenLine count={between} />
         </div>
       ) : null}
     </aside>
@@ -193,7 +200,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
   const agents = new Map(world.agents.map((a) => [a.id, a]));
   const thread = conversation(world, agent.id).slice(-20);
   // What you and the agent said is in the thread; the rest is the office talking.
-  const said = agentMessages(world, agent.id).filter((m) => m.fromAgentId && !m.toFounder).slice(0, 30);
+  const said = agentMessages(world, agent.id).filter((m) => !withMe(m));
   const items = waiting ? waiting.itemIds.map((id) => state.items.find((i) => i.id === id)!).filter(Boolean) : [];
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
   // A lead record nothing ever ran behind, whose place and name this running agent can take.
@@ -227,7 +234,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
           {agent.project ? ` · ${agent.project}` : ""}
         </span>
       </div>
-      <Conversation agent={agent} messages={thread} />
+      <Conversation agent={agent} messages={thread} between={said.length} />
       <TellAgent agent={agent} />
       {agent.cwd ? <code className="agent-cwd" title={agent.cwd}>{agent.cwd}</code> : null}
       {agent.doing ? <div className="agent-doing">{agent.doing}</div> : null}
