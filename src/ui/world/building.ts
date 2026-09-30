@@ -5,15 +5,16 @@
 //
 //   hall     an open hall round your desk: the line in front of it (north), callers on your
 //            side of it, the front door behind you (south)
-//   loop     a walkway round the hall, just inside the rooms' glass fronts; everyone walking
+//   loop     a walkway round the hall, just inside the rooms' fronts; everyone walking
 //            between rooms follows it, so nobody cuts across your desk or the line
-//   bays     a room per project and standing team along the north side, then down the east
-//            and west sides, the first straight ahead, the next ones alternately right and
-//            left. Each has eight console desks in rows of four (more rows for a bigger crew),
-//            the lead's desk and the big screen at the back, and a door at each front corner.
-//            Every bay is as deep as the deepest one needs, so the building stays square;
-//            places no team has yet stand empty.
-//   south    the lounge west of the front door, two meeting rooms east of it
+//   bays     an open team area per project and standing team, behind low planters, along the
+//            north side, then down the east and west sides, the first straight ahead, the next
+//            ones alternately right and left. Each has benches of facing desks, four a side
+//            (eight desks at least, another bench for a bigger crew), the lead's desk at the
+//            front, the team's TV on the back wall and a way in at each front corner. Every bay
+//            is as deep as the deepest one needs, so the building stays square; places no team
+//            has yet have their desks free.
+//   south    the lounge and kitchen west of the front door, two glass meeting rooms east of it
 
 import type { Team, WorldAgent } from "../../shared/types.ts";
 import { queueSpot, route, viewOf, yawTo, type Corner, type Desk, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
@@ -40,11 +41,11 @@ export interface Room {
   doors: number[];
 }
 
-/** A wall from a to b: the outside walls are solid with windows, the rooms' walls glass. */
+/** A wall from a to b: the outside walls have windows, the meeting rooms' walls are glass, the bays' and the lounge's low planters. */
 export interface Wall {
   a: Vec2;
   b: Vec2;
-  outer: boolean;
+  kind: "outer" | "glass" | "planter";
 }
 
 export interface BuildingPlan extends OfficePlan {
@@ -63,19 +64,25 @@ export interface BuildingPlan extends OfficePlan {
   frontDoor: { x: number; z: number; width: number };
 }
 
-/** A bay is this wide; the rooms' depth follows from the rows of desks the biggest crew needs. */
+/** A bay is this wide; the rooms' depth follows from the benches of desks the biggest crew needs. */
 export const BAY_WIDTH = 9.6;
 export const DOOR_WIDTH = 1.2;
 /** Doors, and the side aisles behind them, this far either side of a bay's middle. */
 export const DOOR_X = 4.15;
 export const MIN_CONSOLES = 8;
-const PER_ROW = 4;
-const PITCH = 1.7;
-const ROW_GAP = 1.9;
-/** From the back wall to the first row: room for the big screen. */
-const SCREEN_ROOM = 2.6;
-/** From the last row's desks to the front wall: the lead's desk, their chair and the strip behind it. */
-const FRONT_ROOM = 4.5;
+/** A row of a bench: four desks side by side, the middle two filled first. */
+const ACROSS = [-0.72, 0.72, -2.16, 2.16];
+const DESK_DEPTH = 0.7;
+const PER_ROW = ACROSS.length;
+/** From a desk's middle back to where its person stands, and on to the gap they come in along. */
+const SEAT = 0.75;
+const BEHIND = 1.25;
+/** From one bench's middle line to the next's: two chairs back to back and room to pass between. */
+const BENCH_GAP = 3.8;
+/** From the back wall to the first bench's middle: the TV, the whiteboard and a way behind the chairs. */
+const BACK_ROOM = 3.6;
+/** From the last bench's middle to the front: its chairs, the lead's desk and the strip behind their chair. */
+const FRONT_ROOM = 5.4;
 /** The walkway runs this far out from the rooms' fronts, the work lane this far. */
 const LOOP_INSET = 1.2;
 const LANE_INSET = 2.2;
@@ -89,8 +96,8 @@ const MIN_ACROSS = 3;
 const MIN_DOWN = 2;
 const NORTH = Math.PI;
 
-/** How deep a bay is for this many rows of consoles. */
-export const bayDepth = (rows: number) => SCREEN_ROOM + (rows - 1) * ROW_GAP + FRONT_ROOM;
+/** How deep a bay is for this many rows of desks, two rows facing each other to a bench. */
+export const bayDepth = (rows: number) => BACK_ROOM + (Math.ceil(rows / 2) - 1) * BENCH_GAP + FRONT_ROOM;
 
 /** A point given in a room's own frame (+z towards the hall), on the floor. */
 export const place = (center: Vec2, facing: number, [x, z]: Vec2): Vec2 =>
@@ -145,12 +152,12 @@ export function planBuilding(agents: WorldAgent[], teams: Team[], queue: string[
     rooms.push({ kind: "bay", teamId: team?.id ?? null, center: p.center, facing: p.facing, half, doors: [-DOOR_X, DOOR_X] });
     if (!team) return;
     const who = members.get(team.id)!;
-    const bay = controlRoom(team, p.center, p.facing, half, who);
+    const bay = teamDesks(rooms.at(-1)!, who);
     for (const [id, spot] of bay.seats) spots.set(id, spot);
     corners.push({ team, center: p.center, facing: p.facing, desks: bay.desks, members: who });
   });
 
-  // South of the hall: the lounge, the lobby with the front door, and two meeting rooms.
+  // South of the hall: the lounge and kitchen, the lobby with the front door, and two meeting rooms.
   const southZ = hall.maxZ + depth / 2;
   const wing = hx - LOBBY / 2;
   const lounge: Room = { kind: "lounge", teamId: null, center: [-(LOBBY / 2 + wing / 2), southZ], facing: NORTH, half: [wing / 2, depth / 2], doors: [0] };
@@ -197,37 +204,44 @@ export function doorway(room: Room, x: number): { out: Vec2; inside: Vec2 } {
 }
 
 /**
- * The lead at the front by the glass and the crew in rows of four facing the big screen at the
- * back, as in a corner of the ring. Crew come in by the door on their side, down the side aisle
- * and along the gap behind their row's chairs; the lead along the strip behind their chair.
+ * A bay's desks and who sits where: the crew at benches of facing desks, the first row of each
+ * bench facing the hall and the second the back wall, and the lead at a desk of their own at the
+ * front, facing their crew. Crew come in by the way in on their side, down the side aisle and
+ * along the gap behind their row's chairs; the lead along the strip behind their chair. A bay no
+ * team has yet gets the least bench, every desk free.
  */
-function controlRoom(team: Team, center: Vec2, facing: number, [hw, hd]: Vec2, members: WorldAgent[]) {
+export function teamDesks(room: Room, members: WorldAgent[]): { seats: Array<[string, Spot]>; desks: Desk[] } {
+  const { center, facing } = room;
+  const [, hd] = room.half;
+  const group = room.teamId ?? "";
   const boss = lead(members);
   const crew = members.filter((m) => m !== boss);
   const seats: Array<[string, Spot]> = [];
   const desks: Desk[] = [];
   const at = (x: number, z: number) => place(center, facing, [x, z]);
-  const room: Room = { kind: "bay", teamId: team.id, center, facing, half: [hw, hd], doors: [-DOOR_X, DOOR_X] };
   const strip = hd - INSIDE;
-  const seat = (id: string, pos: Vec2, door: number, approach: Vec2[]) => {
+  const seat = (id: string, pos: Vec2, turn: number, door: number, approach: Vec2[]) => {
     const d = doorway(room, door);
-    seats.push([id, { pos, facing: facing + NORTH, zone: "team", group: team.id, approach: [d.out, d.inside, ...approach] }]);
+    seats.push([id, { pos, facing: facing + turn, zone: "team", group, approach: [d.out, d.inside, ...approach] }]);
   };
   const shown = Math.max(MIN_CONSOLES, crew.length);
   for (let i = 0; i < shown; i++) {
     const row = Math.floor(i / PER_ROW);
-    const inRow = Math.min(PER_ROW, shown - row * PER_ROW);
-    const x = ((i % PER_ROW) - (inRow - 1) / 2) * PITCH;
-    const deskZ = -hd + SCREEN_ROOM + row * ROW_GAP;
+    const x = ACROSS[i % PER_ROW]!;
+    // Towards the hall (+z) in a bench's first row, towards the back wall in its second.
+    const out = row % 2 === 0 ? -1 : 1;
+    const bench = -hd + BACK_ROOM + Math.floor(row / 2) * BENCH_GAP;
+    const deskZ = bench + (out * DESK_DEPTH) / 2;
+    const turn = out < 0 ? 0 : NORTH;
     const occupant = crew[i] ?? null;
-    desks.push({ pos: at(x, deskZ), facing: facing + NORTH, kind: "console", scale: 1, occupantId: occupant?.id ?? null });
+    desks.push({ pos: at(x, deskZ), facing: facing + turn, kind: "console", scale: 1, occupantId: occupant?.id ?? null });
     const side = x > 0 ? DOOR_X : -DOOR_X;
-    const lane = deskZ + 1.25;
-    if (occupant) seat(occupant.id, at(x, deskZ + 0.75), side, [at(side, lane), at(x, lane)]);
+    const lane = deskZ + out * BEHIND;
+    if (occupant) seat(occupant.id, at(x, deskZ + out * SEAT), turn, side, [at(side, lane), at(x, lane)]);
   }
-  const leadSeat = hd - FRONT_ROOM + 3.05;
-  desks.push({ pos: at(0, leadSeat - 0.75), facing: facing + NORTH, kind: "lead", scale: 1, occupantId: boss?.id ?? null });
-  if (boss) seat(boss.id, at(0, leadSeat), -DOOR_X, [at(0, strip)]);
+  const leadSeat = hd - 1.45;
+  desks.push({ pos: at(0, leadSeat - SEAT), facing: facing + NORTH, kind: "lead", scale: 1, occupantId: boss?.id ?? null });
+  if (boss) seat(boss.id, at(0, leadSeat), NORTH, -DOOR_X, [at(0, strip)]);
   return { seats, desks };
 }
 
@@ -255,24 +269,26 @@ function walls(rooms: Room[], outline: Rect, frontDoor: { x: number; width: numb
   const out: Wall[] = [];
   const seen = new Set<string>();
   const key = (p: Vec2) => `${p[0].toFixed(3)},${p[1].toFixed(3)}`;
-  const add = (a: Vec2, b: Vec2, outer: boolean) => {
+  const add = (a: Vec2, b: Vec2, kind: Wall["kind"]) => {
     const k = [key(a), key(b)].sort().join("|");
     if (seen.has(k)) return;
     seen.add(k);
-    out.push({ a, b, outer });
+    out.push({ a, b, kind });
   };
-  for (const room of rooms) {
+  // Meeting rooms first, so a wall one shares is glass.
+  for (const room of [...rooms].sort((p, q) => Number(q.kind === "meeting") - Number(p.kind === "meeting"))) {
     const [hw, hd] = room.half;
+    const kind = room.kind === "meeting" ? "glass" : "planter";
     const at = (x: number, z: number) => place(room.center, room.facing, [x, z]);
-    for (const [from, to] of gaps(-hw, hw, room.doors.map((d) => [d - DOOR_WIDTH / 2, d + DOOR_WIDTH / 2]))) add(at(from, hd), at(to, hd), false);
-    add(at(-hw, -hd), at(-hw, hd), false);
-    add(at(hw, -hd), at(hw, hd), false);
+    for (const [from, to] of gaps(-hw, hw, room.doors.map((d) => [d - DOOR_WIDTH / 2, d + DOOR_WIDTH / 2]))) add(at(from, hd), at(to, hd), kind);
+    add(at(-hw, -hd), at(-hw, hd), kind);
+    add(at(hw, -hd), at(hw, hd), kind);
   }
   const { minX, maxX, minZ, maxZ } = outline;
-  add([minX, minZ], [maxX, minZ], true);
-  add([maxX, minZ], [maxX, maxZ], true);
-  add([minX, minZ], [minX, maxZ], true);
-  for (const [from, to] of gaps(minX, maxX, [[frontDoor.x - frontDoor.width / 2, frontDoor.x + frontDoor.width / 2]])) add([from, maxZ], [to, maxZ], true);
+  add([minX, minZ], [maxX, minZ], "outer");
+  add([maxX, minZ], [maxX, maxZ], "outer");
+  add([minX, minZ], [minX, maxZ], "outer");
+  for (const [from, to] of gaps(minX, maxX, [[frontDoor.x - frontDoor.width / 2, frontDoor.x + frontDoor.width / 2]])) add([from, maxZ], [to, maxZ], "outer");
   return out;
 }
 

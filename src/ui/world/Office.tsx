@@ -176,20 +176,10 @@ export function Lounge({ center, facing, halfDepth = CORNER_HALF_DEPTH }: { cent
 
 /** A team's corner of the ring, or its bay in the building, which is as wide and deep as `half` says. */
 export function TeamCorner({ corner, agents, teams, work, half = [CORNER_HALF_WIDTH, CORNER_HALF_DEPTH] }: { corner: Corner; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; half?: Vec2 }) {
-  const { team, center, facing, desks, members } = corner;
-  const live = teams.get(team.id) ?? null;
-  const toReview = work.filter((w) => w.toTeamId === team.id && w.state === "in_review").length;
-  const handsTo = team.handsTo ? teams.get(team.handsTo)?.name : null;
-  const flow = [toReview ? `${toReview} to review` : "", handsTo ? `hands its work to ${handsTo}` : ""].filter(Boolean).join(" · ");
+  const { team, center, facing, desks } = corner;
   const [cx, cz] = center;
   const tint = useMemo(() => lookFor(team.id).shirt, [team.id]);
-  const status = live ? teamLine(live, agents) : { text: "", color: "#8b95a3" };
-  const lines: Line[] = [
-    { text: team.name, size: 72, color: "#ffffff", weight: 800 },
-    { text: `${team.standing ? "Always on" : `Project · ${team.branch ?? "worktree"}`} · ${members.length} ${members.length === 1 ? "agent" : "agents"}`, size: 34, color: "#b8c2cc", weight: 500 },
-    { text: status.text, size: 34, color: status.color, weight: 600 },
-    ...(flow ? [{ text: flow, size: 30, color: toReview ? "#8fb8ff" : "#b8c2cc", weight: 600 }] : []),
-  ];
+  const lines = boardLines(corner, agents, teams, work);
   const board = useTexture(() => textTexture(lines, { width: 1024, height: 360, background: "#141a22", radius: 28 }), [JSON.stringify(lines)]);
   return (
     <group>
@@ -222,6 +212,21 @@ export function TeamCorner({ corner, agents, teams, work, half = [CORNER_HALF_WI
       ))}
     </group>
   );
+}
+
+/** What a team's board says: its name, what it is, how it is doing, and the work it hands on and gets. */
+export function boardLines({ team, members }: Corner, agents: Map<string, WorldAgent>, teams: Map<string, WorldTeam>, work: Work[]): Line[] {
+  const live = teams.get(team.id) ?? null;
+  const toReview = work.filter((w) => w.toTeamId === team.id && w.state === "in_review").length;
+  const handsTo = team.handsTo ? teams.get(team.handsTo)?.name : null;
+  const flow = [toReview ? `${toReview} to review` : "", handsTo ? `hands its work to ${handsTo}` : ""].filter(Boolean).join(" · ");
+  const status = live ? teamLine(live, agents) : { text: "", color: "#8b95a3" };
+  return [
+    { text: team.name, size: 72, color: "#ffffff", weight: 800 },
+    { text: `${team.standing ? "Always on" : `Project · ${team.branch ?? "worktree"}`} · ${members.length} ${members.length === 1 ? "agent" : "agents"}`, size: 34, color: "#b8c2cc", weight: 500 },
+    { text: status.text, size: 34, color: status.color, weight: 600 },
+    ...(flow ? [{ text: flow, size: 30, color: toReview ? "#8fb8ff" : "#b8c2cc", weight: 600 }] : []),
+  ];
 }
 
 function DeskUnit({ desk, working }: { desk: Desk; working: boolean }) {

@@ -1,45 +1,238 @@
+import { useMemo } from "react";
+import { Color, type Texture } from "three";
 import type { Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
-import { textTexture } from "./label.ts";
-import { buildingPipelines, type BuildingPlan, type Rect, type Room, type Wall } from "./building.ts";
-import { Lounge, Pipeline, Plant, TeamCorner, useTexture, YourDesk } from "./Office.tsx";
+import { textTexture, type Line } from "./label.ts";
+import { lookFor } from "./look.ts";
+import { buildingPipelines, place, teamDesks, type BuildingPlan, type Rect, type Room, type Wall } from "./building.ts";
+import { deskUnit, Furniture, Kit, officeChair, plant, sofa, Trees } from "./Furniture.tsx";
+import { boardLines, Pipeline, useTexture, YourDesk } from "./Office.tsx";
+import { LOUNGE_SOFAS, LOUNGE_TABLE, type Corner, type Vec2 } from "./layout.ts";
 
-/** High enough for the bays' big screens, which hang over the crew's heads. */
-const WALL_H = 5.4;
+/** Ceiling height, as far as the outside walls go: an open ceiling, high enough for the teams' signs. */
+const WALL_H = 4.3;
+/** The windows run from the sill to the head, in panes this wide at most. */
+const SILL = 0.85;
+const HEAD = 3.4;
+const PANE = 1.6;
+/** The team's TV on a bay's back wall, for the crew. */
+const TV: Vec2 = [2.4, 1.35];
+const TV_Y = 1.75;
+/**
+ * The team's sign hangs over the bay's front, its bottom above every name tag as seen from the
+ * hall, so the name and status read over the heads of whoever is in the bay.
+ */
+const SIGN: Vec2 = [3.2, 1.125];
+const SIGN_Y = 3.55;
+/** Planters between the bays and round the lounge: low enough to see every team from the hall. */
+const PLANTER_H = 0.75;
+const GLASS_H = 2.9;
+/** The lounge's sign on its back wall, beside the sofas and clear of the kitchen. */
+const SIGN_X = -1.2;
 
-/** The office as one building: the hall round your desk, a glass-fronted bay per team, the lounge and meeting rooms. */
+const CHAIRS = ["#3c4a5c", "#5b6b7d", "#40576b"];
+
+/** The office as one building: an ordinary open-plan office, a team area per team round the hall with your desk, the lounge and kitchen, meeting rooms and reception. */
 export function BuildingOffice({ plan, agents, teams, work, queueLength }: { plan: BuildingPlan; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; queueLength: number }) {
-  const { outline, hall, loop, lane } = plan;
-  const bays = new Map(plan.rooms.filter((r) => r.teamId).map((r) => [r.teamId!, r]));
+  const { outline, hall } = plan;
   const lounge = plan.rooms.find((r) => r.kind === "lounge")!;
-  // The squares where the east and west rooms meet the north and south ones are closed off: plants there.
-  const nooks: Array<[number, number]> = [
-    [(outline.minX + hall.minX) / 2, (outline.minZ + hall.minZ) / 2], [(outline.maxX + hall.maxX) / 2, (outline.minZ + hall.minZ) / 2],
-    [(outline.minX + hall.minX) / 2, (outline.maxZ + hall.maxZ) / 2], [(outline.maxX + hall.maxX) / 2, (outline.maxZ + hall.maxZ) / 2],
-  ];
+  const meetings = plan.rooms.filter((r) => r.kind === "meeting");
+  const working = [...agents.values()].filter((a) => a.status === "working").map((a) => a.id).join(",");
+  const pieces = useMemo(() => furnish(plan, new Set(working.split(","))), [plan, working]);
+  const trees = useMemo(() => treesRound(outline), [outline]);
   return (
     <group>
-      <Floor rect={plan.bounds} y={-0.01} color="#c3cfbb" />
-      <Floor rect={outline} y={0} color="#d9dde2" shadows />
-      <Floor rect={hall} y={0.002} color="#cfd5dc" />
-      <Frame rect={loop} width={1.3} y={0.004} color="#b9c1ca" />
-      <Frame rect={lane} width={0.6} y={0.005} color="#c3cad2" />
-      {plan.walls.map((w, i) => (w.outer ? <OuterWall key={i} wall={w} /> : <GlassWall key={i} wall={w} />))}
-      <FrontDoor plan={plan} />
-      <YourDesk queueLength={queueLength} />
-      <Lounge center={lounge.center} facing={lounge.facing} halfDepth={lounge.half[1]} />
-      {plan.corners.map((c) => (
-        <TeamCorner key={c.team.id} corner={c} agents={agents} teams={teams} work={work} half={bays.get(c.team.id)!.half} />
+      <Floor rect={plan.bounds} y={-0.01} color="#b9cba9" />
+      <Floor rect={outline} y={0} color="#d8d2c6" shadows />
+      <Floor rect={hall} y={0.002} color="#d6bc98" shadows />
+      <Floor rect={{ minX: -plan.frontDoor.width, maxX: plan.frontDoor.width, minZ: hall.maxZ, maxZ: outline.maxZ }} y={0.002} color="#d9d6cf" shadows />
+      {plan.rooms.filter((r) => r.kind !== "meeting").map((r, i) => (
+        <Carpet key={i} room={r} color={r.teamId ? carpetFor(r.teamId) : r.kind === "lounge" ? "#a9a08f" : "#9aa0a6"} />
       ))}
-      {plan.rooms.filter((r) => r.kind === "bay" && !r.teamId).map((r, i) => <EmptyBay key={i} room={r} />)}
-      {plan.rooms.filter((r) => r.kind === "meeting").map((r, i) => <MeetingRoom key={i} room={r} n={i + 1} />)}
+      {meetings.map((r, i) => <Carpet key={i} room={r} color="#8e959c" />)}
+      <Furniture pieces={pieces} />
+      <Reception plan={plan} />
+      <YourDesk queueLength={queueLength} />
+      <LoungeSign room={lounge} />
+      {plan.corners.map((c) => (
+        <TeamTv key={c.team.id} corner={c} room={plan.rooms.find((r) => r.teamId === c.team.id)!} agents={agents} teams={teams} work={work} />
+      ))}
+      {plan.rooms.filter((r) => r.kind === "bay" && !r.teamId).map((r, i) => <FreeDesks key={i} room={r} />)}
+      {meetings.map((r, i) => <MeetingRoom key={i} room={r} n={i + 1} />)}
       {buildingPipelines(plan).map((p) => (
         <Pipeline key={p.fromTeamId} path={p.path} busy={work.some((w) => w.fromTeamId === p.fromTeamId && w.toTeamId === p.toTeamId && w.state === "in_review")} />
       ))}
-      {nooks.map(([x, z]) => (
-        <Plant key={`${x},${z}`} x={x} z={z} />
-      ))}
+      <Trees spots={trees} />
     </group>
   );
+}
+
+/** A team's carpet: a quiet grey with a little of the team's colour in it. */
+function carpetFor(teamId: string): string {
+  return `#${new Color("#9097a0").lerp(new Color(lookFor(teamId).shirt), 0.22).getHexString()}`;
+}
+
+/**
+ * Everything that stands on the floor, as boxes: the desks and chairs in every bay, planters,
+ * the lounge's sofas and kitchen, the meeting rooms' tables, reception, and plants.
+ */
+function furnish(plan: BuildingPlan, working: Set<string>) {
+  const kit = new Kit();
+  const { outline, hall } = plan;
+  let n = 0;
+  const chair = () => CHAIRS[n++ % CHAIRS.length]!;
+
+  // The bays: their desks, and at the back a low cabinet under the TV, a whiteboard and a plant.
+  for (const room of plan.rooms.filter((r) => r.kind === "bay")) {
+    const corner = plan.corners.find((c) => c.team.id === room.teamId);
+    const desks = corner?.desks ?? teamDesks(room, []).desks;
+    for (const d of desks) deskUnit(kit, d, !!d.occupantId, !!d.occupantId && working.has(d.occupantId), chair());
+    const add = kit.in(room);
+    const [hw, hd] = room.half;
+    add("white", [0, 0.36, 0.4 - hd], [2.6, 0.72, 0.45]);
+    add("wood", [0, 0.735, 0.4 - hd], [2.64, 0.03, 0.48]);
+    add("metal", [0.9, 0.84, 0.4 - hd], [0.3, 0.18, 0.22]);
+    add("white", [-3.3, 1.45, 0.4 - hd], [1.6, 1.0, 0.04]);
+    add("metal", [-3.3, 1.45, 0.38 - hd], [1.66, 1.06, 0.03]);
+    for (const sx of [-1, 1]) add("metal", [-3.3 + sx * 0.78, 0.5, 0.4 - hd], [0.04, 1.0, 0.04]);
+    plant(add, hw - 0.5, 0.5 - hd, 1.4);
+  }
+
+  // Planters wherever the bays and the lounge have a wall: a white trough with greenery on top.
+  for (const w of plan.walls.filter((x) => x.kind === "planter")) {
+    const { x, z, length, yaw } = span(w);
+    const add = kit.at([x, z], yaw);
+    add("white", [0, PLANTER_H / 2, 0], [length, PLANTER_H, 0.34]);
+    add("wood", [0, PLANTER_H + 0.01, 0], [length + 0.02, 0.02, 0.38]);
+    add("hedge", [0, PLANTER_H + 0.07, 0], [Math.max(0.1, length - 0.1), 0.12, 0.26]);
+    const tufts = Math.max(1, Math.round(length / 0.7));
+    for (let i = 0; i < tufts; i++) add("leaf", [-length / 2 + (i + 0.5) * (length / tufts), PLANTER_H + 0.16, 0], [0.4, 0.26 + (i % 3) * 0.07, 0.3], 0.8 * (i % 3));
+  }
+
+  // The lounge: sofas round the low table on a rug, and the kitchen along its back and far side.
+  const lounge = plan.rooms.find((r) => r.kind === "lounge")!;
+  const la = kit.in(lounge);
+  const [lw, ld] = lounge.half;
+  la("fabric", [0, 0.005, 0], [7.4, 0.01, 7.4], 0, "#c9b79a");
+  la("wood", [0, 0.2, 0], [LOUNGE_TABLE * 2 - 0.2, 0.06, LOUNGE_TABLE * 2 - 0.2]);
+  la("metal", [0, 0.09, 0], [0.12, 0.18, 0.12]);
+  for (const a of LOUNGE_SOFAS) sofa(kit.at(place(lounge.center, lounge.facing, [Math.sin(a) * 3.7, Math.cos(a) * 3.7]), lounge.facing + a + Math.PI), 0, 0, 2.4, "#5f7f8f");
+  const back = 0.33 - ld;
+  const run = lw - 0.8 - 2.3;
+  la("white", [2.3 + run / 2, 0.44, back], [run, 0.88, 0.62]);
+  la("wood", [2.3 + run / 2, 0.9, back], [run, 0.04, 0.66]);
+  la("white", [lw - 0.42, 1.0, back + 0.05], [0.72, 2.0, 0.7]);
+  la("metal", [lw - 0.72, 1.15, back + 0.41], [0.03, 0.5, 0.03]);
+  la("metal", [3.0, 1.12, back + 0.02], [0.32, 0.4, 0.34]);
+  la("screen", [3.0, 1.2, back + 0.19], [0.18, 0.08, 0.005], 0, "#f0b44c");
+  la("pot", [3.5, 0.98, back], [0.1, 0.12, 0.1]);
+  la("pot", [3.65, 0.98, back + 0.05], [0.1, 0.12, 0.1]);
+  la("metal", [4.5, 0.925, back], [0.5, 0.02, 0.4]);
+  // A high table with stools by the kitchen, out of the way of the circle round the lounge's table.
+  const tx = lw - 1.9;
+  const tz = back + 1.65;
+  la("wood", [tx, 1.05, tz], [1.6, 0.04, 0.7]);
+  la("metal", [tx, 0.52, tz], [0.08, 1.04, 0.08]);
+  for (const dz of [-0.55, 0.55]) for (const dx of [-0.5, 0.5]) {
+    la("fabric", [tx + dx, 0.72, tz + dz], [0.38, 0.06, 0.38], 0, "#d68a4c");
+    la("metal", [tx + dx, 0.36, tz + dz], [0.05, 0.7, 0.05]);
+  }
+  plant(la, 0.8 - lw, 0.6 - ld, 1.5);
+  plant(la, 0.8 - lw, ld - 1.4, 1.1);
+
+  // The meeting rooms: a table with office chairs down both sides, and a TV on the back wall.
+  for (const room of plan.rooms.filter((r) => r.kind === "meeting")) {
+    const add = kit.in(room);
+    const [hw, hd] = room.half;
+    const length = Math.max(2, Math.min(4.2, 2 * hd - 3.4));
+    const chairs = Math.max(2, Math.floor(length / 0.9));
+    add("wood", [0, 0.74, -0.3], [1.3, 0.05, length]);
+    for (const dz of [-1, 1]) add("metal", [0, 0.36, -0.3 + dz * (length / 2 - 0.4)], [0.1, 0.72, 0.1]);
+    for (const side of [-1, 1]) for (let i = 0; i < chairs; i++) {
+      officeChair(add, side * 0.95, -0.3 - length / 2 + (i + 0.5) * (length / chairs), side * (Math.PI / 2), chair());
+    }
+    add("metal", [0, 1.55, 0.2 - hd], [Math.min(2.4, hw * 2 - 1.2), 1.36, 0.06]);
+    add("screen", [0, 1.55, 0.235 - hd], [Math.min(2.3, hw * 2 - 1.3), 1.28, 0.005], 0, "#2c3a4d");
+    plant(add, hw - 0.5, 0.5 - hd, 1.2);
+  }
+
+  // Reception: a counter beside the way in, clear of it, with a plant either side of the door.
+  const door = plan.frontDoor;
+  const rc = kit.at([door.x + 0.9, door.z - 3.2], 0);
+  rc("white", [0, 0.53, 0], [0.62, 1.06, 2.2]);
+  rc("wood", [0, 1.08, 0], [0.74, 0.04, 2.3]);
+  rc("metal", [0.05, 1.2, 0.3], [0.04, 0.26, 0.4], -0.4);
+  officeChair(rc, 0.64, 0.2, -Math.PI / 2, CHAIRS[0]!);
+  const fa = kit.at([door.x, door.z], 0);
+  for (const sx of [-1, 1]) plant(fa, sx * (door.width / 2 + 0.55), -0.55, 1.5);
+
+  // The corners where the side rooms meet the north and south ones: a reading nook each.
+  for (const [x, z] of [[outline.minX, outline.minZ], [outline.maxX, outline.minZ], [outline.minX, outline.maxZ], [outline.maxX, outline.maxZ]] as Vec2[]) {
+    const cx = (x + (x < 0 ? hall.minX : hall.maxX)) / 2;
+    const cz = (z + (z < 0 ? hall.minZ : hall.maxZ)) / 2;
+    const add = kit.at([cx, cz], Math.atan2(-cx, -cz));
+    sofa(add, 0, 0.6, 2, "#8a6f8f");
+    add("wood", [0, 0.2, 1.6], [0.9, 0.05, 0.6]);
+    plant(add, 1.6, 0.4, 1.6);
+    plant(add, -1.6, 0.4, 1.2);
+  }
+
+  outerWalls(kit, plan);
+  for (const w of plan.walls.filter((x) => x.kind === "glass")) glassWall(kit, w);
+
+  // The hall: a plant in each corner, clear of the walkway.
+  for (const [x, z] of [[hall.minX + 0.5, hall.minZ + 0.5], [hall.maxX - 0.5, hall.minZ + 0.5], [hall.minX + 0.5, hall.maxZ - 0.5], [hall.maxX - 0.5, hall.maxZ - 0.5]] as Vec2[]) {
+    plant(kit.at([x, z], 0), 0, 0, 1.6);
+  }
+  return kit.pieces;
+}
+
+/**
+ * The outside walls: a sill and a head, and windows between them in panes, except behind the
+ * teams' TVs, the meeting rooms' and the lounge's sign, where the wall is solid.
+ */
+function outerWalls(kit: Kit, plan: BuildingPlan) {
+  const solid = plan.rooms
+    .filter((r) => r.kind !== "bay" || r.teamId)
+    .map((r) => ({ at: place(r.center, r.facing, [r.kind === "lounge" ? SIGN_X : 0, -r.half[1]]), half: r.kind === "bay" ? TV[0] / 2 + 0.1 : 1.3 }));
+  for (const w of plan.walls.filter((x) => x.kind === "outer")) {
+    const { x, z, length, yaw } = span(w);
+    const add = kit.at([x, z], yaw);
+    add("wall", [0, SILL / 2, 0], [length + 0.3, SILL, 0.3]);
+    add("wall", [0, (HEAD + WALL_H) / 2, 0], [length + 0.3, WALL_H - HEAD, 0.3]);
+    add("wood", [0, SILL + 0.02, 0], [length, 0.04, 0.36]);
+    const panes = Math.max(1, Math.round(length / PANE));
+    const pane = length / panes;
+    for (let i = 0; i < panes; i++) {
+      const t = -length / 2 + (i + 0.5) * pane;
+      const at: Vec2 = [x + Math.cos(yaw) * t, z - Math.sin(yaw) * t];
+      if (solid.some((s) => Math.hypot(s.at[0] - at[0], s.at[1] - at[1]) < s.half + pane / 2)) {
+        add("wall", [t, (SILL + HEAD) / 2, 0], [pane + 0.02, HEAD - SILL, 0.3]);
+      } else {
+        add("window", [t, (SILL + HEAD) / 2, 0], [pane - 0.08, HEAD - SILL, 0.04]);
+        add("frame", [t + pane / 2, (SILL + HEAD) / 2, 0], [0.08, HEAD - SILL, 0.14]);
+      }
+    }
+  }
+}
+
+/** A meeting room's wall: glass in thin frames, with a frosted band at eye height. */
+function glassWall(kit: Kit, w: Wall) {
+  const { x, z, length, yaw } = span(w);
+  const add = kit.at([x, z], yaw);
+  add("glass", [0, GLASS_H / 2, 0], [length, GLASS_H, 0.04]);
+  add("frosted", [0, 1.3, 0], [length, 0.28, 0.05]);
+  for (const y of [0.03, GLASS_H]) add("frame", [0, y, 0], [length + 0.06, 0.06, 0.08]);
+  for (const s of [-1, 1]) add("frame", [(s * length) / 2, GLASS_H / 2, 0], [0.06, GLASS_H, 0.08]);
+}
+
+/** Trees on the lawn round the building, a few metres out. */
+function treesRound(r: Rect): Vec2[] {
+  const out: Vec2[] = [];
+  const off = 2.2;
+  for (let x = r.minX + 2; x <= r.maxX - 2; x += 7) out.push([x, r.minZ - off], [x, r.maxZ + off]);
+  for (let z = r.minZ + 5; z <= r.maxZ - 5; z += 7) out.push([r.minX - off, z], [r.maxX + off, z]);
+  // Keep the front door clear.
+  return out.filter(([x, z]) => !(z > r.maxZ && Math.abs(x) < 3));
 }
 
 function Floor({ rect, y, color, shadows = false }: { rect: Rect; y: number; color: string; shadows?: boolean }) {
@@ -51,24 +244,12 @@ function Floor({ rect, y, color, shadows = false }: { rect: Rect; y: number; col
   );
 }
 
-/** A band on the floor along a rectangle's edge: the walkway round the hall, or the lane the work runs along. */
-function Frame({ rect, width, y, color }: { rect: Rect; width: number; y: number; color: string }) {
-  const { minX, maxX, minZ, maxZ } = rect;
-  const bands: Array<[number, number, number, number]> = [
-    [(minX + maxX) / 2, minZ, maxX - minX + width, width],
-    [(minX + maxX) / 2, maxZ, maxX - minX + width, width],
-    [minX, (minZ + maxZ) / 2, width, maxZ - minZ - width],
-    [maxX, (minZ + maxZ) / 2, width, maxZ - minZ - width],
-  ];
+function Carpet({ room, color }: { room: Room; color: string }) {
   return (
-    <group>
-      {bands.map(([x, z, w, d], i) => (
-        <mesh key={i} rotation-x={-Math.PI / 2} position={[x, y, z]} receiveShadow>
-          <planeGeometry args={[w, d]} />
-          <meshStandardMaterial color={color} roughness={0.9} />
-        </mesh>
-      ))}
-    </group>
+    <mesh rotation-x={-Math.PI / 2} rotation-z={room.facing} position={[room.center[0], 0.004, room.center[1]]} receiveShadow>
+      <planeGeometry args={[room.half[0] * 2, room.half[1] * 2]} />
+      <meshStandardMaterial color={color} roughness={1} />
+    </mesh>
   );
 }
 
@@ -79,108 +260,116 @@ function span({ a, b }: Wall) {
   return { x: (a[0] + b[0]) / 2, z: (a[1] + b[1]) / 2, length: Math.hypot(dx, dz), yaw: Math.atan2(-dz, dx) };
 }
 
-function OuterWall({ wall }: { wall: Wall }) {
-  const { x, z, length, yaw } = span(wall);
+/** A sign on a wall, facing the room it is in. */
+function Sign({ lines, size, width, height, position, rotation = 0 }: { lines: Line[]; size: [number, number]; width: number; height: number; position: [number, number, number]; rotation?: number }) {
+  const texture = useTexture(() => textTexture(lines, { width: size[0], height: size[1], background: "#2f3b48", radius: 20 }), [JSON.stringify(lines)]);
   return (
-    <group position={[x, 0, z]} rotation-y={yaw}>
-      <mesh position={[0, WALL_H / 2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[length + 0.3, WALL_H, 0.3]} />
-        <meshStandardMaterial color="#e9ecef" roughness={0.9} />
+    <mesh position={position} rotation-y={rotation}>
+      <planeGeometry args={[width, height]} />
+      <meshBasicMaterial map={texture} toneMapped={false} />
+    </mesh>
+  );
+}
+
+/** A team's TV on its bay's back wall, with the board the ring's corners show: name, what it is, how it is doing. */
+function TeamTv({ corner, room, agents, teams, work }: { corner: Corner; room: Room; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[] }) {
+  const lines = boardLines(corner, agents, teams, work);
+  const board = useTexture(() => textTexture(lines, { width: 1024, height: 360, background: "#141a22" }), [JSON.stringify(lines)]);
+  const tv = useTexture(() => textTexture(lines.map((l, i) => ({ ...l, size: Math.round(l.size * (i ? 1.45 : 1.6)) })), { width: 1024, height: 576, background: "#141a22" }), [JSON.stringify(lines)]);
+  return (
+    <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
+      <WallTv texture={tv} z={0.19 - room.half[1]} />
+      <HangingSign texture={board} z={room.half[1] - 0.45} />
+    </group>
+  );
+}
+
+function WallTv({ texture, z }: { texture: Texture; z: number }) {
+  return (
+    <group position={[0, TV_Y, z]}>
+      <mesh>
+        <boxGeometry args={[TV[0] + 0.08, TV[1] + 0.08, 0.06]} />
+        <meshStandardMaterial color="#111418" roughness={0.4} />
       </mesh>
-      {length > 2.5 ? (
-        <mesh position={[0, 2.4, 0]}>
-          <boxGeometry args={[length - 1.6, 1.7, 0.34]} />
-          <meshStandardMaterial color="#a9c8e8" emissive="#a9c8e8" emissiveIntensity={0.35} roughness={0.2} />
+      <mesh position={[0, 0, 0.032]}>
+        <planeGeometry args={TV} />
+        <meshBasicMaterial map={texture} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
+/** A slim screen hung from the ceiling on two cables, showing the same on both faces. */
+function HangingSign({ texture, z }: { texture: Texture; z: number }) {
+  return (
+    <group position={[0, SIGN_Y, z]}>
+      <mesh>
+        <boxGeometry args={[SIGN[0] + 0.08, SIGN[1] + 0.08, 0.07]} />
+        <meshStandardMaterial color="#111418" roughness={0.4} />
+      </mesh>
+      {[0, Math.PI].map((turn) => (
+        <mesh key={turn} rotation-y={turn} position={[0, 0, turn ? -0.037 : 0.037]}>
+          <planeGeometry args={SIGN} />
+          <meshBasicMaterial map={texture} toneMapped={false} />
         </mesh>
-      ) : null}
+      ))}
+      {[-1, 1].map((sx) => (
+        <mesh key={sx} position={[sx * (SIGN[0] / 2 - 0.3), (WALL_H - SIGN_Y) / 2 + SIGN[1] / 4, 0]}>
+          <boxGeometry args={[0.015, WALL_H - SIGN_Y - SIGN[1] / 2, 0.015]} />
+          <meshStandardMaterial color="#5b636c" />
+        </mesh>
+      ))}
     </group>
   );
 }
 
-/** The rooms' walls: a low solid skirting and glass above it, so you see into every room from the hall. */
-function GlassWall({ wall }: { wall: Wall }) {
-  const { x, z, length, yaw } = span(wall);
+/** A bay no team has yet: its desks stand free, and its sign says so. */
+function FreeDesks({ room }: { room: Room }) {
+  const texture = useTexture(() => textTexture([{ text: "Free desks", size: 80, color: "#ffffff", weight: 800 }, { text: "for the next project", size: 40, color: "#b8c2cc" }], { width: 1024, height: 360, background: "#2f3b48" }), []);
   return (
-    <group position={[x, 0, z]} rotation-y={yaw}>
-      <mesh position={[0, 0.45, 0]} castShadow receiveShadow>
-        <boxGeometry args={[length + 0.12, 0.9, 0.12]} />
-        <meshStandardMaterial color="#dfe3e8" roughness={0.8} />
-      </mesh>
-      <mesh position={[0, 0.9 + (WALL_H - 0.9) / 2, 0]}>
-        <boxGeometry args={[length, WALL_H - 0.9, 0.05]} />
-        <meshStandardMaterial color="#cfe3f5" transparent opacity={0.16} roughness={0.1} depthWrite={false} />
-      </mesh>
-      <mesh position={[0, WALL_H, 0]}>
-        <boxGeometry args={[length + 0.12, 0.08, 0.12]} />
-        <meshStandardMaterial color="#9aa6b4" />
-      </mesh>
+    <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
+      <HangingSign texture={texture} z={room.half[1] - 0.45} />
     </group>
   );
 }
 
-function FrontDoor({ plan }: { plan: BuildingPlan }) {
+/** A meeting room's name on its glass front, over the door, readable from the hall. */
+function MeetingRoom({ room, n }: { room: Room; n: number }) {
+  return (
+    <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
+      <Sign lines={[{ text: `Meeting room ${n}`, size: 56, color: "#ffffff", weight: 800 }]} size={[512, 110]} width={1.6} height={0.34} position={[0, 2.5, room.half[1] + 0.04]} />
+    </group>
+  );
+}
+
+function LoungeSign({ room }: { room: Room }) {
+  return (
+    <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
+      <Sign lines={[{ text: "Lounge & kitchen", size: 60, color: "#ffffff", weight: 800 }, { text: "agents not on a project", size: 32, color: "#b8c2cc" }]} size={[640, 180]} width={2.2} height={0.62} position={[SIGN_X, 2.3, 0.2 - room.half[1]]} />
+    </group>
+  );
+}
+
+/** The front door: glass doors slid open, a mat, and the name over it on the inside. */
+function Reception({ plan }: { plan: BuildingPlan }) {
   const { x, z, width } = plan.frontDoor;
-  const sign = useTexture(() => textTexture([{ text: "Entrance", size: 60, color: "#ffffff", weight: 800 }], { width: 420, height: 120, background: "#2b3a4a", radius: 24 }), []);
   return (
     <group position={[x, 0, z]}>
-      <mesh rotation-x={-Math.PI / 2} position={[0, 0.006, -1]}>
-        <planeGeometry args={[width, 1.6]} />
-        <meshStandardMaterial color="#6b5a4a" roughness={1} />
+      <mesh rotation-x={-Math.PI / 2} position={[0, 0.008, -0.9]}>
+        <planeGeometry args={[width, 1.4]} />
+        <meshStandardMaterial color="#4f4a45" roughness={1} />
       </mesh>
-      <mesh position={[0, 3.2, -0.2]} rotation-y={Math.PI}>
-        <planeGeometry args={[1.6, 0.46]} />
-        <meshBasicMaterial map={sign} toneMapped={false} side={2} />
+      {[-1, 1].map((s) => (
+        <mesh key={s} position={[s * (width / 2 + 0.45), 1.2, -0.2]}>
+          <boxGeometry args={[0.9, 2.4, 0.05]} />
+          <meshStandardMaterial color="#d6ecff" transparent opacity={0.35} roughness={0.05} depthWrite={false} />
+        </mesh>
+      ))}
+      <mesh position={[0, 2.5, 0]}>
+        <boxGeometry args={[width + 0.1, 0.1, 0.32]} />
+        <meshStandardMaterial color="#8a939c" roughness={0.5} />
       </mesh>
-    </group>
-  );
-}
-
-/** A bay no team has yet: bare floor and a sign. */
-function EmptyBay({ room }: { room: Room }) {
-  const sign = useTexture(() => textTexture([{ text: "Free bay", size: 60, color: "#ffffff", weight: 800 }, { text: "for the next project", size: 32, color: "#b8c2cc" }], { width: 512, height: 180, background: "#2b3a4a", radius: 24 }), []);
-  return (
-    <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
-      <mesh position={[0, 2.4, 0.3 - room.half[1]]}>
-        <planeGeometry args={[1.8, 0.63]} />
-        <meshBasicMaterial map={sign} toneMapped={false} />
-      </mesh>
-    </group>
-  );
-}
-
-/** A meeting room: a long table with chairs round it and a screen on the back wall. Nobody meets here yet. */
-function MeetingRoom({ room, n }: { room: Room; n: number }) {
-  const sign = useTexture(() => textTexture([{ text: `Meeting room ${n}`, size: 56, color: "#ffffff", weight: 800 }], { width: 512, height: 110, background: "#2b3a4a", radius: 24 }), [n]);
-  const [hw, hd] = room.half;
-  // The table runs from front to back; chairs down both long sides.
-  const length = Math.max(2, Math.min(4.2, 2 * hd - 3.4));
-  const chairs = Math.max(2, Math.floor(length / 1));
-  return (
-    <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
-      <mesh rotation-x={-Math.PI / 2} position={[0, 0.005, 0]} receiveShadow>
-        <planeGeometry args={[hw * 2, hd * 2]} />
-        <meshStandardMaterial color="#b9a88f" roughness={1} transparent opacity={0.35} />
-      </mesh>
-      <mesh position={[0, 0.74, -0.3]} castShadow receiveShadow>
-        <boxGeometry args={[1.3, 0.06, length]} />
-        <meshStandardMaterial color="#8a6a4f" roughness={0.6} />
-      </mesh>
-      {[-1, 1].flatMap((side) =>
-        Array.from({ length: chairs }, (_, i) => (
-          <mesh key={`${side}${i}`} position={[side * 0.95, 0.25, -0.3 - length / 2 + (i + 0.5) * (length / chairs)]} castShadow>
-            <boxGeometry args={[0.45, 0.5, 0.45]} />
-            <meshStandardMaterial color="#5a6f8c" roughness={0.9} />
-          </mesh>
-        )),
-      )}
-      <mesh position={[0, 1.6, 0.12 - hd]}>
-        <boxGeometry args={[Math.min(3, hw * 2 - 1), 1.4, 0.08]} />
-        <meshStandardMaterial color="#15181d" />
-      </mesh>
-      <mesh position={[0, 3.2, 0.2 - hd]}>
-        <planeGeometry args={[1.8, 0.39]} />
-        <meshBasicMaterial map={sign} toneMapped={false} />
-      </mesh>
+      <Sign lines={[{ text: "Welcome", size: 60, color: "#ffffff", weight: 800 }]} size={[420, 120]} width={1.4} height={0.4} position={[0, 3.0, -0.17]} rotation={Math.PI} />
     </group>
   );
 }

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Team, WorldAgent } from "../src/shared/types.ts";
 import { callerSpot, DESK, LOUNGE_TABLE, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
-import { buildingPipelines, buildingRoute, doorway, DOOR_WIDTH, MIN_CONSOLES, place, planBuilding, type BuildingPlan, type Rect, type Room } from "../src/ui/world/building.ts";
+import { buildingPipelines, buildingRoute, doorway, DOOR_WIDTH, MIN_CONSOLES, place, planBuilding, teamDesks, type BuildingPlan, type Rect, type Room } from "../src/ui/world/building.ts";
 import { visitSpot } from "../src/ui/world/visits.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
@@ -175,4 +175,67 @@ test("handed-over work runs from a bay's door round the hall to the next bay's, 
     const path = line.path;
     for (let i = 1; i < path.length; i++) for (const w of plan.walls) assert.ok(segmentGap(path[i - 1]!, path[i]!, w.a, w.b) >= DOOR_WIDTH / 2 - 0.05, `${line.fromTeamId} → ${line.toTeamId}`);
   }
+});
+
+/** A unit step the way something faces, on the floor. */
+const ahead = (yaw: number): Vec2 => [Math.sin(yaw), Math.cos(yaw)];
+const sameWay = (a: number, b: number) => Math.abs(Math.sin(a - b)) < 1e-9 && Math.cos(a - b) > 0;
+
+test("crew sit at benches of facing desks, each at their desk and facing its screens", () => {
+  for (const crew of [3, 8, 16]) {
+    const plan = building(4, () => crew);
+    for (const c of plan.corners) {
+      const consoles = c.desks.filter((d) => d.kind === "console");
+      // A full bench: every desk has one across it, touching front to front and facing the other way.
+      if (consoles.length % (2 * 4) === 0) {
+        for (const d of consoles) {
+          const [fx, fz] = ahead(d.facing);
+          const across = consoles.find((o) => o !== d && dist(o.pos, [d.pos[0] + fx * 0.7, d.pos[1] + fz * 0.7]) < 1e-6);
+          assert.ok(across && sameWay(across.facing, d.facing + Math.PI), `${crew} crew: a desk faces each desk in ${c.team.id}`);
+        }
+      }
+      for (const d of c.desks) {
+        if (!d.occupantId) continue;
+        const spot = plan.spots.get(d.occupantId)!;
+        const [fx, fz] = ahead(d.facing);
+        assert.ok(dist(spot.pos, [d.pos[0] - fx * 0.75, d.pos[1] - fz * 0.75]) < 1e-6, `${d.occupantId} stands at their desk`);
+        assert.ok(sameWay(spot.facing, d.facing), `${d.occupantId} faces their screens`);
+      }
+      // The lead's desk is at the front, facing the crew.
+      const room = plan.rooms.find((r) => r.teamId === c.team.id)!;
+      const lead = c.desks.find((d) => d.kind === "lead")!;
+      assert.ok(sameWay(lead.facing, room.facing + Math.PI), "the lead faces their crew");
+      for (const d of consoles) assert.ok(dist(lead.pos, doorway(room, 0).out) < dist(d.pos, doorway(room, 0).out), "the lead sits nearest the hall");
+    }
+  }
+});
+
+test("a bay no team has yet has the least bench, every desk free, inside it", () => {
+  const plan = building(2);
+  const empty = plan.rooms.filter((r) => r.kind === "bay" && !r.teamId);
+  assert.ok(empty.length > 0);
+  for (const room of empty) {
+    const { desks, seats } = teamDesks(room, []);
+    assert.equal(seats.length, 0);
+    assert.equal(desks.filter((d) => d.kind === "console").length, MIN_CONSOLES);
+    assert.ok(desks.every((d) => !d.occupantId));
+    for (const d of desks) assert.ok(inRect(footprint(room), d.pos, 0.5), "free desk inside its bay");
+  }
+});
+
+test("the outside walls have windows, the meeting rooms glass, and the bays and the lounge low planters", () => {
+  const plan = building(5);
+  const { minX, maxX, minZ, maxZ } = plan.outline;
+  const onOutline = (p: Vec2) => [minX, maxX].some((x) => Math.abs(p[0] - x) < 1e-6) || [minZ, maxZ].some((z) => Math.abs(p[1] - z) < 1e-6);
+  const edgeOf = (room: Room, p: Vec2) => {
+    const r = footprint(room);
+    return inRect(r, p, -1e-6) && ([r.minX, r.maxX].some((x) => Math.abs(p[0] - x) < 1e-6) || [r.minZ, r.maxZ].some((z) => Math.abs(p[1] - z) < 1e-6));
+  };
+  const meetings = plan.rooms.filter((r) => r.kind === "meeting");
+  for (const w of plan.walls) {
+    const mid: Vec2 = [(w.a[0] + w.b[0]) / 2, (w.a[1] + w.b[1]) / 2];
+    if (w.kind === "outer") assert.ok(onOutline(w.a) && onOutline(w.b));
+    else assert.equal(w.kind === "glass", meetings.some((m) => edgeOf(m, mid)), `${w.a} → ${w.b} is ${w.kind}`);
+  }
+  assert.ok(plan.walls.some((w) => w.kind === "planter") && plan.walls.some((w) => w.kind === "glass"));
 });
