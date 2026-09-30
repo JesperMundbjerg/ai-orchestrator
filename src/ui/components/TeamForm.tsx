@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import type { Repository, Team } from "../../shared/types.ts";
 import { projectSlug } from "../../shared/slug.ts";
 import { api } from "../api.ts";
+import { SEND_HINT, sendOnEnter } from "../sendKey.ts";
 
 export interface TeamFields {
   name: string;
@@ -36,14 +37,18 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
   const others = teams.filter((t) => t.id !== initial?.id);
   const repo = repositories.find((r) => r.root === repository);
   const slug = projectSlug(name);
+  const canSubmit = Boolean(name.trim()) && (Boolean(initial) || standing || Boolean(repo));
+  const save = () => {
+    if (!canSubmit) return;
+    const fields = { name: name.trim(), purpose: purpose.trim(), handsTo: handsTo || null };
+    onSubmit(initial ? fields : { ...fields, standing, repository: standing ? undefined : repository });
+  };
   return (
     <form
       className="team-form"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!name.trim()) return;
-        const fields = { name: name.trim(), purpose: purpose.trim(), handsTo: handsTo || null };
-        onSubmit(initial ? fields : { ...fields, standing, repository: standing ? undefined : repository });
+        save();
       }}
     >
       <input autoFocus placeholder={initial?.standing || standing ? "Team name, e.g. Mission Control" : "Project name, e.g. Atoms light"} value={name} onChange={(e) => setName(e.target.value)} />
@@ -72,7 +77,8 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
           ) : null}
         </>
       )}
-      <textarea rows={2} placeholder={standing || initial?.standing ? "What the team is for; every member is told" : "What the project is for; the first mate starts on it right away"} value={purpose} onChange={(e) => setPurpose(e.target.value)} />
+      <textarea rows={2} placeholder={standing || initial?.standing ? "What the team is for; every member is told" : "What the project is for; the first mate starts on it right away"} value={purpose} onChange={(e) => setPurpose(e.target.value)} onKeyDown={sendOnEnter(save)} />
+      <span className="muted small-note">{SEND_HINT}</span>
       <label className="field">
         <span>Hands finished work to</span>
         <select value={handsTo} onChange={(e) => setHandsTo(e.target.value)}>
@@ -83,7 +89,7 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
         </select>
       </label>
       <div className="row">
-        <button className="primary small" type="submit" disabled={!name.trim() || (!initial && !standing && !repo)}>{submit}</button>
+        <button className="primary small" type="submit" disabled={!canSubmit}>{submit}</button>
         {extra}
       </div>
     </form>

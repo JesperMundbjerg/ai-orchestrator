@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ItemDetail, ReplyAction } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { deliveryLabel, snoozeChoices } from "../format.ts";
+import { SEND_HINT, sendOnEnter } from "../sendKey.ts";
 import { AttachedImages, useAttachments, type Attachments } from "./Attach.tsx";
 
 /**
@@ -56,6 +57,16 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
   // A decision with no options is an open question: the words are the answer.
   const open = item.type === "decide" && !item.options.length;
 
+  // Enter in the note box does the highlighted action; when that needs words or a choice that
+  // are missing, Enter does nothing.
+  const primary =
+    item.type === "decide"
+      ? open
+        ? { label: "Answer", run: text.trim() ? () => void send("answer") : null }
+        : { label: "Send decision", run: choice ? () => void send("choose", { choice }) : null }
+      : { label: item.type === "milestone" ? "Accept milestone" : "Approve", run: () => void send("accept") };
+  const submit = waiting ? undefined : primary.run ?? undefined;
+
   const note = (
     <>
       <textarea
@@ -64,8 +75,10 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
         value={text}
         onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
+        onKeyDown={sendOnEnter(() => submit?.())}
         rows={open ? 4 : 2}
       />
+      <div className="muted small-note">Enter to {primary.label.toLowerCase()} · Shift+Enter for a new line</div>
       <AttachedImages attachments={attachments} />
     </>
   );
@@ -158,8 +171,10 @@ function Discuss({ text, setText, attachments, busy, said, onSend, onCancel }: {
         value={text}
         onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
+        onKeyDown={sendOnEnter(() => !busy && said && onSend())}
         rows={4}
       />
+      <div className="muted small-note">{SEND_HINT}</div>
       <AttachedImages attachments={attachments} />
       <div className="row">
         <button className="primary" disabled={busy || !said} onClick={onSend}>Send to the agent</button>

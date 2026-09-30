@@ -6,6 +6,7 @@ import type { Message, MessageKind, WorkState, Work, WorldAgent, WorldState, Wor
 import { api } from "../api.ts";
 import { ago } from "../format.ts";
 import { AttachedImages, Images, useAttachments } from "../components/Attach.tsx";
+import { SEND_HINT, sendOnEnter } from "../sendKey.ts";
 
 const DELIVERY_LABEL = { queued: "waiting until free", sending: "typing…", delivered: "took it up", failed: "not delivered" } as const;
 
@@ -114,8 +115,10 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
   const [error, setError] = useState<string | null>(null);
   const lead = members.find((m) => m.role === "lead") ?? null;
   const attachments = useAttachments();
-  const ready = (text.trim() || attachments.ids.length) && !attachments.uploading;
+  const ready = Boolean((text.trim() || attachments.ids.length) && !attachments.uploading);
+  const canSend = ready && !sending && Boolean(lead);
   const send = () => {
+    if (!canSend) return;
     setSending(true);
     api.instructTeam(team.id, text, attachments.ids).then(
       () => (setText(""), attachments.clear(), setError(null)),
@@ -128,7 +131,7 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
       {...attachments.drop}
       onSubmit={(e) => {
         e.preventDefault();
-        if (ready && !sending) send();
+        send();
       }}
     >
       <div className="section-label">Tell {team.name}</div>
@@ -138,12 +141,12 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
         placeholder={`What should ${team.name} do? ${lead?.name ?? (team.standing ? "The lead" : "The first mate")} ${team.standing ? "divides it among the crew" : "plans it and runs the crew"}.`}
         onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
-        onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && e.currentTarget.form?.requestSubmit()}
+        onKeyDown={sendOnEnter(send)}
       />
       <AttachedImages attachments={attachments} />
       <div className="row">
-        <button className="primary small" type="submit" disabled={!ready || sending || !lead}>Send to {team.name}</button>
-        <span className="muted small-note">{lead ? `Typed into ${lead.name}'s terminal once free. Paste or drop images to show them.` : "Nobody on it yet."}</span>
+        <button className="primary small" type="submit" disabled={!canSend}>Send to {team.name}</button>
+        <span className="muted small-note">{lead ? `Typed into ${lead.name}'s terminal once free · ${SEND_HINT}. Paste or drop images to show them.` : "Nobody on it yet."}</span>
       </div>
       {error ? <div className="warn">{error}</div> : null}
     </form>
@@ -212,8 +215,10 @@ export function TellAgent({ agent }: { agent: WorldAgent }) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const attachments = useAttachments();
-  const ready = (text.trim() || attachments.ids.length) && !attachments.uploading;
+  const ready = Boolean((text.trim() || attachments.ids.length) && !attachments.uploading);
+  const canSend = ready && !sending;
   const send = () => {
+    if (!canSend) return;
     setSending(true);
     api.tellAgent(agent.id, text, attachments.ids).then(
       () => (setText(""), attachments.clear(), setError(null)),
@@ -226,7 +231,7 @@ export function TellAgent({ agent }: { agent: WorldAgent }) {
       {...attachments.drop}
       onSubmit={(e) => {
         e.preventDefault();
-        if (ready && !sending) send();
+        send();
       }}
     >
       <textarea
@@ -238,14 +243,14 @@ export function TellAgent({ agent }: { agent: WorldAgent }) {
         onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) e.currentTarget.form?.requestSubmit();
+          sendOnEnter(send)(e);
           if (e.key === "Escape") e.currentTarget.blur();
         }}
       />
       <AttachedImages attachments={attachments} />
       <div className="row">
-        <button className="primary small" type="submit" disabled={!ready || sending}>Send</button>
-        <span className="muted small-note">{agent.paneId ? `Typed into ${agent.name}'s terminal once free · ⌘↵` : `${agent.name} is not running; it waits until they are.`}</span>
+        <button className="primary small" type="submit" disabled={!canSend}>Send</button>
+        <span className="muted small-note">{agent.paneId ? `Typed into ${agent.name}'s terminal once free · ${SEND_HINT}` : `${agent.name} is not running; it waits until they are.`}</span>
       </div>
       {error ? <div className="warn">{error}</div> : null}
     </form>
