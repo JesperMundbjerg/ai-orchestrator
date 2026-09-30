@@ -9,10 +9,18 @@ import { acknowledge, call, fetchReplies, formatReply } from "../../src/shared/a
 import { lengthHints, SOFT_CAPS } from "../../src/shared/decision.ts";
 import { modelLabel } from "../../src/shared/models.ts";
 import { projectRoot } from "../../src/shared/project.ts";
-import type { ActivityEvent, ItemType, SessionInput, SubmitResult } from "../../src/shared/types.ts";
+import type { ActivityEvent, EffortReport, ItemType, SessionInput, SubmitResult } from "../../src/shared/types.ts";
 
 // The slice of Pi's extension API this uses (the full types ship with @earendil-works/pi-coding-agent).
-interface PiModel { id: string; provider: string }
+interface PiModel { id: string; provider: string; reasoning?: boolean; thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>> }
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+/** Same supported-level rule as Pi's getSupportedThinkingLevels; no runtime SDK dependency here. */
+export function thinkingLevels(model: PiModel | undefined): ThinkingLevel[] {
+  if (!model) return [...THINKING_LEVELS];
+  if (!model.reasoning) return ["off"];
+  return THINKING_LEVELS.filter((level) => model.thinkingLevelMap?.[level] !== null && (!(level === "xhigh" || level === "max") || model.thinkingLevelMap?.[level] !== undefined));
+}
 interface PiContext {
   cwd: string;
   model?: PiModel;
@@ -34,6 +42,9 @@ interface PiApi {
   }): void;
   sendUserMessage(text: string, options?: { deliverAs: "steer" | "followUp" }): void;
   getSessionName(): string | undefined;
+  getThinkingLevel(): ThinkingLevel;
+  setThinkingLevel(level: ThinkingLevel): void;
+  on(event: "thinking_level_select", handler: (event: { level: ThinkingLevel }, ctx: PiContext) => void): void;
 }
 
 const POLL_MS = 2000;
@@ -67,6 +78,9 @@ const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], de
 
 export default function reviewInbox(pi: PiApi): void {
   let timer: NodeJS.Timeout | null = null;
+  let generation = 0;
+  let effortResult: EffortReport["result"];
+  const effortReport = (ctx: PiContext): EffortReport => ({ current: pi.getThinkingLevel(), levels: thinkingLevels(ctx.model), result: effortResult });
   // Replies already handed to Pi: if only the acknowledgement failed, retry that, never the send.
   const sent = new Set<string>();
 
@@ -154,12 +168,29 @@ export default function reviewInbox(pi: PiApi): void {
   pi.on("session_start", (_event, ctx) => {
     const session = sessionOf(ctx);
     if (!session) return;
-    report(ctx, ...modelEvent(ctx.model), ...nameEvent(pi.getSessionName()));
-    let reachable = true;
+    const run = ++generation;
+    effortResult = undefined;
+    report(ctx, ...modelEvent(ctx.model), ...nameEvent(pi.getSessionName()), { kind: "effort", effort: effortReport(ctx) });
+    let reachable = false;
     const poll = async () => {
       let wait = POLL_MS;
       try {
+        const control = await call<{ request: { id: string; level: string } | null }>("/api/agent/effort", {
+          session: { ...session, paneId: process.env.HERDR_PANE_ID }, report: effortReport(ctx),
+        }, 1500).catch(() => ({ request: null })); // Older offices still deliver replies without effort control.
+        if (run !== generation) return;
+        if (control.request && control.request.id !== effortResult?.id && ctx.isIdle()) {
+          const { id, level } = control.request;
+          let error: string | undefined;
+          try {
+            if (!thinkingLevels(ctx.model).includes(level as ThinkingLevel)) throw new Error("This model no longer supports that effort level");
+            pi.setThinkingLevel(level as ThinkingLevel);
+          } catch (err) { error = (err as Error).message; }
+          effortResult = { id, error };
+          report(ctx, { kind: "effort", effort: effortReport(ctx) });
+        }
         for (const reply of await fetchReplies(session, "live")) {
+          if (run !== generation) return;
           if (!sent.has(reply.deliveryId)) {
             try {
               pi.sendUserMessage(formatReply(reply), ctx.isIdle() ? undefined : { deliverAs: "followUp" });
@@ -178,6 +209,7 @@ export default function reviewInbox(pi: PiApi): void {
         wait = BACKOFF_MS; // the inbox is not running; keep quiet and try again later
         reachable = false;
       }
+      if (run !== generation) return;
       timer = setTimeout(poll, wait);
       timer.unref?.();
     };
@@ -188,10 +220,12 @@ export default function reviewInbox(pi: PiApi): void {
   pi.on("tool_execution_end", (e, ctx) => report(ctx, { kind: "tool_end", tool: e.toolName, callId: e.toolCallId }));
   // Every turn's end repeats the model and name, so an office started later still learns them.
   pi.on("agent_end", (_e, ctx) => report(ctx, { kind: "idle" }, ...modelEvent(ctx.model), ...nameEvent(pi.getSessionName())));
-  pi.on("model_select", (e, ctx) => report(ctx, ...modelEvent(e.model)));
+  pi.on("model_select", (e, ctx) => report(ctx, ...modelEvent(e.model), { kind: "effort", effort: effortReport(ctx) }));
+  pi.on("thinking_level_select", (_e, ctx) => report(ctx, { kind: "effort", effort: effortReport(ctx) }));
   pi.on("session_info_changed", (e, ctx) => report(ctx, ...nameEvent(e.name)));
 
   pi.on("session_shutdown", () => {
+    generation++;
     if (timer) clearTimeout(timer);
     timer = null;
   });

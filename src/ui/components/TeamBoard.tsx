@@ -203,6 +203,8 @@ function MemberCard({ agent, team, state, run }: { agent: WorldAgent; team: Worl
         {doing}
         {agent.helpers.length ? ` · ${agent.helpers.length} ${agent.helpers.length === 1 ? "helper" : "helpers"}` : ""}
         {agent.model ? <span title={agent.model.id}> · {HARNESS_INFO[agent.harness].label} · {agent.model.label}</span> : null}
+        {agent.effort?.current ? ` · effort ${agent.effort.current}` : ""}
+        {agent.effort?.request?.state === "pending" ? ` (${agent.effort.request.level} pending)` : ""}
         {agent.project ? ` · ${agent.project}` : ""}
       </span>
     </li>

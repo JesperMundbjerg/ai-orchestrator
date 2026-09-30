@@ -21,6 +21,8 @@ import { Adapters } from "./adapter.ts";
 import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
 import { SessionFiles } from "./models.ts";
+import { EFFORT_TIMEOUT_MS, Efforts } from "./effort.ts";
+import type { EffortReport } from "../shared/types.ts";
 import { whyStuck } from "../shared/stuck.ts";
 import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
 
@@ -133,6 +135,7 @@ export class World {
   private announced: Map<string, TeamStatus> | null = null;
   readonly messages: Messages;
   private activity = new Activity();
+  private efforts = new Efforts();
   /** Session files, for the model of an agent whose harness does not report it. */
   private files: SessionFiles;
   private activityTimer: NodeJS.Timeout | null = null;
@@ -203,6 +206,7 @@ export class World {
         // What the harness reported wins; its own session file is the fallback, read lazily.
         model: this.activity.modelOf(str(row.id), sessionId) ?? this.files.modelOf(a.harness, sessionId, this.now().getTime(), a.cwd),
         sessionName: this.activity.sessionNameOf(str(row.id), sessionId),
+        ...this.efforts.view(a.harness, sessionId, this.now().getTime()),
         ran: Boolean(row.ran_at),
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
@@ -354,6 +358,9 @@ export class World {
     if (model?.id && model.label) changed = this.activity.setModel(agent.id, sessionId, model) || changed;
     const named = events.findLast((e) => e.kind === "session_name");
     if (named) changed = this.activity.setSessionName(agent.id, sessionId, typeof named.sessionName === "string" ? named.sessionName : null) || changed;
+    if (sessionId && session.harness) for (const e of events) {
+      if (e.kind === "effort" && e.effort) changed = this.efforts.report(session.harness, sessionId, e.effort, now) || changed;
+    }
     // Tool calls come several a second; the office redraws at most a few times a second.
     if (changed && !this.activityTimer) {
       this.activityTimer = setTimeout(() => {
@@ -363,6 +370,25 @@ export class World {
       this.activityTimer.unref?.();
     }
     return { ok: true };
+  }
+
+  setEffort(agentId: string, level: unknown) {
+    const agent = this.state().agents.find((a) => a.id === agentId);
+    const session = agent && this.join(this.inbox().tasks).find((a) => a.identity === agent.identity);
+    if (!agent?.paneId || !session?.sessionId || !agent.capabilities?.changeEffort) throw new InboxError(409, "this agent has no session-only effort control");
+    const result = this.efforts.request(agent.harness, session.sessionId, level, this.now().getTime());
+    // Even if the integration disappears, a quiet office must redraw the unconfirmed failure.
+    setTimeout(() => this.onChange("activity"), EFFORT_TIMEOUT_MS).unref();
+    this.onChange("activity");
+    return result;
+  }
+
+  /** The integration reports actual state and fetches only its own pending request. */
+  pollEffort(session: SessionInput, report: EffortReport) {
+    this.resolve(session);
+    if (!session.harness || !session.sessionId) throw new InboxError(400, "effort control needs a session id and harness");
+    this.report(session, [{ kind: "effort", effort: report }]);
+    return { request: this.efforts.pending(session.harness, session.sessionId, this.now().getTime()) };
   }
 
   private activityOf(agentId: string, status: WorldAgent["status"]): Pick<WorldAgent, "doing" | "helpers"> {

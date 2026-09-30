@@ -28,6 +28,7 @@ export const api = {
   updateTeam: (teamId: string, patch: { name?: string; purpose?: string; handsTo?: string | null }) => request<Team>("PATCH", `/api/world/teams/${teamId}`, patch),
   deleteTeam: (teamId: string) => request<{ ok: true; note: string }>("DELETE", `/api/world/teams/${teamId}`, {}),
   updateAgent: (agentId: string, patch: { name?: string; teamId?: string | null; role?: "lead" | "member"; takeName?: boolean }) => request<WorldAgent>("PATCH", `/api/world/agents/${agentId}`, patch),
+  setEffort: (agentId: string, level: string) => request("POST", `/api/world/agents/${agentId}/effort`, { level }),
   removeAgent: (agentId: string) => request<{ removed: string }>("DELETE", `/api/world/agents/${agentId}`, {}),
   instructTeam: (teamId: string, text: string, images: string[] = []) => request<Message>("POST", `/api/world/teams/${teamId}/messages`, { text, images, clientId: crypto.randomUUID() }),
   tellAllLeads: (body: { text: string; images: string[]; leadIds: string[]; clientId: string }) => request<AllLeadsResult>("POST", "/api/world/all-leads/messages", body),

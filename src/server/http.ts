@@ -88,6 +88,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/world\/all-leads\/messages$/, (_r, b) => needWorld().messages.tellAllLeads(b)],
     ["POST", /^\/api\/world\/teams\/([\w-]+)\/messages$/, (_r, b, [id]) => needWorld().messages.instruct(id!, b)],
     ["POST", /^\/api\/world\/messages\/([\w-]+)\/deliveries\/([\w-]+)\/retry$/, (_r, _b, [message, agent]) => needWorld().messages.retry(message!, agent!)],
+    ["POST", /^\/api\/world\/agents\/([\w-]+)\/effort$/, (_r, b, [id]) => needWorld().setEffort(id!, b.level)],
     ["PATCH", /^\/api\/world\/agents\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateAgent(id!, b)],
     ["DELETE", /^\/api\/world\/agents\/([\w-]+)$/, (_r, _b, [id]) => (needWorld().removeAgent(id!), { removed: id })],
     ["POST", /^\/api\/world\/agents\/([\w-]+)\/messages$/, (_r, b, [id]) => needWorld().messages.tell(id!, b)],
@@ -102,6 +103,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/agent\/team$/, (_r, b: { session: SessionInput }) => needWorld().brief(b.session)],
     ["POST", /^\/api\/agent\/say$/, (_r, b) => needWorld().messages.say(needWorld().resolve(b.session), b)],
     ["POST", /^\/api\/agent\/events$/, (_r, b: { session: SessionInput; events?: ActivityEvent[] }) => needWorld().report(b.session, Array.isArray(b.events) ? b.events : [])],
+    ["POST", /^\/api\/agent\/effort$/, (_r, b) => needWorld().pollEffort(b.session, b.report)],
     // Claude Code's HTTP hook posts its hook input as is. Always answers {}: no decision, never in the way.
     ["POST", /^\/api\/hooks\/claude$/, (_r, b: Record<string, unknown>) => {
       if (world && typeof b.session_id === "string") {

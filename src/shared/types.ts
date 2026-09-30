@@ -37,6 +37,9 @@ export interface Capabilities {
   /** Bring the owning conversation to the front (via herdr when the session runs in a pane). */
   openConversation: boolean;
   openPreview: boolean;
+  /** Session-only control, advertised by a live integration, with its accepted levels. */
+  changeEffort?: { levels: string[] };
+  effortUnavailable?: string;
 }
 
 /** Live facts about a session from the terminal multiplexer, when it runs in one. */
@@ -325,10 +328,23 @@ export interface WorldAgent {
   helpers: Helper[];
   /** The model its harness last reported for this session; null when it has not said. */
   model: AgentModel | null;
+  capabilities?: Pick<Capabilities, "changeEffort" | "effortUnavailable">;
+  effort?: AgentEffort;
   /** The name its session goes by in its own harness (Pi's session name, shown in its title), as the harness reported it; null when it has not said. */
   sessionName: string | null;
   /** It has been seen running in herdr; a record that never has is a name with nobody behind it. */
   ran: boolean;
+}
+
+/** Reported level stays separate from a requested change until the session acknowledges it. */
+export interface AgentEffort {
+  current: string | null;
+  request: { id: string; level: string; state: "pending" | "confirmed" | "failed"; error?: string } | null;
+}
+export interface EffortReport {
+  current: string;
+  levels: string[];
+  result?: { id: string; error?: string };
 }
 
 /** A model as the harness names it: its own id, and a short label to show. */
@@ -341,7 +357,7 @@ export interface AgentModel {
 
 /** Reported by an agent's harness to POST /api/agent/events. */
 export interface ActivityEvent {
-  kind: "tool" | "tool_end" | "idle" | "helper_start" | "helper_stop" | "model" | "session_name";
+  kind: "tool" | "tool_end" | "idle" | "helper_start" | "helper_stop" | "model" | "session_name" | "effort";
   tool?: string;
   input?: Record<string, unknown>;
   /** The harness's id for one tool call, so its end can be matched to its start. */
@@ -352,6 +368,8 @@ export interface ActivityEvent {
   model?: AgentModel;
   /** For "session_name": the session's name in its harness now; null or empty when it has none. */
   sessionName?: string | null;
+  /** For "effort": read back from the running session, not an assumed setting. */
+  effort?: EffortReport;
 }
 
 /** A sub-agent working for an agent while it runs. */

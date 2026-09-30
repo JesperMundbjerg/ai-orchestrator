@@ -4,6 +4,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Message, MessageKind, WorkState, Work, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
+import { leftBeforeArrival } from "../../shared/delivery.ts";
 import { ago } from "../format.ts";
 import { AttachedImages, Images, useAttachments } from "../components/Attach.tsx";
 import { SEND_HINT, sendOnEnter } from "../sendKey.ts";
@@ -121,7 +122,7 @@ export function MessageRow({ message, agents }: { message: Message; agents: Map<
   const from = message.fromAgentId ? (agents.get(message.fromAgentId)?.name ?? "someone who left") : message.fromOffice ? "The office" : "You";
   const mine = !message.fromAgentId && !message.fromOffice;
   const to = message.toFounder ? "you" : message.deliveries.map((d) => agents.get(d.agentId)?.name ?? "someone").join(", ");
-  const failure = message.deliveries.find((d) => d.error)?.error;
+  const failure = message.deliveries.find((d) => d.error && !leftBeforeArrival(d, agents.get(d.agentId)))?.error;
   return (
     <li className={`order ${message.kind}${message.toFounder ? " to-you" : mine ? " from-you" : ""}`}>
       <div className="order-head">
@@ -137,8 +138,8 @@ export function MessageRow({ message, agents }: { message: Message; agents: Map<
       <div className="order-meta">
         {message.deliveries.map((d) => (
           <span key={d.agentId} className={`delivery ${d.state}`} title={d.error ?? undefined}>
-            {agents.get(d.agentId)?.name ?? "someone"}: {DELIVERY_LABEL[d.state]}
-            {d.state === "failed" ? (
+            {agents.get(d.agentId)?.name ?? "someone"}: {leftBeforeArrival(d, agents.get(d.agentId)) ? "left before it arrived" : DELIVERY_LABEL[d.state]}
+            {d.state === "failed" && !leftBeforeArrival(d, agents.get(d.agentId)) ? (
               <button className="ghost small" onClick={() => void api.retryDelivery(message.id, d.agentId).catch((e: Error) => setError(e.message))}>Retry</button>
             ) : null}
           </span>
@@ -214,6 +215,7 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
 
 /** The thread between you and an agent, newest at the bottom, kept in view as it grows. */
 export function Conversation({ agent, messages, between }: { agent: WorldAgent; messages: Message[]; between: number }) {
+  const [error, setError] = useState<string | null>(null);
   const list = useRef<HTMLOListElement>(null);
   const last = messages.at(-1)?.id;
   // The thread is as tall as it is; the panel scrolls. Bring the newest line into view on open and on a reply.
@@ -239,7 +241,8 @@ export function Conversation({ agent, messages, between }: { agent: WorldAgent; 
             <div className="say-head">
               {mine ? "You" : <>{agent.name} <span className="for-you">to you</span></>}
               {m.allLeads ? " · All-leads broadcast" : m.kind === "instruction" ? " to the project" : ""} · {ago(m.createdAt)}
-              {delivery && delivery.state !== "delivered" ? ` · ${DELIVERY_LABEL[delivery.state]}` : ""}
+              {delivery && delivery.state !== "delivered" ? ` · ${leftBeforeArrival(delivery, agent) ? "left before it arrived" : DELIVERY_LABEL[delivery.state]}` : ""}
+              {delivery?.state === "failed" && !leftBeforeArrival(delivery, agent) ? <button className="ghost small" onClick={() => void api.retryDelivery(m.id, agent.id).catch((e: Error) => setError(e.message))}>Retry</button> : null}
             </div>
             {m.text ? <div className="say-text">{m.text}</div> : null}
             <Images ids={m.images} />
@@ -248,6 +251,7 @@ export function Conversation({ agent, messages, between }: { agent: WorldAgent; 
       })}
     </ol>
       ) : null}
+      {error ? <div className="warn small-note">{error}</div> : null}
       <HiddenLine count={between} />
     </>
   );

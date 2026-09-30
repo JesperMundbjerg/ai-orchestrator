@@ -14,6 +14,7 @@ import { formatReply, imageLines } from "../shared/agent-client.ts";
 import { imageIds, InboxError, type Inbox } from "./inbox.ts";
 import type { Uploads } from "./uploads.ts";
 import { laneRecipient } from "./queue.ts";
+import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { AgentSource } from "./world.ts";
 
 type Row = Record<string, unknown>;
@@ -224,6 +225,9 @@ export class Messages {
 
   /** Puts a failed delivery back in line. */
   retry(messageId: string, agentId: string): Message {
+    const delivery = this.message(messageId).deliveries.find((d) => d.agentId === agentId);
+    const agent = this.world().agents.find((a) => a.id === agentId);
+    if (!agent?.paneId || (delivery && leftBeforeArrival(delivery, agent))) throw new InboxError(409, "the agent left before it arrived; this delivery cannot be retried");
     const done = this.db
       .prepare("UPDATE message_deliveries SET state = 'queued', error = NULL, updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'failed'")
       .run(this.now().toISOString(), messageId, agentId);
