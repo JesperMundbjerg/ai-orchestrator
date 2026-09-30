@@ -20,7 +20,7 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox try     "Title" --preview URL [--check "what to do and expect"] [--viewport phone] [--setup "…"]
   inbox try     "Title" --page "Label=URL" [--look "what to look at"] --page … [--check "…"]
   inbox milestone "Title" [--context "what changed"] [--limitations "…"]
-      common: --request "what you need"  --context "…"  --screenshot FILE (repeat)  --url URL (repeat)
+      common: --request "what you need"  --context "…"  --screenshot FILE (repeat)  --video FILE (repeat)  --url URL (repeat)
               --key KEY (resubmitting a key revises that item)  --task "task name"  --nonblocking | --blocking
               --json FILE|-   (a full SubmitInput item; flags override)
 
@@ -51,6 +51,10 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
       --page "Step 2=http://localhost:3000/sim/isotopes?step=2" --look "It is gone once you have dragged"
 
   A try answers as "Approved" (done, maybe with a note) or "Needs changes" (the note says what); a milestone as accepted or changes requested.
+
+  --video copies MP4, WebM or MOV files up to 200 MB each; playback depends on browser codec support.
+  --screenshot copies images, PDFs, Markdown or text up to 20 MB (and also accepts videos).
+  Only explicitly attached regular files are copied; never dotfiles.
 
   Keep the title near ${SOFT_CAPS.title} characters and the request near ${SOFT_CAPS.request}; longer is accepted with a hint.
 
@@ -90,6 +94,7 @@ const OPTIONS = {
   viewport: { type: "string" },
   setup: { type: "string" },
   screenshot: { type: "string", multiple: true },
+  video: { type: "string", multiple: true },
   url: { type: "string", multiple: true },
   key: { type: "string" },
   task: { type: "string" },
@@ -128,7 +133,9 @@ async function submit(type: ItemType, title: string | undefined): Promise<void> 
   if (!itemTitle) throw new Error(`inbox ${type} needs a title`);
   const evidence: EvidenceInput[] = [
     ...(base.evidence ?? []),
-    ...(flags.screenshot ?? []).map((p) => ({ path: resolve(p) })),
+    ...order.filter((f) => f.name === "screenshot" || f.name === "video").map((f) => ({
+      path: resolve(f.value!), ...(f.name === "video" ? { kind: "video" as const } : {}),
+    })),
     ...(flags.url ?? []).map((url) => ({ url })),
   ];
   const context = [flags.context ?? base.context, flags.limitations && `Known limitations: ${flags.limitations}`].filter(Boolean).join("\n\n");

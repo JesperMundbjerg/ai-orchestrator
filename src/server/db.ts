@@ -10,6 +10,21 @@ export function dataDir(): string {
   return process.env.INBOX_DATA_DIR ?? join(homedir(), ".review-inbox");
 }
 
+const EVIDENCE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS evidence (
+  id TEXT PRIMARY KEY,
+  item_id TEXT NOT NULL REFERENCES items(id),
+  revision INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('image', 'video', 'url', 'document')),
+  file TEXT,
+  url TEXT,
+  sha256 TEXT,
+  caption TEXT NOT NULL,
+  source_revision TEXT NOT NULL,
+  captured_at TEXT NOT NULL
+);
+`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
@@ -72,18 +87,7 @@ CREATE TABLE IF NOT EXISTS item_revisions (
   PRIMARY KEY (item_id, revision)
 );
 
-CREATE TABLE IF NOT EXISTS evidence (
-  id TEXT PRIMARY KEY,
-  item_id TEXT NOT NULL REFERENCES items(id),
-  revision INTEGER NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('image', 'url', 'document')),
-  file TEXT,
-  url TEXT,
-  sha256 TEXT,
-  caption TEXT NOT NULL,
-  source_revision TEXT NOT NULL,
-  captured_at TEXT NOT NULL
-);
+${EVIDENCE_SCHEMA}
 
 CREATE TABLE IF NOT EXISTS replies (
   id TEXT PRIMARY KEY,
@@ -203,6 +207,25 @@ export function openDatabase(file: string): DatabaseSync {
 
 /** Brings a database made by an earlier version up to the schema above. Each step is idempotent. */
 function migrate(db: DatabaseSync): void {
+  // SQLite cannot widen a CHECK constraint in place. Keep ids and rowids (evidence order)
+  // when rebuilding, so old attachment URLs and revisions remain exactly the same.
+  const evidenceSchema = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'evidence'").get() as { sql: string };
+  if (!evidenceSchema.sql.includes("'video'")) {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(`
+        ALTER TABLE evidence RENAME TO evidence_before_video;
+        ${EVIDENCE_SCHEMA}
+        INSERT INTO evidence (rowid, id, item_id, revision, kind, file, url, sha256, caption, source_revision, captured_at)
+          SELECT rowid, id, item_id, revision, kind, file, url, sha256, caption, source_revision, captured_at FROM evidence_before_video;
+        DROP TABLE evidence_before_video;
+      `);
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  }
   const columns = (table: string) => new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name));
   const teams = columns("teams");
   if (!teams.has("purpose")) db.exec("ALTER TABLE teams ADD COLUMN purpose TEXT NOT NULL DEFAULT ''");

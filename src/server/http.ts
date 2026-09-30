@@ -9,6 +9,7 @@ import { frameAllowed, inlineProblem, ownAppPage } from "../shared/pages.ts";
 import type { ActivityEvent, ActivityInput, AgentModel, PageCheck, SessionInput, SubmitInput } from "../shared/types.ts";
 import { claudeHookEvents, claudeModel } from "./activity.ts";
 import { Inbox, InboxError } from "./inbox.ts";
+import { sendEvidence } from "./evidence.ts";
 import { projectQueue } from "./queue.ts";
 import { UPLOAD_BODY_LIMIT } from "./uploads.ts";
 import type { Herdr } from "./herdr.ts";
@@ -16,6 +17,7 @@ import type { Machine } from "./machine.ts";
 import type { World } from "./world.ts";
 
 const TYPES: Record<string, string> = {
+  ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif",
   ".pdf": "application/pdf", ".md": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".json": "application/json",
@@ -157,10 +159,10 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
       }
 
       const file = url.pathname.match(/^\/files\/([\w-]+)$/);
-      if (file && method === "GET") {
+      if (file && (method === "GET" || method === "HEAD")) {
         const found = inbox.evidenceFile(file[1]!);
         if (!found || !existsSync(found.path)) throw new InboxError(404, "no such attachment");
-        return sendFile(res, found.path, { "content-disposition": "inline", "x-content-type-options": "nosniff", "content-security-policy": "sandbox" });
+        return sendEvidence(req, res, found.path, TYPES[extname(found.path).toLowerCase()] ?? "application/octet-stream");
       }
 
       const upload = url.pathname.match(/^\/uploads\/([\w.-]+)$/);

@@ -76,6 +76,7 @@ inbox try "Try the receipt import" --preview http://localhost:3000/import --chec
 inbox try "The import, step by step" --page "Upload=http://localhost:3000/import" --look "Three receipts listed" \
   --page "Review=http://localhost:3000/import/review" --look "Totals match"
 inbox milestone "Lead scene done" --screenshot out/en.png --screenshot out/da.png
+inbox milestone "Animation pass" --video out/intro.mp4 --video out/details.webm
 inbox activity "Tuning the travel rules" --next "October import end to end"
 inbox replies --ack          # replies for this session, marked received
 ```
@@ -100,7 +101,9 @@ A message is typed into each recipient's terminal once herdr reports them free. 
 
 `inbox pane [--cwd DIR]` opens a pane in the calling pane's herdr tab and prints its id, so a first mate's crew form a grid (two columns, then two rows each, then the grid grows) rather than a stack. It splits the largest pane of the tab along its longer side, counting a terminal cell as twice as tall as wide, never closes or moves a pane, and does not take focus; `herdr agent start <name> --kind … --pane "$P"` then starts the crew member in it.
 
-Only files named with `--screenshot` are copied: png, jpg, webp, gif, pdf, md and txt files up to 20 MB, never dotfiles.
+Only explicitly attached regular files are copied into the data directory, never dotfiles or symlinks. `--screenshot` accepts png, jpg, jpeg, webp, gif, pdf, md and txt files up to 20 MB. **`--video FILE`** accepts mp4, webm and mov files up to **200 MB each** (200 × 1024 × 1024 bytes); repeat it to show several videos in order, alongside screenshots, on decide, try or milestone. `--screenshot` also accepts these video types with the same 200 MB cap. A try can carry a video instead of a preview URL.
+
+Videos play inline with native controls, muted initially and never autoplaying; **Enlarge video** opens a larger player. The copied file streams with byte-range support for seeking, without a separate preview server. Codec support is the browser's (for example H.264, VP9 or AV1); nothing is transcoded. MP4/H.264 is a good portable choice; a MOV or unsupported codec may need to be opened in another player.
 
 The CLI finds the calling session from `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID` or `HERDR_PANE_ID`, or from `--harness` and `--session`. Posting the same `--key` again revises that item; it does not add a duplicate.
 
@@ -112,7 +115,7 @@ Add the extension's absolute path to `extensions` in `~/.pi/agent/settings.json`
 { "extensions": ["/path/to/review-inbox/integrations/pi/review-inbox.ts"] }
 ```
 
-It gives the agent `review_submit` and `review_activity` tools. It also delivers replies into the running session: straight away when Pi is idle, and as a follow-up when Pi is busy. Each reply is acknowledged once Pi has taken it.
+It gives the agent `review_submit` and `review_activity` tools. `review_submit` takes `videos: ["/absolute/path/clip.mp4", …]` alongside `screenshots`, with the same types and limits as the CLI. It also delivers replies into the running session: straight away when Pi is idle, and as a follow-up when Pi is busy. Each reply is acknowledged once Pi has taken it.
 
 ### Claude Code: delivery at turn boundaries
 

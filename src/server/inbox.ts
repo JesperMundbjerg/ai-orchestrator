@@ -4,7 +4,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, lstatSync, mkdirSync, readFileSync } from "node:fs";
+import { closeSync, copyFileSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import {
   HARNESSES, ITEM_TYPES, REPLY_ACTIONS,
@@ -39,8 +39,24 @@ export const ACK_GRACE_MS = 30_000;
 const ATTACHABLE: Record<string, Evidence["kind"]> = {
   ".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image", ".gif": "image",
   ".pdf": "document", ".md": "document", ".txt": "document",
+  ".mp4": "video", ".webm": "video", ".mov": "video",
 };
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
+
+/** Hash copied evidence in bounded chunks, not one video-sized allocation. */
+function fileHash(path: string): string {
+  const fd = openSync(path, "r");
+  try {
+    const hash = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let bytes: number;
+    while ((bytes = readSync(fd, chunk, 0, chunk.length, null)) > 0) hash.update(chunk.subarray(0, bytes));
+    return hash.digest("hex");
+  } finally {
+    closeSync(fd);
+  }
+}
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? "" : String(v));
@@ -163,8 +179,10 @@ export class Inbox {
     if (raw.type === "decide" && !fields.options.length && fields.recommendation) {
       throw new InboxError(400, "a recommendation picks one of the options: give options, or drop it for an open question");
     }
-    if (raw.type === "try" && !fields.preview) throw new InboxError(400, "a try-it request needs a preview url or pages");
     const attachments = (raw.evidence ?? []).map((e) => this.prepareEvidence(e));
+    if (raw.type === "try" && !fields.preview && !attachments.some((a) => a.kind === "video" && a.file)) {
+      throw new InboxError(400, "a try-it request needs a preview url or pages, or an attached video");
+    }
     const hash = sha256(JSON.stringify([fields, attachments.map((a) => [a.kind, a.sha256 ?? a.url, a.caption])]));
 
     const result = this.tx(() => {
@@ -225,7 +243,8 @@ export class Inbox {
     if (!e.path) throw new InboxError(400, "evidence needs a path or a url");
     const ext = extname(e.path).toLowerCase();
     const kind = ATTACHABLE[ext];
-    if (!kind || basename(e.path).startsWith(".")) throw new InboxError(400, `cannot attach ${basename(e.path)}: only images, PDFs, Markdown and text files`);
+    if (!kind || basename(e.path).startsWith(".")) throw new InboxError(400, `cannot attach ${basename(e.path)}: only images, MP4/WebM/MOV videos, PDFs, Markdown and text files`);
+    if (e.kind === "video" && kind !== "video") throw new InboxError(400, `cannot attach ${basename(e.path)} as video: use MP4, WebM or MOV`);
     let stat;
     try {
       stat = lstatSync(e.path);
@@ -233,10 +252,11 @@ export class Inbox {
       throw new InboxError(400, `evidence file not found: ${e.path}`);
     }
     if (!stat.isFile()) throw new InboxError(400, `evidence is not a regular file: ${e.path}`);
-    if (stat.size > MAX_ATTACHMENT_BYTES) throw new InboxError(400, `evidence file is larger than 20 MB: ${e.path}`);
+    const limit = kind === "video" ? MAX_VIDEO_BYTES : MAX_ATTACHMENT_BYTES;
+    if (stat.size > limit) throw new InboxError(400, `${kind === "video" ? "video" : "evidence"} file is larger than ${limit / (1024 * 1024)} MB: ${e.path}`);
     const file = `${id}${ext}`;
     copyFileSync(e.path, join(this.filesDir, file));
-    return { id, kind, file, url: null, sha256: sha256(readFileSync(join(this.filesDir, file))), caption, sourceRevision };
+    return { id, kind, file, url: null, sha256: fileHash(join(this.filesDir, file)), caption, sourceRevision };
   }
 
   activity(input: ActivityInput): Task {
@@ -486,6 +506,7 @@ export class Inbox {
     const rows = this.db
       .prepare(`SELECT i.*,
                   (SELECT count(*) FROM evidence e WHERE e.item_id = i.id AND e.revision = i.revision) AS evidence_count,
+                  (SELECT count(*) FROM evidence e WHERE e.item_id = i.id AND e.revision = i.revision AND e.kind = 'video') AS video_count,
                   (SELECT e.id FROM evidence e WHERE e.item_id = i.id AND e.revision = i.revision AND e.kind = 'image' ORDER BY e.rowid LIMIT 1) AS thumb
                 FROM items i
                 WHERE i.state NOT IN ('resolved', 'withdrawn') OR i.updated_at >= ?
@@ -497,6 +518,7 @@ export class Inbox {
       return {
         ...toItem(r),
         evidenceCount: Number(r.evidence_count),
+        videoCount: Number(r.video_count),
         thumbnail: r.thumb ? `/files/${str(r.thumb)}` : null,
         lastReply: reply ? this.toReply(reply) : null,
       };

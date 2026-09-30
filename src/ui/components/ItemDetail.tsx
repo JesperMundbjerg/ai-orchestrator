@@ -7,6 +7,7 @@ import { Images } from "./Attach.tsx";
 import { Owner } from "./Owner.tsx";
 import { PageWalk } from "./PageWalk.tsx";
 import { Respond } from "./Respond.tsx";
+import { VideoEvidence } from "./VideoEvidence.tsx";
 
 type Tab = "context" | "screenshots" | "pages" | "conversation";
 
@@ -15,12 +16,12 @@ export function ItemDetailView({ detail, onNext }: { detail: ItemDetail; onNext:
   const current = evidence.filter((e) => e.revision === item.revision);
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "context", label: "Context" },
-    ...(evidence.length ? [{ id: "screenshots" as const, label: `Screenshots ${current.length ? `(${current.length})` : ""}` }] : []),
+    ...(evidence.length ? [{ id: "screenshots" as const, label: `${evidence.some((e) => e.kind === "video") ? "Evidence" : "Screenshots"} ${current.length ? `(${current.length})` : ""}` }] : []),
     ...(item.pages.length ? [{ id: "pages" as const, label: item.pages.length > 1 ? `Pages (${item.pages.length})` : "Live preview" }] : []),
     ...(replies.length || item.revision > 1 ? [{ id: "conversation" as const, label: "Conversation" }] : []),
   ];
   // A walkthrough is what the agent wants you to see first.
-  const [tab, setTab] = useState<Tab>(item.pages.length > 1 ? "pages" : current.some((e) => e.kind === "image") ? "screenshots" : "context");
+  const [tab, setTab] = useState<Tab>(item.pages.length > 1 ? "pages" : current.some((e) => e.kind === "image" || e.kind === "video") ? "screenshots" : "context");
   const [openError, setOpenError] = useState<string | null>(null);
   const activeTab = tabs.some((t) => t.id === tab) ? tab : "context";
 
@@ -152,7 +153,7 @@ function EvidenceTab({ evidence, revision }: { evidence: Evidence[]; revision: n
     <div className="evidence">
       {evidence.map((e) => (
         <figure key={e.id} className={e.revision === revision ? "" : "older"}>
-          {e.kind === "image" ? (
+          {e.kind === "video" ? <VideoEvidence evidence={e} /> : e.kind === "image" ? (
             <button className="shot" onClick={() => setZoom(e)} aria-label={`Enlarge ${e.caption || "screenshot"}`}>
               <img src={e.href} alt={e.caption} loading="lazy" />
             </button>

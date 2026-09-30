@@ -116,6 +116,7 @@ export default function reviewInbox(pi: PiApi): void {
       viewport: Type.Optional(Type.Union([Type.Literal("desktop"), Type.Literal("phone")])),
       setup: Type.Optional(Type.String()),
       screenshots: Type.Optional(Type.Array(Type.String({ description: "Absolute path of an image to attach" }))),
+      videos: Type.Optional(Type.Array(Type.String({ description: "Absolute path of an MP4, WebM or MOV video to attach (up to 200 MB each; browser-supported codecs)" }))),
       key: Type.Optional(Type.String({ description: "Stable id; reuse it to revise this item" })),
       blocking: Type.Optional(Type.Boolean({ description: "true if you are waiting on this answer rather than continuing other work" })),
       task_title: Type.Optional(Type.String({ description: "Name of your overall task, e.g. \"Voice teacher\"" })),
@@ -139,7 +140,10 @@ export default function reviewInbox(pi: PiApi): void {
           preview: p.preview_url || (p.pages?.length && (p.viewport || p.setup)) ? { url: p.preview_url, viewport: p.viewport ?? null, setup: p.setup ?? "" } : undefined,
           pages: p.pages,
           blocking: p.blocking,
-          evidence: (p.screenshots ?? []).map((path: string) => ({ path })),
+          evidence: [
+            ...(p.screenshots ?? []).map((path: string) => ({ path })),
+            ...(p.videos ?? []).map((path: string) => ({ path, kind: "video" as const })),
+          ],
         },
       });
       const hints = lengthHints({ title: p.title, request: p.request }).map((h) => `\nHint: ${h}`).join("") + (result.warnings ?? []).map((w) => `\nWarning: ${w}`).join("");

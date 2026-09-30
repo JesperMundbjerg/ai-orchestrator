@@ -115,7 +115,7 @@ export interface PageCheck {
   checkedAt: string;
 }
 
-export type EvidenceKind = "image" | "url" | "document";
+export type EvidenceKind = "image" | "video" | "url" | "document";
 
 export interface Evidence {
   id: string;
@@ -179,6 +179,8 @@ export interface HistoryEvent {
 
 export interface ItemSummary extends Item {
   evidenceCount: number;
+  /** Videos attached to the current revision. */
+  videoCount?: number;
   thumbnail: string | null;
   lastReply: Reply | null;
 }
