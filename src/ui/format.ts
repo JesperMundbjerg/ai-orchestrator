@@ -10,6 +10,13 @@ export const ACTION_LABEL: Record<ReplyAction, string> = {
   discuss: "Said",
 };
 
+/** What a reply is called in the thread; a try-it request is approved or needs changes rather than accepted. */
+export function actionLabel(action: ReplyAction, type: ItemType): string {
+  if (type === "try" && action === "accept") return "Approved";
+  if (type === "try" && action === "request_changes") return "Needs changes";
+  return ACTION_LABEL[action];
+}
+
 export const PRESENCE_LABEL: Record<Presence["status"], string> = {
   idle: "idle",
   working: "working",

@@ -75,7 +75,7 @@ export default function reviewInbox(pi: PiApi): void {
     description:
       "Put a result in front of the user in their Review Inbox and get their answer back in this conversation. " +
       "Use at a meaningful point, not for every turn: `decide` for a concrete question with 2-3 options, " +
-      "`try` for a preview the user should interact with (or `pages`, a walkthrough of live pages they step through), `milestone` for an increment to accept or send back. " +
+      "`try` for a preview the user should interact with (or `pages`, a walkthrough of live pages they step through), `milestone` for an increment to accept or send back. A `try` comes back as \"Approved\" or \"Needs changes\" with a note saying what. " +
       "Write a decision the way an engineer asks a colleague, e.g. title \"Should the tutor cover the slider or push it aside?\", " +
       "request \"I need this to finish the isotope step. Until you answer I'll keep it docked.\", " +
       "options [\"Overlay: tutor covers the right third; slider hidden while it talks\", \"Docked: the stage narrows; everything stays visible\"], " +

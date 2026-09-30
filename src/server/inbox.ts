@@ -373,8 +373,9 @@ export class Inbox {
     }
     if (!REPLY_ACTIONS.includes(input.action)) throw new InboxError(400, `unknown action "${input.action}"`);
     const allowed: Record<ReplyAction, Item["type"][]> = {
-      choose: ["decide"], accept: ["milestone"], request_changes: ["milestone"], tried: ["try"], discuss: ["decide", "try", "milestone"],
+      choose: ["decide"], accept: ["milestone", "try"], request_changes: ["milestone", "try"], tried: [], discuss: ["decide", "try", "milestone"],
     };
+    if (input.action === "tried") throw new InboxError(400, `"tried" is no longer an answer: approve, or say what needs changing`);
     if (!allowed[input.action].includes(item.type)) throw new InboxError(400, `"${input.action}" does not answer a ${item.type} item`);
     const text = input.text?.trim() ?? "";
     const images = this.uploads.check(input.images);
@@ -391,7 +392,7 @@ export class Inbox {
         .run(deliveryId, itemId, item.revision, input.action, choice, text, images.length ? JSON.stringify(images) : null, now);
       this.db.prepare("UPDATE items SET state = 'answer_queued', snoozed_until = NULL, updated_at = ? WHERE id = ?").run(now, itemId);
       if (option) this.db.prepare("UPDATE tasks SET last_decision = ? WHERE id = ?").run(`${option.label} (${item.title})`, task.id);
-      if (input.action === "accept") this.db.prepare("UPDATE tasks SET last_accepted_milestone = ? WHERE id = ?").run(item.title, task.id);
+      if (input.action === "accept" && item.type === "milestone") this.db.prepare("UPDATE tasks SET last_accepted_milestone = ? WHERE id = ?").run(item.title, task.id);
       this.log("user", "reply.queued", { taskId: task.id, itemId }, { deliveryId, action: input.action, choice });
     });
     this.onChange("reply");

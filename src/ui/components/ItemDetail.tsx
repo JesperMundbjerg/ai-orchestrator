@@ -2,7 +2,7 @@ import { useState } from "react";
 import { DELIVERY_LABEL } from "../../shared/harnesses.ts";
 import type { Evidence, ItemDetail } from "../../shared/types.ts";
 import { api } from "../api.ts";
-import { ACTION_LABEL, ago, clock, deliveryLabel, TYPE_LABEL } from "../format.ts";
+import { actionLabel, ago, clock, deliveryLabel, TYPE_LABEL } from "../format.ts";
 import { Images } from "./Attach.tsx";
 import { Owner } from "./Owner.tsx";
 import { PageWalk } from "./PageWalk.tsx";
@@ -176,7 +176,7 @@ function EvidenceTab({ evidence, revision }: { evidence: Evidence[]; revision: n
   );
 }
 
-function ConversationTab({ detail: { history, replies } }: { detail: ItemDetail }) {
+function ConversationTab({ detail: { item, history, replies } }: { detail: ItemDetail }) {
   const byId = new Map(replies.map((r) => [r.id, r]));
   return (
     <ol className="thread">
@@ -185,7 +185,7 @@ function ConversationTab({ detail: { history, replies } }: { detail: ItemDetail 
         if (h.kind === "reply.queued" && reply) {
           return (
             <li key={h.id} className="msg user">
-              <div className="msg-head">You · {ACTION_LABEL[reply.action]} · {clock(h.at)} · revision {reply.revision}</div>
+              <div className="msg-head">You · {actionLabel(reply.action, item.type)} · {clock(h.at)} · revision {reply.revision}</div>
               {reply.choice ? <div className="msg-choice">Option {reply.choice.toUpperCase()}</div> : null}
               {reply.text ? <Prose text={reply.text} /> : null}
               <Images ids={reply.images} />

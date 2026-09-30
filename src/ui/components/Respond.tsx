@@ -57,7 +57,7 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
     <>
       <textarea
         className="note"
-        placeholder={item.type === "milestone" ? "What should change? (required to request changes) Paste or drop images to show it." : "Add a note (optional). Paste or drop images to show it."}
+        placeholder={item.type === "decide" ? "Add a note (optional). Paste or drop images to show it." : "Add a note (optional to approve, required if it needs changes). Paste or drop images to show it."}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
@@ -115,8 +115,9 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
             <>
               {note}
               <div className="row">
-                <button className="primary" onClick={onOpenPreview}>Try it</button>
-                <button className="ghost" disabled={waiting} onClick={() => void send("tried")}>Tried it — send note</button>
+                <button className="ghost" onClick={onOpenPreview}>Try it</button>
+                <button className="primary" disabled={waiting} onClick={() => void send("accept")}>Approve</button>
+                <button className="ghost" disabled={waiting || !said} onClick={() => void send("request_changes")}>Needs changes</button>
                 {secondary}
               </div>
             </>

@@ -32,8 +32,10 @@ Two things are typed into a pane instead: a reply to an idle session nothing els
 | Type | You get | Primary actions |
 |---|---|---|
 | **Decide** | the question as the title, what the agent needs and what happens if nobody answers, 2+ options with consequences, the agent's pick and why, screenshots | pick an option (plus an optional note) |
-| **Try it** | what to check, a live preview or a walkthrough of pages (each checked for reachability and framing, shown at desktop or phone width), setup notes | open it, then "Tried it" with a note |
+| **Try it** | what to check, a live preview or a walkthrough of pages (each checked for reachability and framing, shown at desktop or phone width), setup notes | open it, then **Approve** (an optional note) or **Needs changes** (a note saying what, required) |
 | **Review milestone** | what was finished, evidence at the exact revision | Accept, or Request changes (text required) |
+
+A try-it request is answered with the milestone's two actions, `accept` and `request_changes`, worded to the agent as "Approved" and "Needs changes". Approving does not update the task's last accepted milestone, since a try is not one. `tried`, what a try was answered with before, is no longer accepted; the replies that carry it stay in the database and the conversation reads "Tried it".
 
 **Discuss** (free text to the owning agent) and **Later** (snooze 1 h / 3 h / tomorrow, or mark handled) are on every type. A choice never stops you writing more.
 

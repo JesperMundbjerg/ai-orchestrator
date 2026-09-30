@@ -6,8 +6,10 @@ import { join } from "node:path";
 import { pagesFrom } from "../src/cli/inbox.ts";
 import { openDatabase } from "../src/server/db.ts";
 import { Inbox, type PresenceSource } from "../src/server/inbox.ts";
+import { formatReply } from "../src/shared/agent-client.ts";
 import { frameAllowed, parsePage } from "../src/shared/pages.ts";
 import type { SubmitInput } from "../src/shared/types.ts";
+import { actionLabel } from "../src/ui/format.ts";
 
 const noPresence: PresenceSource = { available: () => false, forSession: () => null, resolvePane: () => null };
 
@@ -111,4 +113,47 @@ test("a page that forbids framing is known before it is shown", () => {
   assert.equal(allowed(null, "frame-ancestors http:"), true);
   // frame-ancestors overrules X-Frame-Options.
   assert.equal(allowed("DENY", "frame-ancestors *"), true);
+});
+
+test("a try-it request is approved or sent back like a milestone, and the agent reads it in those words", () => {
+  const { inbox } = setup();
+  const session = { harness: "claude" as const, sessionId: "uuid-sim", cwd: "/repo/sim" };
+  const submit = (key: string) => inbox.submit(walk({ key, title: `Drag hint ${key}`, pages: [{ label: "Step 1", url: STEP1 }] }));
+
+  const first = submit("a");
+  assert.throws(() => inbox.answer(first.itemId, { revision: 1, action: "request_changes" }), /write what you want to say/, "Needs changes requires a note");
+  assert.equal(inbox.item(first.itemId).state, "needs_attention");
+  const approved = inbox.answer(first.itemId, { revision: 1, action: "accept" });
+  assert.equal(approved.action, "accept");
+  assert.equal(inbox.item(first.itemId).state, "answer_queued");
+  assert.equal(inbox.task(inbox.item(first.itemId).taskId).lastAcceptedMilestone, "", "a try is not a milestone");
+
+  const second = submit("b");
+  inbox.answer(second.itemId, { revision: 1, action: "request_changes", text: "The hint never fades" });
+
+  const [one, two] = inbox.pendingReplies(session, "pull");
+  assert.match(formatReply(one!), /request "Drag hint a"[^]*\nApproved\.\n/);
+  assert.doesNotMatch(formatReply(one!), /Milestone accepted/);
+  assert.match(formatReply(two!), /\nNeeds changes\.\n\nThe hint never fades\n/);
+  assert.equal(actionLabel("accept", "try"), "Approved");
+  assert.equal(actionLabel("request_changes", "try"), "Needs changes");
+  assert.equal(actionLabel("accept", "milestone"), "Accepted");
+});
+
+test("a milestone's wording is unchanged, and Tried it is no longer an answer but old ones stay readable", () => {
+  const { db, inbox } = setup();
+  const session = { harness: "claude" as const, sessionId: "uuid-sim", cwd: "/repo/sim" };
+  const milestone = inbox.submit({ ...walk({ type: "milestone", key: "m", title: "Hint shipped" }) });
+  inbox.answer(milestone.itemId, { revision: 1, action: "accept" });
+  assert.equal(inbox.task(inbox.item(milestone.itemId).taskId).lastAcceptedMilestone, "Hint shipped");
+  assert.match(formatReply(inbox.pendingReplies(session, "pull")[0]!), /\nMilestone accepted\.\n/);
+
+  const old = inbox.submit(walk({ key: "old", title: "Old hint", pages: [{ label: "Step 1", url: STEP1 }] }));
+  assert.throws(() => inbox.answer(old.itemId, { revision: 1, action: "tried" }), /no longer an answer/);
+  // A reply written before this change still reads.
+  db.prepare("INSERT INTO replies (id, item_id, revision, action, choice, text, images, state, created_at) VALUES ('legacy', ?, 1, 'tried', NULL, 'Looked fine', NULL, 'delivered', '2026-09-28T10:00:00Z')").run(old.itemId);
+  const legacy = inbox.reply("legacy");
+  assert.equal(legacy.action, "tried");
+  assert.equal(legacy.text, "Looked fine");
+  assert.equal(actionLabel("tried", "try"), "Tried it");
 });

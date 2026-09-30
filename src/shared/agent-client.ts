@@ -29,9 +29,12 @@ const ACTION_LEAD: Record<PendingReply["action"], string> = {
   choose: "Decision",
   accept: "Milestone accepted",
   request_changes: "Changes requested",
-  tried: "Tried it",
+  tried: "Tried it", // an old try-it reply, still handed over if one was queued
   discuss: "Message",
 };
+
+/** What a try-it request's answer is called: the user approved it, or it needs changes. */
+const TRY_LEAD: Partial<Record<PendingReply["action"], string>> = { accept: "Approved", request_changes: "Needs changes" };
 
 /** Attached images as the agent reads them: one absolute path per line, never the bytes, since the text may be typed into a terminal. */
 export function imageLines(paths: string[]): string {
@@ -41,7 +44,7 @@ export function imageLines(paths: string[]): string {
 /** A reply as the owning agent reads it: which request it answers, what was chosen, what was said. */
 export function formatReply(r: PendingReply): string {
   const lines = [`[Review inbox] Reply to your ${r.itemType} request "${r.itemTitle}" (key ${r.itemKey}, revision ${r.revision}).`];
-  const lead = ACTION_LEAD[r.action];
+  const lead = (r.itemType === "try" ? TRY_LEAD[r.action] : undefined) ?? ACTION_LEAD[r.action];
   if (r.action === "choose") lines.push(`${lead}: ${r.choiceLabel ?? r.choice}`);
   else lines.push(`${lead}.`);
   if (r.text) lines.push("", r.text);

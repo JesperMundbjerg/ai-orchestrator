@@ -41,6 +41,8 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
       --page "Step 1=http://localhost:3000/sim/isotopes?step=1" --look "The hint pulses under the slider" \\
       --page "Step 2=http://localhost:3000/sim/isotopes?step=2" --look "It is gone once you have dragged"
 
+  A try answers as "Approved" (done, maybe with a note) or "Needs changes" (the note says what); a milestone as accepted or changes requested.
+
   Keep the title near ${SOFT_CAPS.title} characters and the request near ${SOFT_CAPS.request}; longer is accepted with a hint.
 
   inbox activity "what you are doing now" [--next "next milestone"]
