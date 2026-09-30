@@ -160,3 +160,20 @@ test("the agent can withdraw its own item, and a user resolution stales unsent a
   assert.equal(inbox.closeItem(voice, "second", "withdrawn").state, "withdrawn");
   assert.equal(inbox.item(second.itemId).state, "withdrawn");
 });
+
+test("a Pi session is addressed by its session file path: the header id for the same agent gets no reply", () => {
+  const { inbox } = setup();
+  const { itemId } = inbox.submit(decision());
+  const reply = inbox.answer(itemId, { revision: 1, action: "choose", choice: "a" });
+
+  // The same agent (harness and checkout), submitted as the id from the session file's header.
+  const headerId: SessionInput = { ...voice, sessionId: "0199a1b2-header-id" };
+  assert.deepEqual(inbox.pendingReplies(headerId, "live"), []);
+  assert.deepEqual(inbox.pendingReplies(headerId, "pull"), []);
+  assert.throws(() => inbox.acknowledge(headerId, reply.id), /no reply/);
+
+  // The path the extension registered it under receives it.
+  const [pending] = inbox.pendingReplies({ ...voice }, "live");
+  assert.equal(pending?.deliveryId, reply.id);
+  assert.equal(inbox.acknowledge(voice, reply.id).state, "delivered");
+});

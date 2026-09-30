@@ -39,6 +39,7 @@ interface PiApi {
 const POLL_MS = 2000;
 const BACKOFF_MS = 10_000;
 
+/** The session id is the session FILE'S PATH, not the id in the file's header: replies are addressed to it, so anyone submitting for this agent must use the path too. */
 function sessionOf(ctx: PiContext): SessionInput | null {
   const file = ctx.sessionManager.getSessionFile();
   return file ? { harness: "pi", sessionId: file, cwd: ctx.cwd } : null;

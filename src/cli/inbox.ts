@@ -60,6 +60,11 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox review ID accept|changes --notes "…"            your team's verdict on work handed to it
 
 The session comes from CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or HERDR_PANE_ID, or --harness/--session.
+  --session must be the id the harness registered its session under, or the reply goes to a session nobody listens to:
+    claude   the value of CLAUDE_CODE_SESSION_ID
+    codex    the value of CODEX_THREAD_ID
+    pi       the absolute path of the live session's .jsonl file, as herdr reports it; never the id in the file's header
+  A daemon submitting for a Pi agent:  inbox --harness pi --session /Users/me/.pi/agent/sessions/--repo--/2026-09-30T10-00-00_ab12.jsonl decide "Title" --option "A" --option "B"
 The service is INBOX_URL (default http://127.0.0.1:4870).`;
 
 const OPTIONS = {

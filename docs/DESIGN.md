@@ -12,6 +12,8 @@ This keeps the UI vendor-neutral. The service keeps three things per task:
 |---|---|
 | **Harness** (`pi`, `claude`, `codex`, `manual`) | shown as a label; it picks the setup hint, never a code path in the UI |
 | **Stable session id** (Pi: session file; Claude: `CLAUDE_CODE_SESSION_ID`; Codex: `CODEX_THREAD_ID`; else the herdr pane resolved to its agent session) | the reply's address. It survives restarts, and it is the same id herdr reports, so presence joins on it |
+
+A Pi session's id is the **absolute path of its `.jsonl` file** (as the extension registers it and herdr reports it), never the id in the file's header. Anything submitting on a Pi agent's behalf, such as a daemon using `inbox --harness pi --session <path>`, must use that path: a reply is handed only to the session id it was submitted under, so the header id names a session nobody listens to.
 | **Capabilities**, learned from behaviour | what the UI branches on |
 
 The reply route is **learned, not configured**:
