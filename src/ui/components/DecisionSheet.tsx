@@ -28,13 +28,15 @@ export function DecisionSheet({ state, tick, projectId, selectedId, onOpen }: {
     heading.focus({ preventScroll: true });
     heading.closest("article")?.scrollIntoView({ block: "start", behavior: "instant" });
   };
+  const other = needsYou(state, "all", projectId).filter(({ item }) => item.type !== "decide");
   const advance = (id: string) => {
     const at = visible.indexOf(id);
     const next = [...visible.slice(at + 1), ...visible.slice(0, at)].find((other) => waiting.some(({ item }) => item.id === other));
+    // No decision left: on to whatever else needs you, in the queue's order.
     if (next) { focus(next); onOpen(next); }
+    else if (other[0]) onOpen(other[0].item.id);
     else completion.current?.focus();
   };
-  const other = needsYou(state, "all", projectId).filter(({ item }) => item.type !== "decide");
   return (
     <main className="decision-sheet" ref={root} aria-label="Decisions">
       <div className="decision-sheet-inner">

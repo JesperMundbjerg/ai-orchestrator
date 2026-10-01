@@ -11,7 +11,7 @@ import { recommendedOption } from "./decision.ts";
  * choice never prevents writing more. Each send carries a fresh delivery id, so a retried
  * request cannot become a second answer.
  */
-export function Respond({ detail, onNext, onOpenPreview, onAnswered }: { detail: ItemDetail; onNext: (() => void) | null; onOpenPreview: () => void; onAnswered?: () => void }) {
+export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered }: { detail: ItemDetail; onNext: (() => void) | null; onDone?: () => void; onOpenPreview: () => void; onAnswered?: () => void }) {
   const { item, replies } = detail;
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"answer" | "discuss">("answer");
@@ -35,10 +35,22 @@ export function Respond({ detail, onNext, onOpenPreview, onAnswered }: { detail:
       attachments.clear();
       setMode("answer");
       if (item.type === "decide") onAnswered?.();
+      else onDone?.();
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Snoozing or marking handled also moves on, but only once the service has said yes.
+  const putAside = async (request: Promise<unknown>) => {
+    setError(null);
+    try {
+      await request;
+      onDone?.();
+    } catch (e) {
+      setError((e as Error).message);
     }
   };
 
@@ -92,9 +104,9 @@ export function Respond({ detail, onNext, onOpenPreview, onAnswered }: { detail:
         {showLater ? (
           <span className="menu">
             {snoozeChoices().map((c) => (
-              <button key={c.label} onClick={() => void api.snooze(item.id, c.until).then(() => onNext?.())}>Snooze {c.label}</button>
+              <button key={c.label} onClick={() => void putAside(api.snooze(item.id, c.until))}>Snooze {c.label}</button>
             ))}
-            <button onClick={() => void api.resolve(item.id).then(() => onNext?.())} title="Hide this item; the task itself is not marked finished">Mark handled</button>
+            <button onClick={() => void putAside(api.resolve(item.id))} title="Hide this item; the task itself is not marked finished">Mark handled</button>
           </span>
         ) : null}
       </span>

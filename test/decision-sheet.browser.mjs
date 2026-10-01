@@ -117,10 +117,10 @@ try {
   assert.equal(await page.locator(".decision-sheet").count(), 0);
   await page.getByRole("tab", { name: "Context", exact: true }).waitFor();
   await page.getByRole("button", { name: "Accept milestone", exact: true }).click();
-  await page.getByRole("button", { name: "Add a message", exact: true }).waitFor();
-  assert.equal((await (await fetch(`${url}/api/items/${milestone.itemId}`)).json()).replies[0].action, "accept");
-  await page.goto(`${url}/#/needs?item=${preview.itemId}`);
+  // Accepting moves straight on to the next item needing you.
   await page.getByRole("button", { name: "Approve", exact: true }).waitFor();
+  assert.equal((await (await fetch(`${url}/api/items/${milestone.itemId}`)).json()).replies[0].action, "accept");
+  assert.ok(page.url().endsWith(`item=${preview.itemId}`));
   await page.getByRole("button", { name: "Try it", exact: true }).waitFor();
   assert.ok(await page.getByRole("button", { name: "Needs changes", exact: true }).isDisabled());
   assert.equal(await page.locator(".decision-sheet").count(), 0);

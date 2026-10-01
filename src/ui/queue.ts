@@ -41,6 +41,12 @@ export function nextNeeding(list: Entry[], currentId: string | null): string | n
   return list[(at + 1) % list.length]!.item.id;
 }
 
+/** Where to go once the open item has been answered: the item "Next" would open, or nothing when no other item needs the user. */
+export function nextAfterResponse(list: Entry[], currentId: string | null): string | null {
+  const id = nextNeeding(list, currentId);
+  return id === currentId ? null : id;
+}
+
 export function entries(state: InboxState): Entry[] {
   const tasks = new Map(state.tasks.map((t) => [t.id, t]));
   const projects = new Map(state.projects.map((p) => [p.id, p]));

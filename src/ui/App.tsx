@@ -8,7 +8,7 @@ import { Sidebar } from "./components/Sidebar.tsx";
 import { TaskBoard } from "./components/TaskBoard.tsx";
 import { TeamBoard } from "./components/TeamBoard.tsx";
 import { useChangeSignal, useInboxState, useItemDetail, useRoute } from "./hooks.ts";
-import { needsYou, nextNeeding, type Filter } from "./queue.ts";
+import { needsYou, nextAfterResponse, nextNeeding, type Filter } from "./queue.ts";
 
 // The 3D office is loaded only when opened, so the inbox stays light.
 const WorldView = lazy(() => import("./world/WorldView.tsx").then((m) => ({ default: m.WorldView })));
@@ -28,6 +28,9 @@ export function App() {
     const id = nextNeeding(queue, route.itemId);
     if (id) navigate({ view: "needs", itemId: id });
   };
+
+  // After any response to the open item: on to the next one needing you, or the empty state.
+  const afterResponse = () => navigate({ view: "needs", itemId: nextAfterResponse(queue, route.itemId) });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -80,7 +83,7 @@ export function App() {
           />
           <main className="detail">
             {detail ? (
-              <ItemDetailView key={detail.item.id} detail={detail} onNext={queue.length > 1 ? openNext : null} />
+              <ItemDetailView key={detail.item.id} detail={detail} onNext={queue.length > 1 ? openNext : null} onDone={afterResponse} />
             ) : (
               <div className="empty-detail">
                 {queue.length ? (

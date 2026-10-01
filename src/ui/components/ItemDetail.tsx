@@ -12,7 +12,8 @@ import { decisionAnswer } from "./decision.ts";
 
 type Tab = "context" | "screenshots" | "pages" | "conversation";
 
-export function ItemDetailView({ detail, onNext, onAnswered }: { detail: ItemDetail; onNext: (() => void) | null; onAnswered?: () => void }) {
+/** onDone moves on once any response to the item has been accepted; without it, onNext does. */
+export function ItemDetailView({ detail, onNext, onDone, onAnswered }: { detail: ItemDetail; onNext: (() => void) | null; onDone?: () => void; onAnswered?: () => void }) {
   const { item, task, project, evidence, replies } = detail;
   const current = evidence.filter((e) => e.revision === item.revision);
   const tabs: Array<{ id: Tab; label: string }> = [
@@ -47,7 +48,7 @@ export function ItemDetailView({ detail, onNext, onAnswered }: { detail: ItemDet
               <h2 id={`question-${item.id}`} tabIndex={-1}>{item.title}</h2>
               {item.request ? <p className="decision-request" title={item.request}>{item.request}</p> : null}
             </header>
-            <Respond key={item.revision} detail={detail} onNext={onNext} onOpenPreview={() => (setDetailsOpen(true), setTab("pages"))} onAnswered={() => { setDetailsOpen(false); setExpandedAnswer(false); onAnswered?.(); }} />
+            <Respond key={item.revision} detail={detail} onNext={onNext} onDone={onDone ?? onNext ?? undefined} onOpenPreview={() => (setDetailsOpen(true), setTab("pages"))} onAnswered={() => { setDetailsOpen(false); setExpandedAnswer(false); onAnswered?.(); }} />
             {answer !== null ? <button className="link small" onClick={() => setExpandedAnswer(false)}>Collapse answer</button> : null}
           </>
         )}
@@ -115,7 +116,7 @@ export function ItemDetailView({ detail, onNext, onAnswered }: { detail: ItemDet
         {activeTab === "conversation" ? <ConversationTab detail={detail} /> : null}
       </div>
 
-      <Respond detail={detail} onNext={onNext} onOpenPreview={() => setTab("pages")} />
+      <Respond detail={detail} onNext={onNext} onDone={onDone ?? onNext ?? undefined} onOpenPreview={() => setTab("pages")} />
       <p className="route-note">{DELIVERY_LABEL[task.capabilities.reply]}.</p>
     </article>
   );
