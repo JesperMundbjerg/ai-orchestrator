@@ -54,7 +54,7 @@ export function App() {
   if (route.view === "world") {
     return (
       <Suspense fallback={<div className="empty-page">Opening the office…</div>}>
-        <WorldView state={state} tick={tick} onLeave={() => navigate({ view: "needs", itemId: null })} />
+        <WorldView state={state} tick={tick} onLeave={() => navigate({ view: "needs", itemId: null })} onCrewGuide={() => navigate({ view: "crew", itemId: null })} />
         {/* Under the office's top bar, drawn here so the office itself need not know about the machine. */}
         <MachineWarning tick={tick} floating />
       </Suspense>

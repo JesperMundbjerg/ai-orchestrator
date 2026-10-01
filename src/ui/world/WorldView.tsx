@@ -40,7 +40,7 @@ const FACE_CALLER_YAW = Math.atan2(CALLER[0] - FACE_CALLER[0], FACE_CALLER[1] - 
  * The office: every agent as a person you can walk up to. Each project (and standing team) has its own corner, the
  * rest wait in the lounge (in the building, the garden), and anyone with something for you queues at your desk.
  */
-export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: number; onLeave: () => void }) {
+export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxState; tick: number; onLeave: () => void; onCrewGuide: () => void }) {
   const [world, setWorld] = useState<WorldState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -164,6 +164,7 @@ export function WorldView({ state, tick, onLeave }: { state: InboxState; tick: n
       </header>
 
       <TeamsPanel
+        onCrewGuide={onCrewGuide}
         world={world}
         plan={plan}
         agents={agents}

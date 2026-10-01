@@ -14,11 +14,12 @@ import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "./status.ts
 import type { Waiting } from "./WorldView.tsx";
 
 /** The project list: where each stands, open one, start a project, change or finish one. */
-export function TeamsPanel({ world, plan, agents, onOpen }: {
+export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
   world: WorldState;
   plan: OfficePlan;
   agents: Map<string, WorldAgent>;
   onOpen: (teamId: string, pos: Vec2, yaw: number) => void;
+  onCrewGuide: () => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
@@ -33,6 +34,8 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
     <aside className="world-panel teams">
       <div className="panel-head">
         <strong>Projects</strong>
+        <span className="spacer" />
+        <button className="ghost small" onClick={onCrewGuide} title="Which model each crew member runs on">Crew guide</button>
         <button className="ghost small" onClick={() => (setError(null), setAdding(!adding))}>{adding ? "Cancel" : "+ New project"}</button>
       </div>
       <TellAllLeads world={world} />
