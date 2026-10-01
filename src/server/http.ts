@@ -14,6 +14,7 @@ import { projectQueue } from "./queue.ts";
 import { UPLOAD_BODY_LIMIT } from "./uploads.ts";
 import type { Herdr } from "./herdr.ts";
 import type { Machine } from "./machine.ts";
+import type { Switches } from "./switch.ts";
 import type { World } from "./world.ts";
 
 const TYPES: Record<string, string> = {
@@ -25,7 +26,7 @@ const TYPES: Record<string, string> = {
 
 type Handler = (req: IncomingMessage, body: any, params: string[]) => unknown | Promise<unknown>;
 
-export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine }): Server {
+export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches }): Server {
   const clients = new Set<ServerResponse>();
   const broadcast = (reason: string) => {
     for (const res of clients) res.write(`event: changed\ndata: ${JSON.stringify({ reason })}\n\n`);
@@ -102,6 +103,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     // The founder's crew tree: which harness and model a lead picks for each crew member.
     ["GET", /^\/api\/world\/crew-tree$/, () => needWorld().crewTree().state()],
     ["PUT", /^\/api\/world\/crew-tree$/, (_r, b) => needWorld().crewTree().save(b)],
+    // Moving agents to another harness: one, or everyone on a harness one by one; each reports its progress.
+    ["GET", /^\/api\/world\/switches$/, () => needSwitches().list()],
+    ["POST", /^\/api\/world\/switches$/, (_r, b) => needSwitches().start(b.agent, b)],
+    ["POST", /^\/api\/world\/switches\/all-from$/, (_r, b) => needSwitches().allFrom(b.from, b)],
+    ["GET", /^\/api\/world\/switches\/([\w-]+)$/, (_r, _b, [id]) => needSwitches().get(id!)],
     // What agents left running on the machine; Close is refused for anything but a listed headless browser.
     ["GET", /^\/api\/machine$/, () => needMachine().state()],
     ["POST", /^\/api\/machine\/browsers\/(\d+)\/close$/, (_r, _b, [pid]) => needMachine().close(Number(pid))],
@@ -135,6 +141,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   function needWorld(): World {
     if (!world) throw new InboxError(404, "this service runs without the office world");
     return world;
+  }
+
+  function needSwitches(): Switches {
+    if (!opts.switches) throw new InboxError(404, "this service cannot switch agents between harnesses");
+    return opts.switches;
   }
 
   function needMachine(): Machine {

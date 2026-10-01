@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
-  ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
+  ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, SwitchesView, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
 import { serviceUrl } from "../shared/agent-client.ts";
 import { Activity } from "./activity.ts";
@@ -70,6 +70,8 @@ const NAMES = [
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? "" : String(v));
+
+const NONE: ReadonlySet<string> = new Set();
 
 /** How long the folders beside known repositories are trusted before they are read again. */
 const SCAN_CACHE_MS = 3000;
@@ -155,6 +157,10 @@ export class World {
   private adapters = new Adapters();
   private unpresented: Unpresented;
   onChange: (reason: string) => void = () => {};
+  /** Panes the office does not see yet or any more: an agent being switched to another harness (switch.ts) sets them. */
+  hiddenPanes: () => ReadonlySet<string> = () => NONE;
+  /** Agents being switched to another harness, and what each can be switched to; switch.ts sets it. */
+  switches: { view(agents: WorldAgent[]): SwitchesView } | null = null;
 
   constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date(), files = new SessionFiles()) {
     this.db = db;
@@ -236,6 +242,7 @@ export class World {
       work: this.messages.work(),
       repositories: this.repositories(world, teams),
       herdr: this.source?.available() ? "connected" : "unavailable",
+      ...(this.switches ? { switches: this.switches.view(world) } : {}),
     };
   }
 
@@ -514,9 +521,10 @@ export class World {
   private join(tasks: InboxState["tasks"]): Joined[] {
     const live = this.source?.live() ?? [];
     const out = new Map<string, Joined>();
+    const hidden = this.hiddenPanes();
     for (const a of live) {
-      // A lead's crew shares its checkout, so an agent herdr knows by name is that name in the checkout.
-      const base = `${identityOf(a.harness, a.cwd, a.sessionId ?? a.paneId)}${a.name ? `@${a.name}` : ""}`;
+      if (hidden.has(a.paneId)) continue;
+      const base = liveIdentity(a);
       let identity = base;
       // Two unnamed agents in one checkout are two people.
       for (let n = 2; out.has(identity); n++) identity = `${base}#${n}`;
@@ -926,6 +934,11 @@ export function teamStatus(members: WorldAgent[]): { status: TeamStatus; blocked
   if (working) return { status: "working", blockedBy: [] };
   if (members.some((m) => m.status !== "offline")) return { status: "idle", blockedBy: [] };
   return { status: "offline", blockedBy: [] };
+}
+
+/** Who a running agent is. A lead's crew shares its checkout, so an agent herdr knows by name is that name in the checkout. */
+export function liveIdentity(a: Pick<LiveAgent, "harness" | "cwd" | "sessionId" | "paneId" | "name">): string {
+  return `${identityOf(a.harness, a.cwd, a.sessionId ?? a.paneId)}${a.name ? `@${a.name}` : ""}`;
 }
 
 function identityOf(harness: Harness, cwd: string | null, fallback: string): string {

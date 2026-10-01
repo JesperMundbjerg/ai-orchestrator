@@ -19,6 +19,13 @@ export async function call<T>(path: string, body: unknown, timeoutMs = 5000): Pr
   return out;
 }
 
+export async function get<T>(path: string, timeoutMs = 5000): Promise<T> {
+  const res = await fetch(`${serviceUrl()}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
+  const out = (await res.json()) as T & { error?: string };
+  if (!res.ok) throw new Error(out.error ?? `inbox answered ${res.status}`);
+  return out;
+}
+
 export const fetchReplies = (session: SessionInput, mode: "live" | "boundary" | "pull") =>
   call<PendingReply[]>("/api/agent/replies", { session, mode });
 

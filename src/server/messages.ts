@@ -52,6 +52,8 @@ export class Messages {
   replies: Pick<Inbox, "typeable" | "claimTyping" | "typed"> | null = null;
   /** Where images you attach are stored, when the service wires them in; without it a message carries none. */
   uploads: Uploads | null = null;
+  /** Agents being switched to another harness: what waits for them is held until the new session has its brief. */
+  held: () => ReadonlySet<string> = () => new Set();
   /** Agents a reply is being typed into; like a message being sent, it keeps them busy. */
   private typingTo = new Set<string>();
   private waiting = new WaitingMessages();
@@ -274,7 +276,7 @@ export class Messages {
     const pending = this.db
       .prepare("SELECT d.agent_id, d.state, m.* FROM message_deliveries d JOIN messages m ON m.id = d.message_id WHERE d.state IN ('queued', 'sending') ORDER BY m.rowid")
       .all() as Row[];
-    const busy = new Set<string>(this.typingTo);
+    const busy = new Set<string>([...this.typingTo, ...this.held()]);
     const queued = new Map<string, Row[]>();
     for (const row of pending) {
       const agentId = str(row.agent_id);

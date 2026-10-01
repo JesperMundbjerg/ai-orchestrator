@@ -3,6 +3,7 @@ import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import type { InboxState, ItemDetail, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { Effort } from "../components/Effort.tsx";
+import { SwitchHarness } from "../components/SwitchHarness.tsx";
 import { TellAllLeads } from "../components/TellAllLeads.tsx";
 import { ItemDetailView } from "../components/ItemDetail.tsx";
 import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
@@ -255,6 +256,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
         </span>
       </div>
       <Effort key={agent.id} agent={agent} />
+      <SwitchHarness key={`switch-${agent.id}`} agent={agent} switches={world.switches} />
       <Conversation agent={agent} messages={thread} between={said.length} />
       <TellAgent agent={agent} />
       {agent.cwd ? <code className="agent-cwd" title={agent.cwd}>{agent.cwd}</code> : null}

@@ -7,11 +7,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openPane } from "./pane.ts";
-import { acknowledge, call, fetchReplies, formatReply } from "../shared/agent-client.ts";
+import { acknowledge, call, fetchReplies, formatReply, get } from "../shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
 import { projectRoot } from "../shared/project.ts";
-import type { EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
+import type { AgentSwitch, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
 
@@ -72,6 +72,10 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox handoff "Title" --summary "what was done, where, how to check it" [--to TEAM]
   inbox handoff --work ID --summary "what changed"      hand it over again after changes
   inbox review ID accept|changes --notes "…"            your team's verdict on work handed to it
+  inbox switch NAME [--to claude|pi] [--model M] [--effort E]
+                                  move an agent to the other harness: it writes a handoff, a new session takes over its
+                                  name, team, role and messages, and its old pane closes; the model follows the crew guide
+  inbox switch --all-from pi      the same for every running agent on that harness, one by one
   inbox pane [--cwd DIR]          open a pane in your herdr tab (a grid: 2x2 first, then it grows) and print its id: P=$(inbox pane)
 
 The session comes from CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or HERDR_PANE_ID, or --harness/--session.
@@ -110,6 +114,9 @@ const OPTIONS = {
   notes: { type: "string" },
   ack: { type: "boolean" },
   harness: { type: "string" },
+  model: { type: "string" },
+  effort: { type: "string" },
+  "all-from": { type: "string" },
   session: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -195,6 +202,40 @@ async function replies(): Promise<void> {
   }
 }
 
+/**
+ * `inbox switch`: asks the office to move an agent (or everyone on a harness) to the other harness,
+ * then follows along, printing each step as it happens. Stopping this command does not stop the switch.
+ */
+async function switchAgents(name: string | undefined): Promise<void> {
+  const opts = { to: flags.to, model: flags.model, effort: flags.effort };
+  let ids: string[];
+  if (flags["all-from"]) {
+    const batch = await call<{ switches: AgentSwitch[]; skipped: Array<{ name: string; why: string }> }>("/api/world/switches/all-from", { from: flags["all-from"], ...opts });
+    for (const s of batch.skipped) console.log(`${s.name}: not switched, ${s.why}.`);
+    if (!batch.switches.length) throw new Error("nobody could be switched");
+    console.log(`Switching ${batch.switches.map((s) => s.agentName).join(", ")} one by one.`);
+    ids = batch.switches.map((s) => s.id);
+  } else {
+    if (!name) throw new Error("inbox switch needs the agent's name: inbox switch NAME [--to claude|pi], or --all-from HARNESS");
+    const started = await call<AgentSwitch>("/api/world/switches", { agent: name, ...opts });
+    console.log(`Switching ${started.agentName} to ${started.toLabel} (${started.model}, ${started.effort} effort).`);
+    ids = [started.id];
+  }
+  const said = new Map<string, string>();
+  let failed = 0;
+  for (const id of ids) {
+    for (;;) {
+      const s = await get<AgentSwitch>(`/api/world/switches/${id}`);
+      if (said.get(id) !== s.says) console.log(`${s.agentName}: ${s.says}`);
+      said.set(id, s.says);
+      if (s.step === "failed") failed++;
+      if (s.step === "done" || s.step === "failed") break;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+  if (failed) throw new Error(`${failed} of ${ids.length} not switched`);
+}
+
 /** Claude Code hook: hands queued replies to the session at its turn boundaries, and tells the office a new session's model. */
 async function claudeHook(): Promise<void> {
   const input = JSON.parse(readFileSync(0, "utf8") || "{}") as { hook_event_name?: string; session_id?: string; cwd?: string };
@@ -266,6 +307,8 @@ async function main(argv: string[]): Promise<void> {
       const { work } = await call<{ work: Work }>("/api/agent/review", { session: session(), work: arg, verdict, notes: flags.notes });
       return console.log(`Work ${work.id} is ${work.state === "accepted" ? "accepted" : "sent back with your notes"}; whoever handed it over is told.`);
     }
+    case "switch":
+      return switchAgents(arg);
     case "pane":
       return console.log(await openPane(resolve(flags.cwd ?? process.cwd())));
     case "hook":

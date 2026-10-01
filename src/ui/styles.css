@@ -565,3 +565,11 @@ button.link { background: none; border: 0; padding: 0; font: inherit; color: var
 .crew-off .crew-picker { opacity: 0.5; }
 .crew-fallback { margin-top: 6px; border-style: dashed; }
 .crew-fallback h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0; }
+
+/* Switching an agent to the other harness: a button, then each step as it happens. */
+.switch-harness { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; font-size: 12px; }
+.switch-harness.compact { margin: 2px 0 0; grid-column: 1 / -1; }
+.switch-harness button { align-self: flex-start; }
+.switch-progress { display: inline-flex; gap: 6px; align-items: baseline; color: var(--muted, #888); }
+.switch-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; animation: switch-pulse 1s ease-in-out infinite alternate; }
+@keyframes switch-pulse { from { opacity: 0.25; } to { opacity: 1; } }

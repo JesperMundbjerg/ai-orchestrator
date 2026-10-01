@@ -1,5 +1,5 @@
 import type { CrewTree, CrewTreeState } from "../shared/crewtree.ts";
-import type { AllLeadsResult, InboxState, Item, ItemDetail, MachineState, PageCheck, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
+import type { AgentSwitch, AllLeadsResult, InboxState, Item, ItemDetail, MachineState, PageCheck, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -34,6 +34,7 @@ export const api = {
   mergeTeam: (teamId: string, into: string) => request<{ ok: true; note: string; team: Team }>("POST", `/api/world/teams/${teamId}/merge`, { into }),
   updateAgent: (agentId: string, patch: { name?: string; teamId?: string | null; role?: "lead" | "member"; takeName?: boolean }) => request<WorldAgent>("PATCH", `/api/world/agents/${agentId}`, patch),
   setEffort: (agentId: string, level: string) => request("POST", `/api/world/agents/${agentId}/effort`, { level }),
+  switchAgent: (agentId: string, body: { to?: string; model?: string; effort?: string } = {}) => request<AgentSwitch>("POST", "/api/world/switches", { agent: agentId, ...body }),
   removeAgent: (agentId: string) => request<{ removed: string }>("DELETE", `/api/world/agents/${agentId}`, {}),
   instructTeam: (teamId: string, text: string, images: string[] = []) => request<Message>("POST", `/api/world/teams/${teamId}/messages`, { text, images, clientId: crypto.randomUUID() }),
   tellAllLeads: (body: { text: string; images: string[]; leadIds: string[]; clientId: string }) => request<AllLeadsResult>("POST", "/api/world/all-leads/messages", body),

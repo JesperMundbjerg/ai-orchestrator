@@ -553,6 +553,8 @@ export interface WorldState {
   work: Work[];
   repositories: Repository[];
   herdr: "connected" | "unavailable";
+  /** Moving agents to another harness: what each can go to, and the switches under way. */
+  switches?: SwitchesView;
 }
 
 /** What an agent learns about itself and its team from `inbox team`. */
@@ -593,4 +595,46 @@ export interface MachineState {
   /** Forgotten browsers the office closed today (kept in memory, so since the service started). */
   closedToday: number;
   checkedAt: string;
+}
+
+/** Where moving an agent to another harness stands: each step is said as it happens. */
+export type SwitchStep = "queued" | "waiting" | "handoff" | "opening" | "starting" | "closing" | "taking_over" | "briefing" | "done" | "failed";
+
+/** One agent moving to another harness: a new session takes over its name, team, role and what waits for it. */
+export interface AgentSwitch {
+  id: string;
+  agentId: string;
+  agentName: string;
+  from: Harness;
+  to: Harness;
+  /** The harness it goes to, as people call it. */
+  toLabel: string;
+  model: string;
+  effort: string;
+  step: SwitchStep;
+  /** What is happening now, or what happened, in a sentence. */
+  says: string;
+  /** The handoff the agent wrote for the one taking over; null when it was not running. */
+  handoff: string | null;
+  error: string | null;
+  /** Set when it is one of a batch (`inbox switch --all-from`), switched one by one. */
+  batchId: string | null;
+  startedAt: string;
+  updatedAt: string;
+}
+
+/** What an agent can be switched to, as the office offers it; `refused` says why not, when it cannot be. */
+export interface SwitchOffer {
+  harness: Harness;
+  label: string;
+  model: string;
+  effort: string;
+  refused: string | null;
+}
+
+export interface SwitchesView {
+  /** Per agent id, for agents that run on a harness that can be switched. */
+  offers: Record<string, SwitchOffer>;
+  /** Switches under way, and those finished in the last few minutes. */
+  recent: AgentSwitch[];
 }

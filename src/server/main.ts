@@ -10,6 +10,7 @@ import { createInboxServer } from "./http.ts";
 import { CrewTreeStore } from "./crewtree.ts";
 import { Inbox } from "./inbox.ts";
 import { Machine } from "./machine.ts";
+import { Switches } from "./switch.ts";
 import { World } from "./world.ts";
 
 export const DEFAULT_PORT = 4870;
@@ -32,17 +33,19 @@ inbox.presentationPath = (session) => {
     return team ? (team.standing ? null : team.path) : session.cwd;
   } catch { return session.cwd; }
 };
+const switches = new Switches(db, world, herdr, dir);
 const machine = new Machine(() => world.state());
 machine.tellLead = (teamId, text) => world.tellLead(teamId, text);
 const dist = fileURLToPath(new URL("../../dist", import.meta.url));
 
 herdr.start();
 machine.start();
+void switches.resume();
 setInterval(() => {
   inbox.wakeDue();
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();
 
-createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine }).listen(port, "127.0.0.1", () => {
+createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches }).listen(port, "127.0.0.1", () => {
   console.log(`Review inbox on http://localhost:${port}  (data: ${dir})`);
 });

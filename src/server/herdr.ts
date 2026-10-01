@@ -15,6 +15,7 @@ import { HARNESSES, type Harness, type Presence } from "../shared/types.ts";
 import type { PresenceSource } from "./inbox.ts";
 import type { AgentSource, LiveAgent } from "./world.ts";
 import { StaleWorking } from "./stale.ts";
+import { nextSplit, type PaneRect } from "../shared/panes.ts";
 
 const run = promisify(execFile);
 const POLL_MS = 3000;
@@ -222,6 +223,25 @@ export class Herdr implements PresenceSource, AgentSource {
 
   async closePane(paneId: string): Promise<void> {
     await this.call(["pane", "close", paneId]);
+  }
+
+  /**
+   * A shell pane in `cwd`, without taking focus: beside `pane` in its tab, where `nextSplit` puts
+   * it so the tab stays a grid, or in a workspace of its own when there is no pane to go beside.
+   */
+  async openPane(cwd: string, beside: string | null, label: string): Promise<string> {
+    if (!beside) {
+      const created = await this.call<{ root_pane: { pane_id: string } }>(["workspace", "create", "--cwd", cwd, "--label", label, "--no-focus"]);
+      return created.root_pane.pane_id;
+    }
+    const { layout } = await this.call<{ layout: { panes: Array<{ pane_id: string; rect: Omit<PaneRect, "id"> }> } }>(["pane", "layout", "--pane", beside]);
+    const { pane, direction } = nextSplit(layout.panes.map((p) => ({ id: p.pane_id, ...p.rect })));
+    const created = await this.call<{ pane: { pane_id: string } }>(["pane", "split", pane, "--direction", direction, "--ratio", "0.5", "--cwd", cwd, "--no-focus"]);
+    return created.pane.pane_id;
+  }
+
+  async renameAgent(paneId: string, name: string): Promise<void> {
+    await this.call(["agent", "rename", paneId, name]);
   }
 
   /** herdr removes a worktree through the workspace it is open in, so one not open is opened first. */

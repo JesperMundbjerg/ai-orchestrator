@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type DragEvent } from "react";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
-import type { InboxState, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
+import type { InboxState, SwitchesView, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "../world/status.ts";
 import { HiddenLine, MessageRow, TellTeam, ThreadToggle, useThreadView, withMe, WorkRow } from "../world/Talk.tsx";
 import { TellAllLeads } from "./TellAllLeads.tsx";
+import { SwitchHarness } from "./SwitchHarness.tsx";
 import { MachineWarning } from "./MachineWarning.tsx";
 import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
 
@@ -94,7 +95,7 @@ export function TeamBoard({ state, tick, onOffice, onCrewGuide }: { state: Inbox
             <span className="muted small-note">Not on a project · {lounge.length}</span>
           </div>
           <ul className="member-list">
-            {lounge.map((a) => <MemberCard key={a.id} agent={a} team={null} state={state} run={run} />)}
+            {lounge.map((a) => <MemberCard key={a.id} agent={a} team={null} state={state} run={run} switches={world.switches} />)}
           </ul>
         </section>
       </div>
@@ -180,7 +181,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
         </div>
       )}
       <ul className="member-list">
-        {members.map((a) => <MemberCard key={a.id} agent={a} team={team} state={state} run={run} />)}
+        {members.map((a) => <MemberCard key={a.id} agent={a} team={team} state={state} run={run} switches={world.switches} />)}
         {!members.length ? <li className="muted small-note drop-hint">{team.standing ? "Drag someone here." : "Nobody working in it. Drag someone here, or start an agent in its worktree."}</li> : null}
       </ul>
       <TellTeam team={team} members={members} />
@@ -188,7 +189,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
   );
 }
 
-function MemberCard({ agent, team, state, run }: { agent: WorldAgent; team: WorldTeam | null; state: InboxState; run: (p: Promise<unknown>) => void }) {
+function MemberCard({ agent, team, state, run, switches }: { agent: WorldAgent; team: WorldTeam | null; state: InboxState; run: (p: Promise<unknown>) => void; switches: SwitchesView | undefined }) {
   const doing = agent.doing ?? state.tasks.find((t) => agent.taskIds.includes(t.id) && t.activity)?.activity ?? agent.title ?? LAMP[agent.status].label;
   return (
     <li className="member card-member" draggable onDragStart={(e) => e.dataTransfer.setData("text/agent", agent.id)} title="Drag to another team">
@@ -213,6 +214,7 @@ function MemberCard({ agent, team, state, run }: { agent: WorldAgent; team: Worl
         {agent.effort?.request?.state === "pending" ? ` (${agent.effort.request.level} pending)` : ""}
         {agent.project ? ` · ${agent.project}` : ""}
       </span>
+      <SwitchHarness agent={agent} switches={switches} compact />
     </li>
   );
 }
