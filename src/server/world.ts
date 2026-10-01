@@ -106,6 +106,7 @@ const FIRST_MATE = [
   '`herdr agent prompt <name> "<task>"` gives it its task.',
   "Crew share this checkout, so give each one files of its own.",
   'Tell each crew member to report to you with `inbox say <your office name> "…"` when done or stuck, and not to ask the founder; their reports arrive in your terminal.',
+  "Do not answer acknowledgments or thanks, and tell your crew not to either; continue the work instead.",
   "Close a member's pane when its work is done: `herdr pane close <pane id>`.",
   "Tell crew to close every browser they open: close its pages, `browser.close()` in a `finally`, one shared browser per task, and never leave a dev server's probe browser running; the office closes a headless browser left running (its script gone, or unused for 10 minutes) and tells you, and lists the ones still in use when they load the machine.",
   "Tell crew never to open a visible browser window: it makes the founder's screen jump to it. They use headless browsers (Playwright headless, which can still use the GPU with `--use-angle=metal`), and to show the founder a page they add it to the review inbox with `--page \"Label=URL\"`, never `open URL`; if a real window is unavoidable, `open -g URL` (macOS: in the background, without taking focus).",

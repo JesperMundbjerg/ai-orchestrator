@@ -15,6 +15,7 @@ import { imageIds, InboxError, type Inbox } from "./inbox.ts";
 import type { Uploads } from "./uploads.ts";
 import { laneRecipient } from "./queue.ts";
 import { WaitingMessages } from "./waiting.ts";
+import { MessageLoops } from "./loops.ts";
 import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { AgentSource } from "./world.ts";
 
@@ -52,6 +53,7 @@ export class Messages {
   /** Agents a reply is being typed into; like a message being sent, it keeps them busy. */
   private typingTo = new Set<string>();
   private waiting = new WaitingMessages();
+  private loops: MessageLoops;
 
   /** Only queued recipients need immediate screen sampling; never scan unrelated panes. */
   queuedPanes(state: WorldState): Set<string> {
@@ -70,6 +72,7 @@ export class Messages {
     this.world = world;
     this.now = now;
     this.changed = changed;
+    this.loops = new MessageLoops(db);
     // This service owns all sends. On startup, a persisted claim has no sender left to
     // settle it and must not reserve its agent forever. It may already have been typed:
     // fail visibly, never acknowledge it or requeue it automatically.
@@ -350,15 +353,26 @@ export class Messages {
   }
 
   private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false, images: string[] = [], fromOffice = false, allLeads = false): Message {
-    const id = randomUUID();
     const at = this.now().toISOString();
+    const deliveries = (ids: string[]): Delivery[] => ids.map((agentId) => ({ agentId, state: "queued", error: null, updatedAt: at }));
+    const message: Message = { id: randomUUID(), kind, fromAgentId, teamId, text: body, images, workId, createdAt: at, deliveries: deliveries(to), toFounder, fromOffice, allLeads };
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db
-        .prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder, images, from_office, all_leads) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(id, kind, fromAgentId, teamId, body, workId, clientId ?? null, at, toFounder ? 1 : 0, images.length ? JSON.stringify(images) : null, fromOffice ? 1 : 0, allLeads ? 1 : 0);
-      for (const agentId of to) {
-        this.db.prepare("INSERT INTO message_deliveries (message_id, agent_id, state, updated_at) VALUES (?, ?, 'queued', ?)").run(id, agentId, at);
+      this.insert(message, clientId);
+      this.db.exec("SAVEPOINT loop_notice");
+      try {
+        const loop = this.loops.observe(message);
+        if (loop) {
+          // Advisory only, through ordinary guarded deliveries. The notice and episode
+          // latch commit together; never suppress or change the triggering message.
+          this.insert({ ...message, id: randomUUID(), kind: "message", fromAgentId: null, teamId: null, text: loop.text, images: [], workId: null,
+            deliveries: deliveries(loop.agentIds), toFounder: false, fromOffice: true, allLeads: false });
+        }
+        this.db.exec("RELEASE loop_notice");
+      } catch (err) {
+        // Even a broken detector/notice must not become a sending limit.
+        this.db.exec("ROLLBACK TO loop_notice; RELEASE loop_notice;");
+        console.error(`office loop notice: ${err instanceof Error ? err.message : String(err)}`);
       }
       this.db.exec("COMMIT");
     } catch (err) {
@@ -366,7 +380,16 @@ export class Messages {
       throw err;
     }
     this.changed();
-    return this.message(id);
+    return this.message(message.id);
+  }
+
+  /** Inserts inside store's transaction, so an advisory shares the same durable delivery path. */
+  private insert(m: Message, clientId?: string): void {
+    this.db.prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder, images, from_office, all_leads) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(m.id, m.kind, m.fromAgentId, m.teamId, m.text, m.workId, clientId ?? null, m.createdAt, m.toFounder ? 1 : 0, m.images.length ? JSON.stringify(m.images) : null, m.fromOffice ? 1 : 0, m.allLeads ? 1 : 0);
+    for (const d of m.deliveries) {
+      this.db.prepare("INSERT INTO message_deliveries (message_id, agent_id, state, updated_at) VALUES (?, ?, 'queued', ?)").run(m.id, d.agentId, d.updatedAt);
+    }
   }
 
   private byClientId(clientId: string | undefined): Message | null {

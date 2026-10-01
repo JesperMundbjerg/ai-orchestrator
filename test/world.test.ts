@@ -723,6 +723,7 @@ test("inbox team tells a first mate how to run its crew, and its crew to report 
   assert.match(told, new RegExp(`Project: Atoms light, in the worktree ${atoms}`));
   assert.match(told, new RegExp(`Your office name is ${mate!.name}. You are the project's first mate`));
   assert.match(told, /Crew guide/, "a first mate reads the current tree in `inbox team`");
+  assert.match(told, /Do not answer acknowledgments or thanks, and tell your crew not to either/);
   assert.match(told, /Start: herdr agent start <name> --kind claude --pane "\$P" -- --model sonnet --effort high/);
   assert.match(world.brief({ paneId: "p2" }).text, new RegExp(`${mate!.name} is its first mate: .*inbox say ${mate!.name}`));
   assert.equal(crew!.role, "member");
