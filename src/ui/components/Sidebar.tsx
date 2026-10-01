@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { InboxState } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import type { Route, View } from "../hooks.ts";
@@ -10,6 +11,7 @@ const VIEWS: Array<{ view: Exclude<View, "world" | "teams">; label: string }> = 
 ];
 
 export function Sidebar({ state, route, navigate }: { state: InboxState; route: Route; navigate: (r: Partial<Route>) => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   const counts: Record<Exclude<View, "world" | "teams">, number> = {
     needs: needsYou(state, "all", route.projectId).length,
     working: state.tasks.filter((t) => !t.parked && (!route.projectId || t.projectId === route.projectId)).length,
@@ -18,8 +20,8 @@ export function Sidebar({ state, route, navigate }: { state: InboxState; route: 
   const waiting = (projectId: string) => needsYou(state, "all", projectId).length;
 
   return (
-    <nav className="sidebar">
-      <div className="brand">Review Inbox</div>
+    <nav className={`sidebar${menuOpen ? " nav-open" : ""}`}>
+      <div className="brand">Review Inbox<button className="ghost small sidebar-menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}>Navigation</button></div>
       <ul className="views">
         {VIEWS.map(({ view, label }) => (
           <li key={view}>

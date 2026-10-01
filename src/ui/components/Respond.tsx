@@ -4,20 +4,22 @@ import { api } from "../api.ts";
 import { deliveryLabel, snoozeChoices } from "../format.ts";
 import { enterPlan, SEND_HINT, sendOnEnter } from "../sendKey.ts";
 import { AttachedImages, useAttachments, type Attachments } from "./Attach.tsx";
+import { recommendedOption } from "./decision.ts";
 
 /**
  * The answer area. Each type has one primary action; Discuss and Later are always there, and a
  * choice never prevents writing more. Each send carries a fresh delivery id, so a retried
  * request cannot become a second answer.
  */
-export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail; onNext: (() => void) | null; onOpenPreview: () => void }) {
+export function Respond({ detail, onNext, onOpenPreview, onAnswered }: { detail: ItemDetail; onNext: (() => void) | null; onOpenPreview: () => void; onAnswered?: () => void }) {
   const { item, replies } = detail;
-  const [choice, setChoice] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"answer" | "discuss">("answer");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showLater, setShowLater] = useState(false);
+  const [showNote, setShowNote] = useState(false);
+  const recommended = recommendedOption(item.options, item.recommendation);
   const attachments = useAttachments();
   const last = replies.at(-1);
   // Something to say: words, or images you pasted or dropped. Nothing is sent while an image is still uploading.
@@ -31,8 +33,8 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
       await api.answer(item.id, { id: crypto.randomUUID(), revision: item.revision, action, text, images: attachments.ids, ...extra });
       setText("");
       attachments.clear();
-      setChoice(null);
       setMode("answer");
+      if (item.type === "decide") onAnswered?.();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -61,14 +63,15 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
   // are missing, or a note is typed on an item that is approved, Enter does nothing.
   const kind = item.type === "decide" ? (open ? "answer" : "choose") : "approve";
   const label = open ? "Answer" : item.type === "decide" ? "Send decision" : item.type === "milestone" ? "Accept milestone" : "Approve";
-  const enter = enterPlan(kind, label, { text, choice, said }, item.type === "milestone" ? "Request changes" : "Needs changes");
-  const run = () => (kind === "answer" ? void send("answer") : kind === "choose" ? choice && void send("choose", { choice }) : void send("accept"));
+  const enter = enterPlan(kind, label, { text, choice: null, said }, item.type === "milestone" ? "Request changes" : "Needs changes");
+  const run = () => (kind === "answer" ? void send("answer") : kind === "approve" ? void send("accept") : undefined);
   const submit = waiting || !enter.enabled ? undefined : run;
 
   const note = (
     <>
       <textarea
         className="note"
+        aria-label={open ? "Your answer" : "Optional note"}
         placeholder={open ? "Write your answer. Paste or drop images to show it." : item.type === "decide" ? "Add a note (optional). Paste or drop images to show it." : "Add a note (optional to approve, required if it needs changes). Paste or drop images to show it."}
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -76,14 +79,14 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
         onKeyDown={sendOnEnter(() => submit?.())}
         rows={open ? 4 : 2}
       />
-      <div className="muted small-note">{enter.hint}</div>
+      <div className="muted small-note">{kind === "choose" ? "Choose an option above to send with this note · Shift+Enter for a new line" : enter.hint}</div>
       <AttachedImages attachments={attachments} />
     </>
   );
 
   const secondary = (
     <span className="secondary">
-      <button className="ghost" onClick={() => setMode("discuss")}>Discuss</button>
+      <button className="ghost" onClick={() => setMode("discuss")}>{item.type === "decide" && item.options.length ? "Other / discuss" : "Discuss"}</button>
       <span className="later">
         <button className="ghost" onClick={() => setShowLater(!showLater)} aria-expanded={showLater}>Later ▾</button>
         {showLater ? (
@@ -107,23 +110,20 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
         <>
           {item.type === "decide" ? (
             <>
-              {item.recommendation ? <p className="recommendation">Agent recommends: {item.recommendation}</p> : null}
-              {open ? null : <div className="options" role="radiogroup">
+              {item.recommendation && !recommended ? <p className="recommendation">Recommended: {item.recommendation}</p> : null}
+              {open ? null : <div className="options" aria-label="Choose an answer">
                 {item.options.map((o) => (
-                  <button key={o.id} role="radio" aria-checked={choice === o.id} className={`option ${choice === o.id ? "on" : ""}`} onClick={() => setChoice(o.id)}>
-                    <span className="option-label">
-                      <span className="option-key">{o.id.toUpperCase()}</span> {o.label}
-                    </span>
+                  <button key={o.id} disabled={waiting} className={`option ${recommended === o.id ? "recommended" : ""}`} onClick={() => void send("choose", { choice: o.id })}>
+                    <span className="option-label">{o.label}{recommended === o.id ? <span className="recommend-badge">Recommended</span> : null}</span>
                     {o.consequence ? <span className="option-consequence">{o.consequence}</span> : null}
+                    {recommended === o.id ? <span className="option-reason">{item.recommendation}</span> : null}
                   </button>
                 ))}
               </div>}
-              {note}
-              <div className="row">
-                {open ? (
-                  <button className="primary" disabled={!text.trim() || waiting} onClick={() => void send("answer")}>Answer</button>
-                ) : (
-                  <button className="primary" disabled={!choice || waiting} onClick={() => choice && void send("choose", { choice })}>Send decision</button>
+              {open || showNote ? note : <AttachedImages attachments={attachments} />}
+              <div className="row decision-secondary">
+                {open ? <button className="primary" disabled={!text.trim() || waiting} onClick={() => void send("answer")}>Answer</button> : (
+                  <button className="ghost" aria-expanded={showNote} onClick={() => setShowNote(!showNote)}>Add a note</button>
                 )}
                 {secondary}
               </div>
@@ -152,7 +152,7 @@ export function Respond({ detail, onNext, onOpenPreview }: { detail: ItemDetail;
           ) : null}
         </>
       )}
-      {error ? <div className="warn">{error}</div> : null}
+      {error ? <div className="warn" role="alert">{error}</div> : null}
     </footer>
   );
 }

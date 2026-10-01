@@ -8,10 +8,11 @@ import { Owner } from "./Owner.tsx";
 import { PageWalk } from "./PageWalk.tsx";
 import { Respond } from "./Respond.tsx";
 import { VideoEvidence } from "./VideoEvidence.tsx";
+import { decisionAnswer } from "./decision.ts";
 
 type Tab = "context" | "screenshots" | "pages" | "conversation";
 
-export function ItemDetailView({ detail, onNext }: { detail: ItemDetail; onNext: (() => void) | null }) {
+export function ItemDetailView({ detail, onNext, onAnswered }: { detail: ItemDetail; onNext: (() => void) | null; onAnswered?: () => void }) {
   const { item, task, project, evidence, replies } = detail;
   const current = evidence.filter((e) => e.revision === item.revision);
   const tabs: Array<{ id: Tab; label: string }> = [
@@ -23,10 +24,57 @@ export function ItemDetailView({ detail, onNext }: { detail: ItemDetail; onNext:
   // A walkthrough is what the agent wants you to see first.
   const [tab, setTab] = useState<Tab>(item.pages.length > 1 ? "pages" : current.some((e) => e.kind === "image" || e.kind === "video") ? "screenshots" : "context");
   const [openError, setOpenError] = useState<string | null>(null);
+  const [expandedAnswer, setExpandedAnswer] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const activeTab = tabs.some((t) => t.id === tab) ? tab : "context";
 
   const openConversation = () =>
     api.openConversation(task.id).then(() => setOpenError(null), (e: Error) => setOpenError(e.message));
+
+  if (item.type === "decide") {
+    const answer = decisionAnswer(detail);
+    const collapsed = answer !== null && !expandedAnswer;
+    return (
+      <article data-decision-id={item.id} className={`item decision-card${collapsed ? " collapsed" : ""}`} aria-label={collapsed ? item.title : undefined} aria-labelledby={collapsed ? undefined : `question-${item.id}`}>
+        {collapsed ? (
+          <button className="decision-receipt" onClick={() => setExpandedAnswer(true)} title={item.title}>
+            <span className="receipt-question">{item.title}</span><span className="receipt-answer">Answered: {answer}</span><span aria-hidden>⌄</span>
+          </button>
+        ) : (
+          <>
+            <header className="decision-head">
+              <p className="decision-asker">{project.name} · {task.presence?.name ?? task.presence?.title ?? task.title}</p>
+              <h2 id={`question-${item.id}`} tabIndex={-1}>{item.title}</h2>
+              {item.request ? <p className="decision-request" title={item.request}>{item.request}</p> : null}
+            </header>
+            <Respond key={item.revision} detail={detail} onNext={onNext} onOpenPreview={() => (setDetailsOpen(true), setTab("pages"))} onAnswered={() => { setDetailsOpen(false); setExpandedAnswer(false); onAnswered?.(); }} />
+            {answer !== null ? <button className="link small" onClick={() => setExpandedAnswer(false)}>Collapse answer</button> : null}
+          </>
+        )}
+        <details className="decision-details" open={detailsOpen} onToggle={(e) => setDetailsOpen(e.currentTarget.open)}>
+          <summary>Details</summary>
+          {detailsOpen ? <>
+            <div className="item-where"><span>{task.title} · {project.name}</span><Owner task={task} />
+              {task.capabilities.openConversation ? <button className="ghost small" onClick={openConversation}>Open conversation</button> : null}
+            </div>
+            {openError ? <p className="warn">{openError}</p> : null}
+            <p className="muted small-note">Revision {item.revision} · {ago(item.updatedAt)} · {item.blocking ? "The agent is waiting on this" : "The agent carries on meanwhile"}</p>
+            <p className="muted small-note">{item.request}</p>
+            <p className="route-note">{DELIVERY_LABEL[task.capabilities.reply]}.</p>
+            <div className="tabs" role="tablist">
+              {tabs.map((t) => <button key={t.id} role="tab" aria-selected={activeTab === t.id} className={activeTab === t.id ? "tab on" : "tab"} onClick={() => setTab(t.id)}>{t.label}</button>)}
+            </div>
+            <div className="tab-body">
+              {activeTab === "context" ? <ContextTab detail={detail} /> : null}
+              {activeTab === "screenshots" ? <EvidenceTab evidence={evidence} revision={item.revision} /> : null}
+              {activeTab === "pages" ? <PageWalk itemId={item.id} pages={item.pages} viewport={item.preview?.viewport ?? null} setup={item.preview?.setup ?? ""} /> : null}
+              {activeTab === "conversation" ? <ConversationTab detail={detail} /> : null}
+            </div>
+          </> : null}
+        </details>
+      </article>
+    );
+  }
 
   return (
     <article className="item">

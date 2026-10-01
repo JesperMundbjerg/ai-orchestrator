@@ -98,6 +98,7 @@ h1, h2, h3 { margin: 0; }
 /* Sidebar */
 .sidebar { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px; gap: 4px; overflow-y: auto; }
 .brand { font-weight: 650; font-size: 15px; padding: 2px 8px 12px; letter-spacing: -0.01em; }
+.sidebar-menu { display: none; }
 .sidebar ul { list-style: none; margin: 0; padding: 0; }
 .sidebar li > button:first-child {
   width: 100%;
@@ -279,6 +280,44 @@ h1, h2, h3 { margin: 0; }
 .menu button:hover { background: var(--panel-2); }
 .route-note { font-size: 12px; color: var(--muted); margin: -6px 0 0; }
 
+/* Decisions: one quiet, scrollable sheet rather than a queue beside a form. */
+.decisions-app { grid-template-columns: 220px minmax(0, 1fr); }
+.decision-sheet { overflow-y: auto; min-width: 0; padding: 28px 32px 80px; scroll-padding-top: 72px; }
+.decision-sheet-inner { max-width: 780px; margin: 0 auto; }
+.decision-sheet-head { position: sticky; top: 0; z-index: 2; background: var(--bg); display: flex; align-items: baseline; justify-content: space-between; gap: 16px; margin-bottom: 22px; padding: 10px 0; }
+.decision-sheet-head h1 { font-size: 20px; letter-spacing: -.02em; }
+.decision-sheet-head p { color: var(--muted); margin: 0; }
+.decision-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; margin: 0 0 18px; gap: 12px; scroll-margin-top: 24px; }
+.decision-asker { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
+.decision-head h2 { font-size: 24px; line-height: 1.25; letter-spacing: -.025em; }
+.decision-head h2:focus { outline: none; }
+.decision-head h2:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+.decision-request { margin: 8px 0 0; color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.decision-card .respond { position: static; border: 0; border-radius: 0; padding: 0; box-shadow: none; }
+.decision-card .options { grid-template-columns: 1fr; gap: 10px; }
+.decision-card .option { padding: 15px 18px; gap: 5px; background: var(--panel); }
+.decision-card .option:hover:not(:disabled) { background: var(--decide-soft); }
+.decision-card .option.recommended { border-color: color-mix(in srgb, var(--decide) 55%, var(--line)); }
+.decision-card .option-label { font-size: 16px; justify-content: space-between; }
+.recommend-badge { color: var(--decide); background: var(--decide-soft); border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 550; }
+.option-reason { font-size: 12px; color: var(--decide); }
+.decision-secondary .ghost { border: 0; padding: 4px 0; color: var(--muted); font-size: 12px; }
+.decision-secondary .secondary { gap: 18px; }
+.decision-details { color: var(--muted); font-size: 12px; min-width: 0; }
+.decision-details > summary { cursor: pointer; width: fit-content; }
+.decision-details[open] > summary { margin-bottom: 14px; }
+.decision-details[open] { display: flex; flex-direction: column; gap: 12px; }
+.decision-details .tab-body { color: var(--text); font-size: 14px; padding-top: 12px; }
+.decision-details .tabs { flex-wrap: wrap; }
+.decision-card.collapsed { padding: 14px 20px; flex-direction: row; align-items: center; flex-wrap: wrap; }
+.decision-receipt { display: flex; align-items: center; gap: 12px; text-align: left; background: none; border: 0; padding: 0; flex: 1; min-width: 0; font-size: 13px; }
+.receipt-question { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; color: var(--muted); }
+.receipt-answer { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; color: var(--ok); }
+.collapsed .decision-details[open] { flex-basis: 100%; }
+.decision-other { display: flex; flex-direction: column; gap: 10px; margin-top: 28px; }
+.decision-other h2 { font-size: 14px; color: var(--muted); }
+.decision-other button { white-space: normal; text-align: left; }
+
 /* Working / Parked */
 .board { grid-column: 2 / 4; overflow-y: auto; padding: 20px 28px; }
 .board-head { margin-bottom: 18px; }
@@ -305,6 +344,15 @@ h1, h2, h3 { margin: 0; }
   .board { grid-column: 1; padding: 16px; }
   .item { padding: 16px; }
   .brief-row, .brief.editing label { grid-template-columns: 1fr; }
+  .decisions-app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .decisions-app .brand { display: flex; align-items: center; justify-content: space-between; padding-bottom: 0; }
+  .decisions-app .sidebar-menu { display: inline-flex; }
+  .decisions-app .sidebar:not(.nav-open) > :not(.brand) { display: none; }
+  .decision-sheet { padding: 20px 12px 60px; overflow: visible; }
+  .decision-card { padding: 20px 16px; scroll-margin-top: 64px; }
+  .decision-head h2 { font-size: 22px; }
+  .decision-sheet-head { gap: 8px; }
+  .decision-sheet-head h1 { font-size: 18px; }
 }
 
 /* ── The office ─────────────────────────────────────────────────────────────────────── */

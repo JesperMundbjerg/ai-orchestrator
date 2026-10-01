@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { ItemDetailView } from "./components/ItemDetail.tsx";
+import { DecisionSheet } from "./components/DecisionSheet.tsx";
 import { MachineWarning } from "./components/MachineWarning.tsx";
 import { Queue } from "./components/Queue.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
@@ -19,6 +20,9 @@ export function App() {
   const detail = useItemDetail(route.itemId, tick);
   const queue = useMemo(() => (state ? needsYou(state, filter, route.projectId) : []), [state, filter, route.projectId]);
 
+  const selectedItem = state?.items.find((item) => item.id === route.itemId);
+  const decisionSheet = route.view === "needs" && (selectedItem?.type === "decide" || (!route.itemId && (filter === "all" || filter === "decide")));
+
   const openNext = () => {
     const id = nextNeeding(queue, route.itemId);
     if (id) navigate({ view: "needs", itemId: id });
@@ -27,9 +31,13 @@ export function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (route.view === "world" || route.view === "teams" || e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
-      if (e.key === "n") openNext();
+      const currentId = (e.target as HTMLElement).closest<HTMLElement>("[data-decision-id]")?.dataset.decisionId ?? route.itemId;
+      if (e.key === "n") {
+        const id = nextNeeding(queue, currentId);
+        if (id) navigate({ view: "needs", itemId: id });
+      }
       if ((e.key === "j" || e.key === "k") && queue.length) {
-        const at = queue.findIndex((q) => q.item.id === route.itemId);
+        const at = queue.findIndex((q) => q.item.id === currentId);
         const next = queue[Math.min(queue.length - 1, Math.max(0, at + (e.key === "j" ? 1 : -1)))];
         if (next) navigate({ view: "needs", itemId: next.item.id });
       }
@@ -53,9 +61,11 @@ export function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app${decisionSheet ? " decisions-app" : ""}`}>
       <Sidebar state={state} route={route} navigate={navigate} />
-      {route.view === "needs" ? (
+      {decisionSheet ? (
+        <DecisionSheet key={route.projectId ?? "all"} state={state} tick={tick} projectId={route.projectId} selectedId={route.itemId} onOpen={(itemId) => navigate({ itemId })} />
+      ) : route.view === "needs" ? (
         <>
           <Queue
             state={state}
