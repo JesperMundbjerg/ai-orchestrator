@@ -193,6 +193,35 @@ test("starting a project makes its worktree beside the repository and starts a f
   assert.equal(fresh.path, join(other.dir, "repo-agent-office"));
 });
 
+test("a multi-paragraph purpose gives the first mate single-line, control-free arguments", async () => {
+  const { root } = repository();
+  const { world, started, prompts } = setup();
+  const purpose = "Keep the founder's words.\n\nThen review\t\tthe result.";
+  const team = await world.createTeam({ name: "Review paragraphs", purpose, repository: root });
+  const { args } = started[0]!;
+  const brief = args[args.indexOf("--append-system-prompt") + 1]!;
+  for (const arg of args) assert.doesNotMatch(arg, /[\p{Cc}\u2028\u2029]/u);
+  assert.ok(brief.includes("The project: Keep the founder's words. Then review the result."));
+  assert.equal(team.purpose, purpose, "the stored purpose keeps its paragraphs");
+  assert.deepEqual(prompts, [{ pane: "w2:p1", text: `Start on the project: ${purpose}` }], "the typed kickoff is not a shell argument");
+});
+
+test("first-mate briefs normalize names and all controls without escaping quotes or losing Unicode", async () => {
+  const { root } = repository();
+  const { world, started } = setup();
+  const qa = await world.createTeam({ name: "QA\n\t\u001b\u007f\u009f café 👩‍💻", standing: true });
+  const controls = Array.from({ length: 65 }, (_, i) => String.fromCharCode(i < 32 ? i : i + 95)).join("");
+  const purpose = `Keep "quotes", 'apostrophes', back\\slashes, $dollars and \`backticks\`.\r\n\nReview\t café\u0085世界\u00a0👩‍💻\u2028next\u2029paragraph. Remove con\u0000\u0007\u001btrols. ${controls} Done.`;
+  await world.createTeam({ name: "Review\n\t\u0007 '世界'", purpose, handsTo: qa.id, repository: root });
+  const { args } = started[0]!;
+  const brief = args[args.indexOf("--append-system-prompt") + 1]!;
+  for (const arg of args) assert.doesNotMatch(arg, /[\p{Cc}\u2028\u2029]/u);
+  assert.doesNotMatch(brief, / {2}/);
+  assert.ok(brief.includes(`You run the project "Review '世界'"`));
+  assert.ok(brief.includes("hand it to QA café 👩‍💻 for review"));
+  assert.ok(brief.includes("The project: Keep \"quotes\", 'apostrophes', back\\slashes, $dollars and `backticks`. Review café 世界 👩‍💻 next paragraph. Remove controls. Done."));
+});
+
 /** A main checkout with one commit, in any folder. */
 function initRepository(root: string, branch = "main") {
   execFileSync("git", ["init", "-q", "-b", branch, root]);

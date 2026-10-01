@@ -78,6 +78,14 @@ const FIRST_MATE_ARGS = ["--model", "opus", "--effort", "medium"];
 /** A string as one shell word. */
 const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
+/** Prose passed as an agent argument: herdr refuses shell words containing controls.
+ * Keep word boundaries (including Unicode whitespace), strip other controls, and leave
+ * quotes and Unicode intact: herdr, not this helper, does the shell quoting.
+ */
+function briefArgument(text: string): string {
+  return text.replace(/[\s\p{White_Space}]/gu, " ").replace(/\p{Cc}/gu, "").replace(/ +/g, " ").trim();
+}
+
 /** The CLI of the checkout the service runs from; a lead's pane need not have `inbox` on its PATH. */
 const INBOX_BIN = fileURLToPath(new URL("../../bin/inbox", import.meta.url));
 
@@ -590,7 +598,7 @@ export class World {
     ].filter(Boolean).join(" ");
     // The lead starts with only its brief, so herdr sees it ready for input; its first task follows as a prompt.
     try {
-      await this.source.startAgent(paneId, `lead-${place.slug}`.slice(0, 32).replace(/-+$/, ""), "claude", [...FIRST_MATE_ARGS, ...hookSettings(place.path), "--append-system-prompt", brief]);
+      await this.source.startAgent(paneId, `lead-${place.slug}`.slice(0, 32).replace(/-+$/, ""), "claude", [...FIRST_MATE_ARGS, ...hookSettings(place.path), "--append-system-prompt", briefArgument(brief)]);
     } catch (err) {
       // herdr gave up waiting for it to look ready, but it may be running all the same: then the project is started.
       await this.source.refresh?.().catch(() => {});
