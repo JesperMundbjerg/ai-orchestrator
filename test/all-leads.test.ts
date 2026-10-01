@@ -96,7 +96,6 @@ test("unticked leads hear nothing; duplicate ids, stale recipients and invalid i
     }
     assert.throws(() => world.messages.tellAllLeads({ ...body, clientId: "bad-image", images: ["missing.png"] }));
     assert.equal(world.messages.list().length, 1);
-    // Founder fan-out is not subject to the agents' 30/hour limit, even after 30 sends.
     for (let i = 0; i < 31; i++) world.messages.tellAllLeads({ ...body, clientId: `founder-${i}` });
     assert.equal(world.messages.list().length, 32);
   } finally { f.close(); }

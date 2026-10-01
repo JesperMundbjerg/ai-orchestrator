@@ -376,8 +376,6 @@ test("an agent answers the founder in the office: a thread with them, typed into
   assert.equal(inbox.state().items.length, 0, "not a question in the review inbox");
   assert.equal(world.state().withFounder.filter((m) => m.toFounder).length, 2);
 
-  for (let i = 0; i < 29; i++) world.messages.say(tom!, { to: "founder", text: `update ${i}` });
-  assert.throws(() => world.messages.say(tom!, { to: "founder", text: "one more" }), /in the last hour/, "answers count toward the hourly limit");
   assert.throws(() => world.updateAgent(ann!.id, { name: "Founder" }), /how agents address you/);
 });
 
@@ -702,12 +700,15 @@ test("inbox team tells an agent its team, its part and how to reach the others",
   assert.throws(() => world.brief({ paneId: "nope" }), /does not know this session/);
 });
 
-test("an agent that keeps sending messages is stopped for the hour", () => {
+test("an agent can send more than 30 messages in an hour, including to the founder", () => {
   const { world, setLive } = setup();
   setLive([lane("p1", "/a", "s1"), lane("p2", "/b", "s2")]);
   const [a, b] = world.state().agents;
-  for (let i = 0; i < 30; i++) world.messages.say(a!, { to: b!.name, text: `ping ${i}` });
-  assert.throws(() => world.messages.say(a!, { to: b!.name, text: "one more" }), /in the last hour/);
+  for (let i = 0; i < 31; i++) {
+    world.messages.say(a!, { to: b!.name, text: `ping ${i}` });
+    world.messages.say(a!, { to: "founder", text: `update ${i}` });
+  }
+  assert.equal(world.state().withFounder.filter((message) => message.toFounder && message.fromAgentId === a!.id).length, 31);
 });
 
 test("inbox team tells a first mate how to run its crew, and its crew to report to it", () => {
