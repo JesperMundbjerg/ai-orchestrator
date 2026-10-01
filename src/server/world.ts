@@ -17,7 +17,8 @@ import type {
 } from "../shared/types.ts";
 import { serviceUrl } from "../shared/agent-client.ts";
 import { Activity } from "./activity.ts";
-import type { CrewTreeStore } from "./crewtree.ts";
+import { DEFAULT_LEAD, type CrewChoice } from "../shared/crewtree.ts";
+import { startFlags, type CrewTreeStore } from "./crewtree.ts";
 import { Adapters } from "./adapter.ts";
 import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
@@ -73,8 +74,8 @@ const str = (v: unknown): string => (v == null ? "" : String(v));
 /** How long the folders beside known repositories are trusted before they are read again. */
 const SCAN_CACHE_MS = 3000;
 
-/** A first mate's model: it plans, splits and supervises, which is the deep thinking. */
-const FIRST_MATE_ARGS = ["--model", "opus", "--effort", "medium"];
+/** A first mate's model when the service has no crew tree: it plans, splits and supervises, which is the deep thinking. */
+const FIRST_MATE_CHOICE: CrewChoice = DEFAULT_LEAD.use;
 
 /** A string as one shell word. */
 const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -102,7 +103,7 @@ const FIRST_MATE = [
   `\`P=$(${quote(INBOX_BIN)} pane)\` opens a pane in your tab, laid out with the others as a grid, and prints its id (never split panes yourself);`,
   '`herdr agent start <name> --kind <kind> --pane "$P" -- <model>` starts a crew member in it (a unique lowercase name).',
   "Choose each member's harness, model and effort by the founder's crew guide, a decision tree they edit: `inbox crew` prints it with the exact start command for each choice, and `inbox team` prints it too. Read it before you start each member, not once, since it changes while you work: take the first rule whose \"when\" fits the task.",
-  "Never any other kind or model: crew run only as Claude Code or Pi, which have the permissions set up.",
+  "Never any other kind or model: crew run only as Claude Code or Pi, which have the permissions set up. The crew guide also carries the founder's switch, which can turn one of the two off for a while (its subscription is running out): `inbox crew` says so, and shows only the commands that run on the other; never start the harness it says is switched off.",
   '`herdr agent prompt <name> "<task>"` gives it its task.',
   "Crew share this checkout, so give each one files of its own.",
   'Tell each crew member to report to you with `inbox say <your office name> "…"` when done or stuck, and not to ask the founder; their reports arrive in your terminal.',
@@ -605,12 +606,15 @@ export class World {
       next ? `When the work is done, hand it to ${next} for review: inbox handoff "title" --summary "what was done, where, how to check it".` : "",
     ].filter(Boolean).join(" ");
     // The lead starts with only its brief, so herdr sees it ready for input; its first task follows as a prompt.
+    // What it runs on is the crew tree's lead choice under the founder's switch; both harnesses take the brief as an appended system prompt.
+    const lead = this.crew?.lead() ?? FIRST_MATE_CHOICE;
+    const harness = lead.harness as Harness;
     try {
-      await this.source.startAgent(paneId, `lead-${place.slug}`.slice(0, 32).replace(/-+$/, ""), "claude", [...FIRST_MATE_ARGS, ...hookSettings(place.path), "--append-system-prompt", briefArgument(brief)]);
+      await this.source.startAgent(paneId, `lead-${place.slug}`.slice(0, 32).replace(/-+$/, ""), harness, [...startFlags(lead), ...(harness === "claude" ? hookSettings(place.path) : []), "--append-system-prompt", briefArgument(brief)]);
     } catch (err) {
       // herdr gave up waiting for it to look ready, but it may be running all the same: then the project is started.
       await this.source.refresh?.().catch(() => {});
-      if (!this.source.live().some((a) => a.paneId === paneId && a.harness === "claude")) {
+      if (!this.source.live().some((a) => a.paneId === paneId && a.harness === harness)) {
         throw new InboxError(502, `The worktree ${team.path} is made, but no first mate is running in it (herdr: ${(err as Error).message}). Start one there in herdr, or finish the project.`);
       }
     }

@@ -1,24 +1,39 @@
 {
   "version": 1,
+  "mode": "mixed",
+  "lead": {
+    "use": { "harness": "claude", "model": "opus", "effort": "medium" },
+    "backup": { "harness": "pi", "model": "openai-codex/gpt-6-astra", "effort": "high" },
+    "why": "A project's lead plans and supervises, which is the deep thinking."
+  },
   "rules": [
     {
       "id": "deep-thinking",
       "when": "The task needs deep thinking: an architecture or design choice that is hard to reverse, a hard bug nobody has found yet, or planning how to split a large piece of work.",
       "use": { "harness": "claude", "model": "opus", "effort": "medium" },
+      "backup": { "harness": "pi", "model": "openai-codex/gpt-6-astra", "effort": "high" },
       "why": "The strongest Claude model, for the work where thinking matters more than speed."
     },
     {
       "id": "second-view",
       "when": "A second model's view helps: reviewing work another model did, or a problem the first model is stuck on.",
       "use": { "harness": "pi", "model": "openai-codex/gpt-6-astra", "effort": "high" },
+      "backup": { "harness": "claude", "model": "opus", "effort": "medium" },
       "why": "A different model family catches what the first one keeps missing."
     },
     {
       "id": "most-tasks",
       "when": "Ordinary building: implementing a feature, fixing a bug, writing tests, UI work, refactoring.",
       "use": { "harness": "claude", "model": "sonnet", "effort": "high" },
+      "backup": { "harness": "pi", "model": "openai-codex/gpt-6.1-sol", "effort": "high" },
       "why": "Strong and quick, and light on the Claude usage window."
     }
   ],
-  "fallback": { "harness": "claude", "model": "sonnet", "effort": "high", "why": "When nothing above fits, the everyday choice." }
+  "fallback": {
+    "harness": "claude",
+    "model": "sonnet",
+    "effort": "high",
+    "backup": { "harness": "pi", "model": "openai-codex/gpt-6.1-sol", "effort": "high" },
+    "why": "When nothing above fits, the everyday choice."
+  }
 }

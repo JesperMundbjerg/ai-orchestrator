@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { modelLabel } from "../shared/models.ts";
-import { validateCrewTree, type CrewCatalog, type CrewChoice, type CrewRule, type CrewTree, type CrewTreeState } from "../shared/crewtree.ts";
+import { MIXED, effectiveChoice, effectiveLead, upgradeCrewTree, validateCrewTree, type CrewCatalog, type CrewChoice, type CrewRule, type CrewTree, type CrewTreeState } from "../shared/crewtree.ts";
 import { InboxError } from "./inbox.ts";
 
 const DEFAULT_FILE = fileURLToPath(new URL("./crewtree.default.json", import.meta.url));
@@ -55,11 +55,18 @@ function clean(tree: CrewTree): CrewTree {
   const rule = (r: CrewRule): CrewRule => ({
     id: r.id,
     when: r.when.trim(),
-    ...(r.use ? { use: choice(r.use) } : {}),
+    ...(r.use ? { use: choice(r.use), backup: choice(r.backup!) } : {}),
     ...(r.why?.trim() ? { why: r.why.trim() } : {}),
     ...(r.children?.length ? { children: r.children.map(rule) } : {}),
   });
-  return { version: 1, rules: tree.rules.map(rule), fallback: { ...choice(tree.fallback), ...(tree.fallback.why?.trim() ? { why: tree.fallback.why.trim() } : {}) } };
+  const why = (w?: string) => (w?.trim() ? { why: w.trim() } : {});
+  return {
+    version: 1,
+    mode: tree.mode,
+    rules: tree.rules.map(rule),
+    fallback: { ...choice(tree.fallback), backup: choice(tree.fallback.backup), ...why(tree.fallback.why) },
+    lead: { use: choice(tree.lead.use), backup: choice(tree.lead.backup), ...why(tree.lead.why) },
+  };
 }
 
 export class CrewTreeStore {
@@ -90,13 +97,17 @@ export class CrewTreeStore {
     }
   }
 
-  /** The tree as it is on disk now. A file that is unreadable or invalid is said so, and the default stands in for it. */
+  /**
+   * The tree as it is on disk now. A file that is unreadable or invalid is said so, and the default
+   * stands in for it. A file from before the switch and the backups is filled in as it is read and
+   * becomes current on its next save.
+   */
   state(): CrewTreeState {
     this.seed();
     const catalog = this.catalog();
     let problem: string;
     try {
-      const tree = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
+      const tree = upgradeCrewTree(JSON.parse(readFileSync(this.file, "utf8")) as unknown);
       const problems = validateCrewTree(tree, catalog);
       if (!problems.length) return { tree: clean(tree as CrewTree), catalog, file: this.file, problem: null };
       problem = problems.map((p) => `${p.path}: ${p.message}`).join("; ");
@@ -116,6 +127,11 @@ export class CrewTreeStore {
     return this.state();
   }
 
+  /** What a new project's lead runs on: its choice under the founder's switch as it is now. */
+  lead(): CrewChoice {
+    return effectiveLead(this.state().tree);
+  }
+
   /** What a lead reads: the tree, compact, each choice with the command that starts it. */
   text(): string {
     const { tree, catalog, problem } = this.state();
@@ -124,20 +140,28 @@ export class CrewTreeStore {
 }
 
 /** The words after `--` on `herdr agent start`: the harness's own flags for this model and effort. */
-function startArgs(c: CrewChoice): string {
-  return c.harness === "pi" ? `--model ${c.model}:${c.effort}` : `--model ${c.model} --effort ${c.effort}`;
+export function startFlags(c: CrewChoice): string[] {
+  return c.harness === "pi" ? ["--model", `${c.model}:${c.effort}`] : ["--model", c.model, "--effort", c.effort];
 }
+const startArgs = (c: CrewChoice): string => startFlags(c).join(" ");
 
 export const startCommand = (c: CrewChoice): string => `herdr agent start <name> --kind ${c.harness} --pane "$P" -- ${startArgs(c)}`;
 
 export function crewText(tree: CrewTree, catalog: CrewCatalog, problem: string | null = null): string {
+  const label = (id: string) => catalog.harnesses.find((x) => x.id === id)?.label ?? id;
   const describe = (c: CrewChoice) => {
     const h = catalog.harnesses.find((x) => x.id === c.harness);
-    const label = h?.models.find((m) => m.id === c.model)?.label ?? modelLabel(c.model);
-    return `${label}, ${c.effort} effort, in ${h?.label ?? c.harness}`;
+    const name = h?.models.find((m) => m.id === c.model)?.label ?? modelLabel(c.model);
+    return `${name}, ${c.effort} effort, in ${h?.label ?? c.harness}`;
   };
   const one = (s: string) => s.replace(/\s+/g, " ").trim();
+  // Only the choice the switch allows is printed, so a lead cannot pick the harness that is switched off.
+  const pick = (use: CrewChoice, backup: CrewChoice | undefined) => effectiveChoice(tree.mode, use, backup);
+  const off = tree.mode === MIXED ? [] : catalog.harnesses.filter((h) => h.id !== tree.mode).map((h) => h.label);
   const lines = [
+    tree.mode === MIXED
+      ? "The founder's switch: mixed. Each rule's own choice applies."
+      : `The founder's switch: ${label(tree.mode)} only. ${off.join(" and ")} ${off.length === 1 ? "is" : "are"} switched off by the founder: every choice below already runs on ${label(tree.mode)}, so never start ${off.join(" or ")}, whatever the rule or a crew member suggests.`,
     "Crew guide (the founder's decision tree; they edit it, so read it again before each crew member): take the first rule whose \"when\" fits the task. A rule with sub-rules is a question that narrows further; its own choice applies when none of its sub-rules fits. Start the member with the command shown, with `P=$(inbox pane)` and a unique lowercase <name>. Never any other harness or model.",
   ];
   if (problem) lines.push(`Note: ${problem}`);
@@ -146,8 +170,9 @@ export function crewText(tree: CrewTree, catalog: CrewCatalog, problem: string |
       const n = `${prefix}${i + 1}`;
       lines.push(`${indent}${n}. When: ${one(r.when)}`);
       if (r.use) {
-        lines.push(`${indent}   Use: ${describe(r.use)}${r.why ? `. ${one(r.why)}` : ""}`);
-        lines.push(`${indent}   Start: ${startCommand(r.use)}`);
+        const c = pick(r.use, r.backup);
+        lines.push(`${indent}   Use: ${describe(c)}${r.why ? `. ${one(r.why)}` : ""}`);
+        lines.push(`${indent}   Start: ${startCommand(c)}`);
       }
       if (r.children?.length) {
         lines.push(`${indent}   ${r.use ? "Sub-rules, checked first; the choice above applies when none fits:" : "Sub-rules, to narrow further:"}`);
@@ -155,6 +180,7 @@ export function crewText(tree: CrewTree, catalog: CrewCatalog, problem: string |
       }
     });
   walk(tree.rules, "", "");
-  lines.push(`Otherwise: ${describe(tree.fallback)}${tree.fallback.why ? `. ${one(tree.fallback.why)}` : ""}`, `   Start: ${startCommand(tree.fallback)}`);
+  const fb = pick(tree.fallback, tree.fallback.backup);
+  lines.push(`Otherwise: ${describe(fb)}${tree.fallback.why ? `. ${one(tree.fallback.why)}` : ""}`, `   Start: ${startCommand(fb)}`);
   return lines.join("\n");
 }

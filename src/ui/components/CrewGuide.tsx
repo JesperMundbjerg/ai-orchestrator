@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { modelOptions, newRuleId, validateCrewTree, type CrewCatalog, type CrewChoice, type CrewRule, type CrewTree, type CrewTreeState } from "../../shared/crewtree.ts";
+import { MIXED, modelOptions, newRuleId, validateCrewTree, type CrewCatalog, type CrewChoice, type CrewRule, type CrewTree, type CrewTreeState } from "../../shared/crewtree.ts";
 import { api } from "../api.ts";
 
 type Path = number[];
@@ -14,9 +14,23 @@ function listAt(tree: CrewTree, path: Path): [CrewRule[], number] {
   return [list, path[path.length - 1]!];
 }
 
-function firstChoice(catalog: CrewCatalog): CrewChoice {
-  const h = catalog.harnesses[0]!;
+/** A first choice on the given harness, or on the first the catalog lists. */
+function firstChoice(catalog: CrewCatalog, harness?: string): CrewChoice {
+  const h = catalog.harnesses.find((x) => x.id === harness) ?? catalog.harnesses[0]!;
   return { harness: h.id, model: h.models[0]?.id ?? "", effort: h.efforts.find((e) => e === "medium") ?? h.efforts[0] ?? "" };
+}
+
+const otherThan = (catalog: CrewCatalog, harness: string) => catalog.harnesses.find((h) => h.id !== harness)?.id;
+
+/** A choice and its backup, the backup on a harness other than the choice's. */
+function firstPair(catalog: CrewCatalog): { use: CrewChoice; backup: CrewChoice } {
+  const use = firstChoice(catalog);
+  return { use, backup: firstChoice(catalog, otherThan(catalog, use.harness)) };
+}
+
+/** A new main choice with its backup, which moves to another harness when the choice moved onto its harness. */
+function withUse(catalog: CrewCatalog, use: CrewChoice, backup: CrewChoice): { use: CrewChoice; backup: CrewChoice } {
+  return backup.harness !== use.harness ? { use, backup } : { use, backup: firstChoice(catalog, otherThan(catalog, use.harness)) };
 }
 
 /** The founder's crew guide: the decision tree project leads follow when they pick each crew member's model. */
@@ -26,6 +40,7 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
   const [failure, setFailure] = useState<string | null>(null);
   const [showErrors, setShowErrors] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const baseline = useRef("");
   const draftRef = useRef<CrewTree | null>(null);
@@ -61,7 +76,12 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
     setDraft(next);
     setSavedAt(null);
   };
-  const patch = (path: Path, fields: Partial<CrewRule>) => edit((t) => { const [l, i] = listAt(t, path); l[i] = { ...l[i]!, ...fields }; });
+  const patch = (path: Path, fields: Partial<CrewRule>) => edit((t) => {
+    const [l, i] = listAt(t, path);
+    const next = { ...l[i]!, ...fields };
+    for (const k of ["use", "backup"] as const) if (next[k] === undefined) delete next[k];
+    l[i] = next;
+  });
   const move = (path: Path, by: number) => edit((t) => {
     const [l, i] = listAt(t, path);
     const j = i + by;
@@ -69,11 +89,33 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
   });
   const remove = (path: Path) => edit((t) => { const [l, i] = listAt(t, path); l.splice(i, 1); if (!l.length && path.length > 1) { const [p, k] = listAt(t, path.slice(0, -1)); delete p[k]!.children; } });
   const add = (parent: Path | null) => edit((t) => {
-    const rule: CrewRule = { id: newRuleId(), when: "", use: firstChoice(catalog) };
+    const rule: CrewRule = { id: newRuleId(), when: "", ...firstPair(catalog) };
     if (!parent) return void t.rules.push(rule);
     const [l, i] = listAt(t, parent);
     (l[i]!.children ??= []).push(rule);
   });
+
+  // The switch is saved on its own, at once, over the tree as last saved: an unsaved edit stays a draft.
+  const setMode = async (mode: string) => {
+    if (mode === loaded.tree.mode || switching) return;
+    setSwitching(true);
+    setFailure(null);
+    try {
+      const saved = await api.saveCrewTree({ ...loaded.tree, mode });
+      setLoaded(saved);
+      baseline.current = JSON.stringify(saved.tree);
+      setDraft((d) => (d ? { ...d, mode: saved.tree.mode } : d));
+    } catch (err) {
+      setFailure((err as Error).message);
+    } finally {
+      setSwitching(false);
+    }
+  };
+  const harnessLabel = (id: string) => catalog.harnesses.find((h) => h.id === id)?.label ?? id;
+  const modes = [{ id: MIXED, label: "Mixed" }, ...catalog.harnesses.map((h) => ({ id: h.id, label: `${h.label} only` }))];
+  const explain = loaded.tree.mode === MIXED
+    ? "Each rule starts its main choice. Its backup waits for the day a harness runs out."
+    : `Every new crew member and project lead starts on ${harnessLabel(loaded.tree.mode)}: each rule's main choice or its backup, whichever runs there. Leads are told never to start ${catalog.harnesses.filter((h) => h.id !== loaded.tree.mode).map((h) => h.label).join(" or ")}. Agents already running are not stopped.`;
 
   const save = async () => {
     setShowErrors(true);
@@ -110,8 +152,8 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
                 {errorAt(`${key}.when`) ? <em className="crew-error">{errorAt(`${key}.when`)}</em> : null}
               </label>
             </div>
-            {rule.use ? (
-              <Picker value={rule.use} catalog={catalog} errors={(f) => errorAt(`${key}.use.${f}`)} onChange={(use) => patch(path, { use })} />
+            {rule.use && rule.backup ? (
+              <Pair value={{ use: rule.use, backup: rule.backup }} catalog={catalog} mode={draft.mode} errors={(f) => errorAt(`${key}.${f}`)} onChange={(p) => patch(path, p)} />
             ) : (
               <p className="muted small-note">No choice of its own: only its sub-rules decide. {errorAt(`${key}.use`) ? <em className="crew-error">{errorAt(`${key}.use`)}</em> : null}</p>
             )}
@@ -126,8 +168,8 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
               <button className="ghost small" onClick={() => add(path)}>+ Sub-rule</button>
               {rule.children?.length ? (
                 rule.use
-                  ? <button className="ghost small" title="Let the sub-rules alone decide" onClick={() => patch(path, { use: undefined })}>No choice of its own</button>
-                  : <button className="ghost small" onClick={() => patch(path, { use: firstChoice(catalog) })}>Give it a choice</button>
+                  ? <button className="ghost small" title="Let the sub-rules alone decide" onClick={() => patch(path, { use: undefined, backup: undefined })}>No choice of its own</button>
+                  : <button className="ghost small" onClick={() => patch(path, firstPair(catalog))}>Give it a choice</button>
               ) : null}
               <span className="spacer" />
               <button className="ghost small danger" onClick={() => remove(path)}>Remove</button>
@@ -154,12 +196,30 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
       {failure ? <p className="warn">{failure}</p> : null}
       {showErrors && problems.length ? <p className="warn">{problems.length === 1 ? "One thing needs fixing" : `${problems.length} things need fixing`} before this can be saved.</p> : null}
       {savedAt && !dirty ? <p className="board-note">Saved. Leads read the new guide the next time they look at it.</p> : null}
+      <section className="crew-switch" aria-label="Which harness the crew runs on">
+        <h2>Which harness runs the crew</h2>
+        <div className="crew-modes" role="radiogroup">
+          {modes.map((m) => (
+            <button key={m.id} role="radio" aria-checked={loaded.tree.mode === m.id} className={`crew-mode${loaded.tree.mode === m.id ? " on" : ""}`} disabled={switching} onClick={() => void setMode(m.id)}>{m.label}</button>
+          ))}
+        </div>
+        <p className="muted small-note">{explain}</p>
+      </section>
+      <section className="crew-rule crew-lead">
+        <h2>Project lead</h2>
+        <p className="muted small-note">What a new project's first mate runs on.</p>
+        <Pair value={draft.lead} catalog={catalog} mode={draft.mode} errors={(f) => errorAt(`lead.${f}`)} onChange={(p) => edit((t) => void (t.lead = { ...t.lead, ...p }))} />
+        <label className="field">
+          <span>Why</span>
+          <input value={draft.lead.why ?? ""} placeholder="One line" onChange={(e) => edit((t) => void (t.lead.why = e.target.value))} />
+        </label>
+      </section>
       {renderRules(draft.rules, [])}
       <button className="ghost small crew-add" onClick={() => add(null)}>+ Add a rule</button>
       <section className="crew-rule crew-fallback">
         <h2>Otherwise</h2>
         <p className="muted small-note">When no rule above fits.</p>
-        <Picker value={draft.fallback} catalog={catalog} errors={(f) => errorAt(`fallback.${f}`)} onChange={(c) => edit((t) => void (t.fallback = { ...c, why: t.fallback.why }))} />
+        <Pair value={{ use: draft.fallback, backup: draft.fallback.backup }} catalog={catalog} mode={draft.mode} errors={(f) => errorAt(`fallback.${f.replace(/^use\./, "")}`)} onChange={(p) => edit((t) => void (t.fallback = { ...p.use, backup: p.backup, why: t.fallback.why }))} />
         <label className="field">
           <span>Why</span>
           <input value={draft.fallback.why ?? ""} placeholder="One line" onChange={(e) => edit((t) => void (t.fallback.why = e.target.value))} />
@@ -169,8 +229,19 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
   );
 }
 
-/** Harness, model and effort, each from the catalog the service supplies. */
-function Picker({ value, catalog, errors, onChange }: { value: CrewChoice; catalog: CrewCatalog; errors: (field: string) => string | undefined; onChange: (c: CrewChoice) => void }) {
+/** A main choice and its backup, the backup limited to the other harnesses; the one the founder's switch has turned off is dimmed. */
+function Pair({ value, catalog, mode, errors, onChange }: { value: { use: CrewChoice; backup: CrewChoice }; catalog: CrewCatalog; mode: string; errors: (path: string) => string | undefined; onChange: (p: { use: CrewChoice; backup: CrewChoice }) => void }) {
+  const off = (c: CrewChoice) => mode !== MIXED && c.harness !== mode;
+  return (
+    <div className="crew-pair">
+      <Picker title="Main" off={off(value.use)} value={value.use} catalog={catalog} errors={(f) => errors(`use.${f}`)} onChange={(use) => onChange(withUse(catalog, use, value.backup))} />
+      <Picker title="Backup" off={off(value.backup)} value={value.backup} avoid={value.use.harness} catalog={catalog} errors={(f) => errors(`backup.${f}`)} onChange={(backup) => onChange({ use: value.use, backup })} />
+    </div>
+  );
+}
+
+/** Harness, model and effort, each from the catalog the service supplies; `avoid` leaves one harness out of the choices. */
+function Picker({ title, off, value, avoid, catalog, errors, onChange }: { title: string; off: boolean; value: CrewChoice; avoid?: string; catalog: CrewCatalog; errors: (field: string) => string | undefined; onChange: (c: CrewChoice) => void }) {
   const harness = catalog.harnesses.find((h) => h.id === value.harness);
   const setHarness = (id: string) => {
     const h = catalog.harnesses.find((x) => x.id === id)!;
@@ -181,12 +252,14 @@ function Picker({ value, catalog, errors, onChange }: { value: CrewChoice; catal
     });
   };
   return (
-    <div className="crew-picker">
+    <div className={`crew-pick${off ? " crew-off" : ""}`}>
+      <span className="crew-pick-title">{title}{off ? <em> · switched off</em> : null}</span>
+      <div className="crew-picker">
       <label className="field">
         <span>Harness</span>
         <select value={value.harness} onChange={(e) => setHarness(e.target.value)}>
           {harness ? null : <option value={value.harness}>{value.harness} (unknown)</option>}
-          {catalog.harnesses.map((h) => <option key={h.id} value={h.id}>{h.label}</option>)}
+          {catalog.harnesses.filter((h) => h.id !== avoid).map((h) => <option key={h.id} value={h.id}>{h.label}</option>)}
         </select>
         {errors("harness") ? <em className="crew-error">{errors("harness")}</em> : null}
       </label>
@@ -210,6 +283,7 @@ function Picker({ value, catalog, errors, onChange }: { value: CrewChoice; catal
         </select>
         {errors("effort") ? <em className="crew-error">{errors("effort")}</em> : null}
       </label>
+      </div>
     </div>
   );
 }

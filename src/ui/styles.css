@@ -544,5 +544,18 @@ button.link { background: none; border: 0; padding: 0; font: inherit; color: var
 .crew-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .crew-error { font-style: normal; font-size: 12px; color: var(--warn); }
 .crew-add { align-self: flex-start; margin: 10px 0 18px; }
+.crew-switch { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 10px 12px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px; }
+.crew-switch h2, .crew-lead h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0; }
+.crew-modes { display: flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; align-self: flex-start; }
+.crew-mode { border: 0; border-right: 1px solid var(--line); background: var(--bg); color: var(--text); padding: 8px 16px; font: inherit; cursor: pointer; }
+.crew-mode:last-child { border-right: 0; }
+.crew-mode.on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.crew-mode:disabled { cursor: progress; }
+.crew-lead { margin-bottom: 10px; }
+.crew-pair { display: flex; flex-direction: column; gap: 8px; }
+.crew-pick { display: flex; flex-direction: column; gap: 4px; }
+.crew-pick-title { font-size: 12px; font-weight: 600; color: var(--muted); }
+.crew-pick-title em { font-style: normal; font-weight: 400; }
+.crew-off .crew-picker { opacity: 0.5; }
 .crew-fallback { margin-top: 6px; border-style: dashed; }
 .crew-fallback h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0; }

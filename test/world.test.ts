@@ -26,7 +26,7 @@ function setup(now?: () => Date) {
   const inbox = new Inbox(db, join(mkdtempSync(join(tmpdir(), "world-test-")), "files"), presence);
   const prompts: Array<{ pane: string; text: string }> = [];
   const notices: string[] = [];
-  const started: Array<{ pane: string; name: string; args: string[] }> = [];
+  const started: Array<{ pane: string; name: string; harness: string; args: string[] }> = [];
   const closed: string[] = [];
   let refuse: string | null = null;
   let startFails: string | null = null;
@@ -44,8 +44,8 @@ function setup(now?: () => Date) {
       git(repoRoot, "worktree", "add", "-b", place.branch, place.path, ...(place.base ? [place.base] : []));
       return { paneId: "w2:p1" };
     },
-    startAgent: async (pane, name, _harness, args) => {
-      started.push({ pane, name, args });
+    startAgent: async (pane, name, harness, args) => {
+      started.push({ pane, name, harness, args });
       onStart?.();
       if (startFails) throw new Error(startFails);
     },
@@ -748,6 +748,44 @@ test("an edit to the crew tree reaches a running first mate's next `inbox team`,
   assert.match(after, /Typos and one-line fixes\./);
   assert.match(after, /--model haiku --effort high/);
   assert.doesNotMatch(world.brief({ paneId: "p2" }).text, /Crew guide/, "only a first mate chooses models");
+});
+
+test("a project's lead starts on the crew tree's lead choice under the founder's switch, with its brief either way", async () => {
+  const flag = (args: string[], name: string) => args[args.indexOf(name) + 1]!;
+  const crewDir = mkdtempSync(join(tmpdir(), "world-lead-"));
+  const lead = async (mode: string | null, name: string) => {
+    const { root } = repository();
+    const { world, started, prompts } = setup();
+    const crew = new CrewTreeStore(crewDir, { piStore: "/nowhere" });
+    if (mode) crew.save({ ...crew.state().tree, mode });
+    world.crew = crew;
+    await world.createTeam({ name, purpose: "Build it.", repository: root });
+    return { first: started[0]!, prompts };
+  };
+
+  const mixed = await lead("mixed", "Mixed project");
+  assert.equal(mixed.first.harness, "claude");
+  assert.deepEqual(mixed.first.args.slice(0, 4), ["--model", "opus", "--effort", "medium"]);
+  assert.ok(mixed.first.args.includes("--append-system-prompt"));
+
+  const claude = await lead("claude", "Claude project");
+  assert.equal(claude.first.harness, "claude");
+  assert.deepEqual(claude.first.args.slice(0, 4), ["--model", "opus", "--effort", "medium"]);
+
+  // Pi takes the brief as an appended system prompt and its model and level as one flag; Claude's hook settings do not apply.
+  const pi = await lead("pi", "Pi project");
+  assert.equal(pi.first.harness, "pi");
+  assert.deepEqual(pi.first.args.slice(0, 2), ["--model", "openai-codex/gpt-6-astra:high"]);
+  assert.ok(!pi.first.args.includes("--settings") && !pi.first.args.includes("--effort"));
+  const brief = flag(pi.first.args, "--append-system-prompt");
+  assert.match(brief, /first mate/);
+  assert.match(brief, /never start the harness it says is switched off/);
+  assert.match(brief, /`inbox crew` says so/);
+  assert.deepEqual(pi.prompts, [{ pane: "w2:p1", text: "Start on the project: Build it." }], "its first task follows as a prompt, as for Claude");
+
+  // The founder's switch decides at the moment a project starts, whatever was saved before.
+  const back = await lead("mixed", "Back again");
+  assert.equal(back.first.harness, "claude");
 });
 
 test("team names are unique, since agents address teams by name", async () => {

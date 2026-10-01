@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { modelOptions, validateCrewTree, type CrewTree } from "../src/shared/crewtree.ts";
+import { defaultBackup, effectiveChoice, effectiveLead, modelOptions, upgradeCrewTree, validateCrewTree, type CrewTree } from "../src/shared/crewtree.ts";
 import { CrewTreeStore } from "../src/server/crewtree.ts";
 import { openDatabase } from "../src/server/db.ts";
 import { createInboxServer } from "../src/server/http.ts";
@@ -41,7 +41,9 @@ test("the default tree is today's guidance, valid, and seeded once without overw
   assert.deepEqual(first.tree.rules.map((r) => [r.use?.harness, r.use?.model, r.use?.effort]), [
     ["claude", "opus", "medium"], ["pi", "openai-codex/gpt-6-astra", "high"], ["claude", "sonnet", "high"],
   ]);
-  assert.deepEqual(first.tree.fallback, { harness: "claude", model: "sonnet", effort: "high", why: first.tree.fallback.why });
+  assert.deepEqual(first.tree.fallback, { harness: "claude", model: "sonnet", effort: "high", backup: { harness: "pi", model: "openai-codex/gpt-6.1-sol", effort: "high" }, why: first.tree.fallback.why });
+  assert.equal(first.tree.mode, "mixed");
+  assert.deepEqual([first.tree.lead.use, first.tree.lead.backup], [{ harness: "claude", model: "opus", effort: "medium" }, { harness: "pi", model: "openai-codex/gpt-6-astra", effort: "high" }]);
   assert.ok(existsSync(join(dir, "crew-tree.json")), "kept in the data directory as JSON");
 
   const edited = copy(first.tree);
@@ -79,19 +81,21 @@ test("validation: when, harness, effort, a choice, ids, depth and unsafe model w
 
   const bare = copy(tree);
   delete bare.rules[0]!.use;
+  delete bare.rules[0]!.backup;
   assert.match(problems(bare)[0]!, /^rules\.0\.use: choose a model, or add rules beneath/);
-  bare.rules[0]!.children = [{ id: "inner", when: "Inside", use: { harness: "claude", model: "haiku", effort: "low" } }];
+  bare.rules[0]!.children = [{ id: "inner", when: "Inside", use: { harness: "claude", model: "haiku", effort: "low" }, backup: { harness: "pi", model: "openai-codex/gpt-6-sol", effort: "low" } }];
   assert.deepEqual(problems(bare), [], "a rule with sub-rules may leave its own choice out");
 
   const twice = copy(tree);
   twice.rules[1]!.id = twice.rules[0]!.id;
   assert.match(problems(twice)[0]!, /^rules\.1\.id: id ".*" is used twice/);
 
-  let deep: CrewTree["rules"] = [{ id: "d9", when: "deepest", use: tree.fallback }];
-  for (let i = 8; i > 0; i--) deep = [{ id: `d${i}`, when: "level", use: tree.fallback, children: deep }];
+  const leaf = { use: { harness: "claude", model: "sonnet", effort: "high" }, backup: tree.fallback.backup };
+  let deep: CrewTree["rules"] = [{ id: "d9", when: "deepest", ...leaf }];
+  for (let i = 8; i > 0; i--) deep = [{ id: `d${i}`, when: "level", ...leaf, children: deep }];
   assert.match(problems({ ...tree, rules: deep }).join(" "), /nest at most 4 deep/);
 
-  assert.match(problems({ ...tree, fallback: { harness: "claude", model: "", effort: "high" } })[0]!, /^fallback\.model/);
+  assert.match(problems({ ...tree, fallback: { ...tree.fallback, model: "" } })[0]!, /^fallback\.model/);
   assert.match(problems({ ...tree, version: 2 })[0]!, /^version/);
   assert.deepEqual(problems(null), [": the tree must be an object"]);
 });
@@ -167,7 +171,7 @@ test("a model the catalog does not list is kept, saved, described to leads and o
 test("the printed tree is compact, numbered, and gives every leaf its exact start command", () => {
   const { crew } = store();
   const tree = copy(crew.state().tree);
-  tree.rules[0]!.children = [{ id: "ui", when: "UI design\nwith taste", use: { harness: "claude", model: "opus", effort: "high" }, why: "Taste." }];
+  tree.rules[0]!.children = [{ id: "ui", when: "UI design\nwith taste", use: { harness: "claude", model: "opus", effort: "high" }, backup: { harness: "pi", model: "openai-codex/gpt-6-astra", effort: "high" }, why: "Taste." }];
   crew.save(tree);
   const text = crew.text();
   assert.match(text, /take the first rule whose "when" fits/);
@@ -182,6 +186,146 @@ test("the printed tree is compact, numbered, and gives every leaf its exact star
   assert.match(text, /^Otherwise: Sonnet 5\.5, high effort, in Claude Code\./m);
   assert.equal((text.match(/Start: /g) ?? []).length, 5, "four rules and the fallback");
   assert.ok(text.split("\n").length < 25);
+});
+
+test("validation: every choice has a backup on the other harness, the mode and the lead are checked", () => {
+  const { crew } = store();
+  const { tree, catalog } = crew.state();
+  const problems = (t: unknown) => validateCrewTree(t, catalog).map((p) => `${p.path}: ${p.message}`);
+
+  const none = copy(tree);
+  delete none.rules[0]!.backup;
+  assert.deepEqual(problems(none), ["rules.0.backup: choose a backup on the other harness"]);
+
+  const same = copy(tree);
+  same.rules[0]!.backup = { harness: "claude", model: "sonnet", effort: "high" };
+  assert.deepEqual(problems(same), ["rules.0.backup.harness: the backup must be on the other harness"]);
+
+  const loose = copy(tree);
+  delete loose.rules[0]!.use;
+  assert.match(problems(loose)[0]!, /^rules\.0\.backup: a backup needs a choice/, "a backup with nothing to back up");
+
+  const badBackup = copy(tree);
+  badBackup.rules[1]!.backup = { harness: "claude", model: "opus", effort: "off" };
+  assert.match(problems(badBackup)[0]!, /^rules\.1\.backup\.effort: effort for Claude Code/, "the backup is validated like a choice");
+
+  const fb = copy(tree) as unknown as { fallback: { backup?: unknown } };
+  delete fb.fallback.backup;
+  assert.deepEqual(problems(fb), ["fallback.backup: choose a backup on the other harness"]);
+  const fbSame = copy(tree);
+  fbSame.fallback.backup = { harness: "claude", model: "haiku", effort: "low" };
+  assert.deepEqual(problems(fbSame), ["fallback.backup.harness: the backup must be on the other harness"]);
+
+  const lead = copy(tree);
+  lead.lead.backup = { harness: "claude", model: "sonnet", effort: "high" };
+  assert.deepEqual(problems(lead), ["lead.backup.harness: the backup must be on the other harness"]);
+  const noLead = copy(tree) as unknown as { lead?: unknown };
+  delete noLead.lead;
+  assert.deepEqual(problems(noLead), ["lead: choose what the project lead runs on"]);
+
+  for (const mode of ["claude", "pi", "mixed"]) assert.deepEqual(problems({ ...tree, mode }), []);
+  assert.match(problems({ ...tree, mode: "codex" })[0]!, /^mode: mode must be one of mixed, claude, pi/);
+  assert.match(problems({ ...tree, mode: undefined })[0]!, /^mode:/, "a saved tree states its mode");
+});
+
+test("the switch resolves each choice, the fallback and the lead to the harness it names", () => {
+  const { crew } = store();
+  const { tree } = crew.state();
+  const [deep, second] = tree.rules;
+  assert.deepEqual(effectiveChoice("mixed", deep!.use!, deep!.backup), deep!.use, "mixed: the choice as written");
+  assert.deepEqual(effectiveChoice("mixed", second!.use!, second!.backup), second!.use);
+  assert.equal(effectiveChoice("claude", deep!.use!, deep!.backup).harness, "claude");
+  assert.deepEqual(effectiveChoice("claude", second!.use!, second!.backup), second!.backup, "a Pi choice falls to its Claude backup");
+  assert.deepEqual(effectiveChoice("pi", deep!.use!, deep!.backup), deep!.backup, "a Claude choice falls to its Pi backup");
+  assert.deepEqual(effectiveChoice("pi", second!.use!, second!.backup), second!.use);
+  assert.deepEqual(effectiveLead({ mode: "pi", lead: tree.lead }), tree.lead.backup);
+  assert.deepEqual(effectiveLead({ mode: "claude", lead: tree.lead }), tree.lead.use);
+  assert.deepEqual(effectiveLead({ mode: "mixed", lead: tree.lead }), tree.lead.use);
+
+  crew.save({ ...tree, mode: "pi" });
+  assert.deepEqual(crew.lead(), tree.lead.backup, "the store resolves the lead under the saved switch");
+  crew.save({ ...tree, mode: "mixed" });
+  assert.deepEqual(crew.lead(), tree.lead.use);
+});
+
+test("a tree from before the switch loads with its backups filled in, and is current once saved", () => {
+  const { crew } = store();
+  const old = copy(crew.state().tree) as unknown as Record<string, unknown> & { rules: Array<Record<string, unknown>>; fallback: Record<string, unknown> };
+  delete old.mode;
+  delete old.lead;
+  delete old.fallback.backup;
+  const use = (model: string, harness = "claude", effort = "high") => ({ harness, model, effort });
+  old.rules = [
+    { id: "a", when: "a", use: use("opus", "claude", "medium"), children: [{ id: "a1", when: "a1", use: use("haiku", "claude", "low") }] },
+    { id: "b", when: "b", use: use("openai-codex/gpt-6-astra", "pi") },
+    { id: "c", when: "c", use: use("openai-codex/gpt-6.1-sol", "pi") },
+    { id: "d", when: "d", use: use("openai-codex/gpt-6-luna", "pi") },
+    { id: "e", when: "e", use: use("fable", "claude", "high") },
+    { id: "f", when: "f", use: use("sonnet"), backup: use("openai-codex/gpt-6-sol", "pi", "medium") },
+    { id: "g", when: "g", children: [{ id: "g1", when: "g1", use: use("sonnet") }] },
+  ];
+  writeFileSync(crew.file, JSON.stringify(old));
+
+  const loaded = crew.state();
+  assert.equal(loaded.problem, null, "an old file is still a good file");
+  assert.equal(loaded.tree.mode, "mixed");
+  const pi = (model: string, effort = "high") => ({ harness: "pi", model: `openai-codex/${model}`, effort });
+  const claude = (model: string, effort = "high") => ({ harness: "claude", model, effort });
+  const r = loaded.tree.rules;
+  assert.deepEqual(r[0]!.backup, pi("gpt-6-astra"), "Opus <-> GPT-6 Astra");
+  assert.deepEqual(r[0]!.children![0]!.backup, pi("gpt-6.1-sol", "low"), "Haiku to a light Sol");
+  assert.deepEqual(r[1]!.backup, claude("opus", "medium"));
+  assert.deepEqual(r[2]!.backup, claude("sonnet"), "Sonnet <-> GPT-6.1 Sol");
+  assert.deepEqual(r[3]!.backup, claude("sonnet"), "any other Pi model falls to Sonnet");
+  assert.deepEqual(r[4]!.backup, pi("gpt-6-astra"), "Fable to the strongest Pi model");
+  assert.deepEqual(r[5]!.backup, pi("gpt-6-sol", "medium"), "a backup already there is never replaced");
+  assert.equal(r[6]!.backup, undefined, "a rule with no choice of its own gets none");
+  assert.deepEqual(r[6]!.children![0]!.backup, pi("gpt-6.1-sol"));
+  assert.deepEqual(loaded.tree.fallback.backup, pi("gpt-6.1-sol"));
+  assert.deepEqual(loaded.tree.lead.use, claude("opus", "medium"));
+  assert.deepEqual(loaded.tree.lead.backup, pi("gpt-6-astra"));
+  assert.deepEqual(validateCrewTree(loaded.tree, loaded.catalog), []);
+  assert.deepEqual(crew.state().tree, loaded.tree, "the same every time");
+  assert.ok(!("mode" in JSON.parse(readFileSync(crew.file, "utf8"))), "reading does not rewrite the file");
+
+  crew.save(loaded.tree);
+  const onDisk = JSON.parse(readFileSync(crew.file, "utf8"));
+  assert.equal(onDisk.mode, "mixed");
+  assert.deepEqual(onDisk.rules[0].backup, pi("gpt-6-astra"));
+  assert.ok(onDisk.lead.backup && onDisk.fallback.backup);
+
+  assert.deepEqual(upgradeCrewTree(null), null);
+  assert.deepEqual(defaultBackup(claude("something-new")), pi("gpt-6.1-sol"));
+});
+
+test("the printed guide names the switch and prints only commands for the harness that is on", () => {
+  const { crew } = store();
+  const tree = copy(crew.state().tree);
+  const text = (mode: string) => {
+    crew.save({ ...tree, mode });
+    return crew.text();
+  };
+  const starts = (t: string) => t.split("\n").filter((l) => l.includes("Start: "));
+
+  const mixed = text("mixed");
+  assert.match(mixed, /^The founder's switch: mixed\./m);
+  assert.deepEqual(starts(mixed).map((l) => /--kind (\w+)/.exec(l)![1]), ["claude", "pi", "claude", "claude"]);
+  assert.ok(!mixed.includes("never start"), "nothing is off in mixed");
+
+  const claude = text("claude");
+  assert.match(claude, /^The founder's switch: Claude Code only\. Pi is switched off by the founder: every choice below already runs on Claude Code, so never start Pi/m);
+  assert.deepEqual(starts(claude).map((l) => /--kind (\w+)/.exec(l)![1]), ["claude", "claude", "claude", "claude"]);
+  assert.match(claude, /^ {3}Use: Opus 5\.5, medium effort, in Claude Code\./m, "the second rule's Pi choice shows its Claude backup");
+  assert.ok(!/Pi\b.*effort|--kind pi|gpt-6/.test(claude.split("\n").slice(1).join("\n").replace(/never start Pi/, "")), "no trace of the switched-off harness in the rules");
+  assert.equal(starts(claude)[1], '   Start: herdr agent start <name> --kind claude --pane "$P" -- --model opus --effort medium');
+
+  const pi = text("pi");
+  assert.match(pi, /^The founder's switch: Pi only\. Claude Code is switched off by the founder: .*never start Claude Code/m);
+  assert.deepEqual(starts(pi).map((l) => /--kind (\w+)/.exec(l)![1]), ["pi", "pi", "pi", "pi"]);
+  assert.match(pi, /--kind pi --pane "\$P" -- --model openai-codex\/gpt-6-astra:high/);
+  assert.match(pi, /--model openai-codex\/gpt-6\.1-sol:high/);
+  assert.match(pi, /^Otherwise: GPT-6\.1 Sol/m, "the fallback follows the switch too");
+  assert.ok(!/--kind claude/.test(pi));
 });
 
 test("the endpoints serve the tree and the catalog, and refuse an invalid save without touching the file", async () => {
