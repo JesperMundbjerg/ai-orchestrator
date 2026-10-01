@@ -8,6 +8,7 @@ import { claudeHookEvents, describeTool } from "../src/server/activity.ts";
 import { openDatabase } from "../src/server/db.ts";
 import { Inbox, type PresenceSource } from "../src/server/inbox.ts";
 import { World, type AgentSource, type LiveAgent } from "../src/server/world.ts";
+import { CrewTreeStore } from "../src/server/crewtree.ts";
 import { checkoutsIn, placeFor } from "../src/server/worktrees.ts";
 
 function setup(now?: () => Date) {
@@ -173,9 +174,8 @@ test("starting a project makes its worktree beside the repository and starts a f
   assert.match(brief, /herdr agent start <name> --kind <kind> --pane "\$P" -- <model>/);
   assert.match(brief, /`P=\$\('[^']*bin\/inbox' pane\)` opens a pane in your tab, laid out with the others as a grid/);
   assert.ok(!brief.includes("herdr pane split"), "crew panes come from inbox pane, which lays them out");
-  assert.match(brief, /Sonnet 5\.5, high effort, for most tasks: `--kind claude -- --model sonnet --effort high`/);
-  assert.match(brief, /Opus 5\.5, medium effort, for work that needs deep thinking: `--kind claude -- --model opus --effort medium`/);
-  assert.match(brief, /GPT-6 Astra, high effort, inside Pi, when a second model's view helps: `--kind pi -- --model openai-codex\/gpt-6-astra:high`/);
+  assert.match(brief, /by the founder's crew guide, a decision tree they edit: `inbox crew` prints it with the exact start command/);
+  assert.ok(!/exactly one of three|--model sonnet|gpt-6-astra/.test(brief), "the choices live in the crew tree, not in the brief");
   assert.match(brief, /Never any other kind or model/);
   assert.match(brief, /hand it to QA for review/);
   assert.ok(!lead!.args.some((a) => a.startsWith("Start on the project")), "started with its brief only, so herdr sees it ready");
@@ -713,6 +713,7 @@ test("an agent that keeps sending messages is stopped for the hour", () => {
 test("inbox team tells a first mate how to run its crew, and its crew to report to it", () => {
   const { atoms } = repository();
   const { world, setLive } = setup();
+  world.crew = new CrewTreeStore(mkdtempSync(join(tmpdir(), "world-crew-")), { piStore: "/nowhere" });
   setLive([lane("p1", atoms, "s1")]);
   world.state();
   setLive([lane("p1", atoms, "s1"), { ...lane("p2", atoms, "s2"), name: "tests" }]);
@@ -720,9 +721,31 @@ test("inbox team tells a first mate how to run its crew, and its crew to report 
   const told = world.brief({ paneId: "p1" }).text;
   assert.match(told, new RegExp(`Project: Atoms light, in the worktree ${atoms}`));
   assert.match(told, new RegExp(`Your office name is ${mate!.name}. You are the project's first mate`));
-  assert.match(told, /--model sonnet/);
+  assert.match(told, /Crew guide/, "a first mate reads the current tree in `inbox team`");
+  assert.match(told, /Start: herdr agent start <name> --kind claude --pane "\$P" -- --model sonnet --effort high/);
   assert.match(world.brief({ paneId: "p2" }).text, new RegExp(`${mate!.name} is its first mate: .*inbox say ${mate!.name}`));
   assert.equal(crew!.role, "member");
+});
+
+test("an edit to the crew tree reaches a running first mate's next `inbox team`, and crew never see the tree", () => {
+  const { atoms } = repository();
+  const { world, setLive } = setup();
+  const crew = new CrewTreeStore(mkdtempSync(join(tmpdir(), "world-crew-")), { piStore: "/nowhere" });
+  world.crew = crew;
+  setLive([lane("p1", atoms, "s1")]);
+  world.state();
+  setLive([lane("p1", atoms, "s1"), lane("p2", atoms, "s2")]);
+  const mate = world.state().agents.find((a) => a.paneId === "p1")!;
+  assert.equal(mate.role, "lead");
+  assert.match(world.brief({ paneId: "p1" }).text, /--model sonnet --effort high/);
+  const edited = structuredClone(crew.state().tree);
+  edited.rules[2]!.when = "Typos and one-line fixes.";
+  edited.rules[2]!.use!.model = "haiku";
+  crew.save(edited);
+  const after = world.brief({ paneId: "p1" }).text;
+  assert.match(after, /Typos and one-line fixes\./);
+  assert.match(after, /--model haiku --effort high/);
+  assert.doesNotMatch(world.brief({ paneId: "p2" }).text, /Crew guide/, "only a first mate chooses models");
 });
 
 test("team names are unique, since agents address teams by name", async () => {

@@ -15,7 +15,7 @@ const LOUNGE = "lounge";
  * with where it stands and who is on it (drag people between columns), the work flowing between
  * them and what was said. Starting a project makes its worktree; finishing one removes it.
  */
-export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: number; onOffice: () => void }) {
+export function TeamBoard({ state, tick, onOffice, onCrewGuide }: { state: InboxState; tick: number; onOffice: () => void; onCrewGuide: () => void }) {
   const [world, setWorld] = useState<WorldState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   /** What went wrong with the last thing you did; kept until you dismiss it, cancel or change the form it came from, or do something else, and not cleared by the next refresh. */
@@ -61,6 +61,7 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
           <p className="muted">A project is a worktree: everyone working in it is on it, and its first mate runs the crew. Your instructions go to the first mate; finished work flows to the team it hands to.</p>
         </div>
         <span className="spacer" />
+        <button className="ghost small" onClick={onCrewGuide} title="Which model each crew member runs on">Crew guide</button>
         <button className="ghost small" onClick={onOffice}>Walk into the office →</button>
         <TellAllLeads world={world} />
         <button className="primary small" onClick={() => (setError(null), setAdding(!adding))}>{adding ? "Cancel" : "+ New project"}</button>

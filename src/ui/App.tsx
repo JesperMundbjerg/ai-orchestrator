@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { ItemDetailView } from "./components/ItemDetail.tsx";
+import { CrewGuide } from "./components/CrewGuide.tsx";
 import { DecisionSheet } from "./components/DecisionSheet.tsx";
 import { MachineWarning } from "./components/MachineWarning.tsx";
 import { Queue } from "./components/Queue.tsx";
@@ -30,7 +31,7 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (route.view === "world" || route.view === "teams" || e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
+      if (route.view === "world" || route.view === "teams" || route.view === "crew" || e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).closest("input, textarea, select, [contenteditable]")) return;
       const currentId = (e.target as HTMLElement).closest<HTMLElement>("[data-decision-id]")?.dataset.decisionId ?? route.itemId;
       if (e.key === "n") {
         const id = nextNeeding(queue, currentId);
@@ -91,8 +92,10 @@ export function App() {
             )}
           </main>
         </>
+      ) : route.view === "crew" ? (
+        <CrewGuide tick={tick} onBack={() => navigate({ view: "teams", itemId: null })} />
       ) : route.view === "teams" ? (
-        <TeamBoard state={state} tick={tick} onOffice={() => navigate({ view: "world", itemId: null })} />
+        <TeamBoard state={state} tick={tick} onOffice={() => navigate({ view: "world", itemId: null })} onCrewGuide={() => navigate({ view: "crew", itemId: null })} />
       ) : (
         <TaskBoard state={state} parked={route.view === "parked"} projectId={route.projectId} onOpenItem={(itemId) => navigate({ view: "needs", itemId })} />
       )}

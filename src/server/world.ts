@@ -17,6 +17,7 @@ import type {
 } from "../shared/types.ts";
 import { serviceUrl } from "../shared/agent-client.ts";
 import { Activity } from "./activity.ts";
+import type { CrewTreeStore } from "./crewtree.ts";
 import { Adapters } from "./adapter.ts";
 import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
@@ -99,10 +100,8 @@ const FIRST_MATE = [
   "You do not write the code yourself. Split the work into tasks, start a crew member for each in herdr, supervise them to completion, check what they deliver, and report plain outcomes.",
   "Start crew in this worktree:",
   `\`P=$(${quote(INBOX_BIN)} pane)\` opens a pane in your tab, laid out with the others as a grid, and prints its id (never split panes yourself);`,
-  '`herdr agent start <name> --kind <kind> --pane "$P" -- <model>` starts a crew member in it (a unique lowercase name), as exactly one of three choices:',
-  "Sonnet 5.5, high effort, for most tasks: `--kind claude -- --model sonnet --effort high`;",
-  "Opus 5.5, medium effort, for work that needs deep thinking: `--kind claude -- --model opus --effort medium`;",
-  "GPT-6 Astra, high effort, inside Pi, when a second model's view helps: `--kind pi -- --model openai-codex/gpt-6-astra:high`.",
+  '`herdr agent start <name> --kind <kind> --pane "$P" -- <model>` starts a crew member in it (a unique lowercase name).',
+  "Choose each member's harness, model and effort by the founder's crew guide, a decision tree they edit: `inbox crew` prints it with the exact start command for each choice, and `inbox team` prints it too. Read it before you start each member, not once, since it changes while you work: take the first rule whose \"when\" fits the task.",
   "Never any other kind or model: crew run only as Claude Code or Pi, which have the permissions set up.",
   '`herdr agent prompt <name> "<task>"` gives it its task.',
   "Crew share this checkout, so give each one files of its own.",
@@ -144,6 +143,8 @@ export class World {
   /** The last status seen per team, so a team is announced when it becomes blocked, not while it stays so. */
   private announced: Map<string, TeamStatus> | null = null;
   readonly messages: Messages;
+  /** The founder's crew tree; the service sets it. Leads read it, so an edit reaches them without a restart. */
+  crew: CrewTreeStore | null = null;
   private activity = new Activity();
   private efforts = new Efforts();
   /** Session files, for the model of an agent whose harness does not report it. */
@@ -436,6 +437,11 @@ export class World {
     return true;
   }
 
+  crewTree(): CrewTreeStore {
+    if (!this.crew) throw new InboxError(404, "this service has no crew tree");
+    return this.crew;
+  }
+
   /** What `inbox team` prints: who the agent is, its project and part in it, and what waits for it. */
   brief(session: SessionInput): TeamBrief {
     const me = this.resolve(session);
@@ -454,6 +460,7 @@ export class World {
         ? me.role === "lead" ? "You lead it: divide the work among your crew and keep them moving." : `${lead ? lead.name : "Its lead"} leads it and divides the work; take yours from them.`
         : me.role === "lead" ? `Your office name is ${me.name}. ${FIRST_MATE}` : `${lead ? lead.name : "Its first mate"} is its first mate: take your work from them and report back with \`inbox say ${lead?.name ?? "NAME"} "…"\`, not to the founder.`;
       lines.push(part);
+      if (me.role === "lead" && !team.standing && this.crew) lines.push(this.crew.text());
       if (team.purpose) lines.push(`Purpose: ${team.purpose}`);
       lines.push(`On it: ${state.agents.filter((a) => a.teamId === team.id && a.id !== me.id).map(status).join("; ") || "just you"}.`);
       const next = team.handsTo ? teams.get(team.handsTo) : null;

@@ -43,7 +43,7 @@ export function useItemDetail(itemId: string | null, tick: number): ItemDetail |
   return detail?.item.id === itemId ? detail : null;
 }
 
-export type View = "needs" | "working" | "parked" | "teams" | "world";
+export type View = "needs" | "working" | "parked" | "teams" | "crew" | "world";
 export interface Route {
   view: View;
   itemId: string | null;
@@ -53,7 +53,7 @@ export interface Route {
 function parse(hash: string): Route {
   const [path = "", query = ""] = hash.replace(/^#\/?/, "").split("?");
   const params = new URLSearchParams(query);
-  const view = (["needs", "working", "parked", "teams", "world"] as const).find((v) => v === path) ?? "needs";
+  const view = (["needs", "working", "parked", "teams", "crew", "world"] as const).find((v) => v === path) ?? "needs";
   return { view, itemId: params.get("item"), projectId: params.get("project") };
 }
 

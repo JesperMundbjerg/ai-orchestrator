@@ -528,3 +528,21 @@ button.link { background: none; border: 0; padding: 0; font: inherit; color: var
   box-shadow: 0 6px 24px rgba(16, 24, 40, 0.14); backdrop-filter: blur(8px);
 }
 .warn-dismiss { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+
+/* The crew guide: the decision tree leads follow when choosing a crew member's model. */
+.crew-guide { max-width: 860px; }
+.crew-guide code { font-size: 12px; word-break: break-all; }
+.crew-rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.crew-rules .crew-rules { margin: 10px 0 0 14px; padding-left: 12px; border-left: 2px solid var(--line); }
+.crew-rule { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.crew-rule-head { display: flex; gap: 10px; align-items: flex-start; }
+.crew-n { font-size: 12px; color: var(--muted); padding-top: 22px; min-width: 22px; }
+.crew-when { flex: 1; min-width: 0; }
+.crew-guide textarea, .crew-guide input, .crew-guide select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; resize: vertical; min-width: 0; }
+.crew-guide [aria-invalid="true"] { border-color: var(--warn); }
+.crew-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.crew-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.crew-error { font-style: normal; font-size: 12px; color: var(--warn); }
+.crew-add { align-self: flex-start; margin: 10px 0 18px; }
+.crew-fallback { margin-top: 6px; border-style: dashed; }
+.crew-fallback h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0; }

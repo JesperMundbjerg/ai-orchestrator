@@ -94,6 +94,9 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["PATCH", /^\/api\/world\/agents\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateAgent(id!, b)],
     ["DELETE", /^\/api\/world\/agents\/([\w-]+)$/, (_r, _b, [id]) => (needWorld().removeAgent(id!), { removed: id })],
     ["POST", /^\/api\/world\/agents\/([\w-]+)\/messages$/, (_r, b, [id]) => needWorld().messages.tell(id!, b)],
+    // The founder's crew tree: which harness and model a lead picks for each crew member.
+    ["GET", /^\/api\/world\/crew-tree$/, () => needWorld().crewTree().state()],
+    ["PUT", /^\/api\/world\/crew-tree$/, (_r, b) => needWorld().crewTree().save(b)],
     // What agents left running on the machine; Close is refused for anything but a listed headless browser.
     ["GET", /^\/api\/machine$/, () => needMachine().state()],
     ["POST", /^\/api\/machine\/browsers\/(\d+)\/close$/, (_r, _b, [pid]) => needMachine().close(Number(pid))],
@@ -103,6 +106,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/agent\/replies$/, (_r, b: { session: SessionInput; mode?: "live" | "boundary" | "pull" }) => inbox.pendingReplies(b.session, b.mode ?? "pull")],
     // Agent protocol: the office
     ["POST", /^\/api\/agent\/team$/, (_r, b: { session: SessionInput }) => needWorld().brief(b.session)],
+    ["POST", /^\/api\/agent\/crew$/, () => ({ text: needWorld().crewTree().text() })],
     ["POST", /^\/api\/agent\/say$/, (_r, b) => needWorld().messages.say(needWorld().resolve(b.session), b)],
     ["POST", /^\/api\/agent\/events$/, (_r, b: { session: SessionInput; events?: ActivityEvent[] }) => needWorld().report(b.session, Array.isArray(b.events) ? b.events : [])],
     ["POST", /^\/api\/agent\/effort$/, (_r, b) => needWorld().pollEffort(b.session, b.report)],
