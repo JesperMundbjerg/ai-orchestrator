@@ -182,6 +182,10 @@ test("whole-team reminder merges a commit made inside the zero-count cache windo
   f.commit("Just finished"); f.advance(1); await f.world.react();
   assert.equal(f.prompts.length, 1);
   assert.match(f.prompts[0]!, /Your whole team has been idle.*Unpresented work: 1 commit.*Just finished/s);
+  f.advance(30 * minute); await f.world.react();
+  assert.equal(f.prompts.length, 2);
+  assert.match(f.prompts[1]!, /Unpresented work/);
+  assert.doesNotMatch(f.prompts[1]!, /Your whole team/, "revalidated HEAD belongs to the reminder just sent");
 });
 
 test("a crew answer and another project's open item do not suppress the lead's whole-team reminder", async (t) => {
@@ -238,18 +242,21 @@ test("a lead's say founder during the idle episode suppresses it, including acro
   f.world.messages.say(lead, { to: "founder", text: "Before going idle" });
   await f.world.react();
   f.advance(minute);
+  f.live[0]!.status = "working"; await f.world.react();
   f.world.messages.say(lead, { to: "founder", text: "Next we will check the captions tomorrow." });
+  f.advance(30_000); f.live[0]!.status = "idle"; await f.world.react();
   f.advance(5 * minute); await f.world.react(); assert.equal(f.notices().length, 0);
   const tracker = new Unpresented(f.db);
   const sent: string[] = [];
   const tick = () => tracker.tick(f.world.state(), f.now(), (_id, text) => { sent.push(text); });
   tick(); f.advance(40 * minute); tick(); assert.equal(sent.length, 0);
   f.live[0]!.status = "working"; tick();
+  f.advance(2 * minute); tick();
   f.live[0]!.status = "idle"; tick(); f.advance(5 * minute); tick();
-  assert.equal(sent.length, 1, "previous episode's explanation does not suppress a new idle episode");
+  assert.equal(sent.length, 1, "previous episode's explanation does not suppress real new work");
 });
 
-test("whole-team latch survives restart, prompt and crew changes; only work rearms it, with shared 30m cooldown", async (t) => {
+test("whole-team latch survives restart, prompt and crew changes; sustained work rearms it, with shared 30m cooldown", async (t) => {
   const f = setup(t); await f.world.react(); f.advance(5 * minute); await f.world.react();
   assert.equal(f.notices().length, 1);
   const tracker = new Unpresented(f.db);
@@ -260,21 +267,84 @@ test("whole-team latch survives restart, prompt and crew changes; only work rear
   f.live[0]!.status = "idle";
   f.live.push({ ...f.live[0]!, paneId: "p2", sessionId: "crew", name: "crew" });
   tick(); f.advance(6 * minute); tick(); assert.equal(sent.length, 0);
-  f.live[1]!.status = "working"; tick(); f.live[1]!.status = "done"; tick();
+  f.live[1]!.status = "working"; tick(); f.advance(2 * minute); tick();
+  f.live[1]!.status = "done"; tick();
   f.advance(5 * minute); tick(); assert.equal(sent.length, 0, "still within the 30-minute cooldown");
-  f.advance(13 * minute); tick(); assert.equal(sent.length, 1);
+  f.advance(11 * minute); tick(); assert.equal(sent.length, 1);
   // A whole-team reminder also throttles a newly eligible unpresented reminder.
   f.commit(); f.advance(minute); tick(); assert.equal(sent.length, 1);
   f.advance(29 * minute); tick(); assert.equal(sent.length, 2);
   assert.match(sent[1]!, /Unpresented work/);
-  assert.doesNotMatch(sent[1]!, /Your whole team/);
+  assert.match(sent[1]!, /Your whole team/, "new HEAD also rearms the whole-team reminder");
+});
+
+test("a reminder answered during brief work stays quiet through later replies and restart (Voice teaching)", async (t) => {
+  const f = setup(t);
+  await f.world.react(); f.advance(5 * minute); await f.world.react();
+  assert.equal(f.notices().length, 1);
+  f.live[0]!.status = "working"; await f.world.react();
+  const lead = f.world.state().agents.find((a) => a.role === "lead")!;
+  f.advance(30_000);
+  f.world.messages.say(lead, { to: "founder", text: "Waiting for your lesson feedback; nothing else is needed." });
+  await f.world.react();
+  f.live[0]!.status = "idle"; await f.world.react();
+  f.advance(6 * minute); await f.world.react();
+  assert.equal(f.notices().length, 1);
+  f.advance(30 * minute); await f.world.react();
+  assert.equal(f.notices().length, 1, "quiet beyond the shared cooldown, not merely throttled");
+  for (let reply = 0; reply < 3; reply++) {
+    f.live[0]!.status = "working"; await f.world.react();
+    f.advance(minute); await f.world.react();
+    f.live[0]!.status = "idle"; await f.world.react();
+    f.advance(6 * minute); await f.world.react();
+  }
+  assert.equal(f.notices().length, 1, "short answers to other messages never accumulate into real work");
+  const tracker = new Unpresented(f.db);
+  const sent: string[] = [];
+  const tick = () => tracker.tick(f.world.state(), f.now(), (_id, text) => { sent.push(text); });
+  tick(); f.advance(40 * minute); tick();
+  assert.equal(sent.length, 0, "restart retains the answered episode");
+  f.live[0]!.status = "working"; tick();
+  f.advance(2 * minute - 1); tick();
+  f.live[0]!.status = "idle"; tick(); f.advance(6 * minute); tick();
+  assert.equal(sent.length, 0, "a working stretch below two minutes does not rearm");
+  f.live[0]!.status = "working"; tick(); f.advance(2 * minute); tick();
+  f.live[0]!.status = "idle"; tick(); f.advance(5 * minute - 1); tick();
+  assert.equal(sent.length, 0);
+  f.advance(1); tick();
+  assert.equal(sent.length, 1, "two continuous working minutes rearm despite the previous answer");
+  assert.match(sent[0]!, /Your whole team/);
+});
+
+test("a new HEAD rearms an answered whole-team reminder across restart, even with no unpresented commits", async (t) => {
+  const f = setup(t);
+  await f.world.react(); f.advance(5 * minute); await f.world.react();
+  f.live[0]!.status = "working"; await f.world.react();
+  f.world.messages.say(f.world.state().agents[0]!, { to: "founder", text: "Waiting for feedback." });
+  f.advance(30_000); f.live[0]!.status = "idle"; await f.world.react();
+  f.commit("Real new work"); git(f.root, "merge", "--ff-only", "worktree-video");
+  const tracker = new Unpresented(f.db);
+  const sent: string[] = [];
+  const tick = () => tracker.tick(f.world.state(), f.now(), (_id, text) => { sent.push(text); });
+  tick(); f.advance(5 * minute); tick();
+  assert.equal(sent.length, 0, "new work does not bypass the shared cooldown");
+  f.advance(24.5 * minute); tick();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0]!, /Your whole team/);
+  assert.doesNotMatch(sent[0]!, /Unpresented work/);
+  f.advance(40 * minute); tick();
+  assert.equal(sent.length, 1, "the new episode is also latched");
 });
 
 test("the additive migration keeps existing items and is safe to run again", (t) => {
   const f = setup(t);
   const existing = f.post("decide", "Existing question");
   f.db.exec("DROP INDEX items_presented; DROP TABLE unpresented_work; ALTER TABLE items DROP COLUMN presented_head; ALTER TABLE items DROP COLUMN presented_path;");
+  f.db.prepare("INSERT INTO whole_team_idle (path, members, message_after, notified, reminded_at) VALUES (?, 'lead', 42, 1, 123)").run(f.path);
+  f.db.exec("ALTER TABLE whole_team_idle DROP COLUMN head");
   migrateUnpresented(f.db);
+  const idle = f.db.prepare("SELECT * FROM whole_team_idle WHERE path = ?").get(f.path);
+  assert.deepEqual({ ...idle }, { path: f.path, members: "lead", message_after: 42, notified: 1, reminded_at: 123, head: null });
   assert.equal(f.inbox.item(existing.itemId).title, "Existing question");
   assert.equal(f.inbox.item(existing.itemId).presentedHead, null);
   const head = f.commit(); const item = f.post();

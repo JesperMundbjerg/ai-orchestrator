@@ -17,6 +17,8 @@ export function migrateUnpresented(db: DatabaseSync): void {
     path TEXT PRIMARY KEY, members TEXT, message_after INTEGER,
     notified INTEGER NOT NULL DEFAULT 0, reminded_at INTEGER
   )`);
+  const idleColumns = new Set((db.prepare("PRAGMA table_info(whole_team_idle)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!idleColumns.has("head")) db.exec("ALTER TABLE whole_team_idle ADD COLUMN head TEXT");
 }
 
 export interface PresentedPoint { path: string; head: string }
@@ -37,7 +39,7 @@ export function recordPresented(db: DatabaseSync, itemId: string, point: Present
 
 type History = { presented_head: string | null; reminded_head: string | null; reminded_at: number | null; reminded_lead: string | null; reminded_message: number | null };
 type Sample = { head: string; count: number; latest: string };
-type TeamIdleHistory = { members: string | null; message_after: number | null; notified: number; reminded_at: number | null };
+type TeamIdleHistory = { members: string | null; message_after: number | null; notified: number; reminded_at: number | null; head: string | null };
 const MINUTE = 60_000;
 const WHOLE_TEAM_IDLE = "Your whole team has been idle for 5 minutes. If the work is done, present it now (inbox milestone). If you are waiting for something from the founder, ask for it (inbox decide, with options or an open question). Otherwise tell the founder in one line what happens next (inbox say founder).";
 
@@ -46,6 +48,7 @@ export class Unpresented {
   private samples = new Map<string, { at: number; key: string; value: Sample }>();
   private idle = new Map<string, { lead: string; since: number }>();
   private teamIdle = new Map<string, { members: string; since: number }>();
+  private teamWorking = new Map<string, Map<string, { since: number; rearmed: boolean }>>();
   constructor(db: DatabaseSync) { this.db = db; }
 
   private history(path: string): History | undefined {
@@ -91,18 +94,40 @@ export class Unpresented {
     return this.db.prepare("SELECT * FROM whole_team_idle WHERE path = ?").get(path) as TeamIdleHistory | undefined;
   }
 
-  /** Observe every member, including offline/unknown ones. Only observed work rearms the
-   * durable latch; a prompt, founder answer, changed crew or restart must not send it again. */
-  private wholeTeamReady(team: WorldTeam, path: string, members: WorldAgent[], now: number): boolean {
+  /** Brief replies are not a new work episode: preserve both the durable latch and the
+   * explanation cutoff through them. Prompts, crew changes and restarts alone do not rearm. */
+  private wholeTeamReady(team: WorldTeam, path: string, members: WorldAgent[], now: number, head: string | null): boolean {
+    let history = this.teamHistory(path);
+    let working = this.teamWorking.get(path);
+    if (!working) { working = new Map(); this.teamWorking.set(path, working); }
+    const workers = new Set(members.filter((a) => a.status === "working").map((a) => a.id));
+    for (const id of working.keys()) if (!workers.has(id)) working.delete(id);
+    let realWork = false;
+    for (const id of workers) {
+      let stretch = working.get(id);
+      if (!stretch) { stretch = { since: now, rearmed: false }; working.set(id, stretch); }
+      // Two continuous observed minutes by the same member is longer than a one-line
+      // reply; short turns cannot accumulate. A restart conservatively starts observation over.
+      if (!stretch.rearmed && now - stretch.since >= 2 * MINUTE) {
+        realWork = true;
+        stretch.rearmed = true;
+      }
+    }
+    realWork ||= head != null && history?.head != null && head !== history.head;
+    if (!history || (head != null && head !== history.head)) {
+      this.db.prepare(`INSERT INTO whole_team_idle (path, head) VALUES (?, ?)
+        ON CONFLICT(path) DO UPDATE SET head = excluded.head`).run(path, head);
+    }
+    if (realWork) {
+      this.db.prepare("UPDATE whole_team_idle SET notified = 0, members = NULL, message_after = NULL WHERE path = ?").run(path);
+    }
     const lead = members.find((a) => a.role === "lead");
-    if (members.some((a) => a.status === "working")) this.db.prepare("UPDATE whole_team_idle SET notified = 0 WHERE path = ? AND notified = 1").run(path);
     if (!lead || team.status === "blocked" || members.some((a) => !["idle", "done"].includes(a.status) || a.waitingOnYou)) {
       this.teamIdle.delete(path);
-      this.db.prepare("UPDATE whole_team_idle SET members = NULL, message_after = NULL WHERE path = ? AND members IS NOT NULL").run(path);
       return false;
     }
     const key = members.map((a) => `${a.id}:${a.role}`).sort().join(",");
-    let history = this.teamHistory(path);
+    history = this.teamHistory(path);
     if (history?.members !== key) {
       this.db.prepare(`INSERT INTO whole_team_idle (path, members, message_after) VALUES (?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET members = excluded.members, message_after = excluded.message_after`)
@@ -133,7 +158,7 @@ export class Unpresented {
       let sample = this.sample(team.path, now);
       changed ||= before !== this.count(team.path);
       const members = state.agents.filter((a) => a.teamId === team.id);
-      const wholeTeam = this.wholeTeamReady(team, team.path, members, now);
+      let wholeTeam = this.wholeTeamReady(team, team.path, members, now, sample?.head ?? null);
       const lead = members.find((a) => a.role === "lead");
       if (!lead || !["idle", "done"].includes(lead.status) || lead.waitingOnYou || team.status === "blocked") {
         this.idle.delete(team.path);
@@ -145,13 +170,17 @@ export class Unpresented {
       const history = this.history(team.path);
       const lastReminder = Math.max(history?.reminded_at ?? -Infinity, this.teamHistory(team.path)?.reminded_at ?? -Infinity);
       if (now - lastReminder < 30 * MINUTE) continue;
-      const reasons: string[] = wholeTeam ? [WHOLE_TEAM_IDLE] : [];
+      const reasons: string[] = [];
       if (sample?.count || wholeTeam) {
         // Revalidate before sending: a decision or new commit may have appeared inside the
         // polling window. A whole-team reminder must include newly unpresented work too.
         const fresh = this.sample(team.path, now, true);
         changed ||= (sample?.count ?? 0) !== (fresh?.count ?? 0);
         sample = fresh;
+        // Consume a HEAD change found by revalidation before latching this reminder;
+        // otherwise the next cached poll would mistake it for work done after the reminder.
+        wholeTeam = this.wholeTeamReady(team, team.path, members, now, sample?.head ?? null);
+        if (wholeTeam) reasons.push(WHOLE_TEAM_IDLE);
         const openAtHead = sample && this.db.prepare(`SELECT 1 FROM items WHERE presented_path = ? AND presented_head = ?
           AND state IN ('needs_attention', 'snoozed') LIMIT 1`).get(team.path, sample.head);
         const explained = history?.reminded_head === sample?.head && history?.reminded_message != null
@@ -171,6 +200,7 @@ export class Unpresented {
     for (const path of this.idle.keys()) if (!active.has(path)) this.idle.delete(path);
     for (const path of this.samples.keys()) if (!active.has(path)) this.samples.delete(path);
     for (const path of this.teamIdle.keys()) if (!active.has(path)) this.teamIdle.delete(path);
+    for (const path of this.teamWorking.keys()) if (!active.has(path)) this.teamWorking.delete(path);
     return changed;
   }
 }
