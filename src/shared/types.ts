@@ -297,6 +297,8 @@ export interface Team {
   path: string | null;
   branch: string | null;
   standing: boolean;
+  /** Worktrees it owns besides its own (its lanes): an agent working in one is on it, and finishing it never removes one. */
+  worktrees: string[];
   createdAt: string;
 }
 

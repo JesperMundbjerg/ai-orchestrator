@@ -7,7 +7,7 @@ import { FIGURE_WIDTH, figureGrid, nameLines, teamBoard, wobble, wrap } from "..
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
   id, identity: id, name: id, harness: "pi", cwd: null, project: null, branch: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: "t", role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra,
 });
-const team = (extra: Partial<Team> = {}): Team => ({ id: "t", name: "Voice Teacher", purpose: "", handsTo: null, path: "/repo-t", branch: "worktree-voice-teacher", standing: false, createdAt: "", ...extra });
+const team = (extra: Partial<Team> = {}): Team => ({ id: "t", name: "Voice Teacher", purpose: "", handsTo: null, path: "/repo-t", branch: "worktree-voice-teacher", standing: false, worktrees: [], createdAt: "", ...extra });
 const corner = (t: Team, members: WorldAgent[]): Corner => ({ team: t, center: [0, 0], facing: 0, desks: [], members });
 const live = (t: Team, status: TeamStatus, blockedBy: string[] = []): Map<string, WorldTeam> => new Map([[t.id, { ...t, status, blockedBy }]]);
 /** Every character as wide as half its size. */

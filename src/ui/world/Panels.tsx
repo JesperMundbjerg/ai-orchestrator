@@ -64,6 +64,7 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
                     repositories={world.repositories}
                     submit="Save"
                     onSubmit={(fields) => run(api.updateTeam(team.id, fields).then(() => setEditing(null)))}
+                    manage={{ run, onMerged: (said) => (setNote(said), setEditing(null)) }}
                     extra={
                       <>
                         <button type="button" className="ghost small" onClick={() => (setError(null), setEditing(null))}>Cancel</button>

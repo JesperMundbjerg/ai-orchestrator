@@ -131,6 +131,14 @@ CREATE TABLE IF NOT EXISTS teams (
   lead_pane TEXT
 );
 
+-- Worktrees a team owns besides its own (its lanes), such as Mission Control's crew checkouts:
+-- an agent working in one is on that team, and finishing the team never removes one.
+CREATE TABLE IF NOT EXISTS team_worktrees (
+  path TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  added_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS world_agents (
   id TEXT PRIMARY KEY,
   identity TEXT NOT NULL UNIQUE,

@@ -87,6 +87,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/world\/teams$/, (_r, b) => needWorld().createTeam(b)],
     ["PATCH", /^\/api\/world\/teams\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateTeam(id!, b)],
     ["DELETE", /^\/api\/world\/teams\/([\w-]+)$/, (_r, _b, [id]) => needWorld().deleteTeam(id!)],
+    // A team's other worktrees (lanes), and folding a project into another; neither touches anything on disk.
+    ["GET", /^\/api\/world\/teams\/([\w-]+)\/worktrees$/, (_r, _b, [id]) => needWorld().worktrees(id!)],
+    ["POST", /^\/api\/world\/teams\/([\w-]+)\/worktrees$/, (_r, b, [id]) => needWorld().addWorktree(id!, b.path)],
+    ["POST", /^\/api\/world\/teams\/([\w-]+)\/worktrees\/remove$/, (_r, b, [id]) => needWorld().removeWorktree(id!, b.path)],
+    ["POST", /^\/api\/world\/teams\/([\w-]+)\/merge$/, (_r, b, [id]) => needWorld().mergeTeam(id!, b.into)],
     ["POST", /^\/api\/world\/all-leads\/messages$/, (_r, b) => needWorld().messages.tellAllLeads(b)],
     ["POST", /^\/api\/world\/teams\/([\w-]+)\/messages$/, (_r, b, [id]) => needWorld().messages.instruct(id!, b)],
     ["POST", /^\/api\/world\/messages\/([\w-]+)\/deliveries\/([\w-]+)\/retry$/, (_r, _b, [message, agent]) => needWorld().messages.retry(message!, agent!)],

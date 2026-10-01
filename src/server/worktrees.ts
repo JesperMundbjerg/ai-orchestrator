@@ -44,6 +44,16 @@ export function currentBranch(checkout: Checkout): string | null {
   }
 }
 
+/** A repository's linked worktrees (not its main checkout), as git lists them. */
+export function linkedWorktrees(repoRoot: string): string[] {
+  try {
+    const tops = git(repoRoot, ["worktree", "list", "--porcelain"]).split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9));
+    return tops.filter((top) => top !== repoRoot);
+  } catch {
+    return [];
+  }
+}
+
 /** Changed and untracked files, which removing the worktree would throw away. */
 export function uncommitted(path: string): number {
   return git(path, ["status", "--porcelain"]).split("\n").filter(Boolean).length;

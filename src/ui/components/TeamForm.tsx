@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Repository, Team } from "../../shared/types.ts";
 import { projectSlug } from "../../shared/slug.ts";
 import { api } from "../api.ts";
@@ -20,8 +20,10 @@ export const leadTitle = (team: Team) => (team.standing ? "Lead" : "First mate")
  * project gets its own worktree in the repository you pick, with a first mate started there;
  * an always-on team (like Mission Control) is only named.
  */
-export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra }: {
+export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra, manage }: {
   initial?: Team;
+  /** Editing: the team's worktrees and Merge into…, run through the caller's error line; `onMerged` gets what happened. */
+  manage?: { run: (p: Promise<unknown>) => unknown; onMerged: (note: string) => void };
   /** Every team, for where this one hands its finished work. */
   teams: Team[];
   repositories: Repository[];
@@ -88,6 +90,7 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
           ))}
         </select>
       </label>
+      {initial && manage ? <TeamWorktrees team={initial} teams={teams} {...manage} /> : null}
       <div className="row">
         <button className="primary small" type="submit" disabled={!canSubmit}>{submit}</button>
         {extra}
@@ -106,4 +109,72 @@ export async function finishTeam(team: Team): Promise<string | null> {
     : `Finish ${team.name}?\n\nIts agents are closed and the worktree ${team.path} is removed. The branch ${team.branch ?? ""} is deleted if it is merged, otherwise kept. Nothing uncommitted is lost: it refuses while there is any.`;
   if (!confirm(ask)) return null;
   return (await api.deleteTeam(team.id)).note;
+}
+
+/** A worktree by its folder's name; its full path is in the title. */
+const folder = (path: string) => path.replace(/\/+$/, "").split("/").pop() || path;
+
+/**
+ * The worktrees a team works in: its own, and others of its repository it owns (lanes), whose
+ * agents are on it as members. Adding or removing one never touches the folder. Merge into… folds
+ * a project made for a worktree into another team, keeping everything on disk.
+ */
+function TeamWorktrees({ team, teams, run, onMerged }: { team: Team; teams: Team[]; run: (p: Promise<unknown>) => unknown; onMerged: (note: string) => void }) {
+  const [available, setAvailable] = useState<string[]>([]);
+  const [adding, setAdding] = useState("");
+  const [into, setInto] = useState("");
+  const lanes = team.worktrees.join("\n");
+  useEffect(() => {
+    let live = true;
+    api.teamWorktrees(team.id).then((w) => live && setAvailable(w.available), () => live && setAvailable([]));
+    return () => void (live = false);
+  }, [team.id, lanes]);
+  const others = teams.filter((t) => t.id !== team.id);
+  const target = others.find((t) => t.id === into);
+  const add = () => {
+    const path = adding.trim();
+    if (path) run(api.addWorktree(team.id, path).then(() => setAdding("")));
+  };
+  const merge = () => {
+    if (!target) return;
+    const where = team.path ? `Its worktree ${team.path} becomes one of ${target.name}'s` : `It has no worktree of its own`;
+    if (!confirm(`Merge ${team.name} into ${target.name}?\n\n${where}, and its agents join ${target.name} as members. ${team.name} is then forgotten. Nothing on disk is touched: no worktree, branch, pane or process is removed.`)) return;
+    run(api.mergeTeam(team.id, target.id).then((r) => onMerged(r.note)));
+  };
+  return (
+    <div className="team-worktrees">
+      <span>Worktrees</span>
+      <ul>
+        {team.path ? <li><code title={team.path}>{folder(team.path)}</code> <span className="muted small-note">its own</span></li> : null}
+        {team.worktrees.map((w) => (
+          <li key={w}>
+            <code title={w}>{folder(w)}</code>
+            <button type="button" className="ghost small" onClick={() => run(api.removeWorktree(team.id, w))} title="The folder stays; agents working there are no longer placed on this team by it">Remove</button>
+          </li>
+        ))}
+        {!team.path && !team.worktrees.length ? <li className="muted small-note">None: its agents work wherever they are.</li> : null}
+      </ul>
+      <div className="row">
+        <input
+          list={`worktrees-${team.id}`}
+          placeholder="Add a worktree of the same repository"
+          value={adding}
+          onChange={(e) => setAdding(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+        />
+        <datalist id={`worktrees-${team.id}`}>{available.map((p) => <option key={p} value={p}>{folder(p)}</option>)}</datalist>
+        <button type="button" className="ghost small" disabled={!adding.trim()} onClick={add}>Add</button>
+      </div>
+      <span className="muted small-note">Agents working in one of these are on {team.name}. Removing one, or finishing, never deletes an added worktree.</span>
+      {others.length ? (
+        <div className="row">
+          <select value={into} onChange={(e) => setInto(e.target.value)} aria-label="Merge into">
+            <option value="">Merge into…</option>
+            {others.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+          <button type="button" className="ghost small" disabled={!target} onClick={merge}>Merge</button>
+        </div>
+      ) : null}
+    </div>
+  );
 }

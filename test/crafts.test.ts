@@ -8,7 +8,7 @@ import { CRAFTS, crafters, LEAD_CRAFTS, pieceParts, STAGE_S, stageAt, STAGES, st
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
   id, identity: id, name: id, harness: "pi", cwd: null, project: null, branch: null, status: "working", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra,
 });
-const team = (id: string): Team => ({ id, name: id, purpose: "", handsTo: null, path: `/repo-${id}`, branch: `worktree-${id}`, standing: false, createdAt: "" });
+const team = (id: string): Team => ({ id, name: id, purpose: "", handsTo: null, path: `/repo-${id}`, branch: `worktree-${id}`, standing: false, worktrees: [], createdAt: "" });
 
 function plans(crew: number): OfficePlan[] {
   const teams = [team("a"), team("b"), team("c")];

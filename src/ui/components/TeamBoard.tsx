@@ -86,7 +86,7 @@ export function TeamBoard({ state, tick, onOffice, onCrewGuide }: { state: Inbox
 
       <div className="team-columns">
         {world.teams.map((t) => (
-          <TeamColumn key={t.id} team={t} world={world} agents={agents} state={state} over={over === t.id} target={target(t.id)} run={run} clearError={() => setError(null)} onFinish={() => finish(t)} />
+          <TeamColumn key={t.id} team={t} world={world} agents={agents} state={state} over={over === t.id} target={target(t.id)} run={run} clearError={() => setError(null)} onFinish={() => finish(t)} onNote={setNote} />
         ))}
         <section className={`team-column lounge ${over === LOUNGE ? "over" : ""}`} {...target(LOUNGE)}>
           <div className="team-column-head">
@@ -124,7 +124,7 @@ export function TeamBoard({ state, tick, onOffice, onCrewGuide }: { state: Inbox
   );
 }
 
-function TeamColumn({ team, world, agents, state, over, target, run, clearError, onFinish }: {
+function TeamColumn({ team, world, agents, state, over, target, run, clearError, onFinish, onNote }: {
   team: WorldTeam;
   world: WorldState;
   agents: Map<string, WorldAgent>;
@@ -135,6 +135,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
   /** Dismiss the board's error: the form it came from was changed, cancelled or closed. */
   clearError: () => void;
   onFinish: () => void;
+  onNote: (note: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const members = world.agents.filter((a) => a.teamId === team.id).sort((a, b) => Number(b.role === "lead") - Number(a.role === "lead"));
@@ -150,6 +151,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
           repositories={world.repositories}
           submit="Save"
           onSubmit={(fields) => run(api.updateTeam(team.id, fields).then(() => setEditing(false)))}
+          manage={{ run, onMerged: (said) => (setEditing(false), onNote(said)) }}
           extra={
             <>
               <button type="button" className="ghost small" onClick={() => (clearError(), setEditing(false))}>Cancel</button>
@@ -166,7 +168,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
             <button className="ghost small" onClick={() => (clearError(), setEditing(true))}>Edit</button>
           </div>
           <span className={team.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
-          <span className="muted small-note" title={team.path ?? undefined}>{team.standing ? "Always on" : `Worktree on ${team.branch ?? "an unknown branch"}`}</span>
+          <span className="muted small-note" title={team.path ?? undefined}>{team.standing ? "Always on" : `Worktree on ${team.branch ?? "an unknown branch"}`}{team.worktrees.length ? ` · ${team.worktrees.length}${team.standing ? "" : " more"} ${team.worktrees.length === 1 ? "worktree" : "worktrees"}` : ""}</span>
           {!!team.unpresentedCommits && <span className="muted small-note">{team.unpresentedCommits} {team.unpresentedCommits === 1 ? "commit" : "commits"} not shown to you yet</span>}
           {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}
           {handsTo || toReview ? (

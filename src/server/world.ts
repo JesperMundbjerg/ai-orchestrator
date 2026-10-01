@@ -10,7 +10,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
@@ -27,7 +27,7 @@ import { EFFORT_TIMEOUT_MS, Efforts } from "./effort.ts";
 import type { EffortReport } from "../shared/types.ts";
 import { whyStuck } from "../shared/stuck.ts";
 import { Unpresented } from "./unpresented.ts";
-import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
+import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, linkedWorktrees, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
 
 /** An agent a terminal multiplexer reports as running. */
 export interface LiveAgent {
@@ -187,11 +187,12 @@ export class World {
     const teams = this.teams();
 
     // Working in a project's worktree puts an agent on that project, which is made for a worktree seen for the first time.
+    // A worktree a team owns besides its own (a lane) puts the agent on that team instead, and is never made a project.
     for (const a of agents) {
       const row = rows.get(a.identity)!;
       const checkout = a.cwd ? this.checkout(a.cwd) : null;
       if (row.team_id || !checkout?.linked) continue;
-      const team = teams.find((t) => t.path === checkout.top) ?? this.adopt(checkout, teams);
+      const team = teams.find((t) => t.path === checkout.top) ?? teams.find((t) => t.worktrees.includes(checkout.top)) ?? this.adopt(checkout, teams);
       this.db.prepare("UPDATE world_agents SET team_id = ?, role = 'member' WHERE id = ?").run(team.id, str(row.id));
       Object.assign(row, { team_id: team.id, role: "member" });
     }
@@ -290,13 +291,18 @@ export class World {
     }
   }
 
-  /** Every team with anyone on it has a lead: the one who has been on it longest, preferring someone running. */
+  /**
+   * Every team with anyone on it has a lead: the one who has been on it longest, preferring someone running.
+   * Someone working in one of its lanes is never appointed: they are crew, and only you make one lead.
+   */
   private appointLeads(world: WorldAgent[], teams: Team[], rows: Map<string, Row>): void {
     const since = (a: WorldAgent) => str(rows.get(a.identity)?.first_seen_at);
     for (const team of teams) {
+      const inLane = (a: WorldAgent) => !!a.cwd && team.worktrees.some((w) => a.cwd === w || a.cwd!.startsWith(`${w}/`));
       const members = world.filter((a) => a.teamId === team.id);
-      if (!members.length || members.some((a) => a.role === "lead")) continue;
-      const lead = [...members].sort((a, b) => Number(!a.paneId) - Number(!b.paneId) || since(a).localeCompare(since(b)))[0]!;
+      const candidates = members.filter((a) => !inLane(a));
+      if (!candidates.length || members.some((a) => a.role === "lead")) continue;
+      const lead = [...candidates].sort((a, b) => Number(!a.paneId) - Number(!b.paneId) || since(a).localeCompare(since(b)))[0]!;
       this.db.prepare("UPDATE world_agents SET role = 'lead' WHERE id = ?").run(lead.id);
       lead.role = "lead";
     }
@@ -308,7 +314,7 @@ export class World {
    */
   private repositories(world: WorldAgent[], teams: Team[]): Repository[] {
     const known = new Map<string, Repository>();
-    for (const cwd of [...world.map((a) => a.cwd), ...teams.map((t) => t.path)]) {
+    for (const cwd of [...world.map((a) => a.cwd), ...teams.flatMap((t) => [t.path, ...t.worktrees])]) {
       const checkout = cwd ? this.checkout(cwd) : null;
       if (checkout && !known.has(checkout.repoRoot)) known.set(checkout.repoRoot, this.repository(checkout.repoName, checkout.repoRoot, this.checkout(checkout.repoRoot)?.branch ?? null));
     }
@@ -551,8 +557,19 @@ export class World {
     return checkout && { ...checkout, branch: currentBranch(checkout) };
   }
 
-  /** The teams, without projects whose worktree has gone: removed outside the office, the project is over. */
+  /**
+   * The teams, without projects whose worktree has gone: removed outside the office, the project is over.
+   * A lane whose folder has gone is let go the same way; only the record goes.
+   */
   teams(): Team[] {
+    const lanes = new Map<string, string[]>();
+    for (const r of this.db.prepare("SELECT path, team_id FROM team_worktrees ORDER BY added_at, path").all() as Row[]) {
+      if (!existsSync(str(r.path))) {
+        this.db.prepare("DELETE FROM team_worktrees WHERE path = ?").run(str(r.path));
+        continue;
+      }
+      lanes.set(str(r.team_id), [...(lanes.get(str(r.team_id)) ?? []), str(r.path)]);
+    }
     const teams = (this.db.prepare("SELECT * FROM teams ORDER BY standing DESC, created_at, name").all() as Row[]).map((r): Team => ({
       id: str(r.id),
       name: str(r.name),
@@ -561,6 +578,7 @@ export class World {
       path: r.path == null ? null : str(r.path),
       branch: r.branch == null ? null : str(r.branch),
       standing: Boolean(r.standing),
+      worktrees: lanes.get(str(r.id)) ?? [],
       createdAt: str(r.created_at),
     }));
     const gone = teams.filter((t) => t.path && !existsSync(t.path));
@@ -640,7 +658,7 @@ export class World {
     }
   }
 
-  private insertTeam(t: Omit<Team, "id" | "createdAt">): Team {
+  private insertTeam(t: Omit<Team, "id" | "createdAt" | "worktrees">): Team {
     const id = randomUUID();
     this.db
       .prepare("INSERT INTO teams (id, name, purpose, hands_to, path, branch, standing, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -660,6 +678,111 @@ export class World {
     return this.team(id);
   }
 
+  /**
+   * The worktrees a team owns and the ones it could own: the other linked worktrees of the
+   * repositories it and its agents work in that no team owns yet.
+   */
+  worktrees(id: string): { worktrees: string[]; available: string[] } {
+    const team = this.team(id);
+    const owned = new Set(this.teams().flatMap((t) => [t.path, ...t.worktrees].filter((p): p is string => !!p)));
+    const roots = new Set<string>();
+    const cwds = [team.path, ...team.worktrees, ...this.state().agents.filter((a) => a.teamId === id).map((a) => a.cwd)];
+    for (const cwd of cwds) {
+      const checkout = cwd ? this.checkout(cwd) : null;
+      if (checkout) roots.add(checkout.repoRoot);
+    }
+    const available = [...roots].flatMap(linkedWorktrees).filter((p) => !owned.has(p)).sort();
+    return { worktrees: team.worktrees, available };
+  }
+
+  /**
+   * Gives a team another worktree of its repository (a lane): an agent working there is on it as
+   * a member. Nothing on disk changes. Refused for a worktree another team owns: merge that
+   * project instead, so its agents and history come along.
+   */
+  addWorktree(id: string, path: unknown): Team {
+    const team = this.team(id);
+    if (typeof path !== "string" || !isAbsolute(path)) throw new InboxError(400, "name the worktree by its full path");
+    const checkout = checkoutOf(path);
+    if (!checkout) throw new InboxError(400, `${path} is not a git checkout`);
+    if (!checkout.linked) throw new InboxError(400, `${checkout.top} is the repository's main checkout, not a worktree`);
+    const top = checkout.top;
+    const owner = this.teams().find((t) => t.path === top || t.worktrees.includes(top));
+    if (owner?.id === id) throw new InboxError(409, `${team.name} already works in ${top}`);
+    if (owner) {
+      throw new InboxError(409, owner.path === top
+        ? `${top} is ${owner.name}'s own worktree. To make it ${team.name}'s, merge ${owner.name} into ${team.name} (Edit ${owner.name}, then Merge into…).`
+        : `${top} is already one of ${owner.name}'s worktrees; remove it there first`);
+    }
+    const repo = this.repoOf(team);
+    if (repo && repo !== checkout.repoRoot) throw new InboxError(409, `${top} is in another repository than ${team.name}'s (${repo})`);
+    this.db.prepare("INSERT INTO team_worktrees (path, team_id, added_at) VALUES (?, ?, ?)").run(top, id, this.now().toISOString());
+    this.onChange("world");
+    return this.team(id);
+  }
+
+  /** Lets a team's lane go. Only the record goes: the folder, its branch and whoever works there are left as they are. */
+  removeWorktree(id: string, path: unknown): Team {
+    const team = this.team(id);
+    if (typeof path !== "string" || !team.worktrees.includes(path)) {
+      throw new InboxError(team.path === path ? 409 : 404, team.path === path ? `${path} is ${team.name}'s own worktree; finish the project to remove it` : `${team.name} has no worktree ${String(path)}`);
+    }
+    this.db.prepare("DELETE FROM team_worktrees WHERE path = ? AND team_id = ?").run(path, id);
+    this.onChange("world");
+    return this.team(id);
+  }
+
+  /**
+   * Folds a project into another team: its worktree (and its lanes) become the target's lanes, its
+   * agents join the target as members, and what was said to it, handed over by it or to it follows.
+   * Then the project is forgotten. Unlike finishing, nothing on disk is touched: no worktree,
+   * branch, pane or process. Refused while work waits for its review, or for a standing team whose
+   * lanes would be left without a team.
+   */
+  mergeTeam(id: string, into: unknown): { ok: true; note: string; team: Team } {
+    const source = this.team(id);
+    if (typeof into !== "string" || !into) throw new InboxError(400, "pick the project or team to merge into");
+    const target = this.team(into);
+    if (target.id === source.id) throw new InboxError(400, `${source.name} cannot be merged into itself`);
+    const waiting = this.db.prepare("SELECT title FROM work WHERE to_team_id = ? AND state = 'in_review'").all(id) as Row[];
+    if (waiting.length) {
+      throw new InboxError(409, `${source.name} still has work to review (${waiting.map((w) => `"${str(w.title)}"`).join(", ")}). Its agents would lose track of it: review it first, then merge.`);
+    }
+    if (source.standing && source.worktrees.length) {
+      throw new InboxError(409, `${source.name} is a standing team with worktrees of its own (${source.worktrees.join(", ")}). Remove them from ${source.name} first, or add them to ${target.name}, so none is left without a team.`);
+    }
+    const moving = [source.path, ...source.worktrees].filter((p): p is string => !!p);
+    const repo = this.repoOf(target);
+    const elsewhere = repo ? moving.find((p) => { const c = this.checkout(p); return c && c.repoRoot !== repo; }) : undefined;
+    if (elsewhere) throw new InboxError(409, `${elsewhere} is in another repository than ${target.name}'s (${repo}), so it cannot be one of its worktrees`);
+    const members = this.state().agents.filter((a) => a.teamId === id).map((a) => a.name);
+    const at = this.now().toISOString();
+    this.tx(() => {
+      this.db.prepare("DELETE FROM team_worktrees WHERE team_id = ?").run(id);
+      for (const p of moving) this.db.prepare("INSERT INTO team_worktrees (path, team_id, added_at) VALUES (?, ?, ?)").run(p, target.id, at);
+      this.db.prepare("UPDATE world_agents SET team_id = ?, role = 'member' WHERE team_id = ?").run(target.id, id);
+      this.db.prepare("UPDATE messages SET team_id = ? WHERE team_id = ?").run(target.id, id);
+      this.db.prepare("UPDATE work SET from_team_id = ? WHERE from_team_id = ?").run(target.id, id);
+      this.db.prepare("UPDATE work SET to_team_id = ? WHERE to_team_id = ?").run(target.id, id);
+      this.db.prepare("UPDATE teams SET hands_to = NULL WHERE hands_to = ? AND id = ?").run(id, target.id);
+      this.db.prepare("UPDATE teams SET hands_to = ? WHERE hands_to = ?").run(target.id, id);
+      this.db.prepare("DELETE FROM teams WHERE id = ?").run(id);
+    });
+    this.onChange("world");
+    const where = moving.length ? ` ${moving.map((p) => basename(p)).join(" and ")} ${moving.length === 1 ? "is" : "are"} now ${target.name}'s, left on disk as ${moving.length === 1 ? "it was" : "they were"}.` : "";
+    const who = members.length ? ` ${members.join(", ")} ${members.length === 1 ? "joins" : "join"} ${target.name} as ${members.length === 1 ? "a member" : "members"}.` : "";
+    return { ok: true, note: `${source.name} is merged into ${target.name}.${where}${who}`, team: this.team(target.id) };
+  }
+
+  /** The repository a team works in, from its worktree or its lanes; null for a standing team without lanes. */
+  private repoOf(team: Team): string | null {
+    for (const p of [team.path, ...team.worktrees]) {
+      const checkout = p ? this.checkout(p) : null;
+      if (checkout) return checkout.repoRoot;
+    }
+    return null;
+  }
+
   /** Agents address teams by name, so two teams never share one. */
   private teamName(value: string | undefined, id: string | null): string {
     const name = value?.trim();
@@ -672,7 +795,7 @@ export class World {
    * Finishes a project: closes the agents working in its worktree and removes the worktree, and
    * its branch once that is merged (an unmerged branch is kept, so no commit is lost). It refuses
    * while someone is working there or anything is uncommitted. A standing team is disbanded: its
-   * members go back to the lounge.
+   * members go back to the lounge. Its lanes are never removed, only let go.
    */
   async deleteTeam(id: string): Promise<{ ok: true; note: string }> {
     const team = this.team(id);

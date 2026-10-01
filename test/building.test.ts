@@ -10,7 +10,7 @@ import { GAP, IDLE_MS, inPark, outForABreak, parkPlaces, parkPlan, parkSpots as 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
   id, identity: id, name: id, harness: "pi", cwd: null, project: null, branch: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra,
 });
-const team = (id: string, handsTo: string | null = null): Team => ({ id, name: id, purpose: "", handsTo, path: `/repo-${id}`, branch: `worktree-${id}`, standing: false, createdAt: "" });
+const team = (id: string, handsTo: string | null = null): Team => ({ id, name: id, purpose: "", handsTo, path: `/repo-${id}`, branch: `worktree-${id}`, standing: false, worktrees: [], createdAt: "" });
 
 /** A building with n teams, each a lead and `crew(i)` crew, `idle` agents in the garden and two in line. */
 function building(n: number, crew: (i: number) => number = () => 3, queued = ["q1", "q2"], idle = 3): BuildingPlan {

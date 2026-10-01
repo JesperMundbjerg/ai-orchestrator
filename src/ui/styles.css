@@ -456,6 +456,12 @@ h1, h2, h3 { margin: 0; }
 .agent-helpers { font-size: 12.5px; }
 .team-form textarea, .team-form select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--text); font: inherit; resize: vertical; }
 .field { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--muted); }
+.team-worktrees { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.team-worktrees ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.team-worktrees li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.team-worktrees code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; color: var(--text); }
+.team-worktrees .row input { flex: 1; min-width: 0; }
+.team-worktrees .row select { flex: 1; min-width: 0; }
 .team-purpose { margin: 2px 0 0; font-size: 13px; white-space: pre-wrap; }
 .team-flow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12.5px; }
 
