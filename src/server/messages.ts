@@ -29,8 +29,6 @@ const WITH_FOUNDER_SHOWN = 200;
 export const FOUNDER = "founder";
 const REVIEWED_SHOWN = 30;
 const MAX_TEXT = 8000;
-/** Agents talking to each other cost tokens on both sides; a runaway exchange stops here. */
-const AGENT_MESSAGES_PER_HOUR = 30;
 /** An agent is free for a new prompt when it has finished its turn and is not asking anything. */
 const FREE: ReadonlySet<WorldAgent["status"]> = new Set(["idle", "done"]);
 /** What queued up while an agent was busy is typed as one prompt; this many at most, the rest in the next. */
@@ -72,6 +70,11 @@ export class Messages {
     this.world = world;
     this.now = now;
     this.changed = changed;
+    // This service owns all sends. On startup, a persisted claim has no sender left to
+    // settle it and must not reserve its agent forever. It may already have been typed:
+    // fail visibly, never acknowledge it or requeue it automatically.
+    this.db.prepare("UPDATE message_deliveries SET state = 'failed', error = ?, updated_at = ? WHERE state = 'sending'")
+      .run("The office restarted: delivery was not confirmed; it may have arrived. Retry may send it twice.", this.now().toISOString());
   }
 
   /** The latest messages, newest first. */
@@ -163,7 +166,6 @@ export class Messages {
     const repeat = this.byClientId(input.clientId);
     if (repeat) return repeat;
     const body = text(input.text);
-    this.limit(from);
     const name = input.to?.trim().toLowerCase();
     if (!name) throw new InboxError(400, "say who the message is for: an agent's name or a team's");
     // Shown to you in the office; it is not a question for the inbox and nobody's terminal gets it.
@@ -190,7 +192,6 @@ export class Messages {
   handoff(from: WorldAgent, input: { title?: string; summary?: string; to?: string; work?: string; clientId?: string }): { work: Work; message: Message } {
     const repeat = this.byClientId(input.clientId);
     if (repeat) return { work: this.workById(repeat.workId!), message: repeat };
-    this.limit(from);
     const state = this.world();
     const summary = text(input.summary);
     const at = this.now().toISOString();
@@ -366,12 +367,6 @@ export class Messages {
     }
     this.changed();
     return this.message(id);
-  }
-
-  private limit(from: WorldAgent): void {
-    const since = new Date(this.now().getTime() - 3_600_000).toISOString();
-    const sent = this.db.prepare("SELECT count(*) AS n FROM messages WHERE from_agent_id = ? AND created_at > ?").get(from.id, since) as { n: number };
-    if (sent.n >= AGENT_MESSAGES_PER_HOUR) throw new InboxError(429, `you have sent ${sent.n} messages in the last hour; wait, or ask the founder in the review inbox`);
   }
 
   private byClientId(clientId: string | undefined): Message | null {
