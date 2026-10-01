@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { newRuleId, validateCrewTree, type CrewCatalog, type CrewChoice, type CrewRule, type CrewTree, type CrewTreeState } from "../../shared/crewtree.ts";
+import { modelOptions, newRuleId, validateCrewTree, type CrewCatalog, type CrewChoice, type CrewRule, type CrewTree, type CrewTreeState } from "../../shared/crewtree.ts";
 import { api } from "../api.ts";
 
 type Path = number[];
@@ -172,7 +172,6 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
 /** Harness, model and effort, each from the catalog the service supplies. */
 function Picker({ value, catalog, errors, onChange }: { value: CrewChoice; catalog: CrewCatalog; errors: (field: string) => string | undefined; onChange: (c: CrewChoice) => void }) {
   const harness = catalog.harnesses.find((h) => h.id === value.harness);
-  const known = harness?.models.some((m) => m.id === value.model);
   const setHarness = (id: string) => {
     const h = catalog.harnesses.find((x) => x.id === id)!;
     onChange({
@@ -196,9 +195,9 @@ function Picker({ value, catalog, errors, onChange }: { value: CrewChoice; catal
         {harness && !harness.models.length ? (
           <input value={value.model} placeholder="model id" onChange={(e) => onChange({ ...value, model: e.target.value })} />
         ) : (
-          <select value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })}>
-            {known ? null : <option value={value.model}>{value.model || "Choose a model"}{value.model ? " (not in the list)" : ""}</option>}
-            {harness?.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          <select value={value.model} onChange={(e) => onChange({ ...value, model: e.target.value })} title={value.model}>
+            {value.model ? null : <option value="">Choose a model</option>}
+            {modelOptions(catalog, value).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
         )}
         {errors("model") ? <em className="crew-error">{errors("model")}</em> : null}

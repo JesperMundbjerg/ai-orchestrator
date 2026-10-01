@@ -3,6 +3,8 @@
 // are its types and its validation, shared by the service and the editor. What a harness, a model
 // or an effort is comes from the catalog the service supplies, so nothing here names a vendor.
 
+import { modelLabel } from "./models.ts";
+
 export interface CrewChoice {
   harness: string;
   model: string;
@@ -54,6 +56,17 @@ export interface CrewProblem {
 export const MAX_DEPTH = 4;
 export const MAX_RULES = 60;
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$/;
+
+/**
+ * What the model picker offers for a choice: the catalog's models for its harness, and the chosen
+ * model too when the catalog does not list it (a hand edit, or a model added since), so the
+ * picker keeps it and shows it rather than blanking it.
+ */
+export function modelOptions(catalog: CrewCatalog, choice: CrewChoice): Array<{ id: string; label: string; listed: boolean }> {
+  const listed = (catalog.harnesses.find((h) => h.id === choice.harness)?.models ?? []).map((m) => ({ ...m, listed: true }));
+  if (!choice.model || listed.some((m) => m.id === choice.model)) return listed;
+  return [{ id: choice.model, label: `${modelLabel(choice.model)} (not in the list)`, listed: false }, ...listed];
+}
 
 export function newRuleId(): string {
   return `rule-${Math.random().toString(36).slice(2, 8)}`;

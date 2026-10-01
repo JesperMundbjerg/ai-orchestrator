@@ -19,6 +19,7 @@ const CLAUDE_MODELS = [
   { id: "opus", label: "Opus 5.5" },
   { id: "sonnet", label: "Sonnet 5.5" },
   { id: "haiku", label: "Haiku 4.5" },
+  { id: "fable", label: "Fable 5.1" },
 ];
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const PI_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];

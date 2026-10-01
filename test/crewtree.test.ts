@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { validateCrewTree, type CrewTree } from "../src/shared/crewtree.ts";
+import { modelOptions, validateCrewTree, type CrewTree } from "../src/shared/crewtree.ts";
 import { CrewTreeStore } from "../src/server/crewtree.ts";
 import { openDatabase } from "../src/server/db.ts";
 import { createInboxServer } from "../src/server/http.ts";
@@ -136,10 +136,32 @@ test("the catalog holds Pi's model ids and names only, and nothing when Pi has n
   const { crew } = store();
   const catalog = crew.catalog();
   assert.deepEqual(catalog.harnesses.map((h) => h.id), ["claude", "pi"]);
-  assert.deepEqual(catalog.harnesses[0]!.models.map((m) => m.id), ["opus", "sonnet", "haiku"]);
+  assert.deepEqual(catalog.harnesses[0]!.models.map((m) => m.id), ["opus", "sonnet", "haiku", "fable"]);
+  assert.equal(catalog.harnesses[0]!.models.find((m) => m.id === "fable")?.label, "Fable 5.1");
   assert.deepEqual(catalog.harnesses[1]!.models, [{ id: "openai-codex/gpt-6-astra", label: "GPT-6 Astra" }, { id: "openai-codex/gpt-6-sol", label: "GPT-6 Sol" }]);
   assert.ok(!JSON.stringify(crew.state()).includes("SECRET-TOKEN"));
   assert.deepEqual(store({ pi: false }).crew.catalog().harnesses[1]!.models, []);
+});
+
+test("a model the catalog does not list is kept, saved, described to leads and offered by the picker", () => {
+  const { crew } = store();
+  const tree = copy(crew.state().tree);
+  tree.rules[0]!.use!.model = "claude-opus-5-5";
+  tree.rules[1]!.use!.model = "openai-codex/gpt-7-nova";
+  const saved = crew.save(tree);
+  assert.equal(saved.problem, null);
+  assert.equal(saved.tree.rules[0]!.use!.model, "claude-opus-5-5");
+  assert.equal(JSON.parse(readFileSync(crew.file, "utf8")).rules[1].use.model, "openai-codex/gpt-7-nova");
+  assert.match(crew.text(), /Use: Opus 5\.5, medium effort, in Claude Code\..*\n.*--model claude-opus-5-5 --effort medium/);
+  assert.match(crew.text(), /--model openai-codex\/gpt-7-nova:high/);
+
+  const { catalog } = saved;
+  const unlisted = modelOptions(catalog, saved.tree.rules[1]!.use!);
+  assert.deepEqual(unlisted[0], { id: "openai-codex/gpt-7-nova", label: "GPT-7 Nova (not in the list)", listed: false }, "shown first, by name, as not listed");
+  assert.deepEqual(unlisted.slice(1).map((m) => m.id), ["openai-codex/gpt-6-astra", "openai-codex/gpt-6-sol"]);
+  const fable = modelOptions(catalog, { harness: "claude", model: "fable", effort: "high" });
+  assert.ok(fable.every((m) => m.listed), "Fable is in the catalog, so it is not marked unlisted");
+  assert.equal(modelOptions(catalog, { harness: "claude", model: "", effort: "high" }).length, 4, "no blank entry from the list itself");
 });
 
 test("the printed tree is compact, numbered, and gives every leaf its exact start command", () => {
