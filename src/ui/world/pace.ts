@@ -5,12 +5,16 @@
 
 /** While you or anyone walks, the view turns or zooms, or a flight is under way. */
 export const MOVING_FPS = 20;
-/** While someone out in the garden walks to their next pastime, and nothing else moves. */
+/** While someone ambles in the garden or the view settles, without the cost of full motion. */
 export const AMBLING_FPS = 10;
 /** When nothing moves but the small things: breathing, lamps, tools, wheels, ducks. */
 export const STILL_FPS = 5;
-/** How long after the last movement frames stay at the moving rate, so an ease comes to rest smoothly. */
-export const LINGER_MS = 600;
+/** Keep full motion smooth through short pauses instead of turning choppy as soon as it stops. */
+export const LINGER_MS = 4000;
+/** Step through the middle rate before resting, while keeping long-idle rendering cheap. */
+export const SETTLE_MS = 4000;
+/** Let garden walks come to rest at their own rate without promoting them to full motion. */
+export const AMBLE_LINGER_MS = 4000;
 /** How often the shadows are drawn again. */
 export const SHADOW_MS = 200;
 
@@ -43,7 +47,9 @@ export class Pacer {
   /** How long until the next frame should be drawn, or null for none while the office cannot be seen. */
   nextFrameIn(now: number, visible: boolean): number | null {
     if (!visible) return null;
-    const every = 1000 / (this.moving(now) ? MOVING_FPS : now - this.lastAmble < LINGER_MS ? AMBLING_FPS : STILL_FPS);
+    const settling = now - this.lastMotion < LINGER_MS + SETTLE_MS;
+    const ambling = now - this.lastAmble < AMBLE_LINGER_MS;
+    const every = 1000 / (this.moving(now) ? MOVING_FPS : settling || ambling ? AMBLING_FPS : STILL_FPS);
     return Math.max(0, Math.min(every, this.lastFrame + every - now));
   }
 
