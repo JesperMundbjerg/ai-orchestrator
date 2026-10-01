@@ -104,12 +104,13 @@ function messagingOffice(t: { after: (fn: () => void) => void }) {
   t.after(() => db.close());
   let at = Date.parse("2026-10-01T19:00:00Z");
   const typed: string[] = [];
+  const notified: Array<[string, string]> = [];
   const unused = async () => { throw new Error("not in this test"); };
   const source: AgentSource = {
     available: () => true,
     live: () => ["a", "b"].map((id) => ({ paneId: id, harness: "pi", sessionId: id, cwd: `/not-a-repository/${id}`, status: "done", title: null, name: null })),
     prompt: async (_pane, text) => { typed.push(text); },
-    notify: async () => {}, createWorktree: unused, startAgent: unused, closePane: unused, removeWorktree: unused,
+    notify: async (title, body) => { notified.push([title, body]); }, createWorktree: unused, startAgent: unused, closePane: unused, removeWorktree: unused,
   };
   const world = new World(db, source, () => ({ tasks: [], projects: [], items: [] }), () => new Date(at));
   const agents = ["a", "b"].map((pane) => world.state().agents.find((a) => a.paneId === pane)!);
@@ -118,7 +119,7 @@ function messagingOffice(t: { after: (fn: () => void) => void }) {
     const to = agents[(i + 1) % 2]!;
     return world.messages.say(from, { to: to.name, text: `Thanks ${i}`, clientId: `say-${i}` });
   };
-  return { db, world, typed, agents, say, tick: () => { at += MINUTE; } };
+  return { db, world, typed, notified, agents, say, tick: () => { at += MINUTE; } };
 }
 
 test("storing a loop queues one ordinary office notice for both agents and never blocks their messages", async (t) => {
@@ -127,7 +128,7 @@ test("storing a loop queues one ordinary office notice for both agents and never
   for (let i = 0; i < 8; i++) { say(i); tick(); }
   assert.equal(notices().length, 1);
   assert.deepEqual(notices()[0]!.deliveries.map((d) => d.agentId).sort(), agents.map((a) => a.id).sort());
-  assert.equal(notices()[0]!.toFounder, false, "there is no office-to-founder notice route to reuse");
+  assert.equal(notices()[0]!.toFounder, false, "the first trip advises only the pair");
   assert.match(notices()[0]!.text, /8 short messages in 7 minutes/);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM messages WHERE from_agent_id IS NOT NULL").get()!.n, 8, "the triggering message is stored too");
   const repeated = say(7);
@@ -157,4 +158,36 @@ test("an advisory storage failure cannot block the triggering message or leave a
   db.exec("DROP TRIGGER refuse_advice");
   for (let i = 8; i < 16; i++) { say(i); tick(); }
   assert.equal(world.messages.list().filter((m) => m.fromOffice).length, 1, "a subsequent streak can retry the advisory, not the original message");
+});
+
+test("a repeated pair trip within thirty minutes escalates once, durably; a quiet recurrence rearms", (t) => {
+  const { db, loops, alternating } = detector(t);
+  assert.equal(alternating(8)[7]!.escalate, undefined);
+  loops.observe(message("a", "b", 8 * MINUTE, { text: "x".repeat(300) }));
+  const restarted = new MessageLoops(db);
+  const trip = (start: number) => Array.from({ length: 8 }, (_, i) => restarted.observe(message(i % 2 ? "b" : "a", i % 2 ? "a" : "b", (start + i) * MINUTE)))[7]!;
+  assert.equal(trip(9).escalate, true);
+  restarted.observe(message("a", "b", 17 * MINUTE, { kind: "handoff" }));
+  assert.equal(trip(18).escalate, undefined, "only one founder notice in this recurrence episode");
+  assert.equal(trip(56).escalate, undefined, "more than thirty minutes since the last trip starts fresh");
+  restarted.observe(message("a", "b", 64 * MINUTE, { kind: "review" }));
+  assert.equal(trip(65).escalate, true);
+});
+
+test("loop escalation uses the office founder thread and desktop notice, never a terminal delivery", async (t) => {
+  const { world, agents, say, tick, notified } = messagingOffice(t);
+  for (let i = 0; i < 8; i++) { say(i); tick(); }
+  assert.equal(world.messages.withFounder().filter((m) => m.fromOffice).length, 0);
+  world.messages.say(agents[0]!, { to: agents[1]!.name, text: "x".repeat(300) });
+  for (let i = 8; i < 16; i++) { say(i); tick(); }
+  const notices = world.messages.withFounder().filter((m) => m.fromOffice);
+  assert.equal(notices.length, 1);
+  const notice = notices[0]!;
+  assert.equal(notice.fromAgentId, null);
+  assert.equal(notice.toFounder, true);
+  assert.deepEqual(notice.deliveries, []);
+  assert.deepEqual(notice.aboutAgentIds!.slice().sort(), agents.map((a) => a.id).sort());
+  assert.match(notice.text, /have tripped the acknowledgment loop guard again within 30 minutes/);
+  await world.react(); await world.react();
+  assert.equal(notified.filter(([title]) => title === "Repeated acknowledgment loop").length, 1);
 });

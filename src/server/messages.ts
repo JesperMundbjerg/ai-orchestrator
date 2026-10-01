@@ -16,6 +16,8 @@ import type { Uploads } from "./uploads.ts";
 import { laneRecipient } from "./queue.ts";
 import { WaitingMessages } from "./waiting.ts";
 import { MessageLoops } from "./loops.ts";
+import { OfficeNotices } from "./notices.ts";
+import { Undelivered } from "./undelivered.ts";
 import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { AgentSource } from "./world.ts";
 
@@ -54,6 +56,13 @@ export class Messages {
   private typingTo = new Set<string>();
   private waiting = new WaitingMessages();
   private loops: MessageLoops;
+  readonly founderNotices: OfficeNotices;
+  private undelivered: Undelivered;
+
+  /** The regular reaction observes waits and publishes committed office-to-founder notices. */
+  watch(state: WorldState): boolean {
+    return this.undelivered.tick(state, this.now().getTime(), this.founderNotices);
+  }
 
   /** Only queued recipients need immediate screen sampling; never scan unrelated panes. */
   queuedPanes(state: WorldState): Set<string> {
@@ -73,6 +82,8 @@ export class Messages {
     this.now = now;
     this.changed = changed;
     this.loops = new MessageLoops(db);
+    this.founderNotices = new OfficeNotices(db);
+    this.undelivered = new Undelivered(db, FREE);
     // This service owns all sends. On startup, a persisted claim has no sender left to
     // settle it and must not reserve its agent forever. It may already have been typed:
     // fail visibly, never acknowledge it or requeue it automatically.
@@ -284,6 +295,8 @@ export class Messages {
       if (agent?.paneId && FREE.has(agent.status)) sends.push(this.send(rows.slice(0, MAX_BATCHED), agent, state));
     }
     await Promise.all(sends);
+    // Observe a drain immediately, even if new messages arrive before the next poll.
+    this.undelivered.drained();
   }
 
   /** The founder's answer, typed as the hook would hand it over, and acknowledged only once herdr sees the agent take it up. */
@@ -308,6 +321,7 @@ export class Messages {
     const claim = this.db.prepare("UPDATE message_deliveries SET state = 'sending', updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'queued'");
     const messages = rows.filter((row) => claim.run(this.now().toISOString(), str(row.id), agent.id).changes > 0).map((row) => toMessage(row, []));
     if (!messages.length) return;
+    this.undelivered.drained();
     this.changed();
     let error: string | null = null;
     try {
@@ -367,6 +381,11 @@ export class Messages {
           // latch commit together; never suppress or change the triggering message.
           this.insert({ ...message, id: randomUUID(), kind: "message", fromAgentId: null, teamId: null, text: loop.text, images: [], workId: null,
             deliveries: deliveries(loop.agentIds), toFounder: false, fromOffice: true, allLeads: false });
+          if (loop.escalate) {
+            const state = this.world();
+            const names = loop.agentIds.map((id) => state.agents.find((a) => a.id === id)?.name ?? id).join(" and ");
+            this.founderNotices.record("Repeated acknowledgment loop", `${names} have tripped the acknowledgment loop guard again within 30 minutes.`, loop.agentIds, Date.parse(at));
+          }
         }
         this.db.exec("RELEASE loop_notice");
       } catch (err) {
@@ -416,7 +435,9 @@ export class Messages {
     const deliveries = this.db
       .prepare(`SELECT * FROM message_deliveries WHERE message_id IN (${ids.map(() => "?").join(",")})`)
       .all(...ids) as Row[];
-    return rows.map((r) => toMessage(r, deliveries.filter((d) => d.message_id === r.id).map(toDelivery)));
+    const notices = new Map((this.db.prepare(`SELECT message_id, agent_ids FROM office_notices WHERE message_id IN (${ids.map(() => "?").join(",")})`).all(...ids) as Array<{ message_id: string; agent_ids: string }>).map((n) => [n.message_id, JSON.parse(n.agent_ids) as string[]]));
+    return rows.map((r) => ({ ...toMessage(r, deliveries.filter((d) => d.message_id === r.id).map(toDelivery)),
+      ...(notices.has(str(r.id)) ? { aboutAgentIds: notices.get(str(r.id)) } : {}) }));
   }
 }
 

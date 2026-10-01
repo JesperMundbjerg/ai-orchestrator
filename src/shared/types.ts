@@ -492,7 +492,7 @@ export interface Delivery {
 export interface Message {
   id: string;
   kind: MessageKind;
-  /** null when it is from you. */
+  /** null when it is from you or the office. */
   fromAgentId: string | null;
   /** The team it was addressed to, when it was addressed to a team. */
   teamId: string | null;
@@ -502,10 +502,12 @@ export interface Message {
   workId: string | null;
   createdAt: string;
   deliveries: Delivery[];
-  /** An agent answering you: it goes to nobody's terminal. */
+  /** An agent's answer or an office notice to you: it goes to nobody's terminal. */
   toFounder: boolean;
   /** Said by the office itself (such as a browser left running), not by you, though it has no agent as sender. */
   fromOffice?: boolean;
+  /** Agents concerned by an office-to-founder notice, not terminal recipients. */
+  aboutAgentIds?: string[];
   /** One founder instruction shared with the selected project and standing-team leads. */
   allLeads?: boolean;
 }

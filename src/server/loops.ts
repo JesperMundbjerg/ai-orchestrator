@@ -9,7 +9,8 @@ const TRIP = 8;
 const WINDOW_MS = 10 * 60_000;
 const SHORT_CHARS = 300;
 type Episode = { sender_id: string; last_at: number; recent: string; warned: number };
-export type LoopNotice = { agentIds: [string, string]; text: string };
+export type LoopNotice = { agentIds: [string, string]; text: string; escalate?: true };
+const ESCALATION_MS = 30 * 60_000;
 
 export class MessageLoops {
   private db: DatabaseSync;
@@ -22,6 +23,11 @@ export class MessageLoops {
       last_at INTEGER NOT NULL,
       recent TEXT NOT NULL,
       warned INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS message_loop_trips (
+      pair TEXT PRIMARY KEY,
+      last_at INTEGER NOT NULL,
+      escalated INTEGER NOT NULL
     )`);
   }
 
@@ -56,8 +62,15 @@ export class MessageLoops {
       .run(key, from, at, JSON.stringify(streak), previous?.warned || (trip ? 1 : 0));
     if (!trip) return null;
     const minutes = Math.max(1, Math.ceil((at - streak[0]!) / 60_000));
-    // There is no existing office-to-founder notice route; do not invent one for this guard.
+    // Keep recurrence separately: ending an acknowledgment episode must not erase its last trip.
+    const last = this.db.prepare("SELECT last_at, escalated FROM message_loop_trips WHERE pair = ?").get(key) as { last_at: number; escalated: number } | undefined;
+    const recurring = !!last && at - last.last_at <= ESCALATION_MS;
+    const escalate = recurring && !last.escalated;
+    this.db.prepare(`INSERT INTO message_loop_trips (pair, last_at, escalated) VALUES (?, ?, ?)
+      ON CONFLICT(pair) DO UPDATE SET last_at = excluded.last_at, escalated = excluded.escalated`)
+      .run(key, at, recurring ? 1 : 0);
     return {
+      ...(escalate ? { escalate: true as const } : {}),
       agentIds: JSON.parse(key) as [string, string],
       text: `You two have traded ${streak.length} short messages in ${minutes} ${minutes === 1 ? "minute" : "minutes"}; stop replying to acknowledgments, continue the work.`,
     };

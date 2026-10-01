@@ -489,8 +489,9 @@ export class World {
    */
   async react(): Promise<void> {
     const state = this.state();
+    const watched = this.messages.watch(state);
     const changed = this.unpresented.tick(state, this.now().getTime(), (lead, text) => { this.messages.notice(lead, text); });
-    if (changed) this.onChange("activity"); // redraw only; do not recursively react
+    if (changed || watched) this.onChange("activity"); // redraw only; do not recursively react
     const first = this.announced === null;
     const before = this.announced ?? new Map<string, TeamStatus>();
     this.announced = new Map(state.teams.map((t) => [t.id, t.status]));
@@ -498,6 +499,7 @@ export class World {
     const notices = first ? [] : state.teams.filter((t) => t.status === "blocked" && before.get(t.id) !== "blocked");
     await Promise.all([
       ...notices.map((t) => this.source?.notify(`${t.name} is blocked`, `${whyStuck(t.blockedBy.flatMap((id) => agents.get(id) ?? []))}.`).catch(() => {})),
+      this.messages.founderNotices.dispatch(this.source ? (title, body) => this.source!.notify(title, body) : null),
       this.messages.deliver(state),
     ]);
   }

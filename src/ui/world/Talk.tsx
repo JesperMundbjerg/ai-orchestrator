@@ -20,17 +20,23 @@ export const WORK_LABEL: Record<WorkState, string> = { in_review: "in review", a
 /** The messages a team took part in: addressed to it, said by a member, or heard by one. */
 export function teamMessages(world: WorldState, teamId: string): Message[] {
   const members = new Set(world.agents.filter((a) => a.teamId === teamId).map((a) => a.id));
-  return world.messages.filter((m) => m.teamId === teamId || (m.fromAgentId && members.has(m.fromAgentId)) || m.deliveries.some((d) => members.has(d.agentId)));
+  return talkMessages(world).filter((m) => m.teamId === teamId || (m.fromAgentId && members.has(m.fromAgentId)) || m.deliveries.some((d) => members.has(d.agentId)) || m.aboutAgentIds?.some((id) => members.has(id)));
 }
 
 /** The messages an agent sent or was sent, newest first. */
 export function agentMessages(world: WorldState, agentId: string): Message[] {
-  return world.messages.filter((m) => m.fromAgentId === agentId || m.deliveries.some((d) => d.agentId === agentId));
+  return talkMessages(world).filter((m) => m.fromAgentId === agentId || m.deliveries.some((d) => d.agentId === agentId) || m.aboutAgentIds?.includes(agentId));
 }
 
-/** You and an agent talking: what you said to it (or to the team it leads) and its answers, oldest first. */
+/** Include the longer-lived founder thread without duplicating rows from recent office talk. */
+function talkMessages(world: WorldState): Message[] {
+  return [...new Map([...world.messages, ...world.withFounder].map((m) => [m.id, m])).values()]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/** You and an agent talking: what you said, its answers, and office notices concerning it, oldest first. */
 export function conversation(world: WorldState, agentId: string): Message[] {
-  return world.withFounder.filter((m) => (m.toFounder ? m.fromAgentId === agentId : m.deliveries.some((d) => d.agentId === agentId))).reverse();
+  return world.withFounder.filter((m) => (m.toFounder ? m.fromAgentId === agentId || m.aboutAgentIds?.includes(agentId) : m.deliveries.some((d) => d.agentId === agentId))).reverse();
 }
 
 /** Whether a message is part of your own thread: something you said, or an answer addressed to you. */
@@ -127,7 +133,7 @@ export function MessageRow({ message, agents }: { message: Message; agents: Map<
   return (
     <li className={`order ${message.kind}${message.toFounder ? " to-you" : mine ? " from-you" : ""}`}>
       <div className="order-head">
-        {message.toFounder ? <span className="for-you">answer to you</span> : mine ? <span className="for-you mine">you said</span> : null}
+        {message.toFounder ? <span className="for-you">{message.fromOffice ? "notice to you" : "answer to you"}</span> : mine ? <span className="for-you mine">you said</span> : null}
         {message.allLeads ? <span className="for-you mine">All-leads broadcast</span> : null}
         <strong>{from}</strong>
         <span className="muted"> {VERB[message.kind]} {to}</span>
@@ -224,7 +230,7 @@ export function Conversation({ agent, messages, between }: { agent: WorldAgent; 
   useEffect(() => {
     list.current?.lastElementChild?.scrollIntoView({ block: "nearest" });
   }, [last]);
-  const wrote = messages.some((m) => !m.fromAgentId);
+  const wrote = messages.some((m) => !m.fromAgentId && !m.fromOffice);
   const answered = messages.some((m) => m.fromAgentId);
   return (
     <>
@@ -236,12 +242,12 @@ export function Conversation({ agent, messages, between }: { agent: WorldAgent; 
       {messages.length ? (
     <ol ref={list} className="chat" aria-label={`You and ${agent.name}`}>
       {messages.map((m) => {
-        const mine = !m.fromAgentId;
+        const mine = !m.fromAgentId && !m.fromOffice;
         const delivery = mine ? m.deliveries.find((d) => d.agentId === agent.id) : undefined;
         return (
           <li key={m.id} className={`say ${mine ? "you" : "them"}`}>
             <div className="say-head">
-              {mine ? "You" : <>{agent.name} <span className="for-you">to you</span></>}
+              {mine ? "You" : <>{m.fromOffice ? "The office" : agent.name} <span className="for-you">{m.fromOffice ? "notice to you" : "to you"}</span></>}
               {m.allLeads ? " · All-leads broadcast" : m.kind === "instruction" ? " to the project" : ""} · {ago(m.createdAt)}
               {delivery && delivery.state !== "delivered" ? ` · ${leftBeforeArrival(delivery, agent) ? "left before it arrived" : DELIVERY_LABEL[delivery.state]}` : ""}
               {delivery?.state === "failed" && !leftBeforeArrival(delivery, agent) ? <button className="ghost small" onClick={() => void api.retryDelivery(m.id, agent.id).catch((e: Error) => setError(e.message))}>Retry</button> : null}
