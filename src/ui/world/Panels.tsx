@@ -33,16 +33,18 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
     <aside className="world-panel teams">
       <div className="panel-head">
         <strong>Projects</strong>
-        <button className="ghost small" onClick={() => setAdding(!adding)}>{adding ? "Cancel" : "+ New project"}</button>
+        <button className="ghost small" onClick={() => (setError(null), setAdding(!adding))}>{adding ? "Cancel" : "+ New project"}</button>
       </div>
       <TellAllLeads world={world} />
       {adding ? (
-        <TeamForm
-          submit="Start"
-          teams={world.teams}
-          repositories={world.repositories}
-          onSubmit={(fields) => run(api.createTeam(fields).then(() => setAdding(false)))}
-        />
+        <div style={{ display: "contents" }} onChange={() => setError(null)}>
+          <TeamForm
+            submit="Start"
+            teams={world.teams}
+            repositories={world.repositories}
+            onSubmit={(fields) => run(api.createTeam(fields).then(() => setAdding(false)))}
+          />
+        </div>
       ) : null}
       {note ? <div className="board-note small-note">{note}<button className="ghost small" onClick={() => setNote(null)}>OK</button></div> : null}
       <ul className="team-list">
@@ -52,18 +54,23 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
           return (
             <li key={team.id}>
               {editing === team.id ? (
-                <TeamForm
-                  initial={team}
-                  teams={world.teams}
-                  repositories={world.repositories}
-                  submit="Save"
-                  onSubmit={(fields) => run(api.updateTeam(team.id, fields).then(() => setEditing(null)))}
-                  extra={
-                    <button type="button" className="ghost small danger" onClick={() => void run(finishTeam(live).then((said) => said && (setNote(said), setEditing(null))))}>
-                      {team.standing ? "Disband" : "Finish project"}
-                    </button>
-                  }
-                />
+                <div style={{ display: "contents" }} onChange={() => setError(null)}>
+                  <TeamForm
+                    initial={team}
+                    teams={world.teams}
+                    repositories={world.repositories}
+                    submit="Save"
+                    onSubmit={(fields) => run(api.updateTeam(team.id, fields).then(() => setEditing(null)))}
+                    extra={
+                      <>
+                        <button type="button" className="ghost small" onClick={() => (setError(null), setEditing(null))}>Cancel</button>
+                        <button type="button" className="ghost small danger" onClick={() => void run(finishTeam(live).then((said) => said && (setNote(said), setEditing(null))))}>
+                          {team.standing ? "Disband" : "Finish project"}
+                        </button>
+                      </>
+                    }
+                  />
+                </div>
               ) : (
                 <div className="team-row">
                   <button className={`team-go ${live.status}`} onClick={() => onOpen(team.id, [center[0], center[1] + 8.5], 0)} title="Open the team and walk over">
@@ -73,7 +80,7 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
                     <span className={live.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
                     <span className="muted small-note">{team.standing ? "Always on" : team.branch}</span>
                   </button>
-                  <button className="ghost small" onClick={() => setEditing(team.id)} aria-label={`Edit ${team.name}`}>Edit</button>
+                  <button className="ghost small" onClick={() => (setError(null), setEditing(team.id))} aria-label={`Edit ${team.name}`}>Edit</button>
                 </div>
               )}
             </li>
@@ -82,7 +89,7 @@ export function TeamsPanel({ world, plan, agents, onOpen }: {
         {!plan.corners.length ? <li className="muted">No projects yet. Start one, or start an agent in a worktree.</li> : null}
       </ul>
       <div className="muted small-note">{lounge} in the {isBuilding(plan) ? "garden" : "lounge"}, not working in a project's worktree{onBreak ? `; ${onBreak} from projects on a break there` : ""}. Click someone to move them.</div>
-      {error ? <div className="warn">{error}</div> : null}
+      {error ? <div className="warn warn-dismiss">{error}<button className="ghost small" onClick={() => setError(null)}>OK</button></div> : null}
     </aside>
   );
 }
@@ -202,6 +209,8 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
   // A name changed elsewhere, such as by taking over a lead's, shows here too.
   useEffect(() => setName(agent.name), [agent.name]);
   const [error, setError] = useState<string | null>(null);
+  // An error belongs to the agent it came from.
+  useEffect(() => setError(null), [agent.id]);
   const tasks = state.tasks.filter((t) => agent.taskIds.includes(t.id));
   const team = world.teams.find((t) => t.id === agent.teamId) ?? null;
   const agents = new Map(world.agents.map((a) => [a.id, a]));
@@ -226,7 +235,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
           className="agent-name"
           value={name}
           aria-label="Name"
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => (setError(null), setName(e.target.value))}
           onBlur={rename}
           onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
         />
@@ -299,7 +308,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
         <button className="ghost small" onClick={onGo}>Walk over</button>
         {removable(agent) ? <button className="ghost small danger" onClick={() => confirmRemove(agent) && void run(api.removeAgent(agent.id).then(onClose))}>Remove from the office</button> : null}
       </div>
-      {error ? <div className="warn">{error}</div> : null}
+      {error ? <div className="warn warn-dismiss">{error}<button className="ghost small" onClick={() => setError(null)}>OK</button></div> : null}
 
       <BetweenAgents messages={said} agents={agents} />
     </aside>

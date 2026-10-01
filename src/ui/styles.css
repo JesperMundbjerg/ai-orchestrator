@@ -527,3 +527,4 @@ button.link { background: none; border: 0; padding: 0; font: inherit; color: var
   position: fixed; top: 64px; left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 32px)); margin: 0; z-index: 5;
   box-shadow: 0 6px 24px rgba(16, 24, 40, 0.14); backdrop-filter: blur(8px);
 }
+.warn-dismiss { display: flex; gap: 10px; align-items: center; justify-content: space-between; }

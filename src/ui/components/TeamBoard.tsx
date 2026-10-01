@@ -18,7 +18,7 @@ const LOUNGE = "lounge";
 export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: number; onOffice: () => void }) {
   const [world, setWorld] = useState<WorldState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  /** What went wrong with the last thing you did; kept until you do something else, not cleared by the next refresh. */
+  /** What went wrong with the last thing you did; kept until you dismiss it, cancel or change the form it came from, or do something else, and not cleared by the next refresh. */
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [over, setOver] = useState<string | null>(null);
@@ -63,13 +63,13 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
         <span className="spacer" />
         <button className="ghost small" onClick={onOffice}>Walk into the office →</button>
         <TellAllLeads world={world} />
-        <button className="primary small" onClick={() => setAdding(!adding)}>{adding ? "Cancel" : "+ New project"}</button>
+        <button className="primary small" onClick={() => (setError(null), setAdding(!adding))}>{adding ? "Cancel" : "+ New project"}</button>
       </header>
       <MachineWarning tick={tick} note />
-      {error || loadError ? <p className="warn">{error ?? `The office did not answer (${loadError}).`}</p> : null}
+      {error ? <p className="warn warn-dismiss">{error} <button className="ghost small" onClick={() => setError(null)}>OK</button></p> : loadError ? <p className="warn">The office did not answer ({loadError}).</p> : null}
       {note ? <p className="board-note">{note} <button className="ghost small" onClick={() => setNote(null)}>OK</button></p> : null}
       {adding ? (
-        <div className="team-column new">
+        <div className="team-column new" onChange={() => setError(null)}>
           <TeamForm
             teams={world.teams}
             repositories={world.repositories}
@@ -85,7 +85,7 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
 
       <div className="team-columns">
         {world.teams.map((t) => (
-          <TeamColumn key={t.id} team={t} world={world} agents={agents} state={state} over={over === t.id} target={target(t.id)} run={run} onFinish={() => finish(t)} />
+          <TeamColumn key={t.id} team={t} world={world} agents={agents} state={state} over={over === t.id} target={target(t.id)} run={run} clearError={() => setError(null)} onFinish={() => finish(t)} />
         ))}
         <section className={`team-column lounge ${over === LOUNGE ? "over" : ""}`} {...target(LOUNGE)}>
           <div className="team-column-head">
@@ -123,7 +123,7 @@ export function TeamBoard({ state, tick, onOffice }: { state: InboxState; tick: 
   );
 }
 
-function TeamColumn({ team, world, agents, state, over, target, run, onFinish }: {
+function TeamColumn({ team, world, agents, state, over, target, run, clearError, onFinish }: {
   team: WorldTeam;
   world: WorldState;
   agents: Map<string, WorldAgent>;
@@ -131,6 +131,8 @@ function TeamColumn({ team, world, agents, state, over, target, run, onFinish }:
   over: boolean;
   target: Record<string, (e: DragEvent) => void>;
   run: (p: Promise<unknown>) => void;
+  /** Dismiss the board's error: the form it came from was changed, cancelled or closed. */
+  clearError: () => void;
   onFinish: () => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -139,7 +141,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, onFinish }:
   const handsTo = team.handsTo ? world.teams.find((t) => t.id === team.handsTo)?.name : null;
   const toReview = world.work.filter((w) => w.toTeamId === team.id && w.state === "in_review").length;
   return (
-    <section className={`team-column ${team.status} ${over ? "over" : ""}`} {...target}>
+    <section className={`team-column ${team.status} ${over ? "over" : ""}`} {...target} onChange={clearError}>
       {editing ? (
         <TeamForm
           initial={team}
@@ -149,7 +151,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, onFinish }:
           onSubmit={(fields) => run(api.updateTeam(team.id, fields).then(() => setEditing(false)))}
           extra={
             <>
-              <button type="button" className="ghost small" onClick={() => setEditing(false)}>Cancel</button>
+              <button type="button" className="ghost small" onClick={() => (clearError(), setEditing(false))}>Cancel</button>
               <button type="button" className="ghost small danger" onClick={onFinish}>{team.standing ? "Disband" : "Finish project"}</button>
             </>
           }
@@ -160,7 +162,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, onFinish }:
             <span className="lamp" style={{ background: TEAM_LAMP[team.status].color }} />
             <strong>{team.name}</strong>
             <span className="spacer" />
-            <button className="ghost small" onClick={() => setEditing(true)}>Edit</button>
+            <button className="ghost small" onClick={() => (clearError(), setEditing(true))}>Edit</button>
           </div>
           <span className={team.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
           <span className="muted small-note" title={team.path ?? undefined}>{team.standing ? "Always on" : `Worktree on ${team.branch ?? "an unknown branch"}`}</span>
