@@ -154,6 +154,8 @@ CREATE TABLE IF NOT EXISTS world_agents (
   team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
   role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('lead', 'member')),
   first_seen_at TEXT NOT NULL,
+  -- Latest observation, for recycling an offline, unplaced agent's first name.
+  last_seen_at TEXT,
   -- When it was first seen running in herdr; null for a record nothing ever ran behind.
   ran_at TEXT,
   -- Removed by you while nothing ran behind it; kept so what it said still has a sender.
@@ -273,6 +275,11 @@ function migrate(db: DatabaseSync): void {
   if (!agents.has("story")) db.exec("ALTER TABLE world_agents ADD COLUMN story TEXT");
   if (!agents.has("ran_at")) db.exec("ALTER TABLE world_agents ADD COLUMN ran_at TEXT");
   if (!agents.has("removed")) db.exec("ALTER TABLE world_agents ADD COLUMN removed INTEGER NOT NULL DEFAULT 0");
+  if (!agents.has("last_seen_at")) {
+    // We did not track last sighting before this. Give existing records a full three-day grace period.
+    db.exec("ALTER TABLE world_agents ADD COLUMN last_seen_at TEXT");
+    db.prepare("UPDATE world_agents SET last_seen_at = ?").run(new Date().toISOString());
+  }
   if (!columns("items").has("pages")) db.exec("ALTER TABLE items ADD COLUMN pages TEXT");
 
   // Team instructions were their own tables before agents could talk to each other.

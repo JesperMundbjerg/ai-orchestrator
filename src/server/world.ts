@@ -24,6 +24,7 @@ import { Adapters } from "./adapter.ts";
 import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
 import { SessionFiles } from "./models.ts";
+import { allocateName, NAMES } from "./names.ts";
 import type { Usage } from "./usage.ts";
 import { EFFORT_TIMEOUT_MS, Efforts } from "./effort.ts";
 import type { EffortReport } from "../shared/types.ts";
@@ -63,12 +64,6 @@ export interface AgentSource {
 
 type Inbox = () => Pick<InboxState, "tasks" | "projects" | "items">;
 type Joined = Omit<WorldAgent, "id" | "name" | "project" | "branch" | "teamId" | "role" | "waitingOnYou" | "doing" | "helpers" | "model" | "sessionName" | "ran"> & { sessionId: string | null };
-
-/** First names handed out in a stable order per identity; a name is kept once given. */
-const NAMES = [
-  "Tom", "Ada", "Maja", "Noah", "Freja", "Oscar", "Ida", "Lucas", "Clara", "Emil", "Alma", "Viktor", "Sofie", "Felix",
-  "Nora", "Anton", "Liv", "Magnus", "Esther", "Karl", "Agnes", "Otto", "Vera", "Aksel", "Ellen", "Hugo", "Selma", "Theo",
-];
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? "" : String(v));
@@ -191,7 +186,19 @@ export class World {
     const projectOfTask = new Map(inbox.tasks.map((t) => [t.id, inbox.projects.find((p) => p.id === t.projectId)?.name ?? null]));
     const waitedOn = new Set(inbox.items.filter((i) => i.state === "needs_attention" && i.blocking).map((i) => i.taskId));
     const rows = new Map((this.db.prepare("SELECT * FROM world_agents").all() as Row[]).map((r) => [str(r.identity), r]));
-    for (const a of agents) if (!rows.has(a.identity)) rows.set(a.identity, this.register(a.identity, rows));
+    // Protect the whole snapshot before assigning any name: an old record may return beside a newcomer.
+    // Tasks also reserve their agent's name; hidden panes (during a switch) are still running.
+    const present = new Set([...agents.map((a) => a.identity), ...(this.source?.live() ?? []).map(liveIdentity)]);
+    const protectedIds = new Set([...present].flatMap((identity) => rows.has(identity) ? [str(rows.get(identity)!.id)] : []));
+    const lastSeenAt = this.now().toISOString();
+    // One write for the snapshot, rather than one disk commit per visible agent.
+    if (protectedIds.size) this.db.prepare(`UPDATE world_agents SET last_seen_at = ? WHERE id IN (${[...protectedIds].map(() => "?").join(",")})`)
+      .run(lastSeenAt, ...protectedIds);
+    for (const identity of present) {
+      const row = rows.get(identity);
+      if (row) row.last_seen_at = lastSeenAt;
+    }
+    for (const a of agents) if (!rows.has(a.identity)) rows.set(a.identity, this.register(a.identity, rows, protectedIds));
     // Someone you removed stays out while nothing runs behind them; running again brings them back.
     for (const a of agents) {
       const row = rows.get(a.identity)!;
@@ -625,19 +632,22 @@ export class World {
     return [...out.values()];
   }
 
-  private register(identity: string, known: Map<string, Row>): Row {
-    const taken = new Set([...known.values()].map((r) => str(r.name)));
+  private register(identity: string, known: Map<string, Row>, protectedIds: ReadonlySet<string>): Row {
     const start = parseInt(agentId(identity).slice(0, 8), 16) % NAMES.length;
-    let name = "";
-    for (let i = 0; i < NAMES.length && !name; i++) {
-      const candidate = NAMES[(start + i) % NAMES.length]!;
-      if (!taken.has(candidate)) name = candidate;
-    }
-    if (!name) name = `${NAMES[start]} ${taken.size + 1}`;
-    const row = { id: agentId(identity), identity, name, team_id: null, role: "member", first_seen_at: this.now().toISOString() };
-    this.db
-      .prepare("INSERT OR IGNORE INTO world_agents (id, identity, name, role, first_seen_at) VALUES (?, ?, ?, ?, ?)")
-      .run(row.id, identity, name, row.role, row.first_seen_at);
+    const { name, retired } = allocateName([...known.values()].map((r) => ({
+      id: str(r.id), name: str(r.name), teamId: r.team_id ? str(r.team_id) : null,
+      removed: Boolean(r.removed), lastSeenAt: str(r.last_seen_at),
+    })), protectedIds, start, this.now().getTime());
+    const at = this.now().toISOString();
+    const row = { id: agentId(identity), identity, name, team_id: null, role: "member", first_seen_at: at, last_seen_at: at };
+    // Retiring the old display name and giving it to the newcomer are one durable change.
+    // Message senders remain agent ids, never names.
+    this.tx(() => {
+      if (retired) this.db.prepare("UPDATE world_agents SET name = ? WHERE id = ?").run(retired.name, retired.id);
+      this.db.prepare("INSERT INTO world_agents (id, identity, name, role, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(row.id, identity, name, row.role, at, at);
+    });
+    if (retired) for (const old of known.values()) if (old.id === retired.id) old.name = retired.name;
     return row;
   }
 
@@ -950,6 +960,10 @@ export class World {
     if (patch.takeName) return this.takeOver(row);
     if (patch.name !== undefined && !patch.name.trim()) throw new InboxError(400, "an agent needs a name");
     if (patch.name?.trim().toLowerCase() === FOUNDER) throw new InboxError(400, `"${FOUNDER}" is how agents address you`);
+    if (patch.name !== undefined && (this.db.prepare("SELECT id, name FROM world_agents WHERE id != ?").all(id) as Row[])
+      .some((other) => str(other.name).toLowerCase() === patch.name!.trim().toLowerCase())) {
+      throw new InboxError(409, `there is already an agent called ${patch.name.trim()}`);
+    }
     if (patch.teamId) this.team(patch.teamId);
     if (patch.role !== undefined && patch.role !== "lead" && patch.role !== "member") throw new InboxError(400, `role must be lead or member`);
     const teamId = patch.teamId === undefined ? (row.team_id ? str(row.team_id) : null) : patch.teamId;
