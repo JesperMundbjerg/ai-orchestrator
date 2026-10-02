@@ -5,13 +5,14 @@ import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
-import { planOffice } from '../src/ui/world/layout.ts';
 import { planBuilding, place, readingNooks } from '../src/ui/world/building.ts';
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const executablePath=chromium.executablePath();
 const output=process.env.GAMES_SCREENSHOTS || join(homedir(), '.review-inbox/handoffs/agent-office/games');
 const home=mkdtempSync(join(tmpdir(),'office-games-'));
 process.env.HOME=home; process.env.INBOX_DATA_DIR=join(home,'data');
+process.env.HERDR_SOCKET_PATH='/nonexistent';
+process.env.HERDR_BIN_PATH='/usr/bin/false';
 const { openDatabase }=await import('../src/server/db.ts');
 const { Inbox }=await import('../src/server/inbox.ts');
 const { createInboxServer }=await import('../src/server/http.ts');
@@ -30,6 +31,7 @@ try {
   const page=await browser.newPage({viewport:{width:1600,height:1000}}),errors=[];
   page.on('pageerror',e=>errors.push(e.message));
   await page.addInitScript(()=>{
+    localStorage.setItem('review-inbox.office-layout','building');
     window.__roots=new Set();window.__REACT_DEVTOOLS_GLOBAL_HOOK__={supportsFiber:true,inject:()=>1,onCommitFiberRoot:(_,r)=>window.__roots.add(r),onCommitFiberUnmount:()=>{}};
     const realNow=Date.now; Date.now=()=>window.__gameNow??realNow();
     window.__scene=()=>{
@@ -50,11 +52,11 @@ try {
     await page.evaluate(v=>{const s=window.__scene();Object.assign(s.view,v);s.store.invalidate();},{x,z,yaw:Math.atan2(center[0]-x,z-center[1]),pitch,lift,fov});
     await page.waitForTimeout(1100);
   };
-  for(const layout of ['ring','building']) {
-    await page.evaluate(()=>{delete window.__gameNow;});
-    await page.getByRole('button',{name:layout==='ring'?'Ring':'Building',exact:true}).click();
+  // Building-only: no dependency on the old layout selector surviving its removal.
+  {
+    const layout='building';
     await page.waitForTimeout(1200);
-    const plan=(layout==='ring'?planOffice:planBuilding)(agents,teams,[]);
+    const plan=planBuilding(agents,teams,[]);
     const players=await page.evaluate(()=>window.__scene().avatars.filter(a=>a.spot.game));
     assert.equal(players.length,3);
     await page.waitForFunction(()=>window.__scene().games?.starts.size===2);
@@ -80,7 +82,7 @@ try {
     await page.waitForTimeout(400);
     await page.screenshot({path:join(output,`${layout}-darts-score.png`)});
     assert.equal(await page.evaluate(()=>{const d=window.__scene().store.scene.getObjectByName('lounge-darts');return [0,1,2].every(i=>d.getObjectByName(`dart:${i}`).visible)&&d.getObjectByName('game-score').children.some(c=>c.visible);}),true);
-    if(layout==='building')for(const [i,n] of readingNooks(plan).entries()) {
+    for(const [i,n] of readingNooks(plan).entries()) {
       await view(n.center,n.facing,{distance:5.8,pitch:-0.5,lift:0.08,fov:60});
       await page.screenshot({path:join(output,`building-corner-couch-${i+1}.png`)});
     }
@@ -95,7 +97,7 @@ try {
   assert.equal(await page.evaluate(()=>window.__scene().store.scene.getObjectByName('pool-cue').visible),false);
   assert.equal(await page.evaluate(()=>[0,1,2].some(i=>window.__scene().store.scene.getObjectByName(`dart:${i}`).visible)),false);
   assert.deepEqual(errors,[]);
-  console.log(`Headless checked both layouts, idle games, all corner couches and immediate work exit. Scratch port ${port}; screenshots ${output}`);
+  console.log(`Headless checked Building, idle games, all corner couches and immediate work exit. Scratch port ${port}; screenshots ${output}`);
 } finally {
   await browser?.close();server.closeAllConnections();await new Promise(r=>server.close(r));db.close();rmSync(home,{recursive:true,force:true});
 }
