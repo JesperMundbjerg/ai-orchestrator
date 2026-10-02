@@ -166,12 +166,14 @@ function gate(boundary: Boundary, config: HookConfig, identity: Json): string | 
   const args = ["pipeline", "gate", "--repo", boundary.repo, "--operation", boundary.operation, "--ref", boundary.ref, "--candidate", boundary.candidate];
   if (process.env.INBOX_PIPELINE_RUN) args.push("--run", process.env.INBOX_PIPELINE_RUN);
   if (process.env.INBOX_PIPELINE_ROUND) args.push("--round", process.env.INBOX_PIPELINE_ROUND);
-  if (process.env.INBOX_ACTOR_ID) args.push("--actor", process.env.INBOX_ACTOR_ID);
   if (identity.harness && identity.session) args.push("--harness", identity.harness, "--session", identity.session);
   const [exe, ...prefix] = config.inboxCommand;
   const result = spawnSync(exe!, [...prefix, ...args], { cwd: boundary.repo, encoding: "utf8", timeout: 10000, maxBuffer: 128 * 1024 });
   if (result.status === 0 && !result.error) return null;
-  if (result.status === 1) return result.stderr?.trim() || result.stdout?.trim() || "Protected delivery refused by the office pipeline gate.";
+  if (result.status === 1) {
+    const reason = result.stderr?.trim() || result.stdout?.trim() || "Protected delivery refused by the office pipeline gate.";
+    return `${reason}\nIf the office is unavailable: Restart the office and retry; editing, tests and local commits remain available.`;
+  }
   return `${OUTAGE}${result.stderr?.trim() ? `\n${result.stderr.trim()}` : ""}`;
 }
 export function guardTool(config: HookConfig, input: Json, cwd: string, harness: string, session = ""): string | null {
@@ -213,11 +215,11 @@ function configured(repo: string, inboxCommand: string[]): HookConfig {
   if (!Array.isArray(commands) || !commands.every((c) => c && typeof c.command === "string" && shellWords(c.command).length === 1 && shellWords(c.command)[0]!.length > 0 && ["land", "publish", "push", "pr", "merge"].includes(c.operation) && typeof c.ref === "string" && (c.candidateArgument === undefined || (Number.isInteger(c.candidateArgument) && c.candidateArgument >= 0)))) throw new Error("Invalid pipelineHooks.guardedCommands");
   for (const c of commands) if (!refs.includes(refName(c.ref))) refs.push(refName(c.ref));
   if (adapter.land || adapter.project === "fysiklab") {
-    commands.push({ command: "node scripts/worktree-sync.mjs land", operation: "land", ref: adapter.integrationBranch || "dev", candidateArgument: 1 });
-    commands.push({ command: "node scripts/worktree-sync.mjs publish", operation: "publish", ref: adapter.integrationBranch || "dev" });
+    commands.push({ command: "node .claude/hooks/worktree-sync.mjs land", operation: "land", ref: adapter.integrationBranch || "dev", candidateArgument: 1 });
+    commands.push({ command: "node .claude/hooks/worktree-sync.mjs publish", operation: "publish", ref: adapter.integrationBranch || "dev" });
     // Accept a directly executable script as well as the usual node invocation.
-    commands.push({ command: "scripts/worktree-sync.mjs land", operation: "land", ref: adapter.integrationBranch || "dev", candidateArgument: 1 });
-    commands.push({ command: "scripts/worktree-sync.mjs publish", operation: "publish", ref: adapter.integrationBranch || "dev" });
+    commands.push({ command: ".claude/hooks/worktree-sync.mjs land", operation: "land", ref: adapter.integrationBranch || "dev", candidateArgument: 1 });
+    commands.push({ command: ".claude/hooks/worktree-sync.mjs publish", operation: "publish", ref: adapter.integrationBranch || "dev" });
   }
   return { marker: MARK, protectedRefs: refs, guardedCommands: commands, inboxCommand };
 }

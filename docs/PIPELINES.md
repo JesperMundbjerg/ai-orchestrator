@@ -33,13 +33,13 @@ The defaults protect `dev`, `main`, `master`, and the adapter's `integrationBran
     "protectedRefs": ["release"],
     "guardedCommands": [
       {
-        "command": "node scripts/worktree-sync.mjs land",
+        "command": "node .claude/hooks/worktree-sync.mjs land",
         "operation": "land",
         "ref": "dev",
         "candidateArgument": 1
       },
       {
-        "command": "node scripts/worktree-sync.mjs publish",
+        "command": "node .claude/hooks/worktree-sync.mjs publish",
         "operation": "publish",
         "ref": "dev"
       }
@@ -48,7 +48,7 @@ The defaults protect `dev`, `main`, `master`, and the adapter's `integrationBran
 }
 ```
 
-`candidateArgument` is a zero-based index **after** the command prefix: for `land CHECKOUT SHA`, index 1 pins SHA. Without it, publishing pins the target branch tip and other commands pin `HEAD`. Prefixes are literal argv, not executable configuration or regexes. A script path also matches its absolute spelling by basename. The FysikLab adapter (`project: "fysiklab"`) or a configured `land` object adds guards for `worktree-sync.mjs land/publish`, both directly executable and through `node`. Other delivery scripts require explicit `guardedCommands` entries. The installer snapshots this configuration; re-install adds protection but never silently removes an already-installed boundary when configuration disappears or changes. Intentional policy removal requires uninstall/re-install.
+`candidateArgument` is a zero-based index **after** the command prefix: for `land CHECKOUT SHA`, index 1 pins SHA. Without it, publishing pins the target branch tip and other commands pin `HEAD`. Prefixes are literal argv, not executable configuration or regexes. A script path also matches its absolute spelling by basename. The FysikLab adapter (`project: "fysiklab"`) or a configured `land` object adds guards for `.claude/hooks/worktree-sync.mjs land/publish`, both directly executable and through `node`. FysikLab's remaining checks are `npm run check:changed`, `npm run check`, and `npm run gates`; the hooks do not invoke checks or retired delivery tooling. Other delivery scripts require explicit `guardedCommands` entries. The installer snapshots this configuration; re-install adds protection but never silently removes an already-installed boundary when configuration disappears or changes. Intentional policy removal requires uninstall/re-install.
 
 Hooks guard literal `git push`, `gh pr create`, Git protected-branch merges, and configured delivery commands. They recognize compound commands, literal `cd`, `git -C`, and branch switches. Protected Git merges require a single fast-forward candidate; squash, non-fast-forward and continued integration merges are refused in favor of the canonical pinned landing procedure. Unresolved PR merges and cross-repository PR operations require the explicit release procedure rather than guessing the candidate or target. Ordinary feature-branch merges, pushes, editing, tests and local commits remain available.
 
@@ -59,7 +59,7 @@ inbox pipeline gate --repo CHECKOUT --operation push --ref refs/heads/dev --cand
   --run RUN --round ROUND --harness pi --session /absolute/session.jsonl
 ```
 
-Operations distinguish `push`, `pr`, `merge`, `land` and `publish`; the office must bind the run to the repository, target ref and delivery kind. A dev run cannot authorize a main-release PR/merge. Missing runs, crew rather than the current lead, stale candidates/rounds and incomplete evidence are the office's refusals. Exit 0 is allow; exit 1 is policy refusal; other nonzero exits, timeout or a missing executable are fail-closed failures. A shell environment variable is never a bypass or cached authorization.
+Operations distinguish `push`, `pr`, `merge`, `land` and `publish`; the office must bind the run to the repository, target ref and delivery kind. A dev run cannot authorize a main-release PR/merge. Missing runs, crew rather than the current lead, stale candidates/rounds and incomplete evidence are the office's refusals. Exit 0 is allow; every nonzero exit is refusal. Hooks preserve exit-1 reasons and append an office-restart instruction (so an outage reported as exit 1 is still clear); other nonzero exits, timeout or a missing executable also fail closed. A shell environment variable is never a bypass or cached authorization.
 
 The pre-push hook checks **every protected remote ref in Git's actual stdin**, using that update's included candidate SHA (not merely `HEAD`). Protected deletion is refused. Feature-only pushes do not contact the office. Tool hooks are read-only preflight; the Git hook rechecks at publication. An allow response is **not delivery evidence** and does not record landing/publication success: canonical delivery tooling must check before modifying the integration branch and record successful publication afterward. This installer does not rewrite repository delivery scripts.
 

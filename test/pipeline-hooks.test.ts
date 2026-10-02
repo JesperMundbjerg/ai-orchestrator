@@ -93,6 +93,22 @@ test("pre-push checks every protected ref at its included SHA, permits ordinary 
   assert.match(guardPrePush(s.config, `x ${"0".repeat(40)} refs/heads/main ${s.candidate}`, s.repo)!, /deleting/);
 });
 
+test("gate argv binds run, round, session, repo, ref and candidate; exit 1 also has restart guidance", (t) => {
+  const s = scratch(t);
+  const names = ["INBOX_PIPELINE_RUN", "INBOX_PIPELINE_ROUND", "SCRATCH_GATE_EXIT"];
+  const before = names.map((n) => process.env[n]);
+  t.after(() => names.forEach((n, i) => { if (before[i] === undefined) delete process.env[n]; else process.env[n] = before[i]; }));
+  process.env.INBOX_PIPELINE_RUN = "scratch-run"; process.env.INBOX_PIPELINE_ROUND = "3"; process.env.SCRATCH_GATE_EXIT = "1";
+  const reason = guardTool(s.config, { input: { command: "git push origin HEAD:dev" } }, s.repo, "pi", "/scratch/session.jsonl");
+  assert.match(reason!, /Restart the office and retry/);
+  const args = s.readCalls()[0]!;
+  const value = (name: string) => args[args.indexOf(name) + 1];
+  assert.equal(value("--run"), "scratch-run"); assert.equal(value("--round"), "3");
+  assert.equal(value("--repo"), s.repo); assert.equal(value("--candidate"), s.candidate);
+  assert.equal(value("--operation"), "push"); assert.equal(value("--ref"), "refs/heads/dev");
+  assert.equal(value("--harness"), "pi"); assert.equal(value("--session"), "/scratch/session.jsonl");
+});
+
 test("Claude and Codex installed hooks emit deny/reason when CLI unavailable, ordinary tools remain untouched", (t) => {
   const s = scratch(t); s.install({ inboxCommand: ["/nonexistent/inbox"] });
   for (const mode of ["claude", "codex"]) {
@@ -124,12 +140,22 @@ test("PR target and configured landing-script indirection are guarded before mod
   s.install(); const config = JSON.parse(readFileSync(join(s.repo, ".review-inbox-pipeline/config.json"), "utf8")) as HookConfig;
   assert.equal(commandBoundaries("gh pr create --base main --head feature", s.repo, config)[0]!.operation, "pr");
   assert.deepEqual(commandBoundaries("gh pr create --base feature", s.repo, config), []);
-  assert.equal(commandBoundaries(`node /canonical/scripts/worktree-sync.mjs land '${s.repo}' ${s.candidate}`, s.repo, config)[0]!.operation, "land");
-  assert.equal(commandBoundaries("node scripts/worktree-sync.mjs publish", s.repo, config)[0]!.candidate, s.candidate);
+  assert.equal(commandBoundaries(`node /canonical/.claude/hooks/worktree-sync.mjs land '${s.repo}' ${s.candidate}`, s.repo, config)[0]!.operation, "land");
+  assert.equal(commandBoundaries("node .claude/hooks/worktree-sync.mjs publish", s.repo, config)[0]!.candidate, s.candidate);
   assert.equal(commandBoundaries(`./deliver release ${s.candidate}`, s.repo, config)[0]!.ref, "refs/heads/main");
   const down = { ...config, inboxCommand: ["/nonexistent/inbox"] };
-  assert.match(guardTool(down, { input: { command: `node scripts/worktree-sync.mjs land '${s.repo}' ${s.candidate}` } }, s.repo, "pi", "scratch")!, /Restart the office/);
-  assert.equal(guardTool(down, { input: { command: "node scripts/worktree-sync.mjs status" } }, s.repo, "pi", "scratch"), null);
+  assert.match(guardTool(down, { input: { command: `node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${s.candidate}` } }, s.repo, "pi", "scratch")!, /Restart the office/);
+  assert.equal(guardTool(down, { input: { command: "node .claude/hooks/worktree-sync.mjs status" } }, s.repo, "pi", "scratch"), null);
+});
+
+test("FysikLab adapter auto-guards only the live worktree-sync land/publish delivery paths", (t) => {
+  const s = scratch(t);
+  writeFileSync(join(s.repo, "orchestrator.json"), JSON.stringify({ project: "fysiklab", integrationBranch: "dev" }));
+  s.install(); const config = JSON.parse(readFileSync(join(s.repo, ".review-inbox-pipeline/config.json"), "utf8")) as HookConfig;
+  assert.deepEqual(config.guardedCommands.map(c => c.command), ["node .claude/hooks/worktree-sync.mjs land", "node .claude/hooks/worktree-sync.mjs publish", ".claude/hooks/worktree-sync.mjs land", ".claude/hooks/worktree-sync.mjs publish"]);
+  const boundary = commandBoundaries(`node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${s.candidate}`, s.repo, config)[0]!;
+  assert.equal(boundary.operation, "land"); assert.equal(boundary.candidate, s.candidate);
+  for (const command of ["npm run check:changed", "npm run check", "npm run gates", "node space-app/scripts/workflow/workflow.mjs history", "node space-app/scripts/workflow/workflow.mjs returns", "node space-app/scripts/workflow/workflow.mjs audit", "node space-app/scripts/workflow/workflow.mjs record"]) assert.deepEqual(commandBoundaries(command, s.repo, config), []);
 });
 
 test("linked worktree installs local harness files and respects the shared Git pre-push backstop", (t) => {
