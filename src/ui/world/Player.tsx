@@ -226,5 +226,5 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
     pace?.moved(performance.now());
   }, -1);
 
-  return <group ref={bird} name="founder-bird"><Bird pose={pose} /></group>;
+  return <group ref={bird} name="founder-bird"><Bird pose={pose} bounds={bounds} /></group>;
 }
