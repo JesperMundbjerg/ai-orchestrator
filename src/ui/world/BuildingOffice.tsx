@@ -12,25 +12,25 @@ import { plantGarden, treesRound } from "./planting.ts";
 import { Pipeline, useTexture } from "./Office.tsx";
 import { freeBoard, teamBoard } from "./corkboard.ts";
 import { CorkBoard } from "./CorkBoard.tsx";
-import { LOUNGE_SOFAS, LOUNGE_TABLE, type Corner, type Vec2 } from "./layout.ts";
+import { LOUNGE_SOFAS, LOUNGE_TABLE, WALL_H, type Corner, type Vec2 } from "./layout.ts";
 
-/** Ceiling height, as far as the outside walls go: an open ceiling. */
-const WALL_H = 4.3;
-/** The windows run from the sill to the head, in panes this wide at most. */
+/** The windows run from the sill to the head, in panes this wide at most; the wall (`WALL_H`, open to the sky) goes on above them. */
 const SILL = 0.85;
-const HEAD = 3.4;
+const HEAD = WALL_H * 0.8;
 const PANE = 1.6;
 /**
  * The team's corkboard on a bay's back wall, twice as wide as tall. From eye height in the hall
- * the name tags of a full bay's front row cover the back wall up to about 4 m, so the wall rises
- * behind the board (to `PANEL_TOP`) and the board hangs high enough to read over them.
+ * the name tags of a full bay's front row cover the back wall up to about 4 m, so the board hangs
+ * high enough to read over them, its top (about 5.4 m) still under the wall's.
  */
 const BOARD_W = 4.4;
 const BOARD_Y = 4.2;
-const PANEL_TOP = 5.6;
 /** Planters between the bays and round the lounge: low enough to see every team from the hall. */
 const PLANTER_H = 0.75;
-const GLASS_H = 2.9;
+/** The meeting rooms' glass walls, two thirds of the outside wall's height. */
+const GLASS_H = WALL_H * (2 / 3);
+/** The front door's lintel: a door's height, with glass over it up to the windows' head. */
+const LINTEL = 2.5;
 /** The lounge's sign on its back wall, beside the sofas and clear of the kitchen. */
 const SIGN_X = -1.2;
 
@@ -98,8 +98,6 @@ function furnish(plan: BuildingPlan) {
   for (const room of plan.rooms.filter((r) => r.kind === "bay")) {
     const add = kit.in(room);
     const [hw, hd] = room.half;
-    add("wall", [0, (WALL_H + PANEL_TOP) / 2, -hd], [BOARD_W + 0.7, PANEL_TOP - WALL_H, 0.3]);
-    add("wood", [0, PANEL_TOP + 0.02, -hd], [BOARD_W + 0.8, 0.04, 0.36]);
     add("white", [0, 0.36, 0.4 - hd], [2.6, 0.72, 0.45]);
     add("wood", [0, 0.735, 0.4 - hd], [2.64, 0.03, 0.48]);
     add("pot", [0.7, 0.87, 0.4 - hd], [0.2, 0.24, 0.2], 0, "#b8643c");
@@ -183,6 +181,9 @@ function furnish(plan: BuildingPlan) {
   officeChair(rc, 0.64, 0.2, -Math.PI / 2, CHAIRS[0]!);
   const fa = kit.at([door.x, door.z], 0);
   for (const sx of [-1, 1]) plant(fa, sx * (door.width / 2 + 0.55), -0.55, 1.5);
+  // Over the door the outside wall goes on: glass up to the windows' head, and wall above it.
+  fa("window", [0, (LINTEL + HEAD) / 2, 0], [door.width, HEAD - LINTEL, 0.04]);
+  fa("wall", [0, (HEAD + WALL_H) / 2, 0], [door.width + 0.3, WALL_H - HEAD, 0.3]);
 
   // The corners where the side rooms meet the north and south ones: a reading nook each.
   for (const [x, z] of [[outline.minX, outline.minZ], [outline.maxX, outline.minZ], [outline.minX, outline.maxZ], [outline.maxX, outline.maxZ]] as Vec2[]) {
@@ -361,11 +362,11 @@ function Reception({ plan }: { plan: BuildingPlan }) {
           <meshStandardMaterial color="#d6ecff" transparent opacity={0.35} roughness={0.05} depthWrite={false} />
         </mesh>
       ))}
-      <mesh position={[0, 2.5, 0]}>
+      <mesh position={[0, LINTEL, 0]}>
         <boxGeometry args={[width + 0.1, 0.1, 0.32]} />
         <meshStandardMaterial color="#8a939c" roughness={0.5} />
       </mesh>
-      <Sign lines={[{ text: "Welcome", size: 60, color: "#ffffff", weight: 800 }]} size={[420, 120]} width={1.4} height={0.4} position={[0, 3.0, -0.17]} rotation={Math.PI} />
+      <Sign lines={[{ text: "Welcome", size: 60, color: "#ffffff", weight: 800 }]} size={[420, 120]} width={1.4} height={0.4} position={[0, LINTEL + 0.5, -0.17]} rotation={Math.PI} />
     </group>
   );
 }

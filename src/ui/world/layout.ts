@@ -84,6 +84,12 @@ export const YOUR_VIEW: Vec2 = [SPAWN[0], SPAWN[1] + 5.5];
 export const CORNER_HALF_WIDTH = 4.7;
 export const CORNER_HALF_DEPTH = 4.5;
 const CORNER_GAP = 1;
+/**
+ * How high the office's walls go, in both layouts: clear of the corkboards' tops (the ring's, the
+ * higher, reaches about 5.8 m) with a little to spare. Windows, glass walls and the door's head
+ * follow from it; there is no ceiling, so nothing else has to.
+ */
+export const WALL_H = 6.2;
 /** The path runs this far inside the corners' open sides, and never closer to the desk than PATH_MIN (clear of the line). */
 const PATH_INSET = 1.4;
 const PATH_MIN = 8.6;

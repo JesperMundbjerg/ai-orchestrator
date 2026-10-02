@@ -8,7 +8,7 @@ import { studio } from "./crafts.ts";
 import { Crafts } from "./Crafts.tsx";
 import { teamBoard } from "./corkboard.ts";
 import { CorkBoard } from "./CorkBoard.tsx";
-import { CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, LOUNGE_SOFAS, LOUNGE_TABLE, pipelineLane, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, type Corner, type OfficePlan, type Vec2 } from "./layout.ts";
+import { CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, LOUNGE_SOFAS, LOUNGE_TABLE, pipelineLane, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, WALL_H, type Corner, type OfficePlan, type Vec2 } from "./layout.ts";
 
 /** The room and its furniture. Nothing here moves on its own; it follows the plan. */
 export function Office({ plan, agents, teams, work, queueLength }: { plan: OfficePlan; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; queueLength: number }) {
@@ -51,7 +51,7 @@ export function Office({ plan, agents, teams, work, queueLength }: { plan: Offic
 }
 
 function Walls({ minX, maxX, minZ, maxZ }: { minX: number; maxX: number; minZ: number; maxZ: number }) {
-  const h = 3.2;
+  const h = WALL_H;
   const wall = <meshStandardMaterial color="#e9ecef" roughness={0.9} />;
   const sides: Array<[number, number, number, number]> = [
     [(minX + maxX) / 2, minZ, maxX - minX, 0],
@@ -67,9 +67,9 @@ function Walls({ minX, maxX, minZ, maxZ }: { minX: number; maxX: number; minZ: n
             <boxGeometry args={[len, h, 0.2]} />
             {wall}
           </mesh>
-          {/* A band of windows */}
-          <mesh position={[0, 1.9, i % 2 ? -0.11 : 0.11]} rotation-y={i === 1 || i === 3 ? Math.PI : 0}>
-            <planeGeometry args={[len - 2, 1.1]} />
+          {/* A band of windows, a third of the wall high */}
+          <mesh position={[0, h * 0.6, i % 2 ? -0.11 : 0.11]} rotation-y={i === 1 || i === 3 ? Math.PI : 0}>
+            <planeGeometry args={[len - 2, h / 3]} />
             <meshStandardMaterial color="#a9c8e8" emissive="#a9c8e8" emissiveIntensity={0.35} roughness={0.2} />
           </mesh>
         </group>
