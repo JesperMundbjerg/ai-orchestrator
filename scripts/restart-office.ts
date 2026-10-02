@@ -10,6 +10,14 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// This full-office operations script preserves the founder's existing integrations. Ordinary
+// `npm start` opts into none of these. Environment/office.env can override each independently.
+export const FOUNDER_INTEGRATIONS = {
+  INBOX_CODEX_ACCOUNT_POLLING: "1",
+  INBOX_PRESENCE_DISCOVERY: "1",
+  INBOX_BROWSER_CLEANUP: "1",
+} as const;
+
 export const HERDR_KEYS = ["HERDR_BIN_PATH", "HERDR_SOCKET_PATH"] as const;
 type HerdrKey = (typeof HERDR_KEYS)[number];
 export type Settings = Record<HerdrKey, string>;
@@ -110,7 +118,7 @@ async function main(): Promise<string> {
     }
   }
 
-  const child = spawn(process.execPath, ["src/server/main.ts"], { cwd: root, env: { ...file, ...process.env, ...settings }, detached: true, stdio: ["ignore", log, log] });
+  const child = spawn(process.execPath, ["src/server/main.ts"], { cwd: root, env: { ...FOUNDER_INTEGRATIONS, ...file, ...process.env, ...settings }, detached: true, stdio: ["ignore", log, log] });
   let exited: number | null | undefined;
   child.on("exit", (code) => (exited = code));
   const up = await until(async () => {

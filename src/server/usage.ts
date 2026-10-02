@@ -154,7 +154,8 @@ export class Usage {
   }
 
   /** Reads the session files in the background: quickly while catching up, then every few seconds. */
-  start(): void {
+  start({ accountPolling = false }: { accountPolling?: boolean } = {}): void {
+    this.stop();
     const step = () => {
       let behind = false;
       try {
@@ -166,9 +167,12 @@ export class Usage {
       this.timer.unref();
     };
     step();
-    void this.readAccount();
-    this.accountTimer = setInterval(() => void this.readAccount(), ACCOUNT_EVERY_MS);
-    this.accountTimer.unref();
+    // No auth-file read and no authenticated request unless explicitly opted in.
+    if (accountPolling) {
+      void this.readAccount();
+      this.accountTimer = setInterval(() => void this.readAccount(), ACCOUNT_EVERY_MS);
+      this.accountTimer.unref();
+    }
   }
 
   stop(): void {

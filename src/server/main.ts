@@ -12,11 +12,13 @@ import { CrewTreeStore } from "./crewtree.ts";
 import { Inbox } from "./inbox.ts";
 import { Machine } from "./machine.ts";
 import { Switches } from "./switch.ts";
+import { startIntegrations, startupConfig } from "./startup-config.ts";
 import { Usage } from "./usage.ts";
 import { World } from "./world.ts";
 
 export const DEFAULT_PORT = 4870;
 
+const config = startupConfig();
 const port = Number(process.env.INBOX_PORT ?? DEFAULT_PORT);
 const dir = dataDir();
 const herdr = new Herdr();
@@ -40,13 +42,12 @@ inbox.presentationPath = (session) => {
   } catch { return session.cwd; }
 };
 const switches = new Switches(db, world, herdr, dir);
-const machine = new Machine(() => world.state());
-machine.tellLead = (teamId, text) => world.tellLead(teamId, text);
+// When disabled there is no process watcher or process-control HTTP surface at all.
+const machine = config.browserCleanup ? new Machine(() => world.state()) : undefined;
+if (machine) machine.tellLead = (teamId, text) => world.tellLead(teamId, text);
 const dist = fileURLToPath(new URL("../../dist", import.meta.url));
 
-herdr.start();
-machine.start();
-usage.start();
+startIntegrations(config, { herdr, machine, usage });
 void switches.resume();
 setInterval(() => {
   inbox.wakeDue();
