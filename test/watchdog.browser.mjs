@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -16,9 +16,10 @@ const port = socket.address().port;
 await new Promise((resolve) => socket.close(resolve));
 assert.notEqual(port, 4870);
 const url = `http://localhost:${port}`;
-const screenshot = join(homedir(), ".review-inbox/handoffs/agent-office/watchdog.png");
+const artifacts = process.env.TEST_ARTIFACT_DIR ?? await mkdtemp(join(tmpdir(), "review-inbox-artifacts-"));
+const screenshot = join(artifacts, "watchdog.png");
 const office = spawn(process.execPath, ["test/fixtures/watchdog-office.ts"], {
-  env: { ...process.env, HOME: home, INBOX_DATA_DIR: join(home, "data"), INBOX_PORT: String(port), HERDR_BIN_PATH: join(home, "no-herdr"), HERDR_SOCKET_PATH: join(home, "no.sock") },
+  env: { ...process.env, HOME: home, INBOX_DATA_DIR: join(home, "data"), INBOX_PORT: String(port), HERDR_BIN_PATH: "/usr/bin/false", HERDR_SOCKET_PATH: "/nonexistent", INBOX_CODEX_ACCOUNT_POLLING: "0", INBOX_PRESENCE_DISCOVERY: "0", INBOX_BROWSER_CLEANUP: "0" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let logs = "";

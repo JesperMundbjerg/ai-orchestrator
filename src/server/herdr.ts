@@ -1,10 +1,10 @@
-// Presence from herdr: which harness runs in which pane, under which session, and whether it
-// is working. herdr is optional — without it tasks simply have no presence and cannot be
-// brought to the front. It is never used to deliver replies.
+// herdr provides opt-in presence discovery and conversation focus, plus the full office's
+// pane/worktree operations. Agent integrations, hooks and manual pull work without it.
+// Office messages and idle-session fallback replies use guarded `herdr agent prompt` delivery;
+// they count as delivered only after herdr observes the agent take the prompt up.
 //
-// The agent list is re-read whenever herdr's socket reports a status change or a pane coming
-// or going, so a lamp changes within a moment. Polling stays as the fallback when the socket
-// is unreachable and as a slow safety net when it is not.
+// When discovery is enabled, the agent list is re-read on socket status/pane events, with
+// polling as the fallback. Without it, presence is unknown and terminal delivery waits.
 
 import { execFile } from "node:child_process";
 import { connect, type Socket } from "node:net";

@@ -105,14 +105,14 @@ test("a Codex pane herdr gives no session for is found by its folder: the newest
     writeFileSync(path, lines(meta(id, cwd), codexTurn(model)));
     utimesSync(path, at, at);
   };
-  const lesson = "/Users/jesper/projects/space-shuttle-cosmology-lesson";
+  const lesson = "/work/lantern-search";
   write("rollout-2026-09-29T20-32-35-a1.jsonl", "a1", lesson, "gpt-6-sol", 1_000);
   write("rollout-2026-09-29T20-36-37-a2.jsonl", "a2", lesson, "gpt-6-astra", 2_000);
-  write("rollout-2026-09-29T20-40-00-b1.jsonl", "b1", "/Users/jesper/projects/other", "gpt-6", 3_000);
+  write("rollout-2026-09-29T20-40-00-b1.jsonl", "b1", "/work/other", "gpt-6", 3_000);
   const files = new SessionFiles({ claude: dir(), codex });
   assert.deepEqual(files.modelOf("codex", null, 0, lesson), { id: "gpt-6-astra", label: "GPT-6 Astra" });
-  assert.equal(files.modelOf("codex", null, 0, "/Users/jesper/projects/other")?.label, "GPT-6");
-  assert.equal(files.modelOf("codex", null, 0, "/Users/jesper/projects/nowhere"), null);
+  assert.equal(files.modelOf("codex", null, 0, "/work/other")?.label, "GPT-6");
+  assert.equal(files.modelOf("codex", null, 0, "/work/nowhere"), null);
   assert.equal(files.modelOf("codex", null, 0, null), null, "without a session or a folder there is nothing to look for");
   assert.equal(files.modelOf("claude", null, 0, lesson), null, "only Codex is found this way");
 });

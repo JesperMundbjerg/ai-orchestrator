@@ -24,7 +24,7 @@ const HELPER = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrom
 const PS = `
     1     0   0.1  12000 3-02:11:09 /sbin/launchd
 40700     1   0.0  30000    02:10:00 /bin/zsh -l
-40702 40700   1.2 180000    02:09:58 /opt/homebrew/bin/node /Users/me/projects/space-shuttle-cosmology-lesson/space-app/node_modules/next/dist/bin/next dev -p 3010
+40702 40700   1.2 180000    02:09:58 /opt/homebrew/bin/node /Users/me/projects/lantern-search/notes-app/node_modules/next/dist/bin/next dev -p 3010
 40703 40702  12.0 420000    02:09:57 next-server (v16.3.4)
 76099 40703   0.0  93744       12:28 ${SHELL} --disable-field-trial-config --disable-background-networking --headless --user-data-dir=/var/folders/zn/T/playwright_chromiumdev_profile-8GHVLY --remote-debugging-pipe
 76137 76099  31.4 116128       12:28 ${SHELL} --type=gpu-process --no-sandbox --headless --use-angle=metal
@@ -74,15 +74,15 @@ test("a browser belongs to the project where whatever started it works", () => {
   const procs = parsePs(PS);
   assert.deepEqual(lineage(procs, 76099), [76099, 40703, 40702, 40700]);
   const places: Place[] = [
-    { path: "/Users/me/projects/space-shuttle-cosmology-lesson", teamId: "t1", agentId: null, label: "Cosmology lesson" },
-    { path: "/Users/me/projects/space-shuttle", teamId: null, agentId: "a9", label: "Tom" },
+    { path: "/Users/me/projects/lantern-search", teamId: "t1", agentId: null, label: "Note search" },
+    { path: "/Users/me/projects/lantern", teamId: null, agentId: "a9", label: "Tom" },
   ];
   // The browser's own folder says nothing; the dev server's does.
-  const cwds = new Map<number, string | null>([[76099, "/"], [40703, "/Users/me/projects/space-shuttle-cosmology-lesson/space-app"], [40702, null]]);
+  const cwds = new Map<number, string | null>([[76099, "/"], [40703, "/Users/me/projects/lantern-search/notes-app"], [40702, null]]);
   assert.equal(attribute(lineage(procs, 76099), cwds, places)?.teamId, "t1");
   // A folder is in the deepest place containing it, and a sibling folder sharing a prefix is not inside.
-  assert.equal(placeFor("/Users/me/projects/space-shuttle/src", places)?.agentId, "a9");
-  assert.equal(placeFor("/Users/me/projects/space-shuttle-other", places), null);
+  assert.equal(placeFor("/Users/me/projects/lantern/src", places)?.agentId, "a9");
+  assert.equal(placeFor("/Users/me/projects/lantern-other", places), null);
   assert.equal(attribute([900, 40700], new Map([[900, "/tmp"]]), places), null);
   assert.deepEqual([...parseLsofCwds("p12\nfcwd\nn/a/b\np13\nfcwd\nn/c\n")], [[12, "/a/b"], [13, "/c"]]);
 });
@@ -151,7 +151,7 @@ function machine(ps: () => string, world: Pick<WorldState, "teams" | "agents">, 
     ps: async () => ps(),
     cwds: async (pids) => {
       lookedUp.push(pids);
-      return new Map(pids.map((pid) => [pid, pid === 40703 ? "/Users/me/projects/space-shuttle-cosmology-lesson/space-app" : "/"]));
+      return new Map(pids.map((pid) => [pid, pid === 40703 ? "/Users/me/projects/lantern-search/notes-app" : "/"]));
     },
     kill: (pid, signal) => {
       if (failKill) throw failKill;
@@ -165,7 +165,7 @@ function machine(ps: () => string, world: Pick<WorldState, "teams" | "agents">, 
 }
 
 const WORLD = {
-  teams: [{ id: "t1", name: "Cosmology lesson", purpose: "", handsTo: null, path: "/Users/me/projects/space-shuttle-cosmology-lesson", branch: null, standing: false, createdAt: "", status: "idle", blockedBy: [] }],
+  teams: [{ id: "t1", name: "Note search", purpose: "", handsTo: null, path: "/Users/me/projects/lantern-search", branch: null, standing: false, createdAt: "", status: "idle", blockedBy: [] }],
   agents: [],
 } as unknown as Pick<WorldState, "teams" | "agents">;
 

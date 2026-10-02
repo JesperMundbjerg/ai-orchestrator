@@ -116,14 +116,14 @@ export function deleteMergedBranch(repoRoot: string, branch: string): boolean {
   }
 }
 
-/** A project's worktree and branch, beside the main checkout: `space-shuttle-atoms-light` on `worktree-atoms-light`. */
+/** A project's worktree and branch, beside the main checkout: `lantern-search` on `worktree-search`. */
 export function placeFor(repoRoot: string, name: string): { slug: string; path: string; branch: string } | null {
   const slug = projectSlug(name);
   if (!slug) return null;
   return { slug, path: join(dirname(repoRoot), `${basename(repoRoot)}-${slug}`), branch: `worktree-${slug}` };
 }
 
-/** A project's name from its worktree's folder: `space-shuttle-atoms-light` → "Atoms light". */
+/** A project's name from its worktree's folder: `lantern-note-search` → "Note search". */
 export function nameFor(checkout: Checkout): string {
   const folder = basename(checkout.top);
   const rest = folder.startsWith(`${checkout.repoName}-`) ? folder.slice(checkout.repoName.length + 1) : folder;
@@ -133,8 +133,8 @@ export function nameFor(checkout: Checkout): string {
 
 /**
  * The main checkouts directly inside a folder: a subfolder whose `.git` is a directory. A linked
- * worktree (its `.git` is a file) is left out, so `space-shuttle-einstein` is not offered beside
- * `space-shuttle`. One level only, and no git process: a readdir and a stat per folder.
+ * worktree (its `.git` is a file) is left out, so `lantern-search` is not offered beside
+ * `lantern`. One level only, and no git process: a readdir and a stat per folder.
  */
 export function checkoutsIn(parent: string): Array<{ name: string; root: string; branch: string | null }> {
   let names: string[];

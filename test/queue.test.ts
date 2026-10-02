@@ -13,16 +13,16 @@ import { World, type AgentSource, type LiveAgent } from "../src/server/world.ts"
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, stdio: "ignore" });
 
-/** FysikLab's shape: a main checkout on `dev` with standing lane worktrees under .claude/worktrees, and its adapter. */
-function fysiklab(adapter: object = {
-  project: "fysiklab",
+/** A fictional notes app: main checkout on `dev`, standing lane worktrees, and an adapter. */
+function lantern(adapter: object = {
+  project: "lantern",
   lanes: [
     { name: "einstein", worktree: ".claude/worktrees/einstein", harness: "pi" },
     { name: "heisenberg", worktree: ".claude/worktrees/heisenberg", model: "openai-codex/gpt-6-astra" },
     { name: "mission-control", agent: "dispatch-mission-control", role: "router" },
   ],
 }) {
-  const root = join(realpathSync(mkdtempSync(join(tmpdir(), "queue-"))), "space-shuttle");
+  const root = join(realpathSync(mkdtempSync(join(tmpdir(), "queue-"))), "lantern");
   execFileSync("git", ["init", "-q", "-b", "dev", root]);
   git(root, "commit", "-q", "--allow-empty", "-m", "init");
   mkdirSync(join(root, ".claude/worktrees"), { recursive: true });
@@ -44,15 +44,15 @@ test("herdr's name for an agent is read from the end of its identity", () => {
 });
 
 test("a project's lanes are its adapter's names joined to the agents in the office", () => {
-  const { root, world, agent, setLive } = fysiklab();
+  const { root, world, agent, setLive } = lantern();
   const einstein = join(root, ".claude/worktrees/einstein");
   setLive([
     agent("p1", einstein, "working"),
     agent("p2", root, "idle", "dispatch-mission-control", "claude"),
     agent("p3", root, "idle", null, "claude"), // someone else in the main checkout is not Mission Control
   ]);
-  const queue = projectQueue(world.state(), "fysiklab");
-  assert.equal(queue.project, "fysiklab");
+  const queue = projectQueue(world.state(), "lantern");
+  assert.equal(queue.project, "lantern");
   assert.deepEqual(queue.counts, { waiting: 0, assigned: 0, working: 0, held: 0, fixed: 0 });
   assert.deepEqual(queue.held, []);
   const [e, h, mc] = queue.lanes;
@@ -67,15 +67,15 @@ test("a project's lanes are its adapter's names joined to the agents in the offi
 });
 
 test("a lane whose agent is stuck at a prompt says who, and one that stopped keeps its name", () => {
-  const { root, world, agent, setLive } = fysiklab();
+  const { root, world, agent, setLive } = lantern();
   const einstein = join(root, ".claude/worktrees/einstein");
   setLive([agent("p1", einstein, "blocked")]);
-  const stuck = projectQueue(world.state(), "fysiklab").lanes[0]!;
+  const stuck = projectQueue(world.state(), "lantern").lanes[0]!;
   assert.equal(stuck.state, "blocked");
   assert.match(stuck.why!, /is stuck at a prompt/);
   setLive([]);
   // The project's lead keeps a desk while offline, so the lane still names who it was.
-  const lane = projectQueue(world.state(), "fysiklab").lanes[0]!;
+  const lane = projectQueue(world.state(), "lantern").lanes[0]!;
   assert.equal(lane.state, "offline");
   assert.equal(lane.doing, null);
   assert.ok(lane.agentName);
@@ -83,7 +83,7 @@ test("a lane whose agent is stuck at a prompt says who, and one that stopped kee
 });
 
 test("a lane's branch is what git says for its worktree, even when its agent is on a standing team with no path", async () => {
-  const { root, db, world, agent, setLive } = fysiklab();
+  const { root, db, world, agent, setLive } = lantern();
   const einstein = join(root, ".claude/worktrees/einstein");
   const heisenberg = join(root, ".claude/worktrees/heisenberg");
   setLive([agent("p1", einstein, "working"), agent("p2", heisenberg, "idle")]);
@@ -93,29 +93,29 @@ test("a lane's branch is what git says for its worktree, even when its agent is 
   db.exec("DELETE FROM teams WHERE standing = 0"); // the projects first made for the worktrees
   const state = world.state();
   assert.deepEqual(state.teams.map((t) => t.path), [null], "no team stands at the lane's worktree to be found by");
-  assert.deepEqual(projectQueue(state, "fysiklab").lanes.slice(0, 2).map((l) => l.branch), ["worktree-einstein", "worktree-heisenberg"]);
+  assert.deepEqual(projectQueue(state, "lantern").lanes.slice(0, 2).map((l) => l.branch), ["worktree-einstein", "worktree-heisenberg"]);
   // Git is asked, not the branch a team was made with: a lane switched to another branch shows that one.
   git(heisenberg, "switch", "-q", "-c", "fix-heisenberg");
   setLive([agent("p1", einstein, "working"), agent("p2", join(heisenberg, "."), "idle")]);
-  assert.equal(projectQueue(world.state(), "fysiklab").lanes[1]!.branch, "fix-heisenberg");
+  assert.equal(projectQueue(world.state(), "lantern").lanes[1]!.branch, "fix-heisenberg");
 });
 
 test("an unknown project is a 404, and a broken adapter says what is wrong", () => {
-  const { root, world, agent, setLive } = fysiklab({ project: "fysiklab", lanes: "einstein" });
+  const { root, world, agent, setLive } = lantern({ project: "lantern", lanes: "einstein" });
   setLive([agent("p1", root, "idle")]);
   assert.throws(() => projectQueue(world.state(), "nope"), (e: Error & { status?: number }) => e.status === 404 && /no project "nope"/.test(e.message));
-  assert.throws(() => projectQueue(world.state(), "space-shuttle"), (e: Error & { status?: number }) => e.status === 422 && /lanes must be a list/.test(e.message));
+  assert.throws(() => projectQueue(world.state(), "lantern"), (e: Error & { status?: number }) => e.status === 422 && /lanes must be a list/.test(e.message));
 });
 
 test("GET /api/p/:project/queue answers the same over HTTP", async () => {
-  const { root, world, inbox, agent, setLive } = fysiklab();
+  const { root, world, inbox, agent, setLive } = lantern();
   setLive([agent("p1", join(root, ".claude/worktrees/einstein"), "idle")]);
   const port = 49_000 + Math.floor(Math.random() * 1000);
   const server = createInboxServer(inbox, null, { port, staticDir: null, world });
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
   try {
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    const ok = await fetch(`${base}/api/p/fysiklab/queue`);
+    const ok = await fetch(`${base}/api/p/lantern/queue`);
     assert.equal(ok.status, 200);
     assert.deepEqual((await ok.json()).lanes.map((l: { name: string; state: string }) => `${l.name}:${l.state}`), ["einstein:idle", "heisenberg:offline", "mission-control:offline"]);
     const missing = await fetch(`${base}/api/p/nope/queue`);
@@ -128,7 +128,7 @@ test("GET /api/p/:project/queue answers the same over HTTP", async () => {
 });
 
 test("inbox say <lane> reaches the agent behind a project's lane by the name its tools use", () => {
-  const { root, world, agent, setLive } = fysiklab();
+  const { root, world, agent, setLive } = lantern();
   const einstein = join(root, ".claude/worktrees/einstein");
   setLive([agent("p1", einstein, "idle"), agent("p2", root, "idle", "dispatch-mission-control", "claude")]);
   const office = world.state().agents;
@@ -138,12 +138,12 @@ test("inbox say <lane> reaches the agent behind a project's lane by the name its
   const toRouter = world.messages.say(lane!, { to: "mission-control", text: "done" });
   assert.deepEqual([toRouter.teamId, toRouter.deliveries.map((d) => d.agentId)], [null, [router!.id]], "a lane with no worktree, found by herdr's name");
   assert.throws(() => world.messages.say(router!, { to: "mission-control", text: "me?" }), /that is you/);
-  assert.throws(() => world.messages.say(router!, { to: "heisenberg", text: "hi" }), /heisenberg is a lane of fysiklab, but nobody runs in .*heisenberg/);
+  assert.throws(() => world.messages.say(router!, { to: "heisenberg", text: "hi" }), /heisenberg is a lane of lantern, but nobody runs in .*heisenberg/);
   assert.throws(() => world.messages.say(router!, { to: "galilei", text: "hi" }), /nobody called galilei in the office/);
 });
 
 test("an office name or team still wins over a lane with the same name", () => {
-  const { world, agent, setLive, root } = fysiklab({ project: "fysiklab", lanes: [{ name: "einstein", worktree: ".claude/worktrees/einstein" }] });
+  const { world, agent, setLive, root } = lantern({ project: "lantern", lanes: [{ name: "einstein", worktree: ".claude/worktrees/einstein" }] });
   setLive([agent("p1", join(root, ".claude/worktrees/einstein"), "idle"), agent("p2", root, "idle", null, "claude")]);
   const office = world.state().agents;
   const [lane, other] = ["p1", "p2"].map((p) => office.find((a) => a.paneId === p)!);
@@ -156,12 +156,12 @@ test("an office name or team still wins over a lane with the same name", () => {
 });
 
 test("a lane's agent can be the name a Pi session gave itself, matched exactly and never by folder", () => {
-  const { root, world, agent, setLive } = fysiklab();
-  // FysikLab's Mission Control: Pi in the main checkout, which herdr knows by no name; Claude Code works there too.
+  const { root, world, agent, setLive } = lantern();
+  // Lantern's router: Pi in the main checkout, which herdr knows by no name; Claude Code works there too.
   setLive([agent("p1", root, "idle"), agent("p2", root, "working", null, "claude")]);
   const office = () => world.state().agents;
   const [pi, claude] = ["p1", "p2"].map((p) => office().find((a) => a.paneId === p)!);
-  const lane = () => projectQueue(world.state(), "fysiklab").lanes.find((l) => l.name === "mission-control")!;
+  const lane = () => projectQueue(world.state(), "lantern").lanes.find((l) => l.name === "mission-control")!;
 
   // Before Pi says its name nobody stands behind the lane: not the Claude session working in the same folder.
   assert.deepEqual({ agent: lane().agentId, state: lane().state }, { agent: null, state: "offline" });

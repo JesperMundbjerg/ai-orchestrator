@@ -21,7 +21,7 @@ function setup() {
 
 const walk = (item: Partial<SubmitInput["item"]>): SubmitInput => ({
   session: { harness: "claude", sessionId: "uuid-sim", cwd: "/repo/sim" },
-  project: { name: "fysiklab", root: "/repo" },
+  project: { name: "lantern", root: "/repo" },
   item: { type: "try", title: "Isotope simulation: drag hint", key: "hint", ...item },
 });
 

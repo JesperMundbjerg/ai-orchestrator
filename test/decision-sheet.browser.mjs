@@ -18,7 +18,7 @@ await new Promise((resolve) => socket.close(resolve));
 assert.notEqual(port, 4870);
 const url = `http://localhost:${port}`;
 const office = spawn(process.execPath, ["src/server/main.ts"], {
-  env: { ...process.env, HOME: home, INBOX_DATA_DIR: join(home, "data"), INBOX_PORT: String(port), HERDR_BIN_PATH: join(home, "no-herdr"), HERDR_SOCKET_PATH: join(home, "no.sock") },
+  env: { ...process.env, HOME: home, INBOX_DATA_DIR: join(home, "data"), INBOX_PORT: String(port), HERDR_BIN_PATH: "/usr/bin/false", HERDR_SOCKET_PATH: "/nonexistent", INBOX_CODEX_ACCOUNT_POLLING: "0", INBOX_PRESENCE_DISCOVERY: "0", INBOX_BROWSER_CLEANUP: "0" },
   stdio: "ignore",
 });
 let browser;
@@ -33,10 +33,10 @@ try {
     assert.ok(response.ok, await response.clone().text());
     return response.json();
   };
-  const options = [{ id: "a", label: "Overlay", consequence: "Keep the stage wide; cover the slider." }, { id: "b", label: "Docked", consequence: "Narrow the stage; keep every control visible." }];
+  const options = [{ id: "a", label: "Overlay", consequence: "Keep the editor wide; cover part of the note." }, { id: "b", label: "Docked", consequence: "Narrow the editor; keep every control visible." }];
   const submissions = [
-    { title: "Where should the tutor sit?", lead: "Clara", project: "Fysik Lab", options, recommendation: "Docked, because students need to see the slider." },
-    { title: "Should sound start off?", lead: "Clara", project: "Fysik Lab", options: [{ id: "a", label: "Sound off", consequence: "Students choose when to listen." }, { id: "b", label: "Sound on", consequence: "Narration starts immediately." }] },
+    { title: "Where should the search panel sit?", lead: "Clara", project: "Lantern", options, recommendation: "Docked, because writers need to see the note." },
+    { title: "Should sound start off?", lead: "Clara", project: "Lantern", options: [{ id: "a", label: "Sound off", consequence: "Writers choose when to listen." }, { id: "b", label: "Sound on", consequence: "Narration starts immediately." }] },
     { title: "How should uncertain receipts be handled?", lead: "Agnes", project: "Accounts", options },
     { title: "What should the video closing line say?", lead: "Theo", project: "Motion video", options: [] },
   ].map(({ lead, project, ...item }, index) => ({
@@ -110,7 +110,7 @@ try {
   await page.getByRole("button", { name: /All repositories/ }).waitFor();
   // Non-decision items still open in their original detail views, from the sheet.
   const milestone = await post("/api/agent/items", { ...submissions[0], item: { key: "cut", type: "milestone", title: "The launch cut is ready", context: "Checked both languages." } });
-  const preview = await post("/api/agent/items", { ...submissions[0], item: { key: "preview", type: "try", title: "Try the new lesson", check: "Move the slider.", preview: { url, viewport: "desktop" } } });
+  const preview = await post("/api/agent/items", { ...submissions[0], item: { key: "preview", type: "try", title: "Try the new notebook", check: "Search for a note.", preview: { url, viewport: "desktop" } } });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("button", { name: /The launch cut is ready/ }).click();
   await page.getByRole("button", { name: "Accept milestone", exact: true }).waitFor();

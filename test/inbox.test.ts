@@ -22,7 +22,7 @@ const other: SessionInput = { harness: "claude", sessionId: "uuid-other", cwd: "
 function decision(extra: Partial<SubmitInput["item"]> = {}): SubmitInput {
   return {
     session: voice,
-    project: { name: "fysiklab", root: "/repo" },
+    project: { name: "lantern", root: "/repo" },
     task: { title: "Voice teacher" },
     item: { type: "decide", title: "When should the teacher stop talking?", options: ["Immediately: cut mid-word", "At the sentence end: smoother"], ...extra },
   };

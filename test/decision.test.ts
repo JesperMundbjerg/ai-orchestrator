@@ -25,7 +25,7 @@ test("a decision over the soft caps gets a hint for each, and the inbox still ta
   const inbox = new Inbox(openDatabase(":memory:"), join(mkdtempSync(join(tmpdir(), "inbox-test-")), "files"), noPresence);
   const result = inbox.submit({
     session: { harness: "pi", sessionId: "/sessions/long.jsonl", cwd: "/repo" },
-    project: { name: "fysiklab", root: "/repo" },
+    project: { name: "lantern", root: "/repo" },
     item: { type: "decide", title, request, options: ["Yes: ship it", "No: wait"] },
   });
   const item = inbox.state().items.find((i) => i.id === result.itemId);

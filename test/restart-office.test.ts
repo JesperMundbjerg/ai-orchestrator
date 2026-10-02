@@ -30,7 +30,7 @@ test("a setting nobody has is named, rather than guessed", () => {
 
 test("only node running src/server/main.ts is taken for the office", () => {
   assert.equal(isOffice("node src/server/main.ts"), true);
-  assert.equal(isOffice("/opt/homebrew/bin/node --watch /Users/me/ai-orchestrator/src/server/main.ts"), true);
+  assert.equal(isOffice("/opt/homebrew/bin/node --watch /Users/me/review-inbox/src/server/main.ts"), true);
   assert.equal(isOffice("node node_modules/vite/bin/vite.js"), false);
   assert.equal(isOffice("python3 -m http.server 4870"), false);
   assert.equal(isOffice("node src/server/main.ts.bak"), false);
