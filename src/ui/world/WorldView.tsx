@@ -159,9 +159,7 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
           <button className="primary small" onClick={() => setAnswering(entries[0]!.item.id)}>
             {queue.length} in line · answer the first
           </button>
-        ) : (
-          <span className="muted">Nobody is waiting for you</span>
-        )}
+        ) : null}
       </header>
 
       <TeamsPanel

@@ -262,8 +262,9 @@ function benches(kit: Kit, garden: Garden) {
 
 /** A small garden sign by the clearing, turned to you: how many are waiting for you. */
 function WaitingSign({ garden, queueLength }: { garden: Garden; queueLength: number }) {
+  if (queueLength === 0) return null;
   const lines: Line[] = [
-    { text: queueLength ? `${queueLength} waiting for you` : "Nobody is waiting", size: 50, color: queueLength ? "#ffc658" : "#ffffff", weight: 800 },
+    { text: `${queueLength} waiting for you`, size: 50, color: "#ffc658", weight: 800 },
   ];
   const x = 0.8;
   const z = garden.area.maxZ - 0.4;

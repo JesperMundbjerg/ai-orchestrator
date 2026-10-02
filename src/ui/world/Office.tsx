@@ -84,7 +84,7 @@ export function YourDesk({ queueLength }: { queueLength: number }) {
     () => textTexture(
       [
         { text: "Your desk", size: 64, color: "#ffffff", weight: 800 },
-        { text: queueLength ? `${queueLength} waiting in line` : "Nobody is waiting", size: 38, color: queueLength ? "#ffc658" : "#b8c2cc", weight: 600 },
+        ...(queueLength ? [{ text: `${queueLength} waiting in line`, size: 38, color: "#ffc658", weight: 600 }] : []),
       ],
       { width: 640, height: 220, background: "#1d2530", radius: 24 },
     ),
