@@ -23,6 +23,7 @@ import { Adapters } from "./adapter.ts";
 import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
 import { SessionFiles } from "./models.ts";
+import type { Usage } from "./usage.ts";
 import { EFFORT_TIMEOUT_MS, Efforts } from "./effort.ts";
 import type { EffortReport } from "../shared/types.ts";
 import { whyStuck } from "../shared/stuck.ts";
@@ -124,16 +125,22 @@ const FIRST_MATE = [
 
 /**
  * Claude Code settings, for this session only, that run the inbox hook in a lead the office
- * starts, so the founder's answers reach it at its turn boundaries. Nothing is written to anyone's
- * settings. Left out when the settings Claude Code reads there already run it: two hooks would hand
- * each reply over twice.
+ * starts, so the founder's answers reach it at its turn boundaries, and the inbox statusline, which
+ * tells the office the plan's 5-hour and weekly use. Nothing is written to anyone's settings. The
+ * hook is left out when the settings Claude Code reads there already run it (two hooks would hand
+ * each reply over twice), and the statusline when they set one (the founder's own stays).
  */
 export function hookSettings(cwd: string): string[] {
   const config = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
-  const files = [join(config, "settings.json"), join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")];
-  if (files.some((f) => existsSync(f) && /\bhook claude\b/.test(readFileSync(f, "utf8")))) return [];
-  const hook = [{ hooks: [{ type: "command", command: `INBOX_URL=${quote(serviceUrl())} ${quote(INBOX_BIN)} hook claude` }] }];
-  return ["--settings", JSON.stringify({ hooks: { SessionStart: hook, UserPromptSubmit: hook, Stop: hook } })];
+  const files = [join(config, "settings.json"), join(cwd, ".claude", "settings.json"), join(cwd, ".claude", "settings.local.json")]
+    .flatMap((f) => (existsSync(f) ? [readFileSync(f, "utf8")] : []));
+  const inbox = `INBOX_URL=${quote(serviceUrl())} ${quote(INBOX_BIN)}`;
+  const hook = [{ hooks: [{ type: "command", command: `${inbox} hook claude` }] }];
+  const settings = {
+    ...(files.some((text) => /\bhook claude\b/.test(text)) ? {} : { hooks: { SessionStart: hook, UserPromptSubmit: hook, Stop: hook } }),
+    ...(files.some((text) => /"statusLine"/.test(text)) ? {} : { statusLine: { type: "command", command: `${inbox} statusline` } }),
+  };
+  return Object.keys(settings).length ? ["--settings", JSON.stringify(settings)] : [];
 }
 
 export function agentId(identity: string): string {
@@ -164,6 +171,8 @@ export class World {
   hiddenPanes: () => ReadonlySet<string> = () => NONE;
   /** Agents being switched to another harness, and what each can be switched to; switch.ts sets it. */
   switches: { view(agents: WorldAgent[]): SwitchesView } | null = null;
+  /** The founder's subscription use; the service sets it. */
+  usage: Usage | null = null;
 
   constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date(), files = new SessionFiles()) {
     this.db = db;
@@ -234,8 +243,10 @@ export class World {
       agents.push({ identity: str(row.identity), harness, cwd, status: "offline", title: null, paneId: null, taskIds: [], sessionId: null });
     }
 
+    const sessions = new Map<string, string | null>();
     const world = agents.map(({ sessionId, ...a }): WorldAgent => {
       const row = rows.get(a.identity)!;
+      sessions.set(str(row.id), sessionId);
       return {
         ...a,
         id: str(row.id),
@@ -264,6 +275,7 @@ export class World {
       repositories: this.repositories(world, teams),
       herdr: this.source?.available() ? "connected" : "unavailable",
       ...(this.switches ? { switches: this.switches.view(world) } : {}),
+      ...(this.usage ? { usage: this.usage.view(world.map((a) => ({ ...a, sessionId: sessions.get(a.id) ?? null })), teams) } : {}),
     };
   }
 

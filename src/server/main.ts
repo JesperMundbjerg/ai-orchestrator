@@ -11,6 +11,7 @@ import { CrewTreeStore } from "./crewtree.ts";
 import { Inbox } from "./inbox.ts";
 import { Machine } from "./machine.ts";
 import { Switches } from "./switch.ts";
+import { Usage } from "./usage.ts";
 import { World } from "./world.ts";
 
 export const DEFAULT_PORT = 4870;
@@ -23,6 +24,10 @@ const inbox = new Inbox(db, join(dir, "files"), herdr);
 const world = new World(db, herdr, () => inbox.state());
 world.crew = new CrewTreeStore(dir);
 world.crew.seed();
+// The plan's limits and each agent's use; near Claude's 5-hour limit the crew guide gives Pi under Mix.
+const usage = new Usage(db);
+world.usage = usage;
+world.crew.pause = () => usage.crewPause();
 world.messages.replies = inbox;
 world.messages.uploads = inbox.uploads;
 herdr.queuedPanes = () => world.messages.queuedPanes(world.state());
@@ -40,12 +45,13 @@ const dist = fileURLToPath(new URL("../../dist", import.meta.url));
 
 herdr.start();
 machine.start();
+usage.start();
 void switches.resume();
 setInterval(() => {
   inbox.wakeDue();
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();
 
-createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches }).listen(port, "127.0.0.1", () => {
+createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches, usage }).listen(port, "127.0.0.1", () => {
   console.log(`Review inbox on http://localhost:${port}  (data: ${dir})`);
 });

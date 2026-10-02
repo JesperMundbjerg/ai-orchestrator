@@ -63,6 +63,7 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox ack DELIVERY_ID           confirm you have received an answer
   inbox withdraw KEY | inbox resolve KEY
   inbox hook claude               Claude Code hook (Stop / UserPromptSubmit / SessionStart)
+  inbox statusline                Claude Code statusline: tells the office the plan's 5-hour and weekly use, prints them
 
   The office (a project per worktree, run by its first mate; standing teams like Mission Control):
   inbox team                      who you are, your project, your part in it, what waits for you
@@ -259,6 +260,30 @@ async function claudeHook(): Promise<void> {
   for (const r of pending) await acknowledge(s, r.deliveryId).catch(() => {});
 }
 
+/**
+ * Claude Code statusline: Claude Code hands it the plan's limits from the headers of the replies it
+ * already gets, so the office learns them without asking anyone. Prints a short line; a statusline
+ * must never fail, so an office that is not running is only left out.
+ */
+async function statusline(): Promise<void> {
+  type Window = { used_percentage?: number; resets_at?: number | string };
+  let input: { model?: { display_name?: string }; rate_limits?: { five_hour?: Window | null; seven_day?: Window | null } | null } = {};
+  try {
+    input = JSON.parse(readFileSync(0, "utf8") || "{}");
+  } catch {
+    // nothing readable: print what can be printed
+  }
+  const limits = [
+    ["five_hour", "5h", input.rate_limits?.five_hour],
+    ["week", "week", input.rate_limits?.seven_day],
+  ].flatMap(([window, short, w]) => {
+    const used = (w as Window | null | undefined)?.used_percentage;
+    return typeof used === "number" ? [{ window: window as string, short: short as string, usedPercent: used, resetsAt: (w as Window).resets_at ?? null }] : [];
+  });
+  if (limits.length) await call("/api/agent/usage", { provider: "claude", limits: limits.map(({ short, ...l }) => l) }, 1000).catch(() => {});
+  console.log([input.model?.display_name, ...limits.map((l) => `${l.short} ${Math.round(l.usedPercent)}%`)].filter(Boolean).join(" · "));
+}
+
 async function main(argv: string[]): Promise<void> {
   const parsed = parseArgs({ args: argv, allowPositionals: true, options: OPTIONS, tokens: true });
   flags = parsed.values;
@@ -318,6 +343,8 @@ async function main(argv: string[]): Promise<void> {
     case "hook":
       if (arg !== "claude") throw new Error("supported hooks: claude");
       return claudeHook();
+    case "statusline":
+      return statusline();
     default:
       throw new Error(`unknown command "${command}"\n\n${HELP}`);
   }

@@ -9,6 +9,7 @@ import { acknowledge, call, fetchReplies, formatReply } from "../../src/shared/a
 import { lengthHints, SOFT_CAPS } from "../../src/shared/decision.ts";
 import { modelLabel } from "../../src/shared/models.ts";
 import { projectRoot } from "../../src/shared/project.ts";
+import { codexHeaderReadings } from "../../src/shared/usage.ts";
 import type { ActivityEvent, EffortReport, ItemType, SessionInput, SubmitResult } from "../../src/shared/types.ts";
 
 // The slice of Pi's extension API this uses (the full types ship with @earendil-works/pi-coding-agent).
@@ -33,6 +34,7 @@ interface PiApi {
   on(event: "model_select", handler: (event: { model: PiModel }, ctx: PiContext) => void): void;
   on(event: "session_info_changed", handler: (event: { name: string | undefined }, ctx: PiContext) => void): void;
   on(event: "tool_execution_end", handler: (event: { toolName: string; toolCallId: string }, ctx: PiContext) => void): void;
+  on(event: "after_provider_response", handler: (event: { status: number; headers: Record<string, string> }, ctx: PiContext) => void): void;
   registerTool(tool: {
     name: string;
     label: string;
@@ -227,6 +229,16 @@ export default function reviewInbox(pi: PiApi): void {
   pi.on("model_select", (e, ctx) => report(ctx, ...modelEvent(e.model), { kind: "effort", effort: effortReport(ctx) }));
   pi.on("thinking_level_select", (_e, ctx) => report(ctx, { kind: "effort", effort: effortReport(ctx) }));
   pi.on("session_info_changed", (e, ctx) => report(ctx, ...nameEvent(e.name)));
+
+  // Codex says the plan's limits in each reply's headers; the office keeps the latest for its meters.
+  let lastLimits = "";
+  pi.on("after_provider_response", (e) => {
+    const limits = codexHeaderReadings(e.headers ?? {});
+    const key = JSON.stringify(limits.map((l) => [l.usedPercent, l.windowMinutes, l.resetsAt]));
+    if (!limits.length || key === lastLimits) return;
+    lastLimits = key;
+    call("/api/agent/usage", { provider: "codex", limits }, 1500).catch(() => { lastLimits = ""; });
+  });
 
   pi.on("session_shutdown", () => {
     generation++;

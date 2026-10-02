@@ -15,6 +15,7 @@ import { UPLOAD_BODY_LIMIT } from "./uploads.ts";
 import type { Herdr } from "./herdr.ts";
 import type { Machine } from "./machine.ts";
 import type { Switches } from "./switch.ts";
+import type { LimitReading, Usage } from "./usage.ts";
 import type { World } from "./world.ts";
 
 const TYPES: Record<string, string> = {
@@ -26,7 +27,7 @@ const TYPES: Record<string, string> = {
 
 type Handler = (req: IncomingMessage, body: any, params: string[]) => unknown | Promise<unknown>;
 
-export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches }): Server {
+export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage }): Server {
   const clients = new Set<ServerResponse>();
   const broadcast = (reason: string) => {
     for (const res of clients) res.write(`event: changed\ndata: ${JSON.stringify({ reason })}\n\n`);
@@ -45,8 +46,9 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
       if (reason !== "activity") react();
     };
   }
-  // Browsers coming, going or needing a look change only what is drawn.
+  // Browsers coming, going or needing a look change only what is drawn; so does a usage meter.
   if (opts.machine) opts.machine.onChange = () => broadcast("machine");
+  if (opts.usage) opts.usage.onChange = () => broadcast("usage");
   if (herdr) {
     herdr.onChange = () => {
       broadcast("presence");
@@ -121,6 +123,14 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/agent\/crew$/, () => ({ text: needWorld().crewTree().text() })],
     ["POST", /^\/api\/agent\/say$/, (_r, b) => needWorld().messages.say(needWorld().resolve(b.session), b)],
     ["POST", /^\/api\/agent\/events$/, (_r, b: { session: SessionInput; events?: ActivityEvent[] }) => needWorld().report(b.session, Array.isArray(b.events) ? b.events : [])],
+    // A plan's limits as a harness was told them in a reply's headers (Claude Code's statusline, Pi's Codex replies).
+    ["POST", /^\/api\/agent\/usage$/, (_r, b: { provider?: unknown; limits?: unknown }) => {
+      if (!opts.usage) throw new InboxError(404, "this service does not keep usage");
+      if (b.provider !== "claude" && b.provider !== "codex") throw new InboxError(400, "provider must be claude or codex");
+      if (!Array.isArray(b.limits)) throw new InboxError(400, "limits must be a list");
+      const limits = (b.limits as unknown[]).filter((l): l is LimitReading => !!l && typeof l === "object" && typeof (l as LimitReading).usedPercent === "number");
+      return { changed: opts.usage.record(b.provider, limits, b.provider === "claude" ? "statusline" : "pi-headers") };
+    }],
     ["POST", /^\/api\/agent\/effort$/, (_r, b) => needWorld().pollEffort(b.session, b.report)],
     // Claude Code's HTTP hook posts its hook input as is. Always answers {}: no decision, never in the way.
     ["POST", /^\/api\/hooks\/claude$/, (_r, b: Record<string, unknown>) => {

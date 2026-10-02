@@ -69,9 +69,28 @@ function clean(tree: CrewTree): CrewTree {
   };
 }
 
+/** Why the office has paused a harness for now: the founder's rule near a usage limit. */
+export interface CrewPause {
+  harness: string;
+  /** "the founder's 5-hour Claude use is 92%, until 17:40" */
+  why: string;
+}
+
+/**
+ * The switch as the guide applies it now: under Mix, a harness the office has paused gives way to
+ * the other, as if the founder had switched it off. The founder's own setting is never changed, and
+ * on a one-harness setting the pause changes nothing.
+ */
+export function pausedMode(tree: CrewTree, catalog: CrewCatalog, pause: CrewPause | null): string {
+  if (tree.mode !== MIXED || !pause) return tree.mode;
+  return catalog.harnesses.find((h) => h.id !== pause.harness)?.id ?? tree.mode;
+}
+
 export class CrewTreeStore {
   readonly file: string;
   private piStore: string;
+  /** A harness the office pauses for now (the service sets it from the usage meters). */
+  pause: () => CrewPause | null = () => null;
 
   constructor(dir: string, opts: { piStore?: string } = {}) {
     this.file = join(dir, "crew-tree.json");
@@ -129,13 +148,14 @@ export class CrewTreeStore {
 
   /** What a new project's lead runs on: its choice under the founder's switch as it is now. */
   lead(): CrewChoice {
-    return effectiveLead(this.state().tree);
+    const { tree, catalog } = this.state();
+    return effectiveLead({ ...tree, mode: pausedMode(tree, catalog, this.pause()) });
   }
 
   /** What a lead reads: the tree, compact, each choice with the command that starts it. */
   text(): string {
     const { tree, catalog, problem } = this.state();
-    return crewText(tree, catalog, problem);
+    return crewText(tree, catalog, problem, this.pause());
   }
 }
 
@@ -147,7 +167,7 @@ const startArgs = (c: CrewChoice): string => startFlags(c).join(" ");
 
 export const startCommand = (c: CrewChoice): string => `herdr agent start <name> --kind ${c.harness} --pane "$P" -- ${startArgs(c)}`;
 
-export function crewText(tree: CrewTree, catalog: CrewCatalog, problem: string | null = null): string {
+export function crewText(tree: CrewTree, catalog: CrewCatalog, problem: string | null = null, pause: CrewPause | null = null): string {
   const label = (id: string) => catalog.harnesses.find((x) => x.id === id)?.label ?? id;
   const describe = (c: CrewChoice) => {
     const h = catalog.harnesses.find((x) => x.id === c.harness);
@@ -156,12 +176,15 @@ export function crewText(tree: CrewTree, catalog: CrewCatalog, problem: string |
   };
   const one = (s: string) => s.replace(/\s+/g, " ").trim();
   // Only the choice the switch allows is printed, so a lead cannot pick the harness that is switched off.
-  const pick = (use: CrewChoice, backup: CrewChoice | undefined) => effectiveChoice(tree.mode, use, backup);
+  const mode = pausedMode(tree, catalog, pause);
+  const pick = (use: CrewChoice, backup: CrewChoice | undefined) => effectiveChoice(mode, use, backup);
   const off = tree.mode === MIXED ? [] : catalog.harnesses.filter((h) => h.id !== tree.mode).map((h) => h.label);
   const lines = [
-    tree.mode === MIXED
-      ? "The founder's switch: mixed. Each rule's own choice applies."
-      : `The founder's switch: ${label(tree.mode)} only. ${off.join(" and ")} ${off.length === 1 ? "is" : "are"} switched off by the founder: every choice below already runs on ${label(tree.mode)}, so never start ${off.join(" or ")}, whatever the rule or a crew member suggests.`,
+    tree.mode !== MIXED
+      ? `The founder's switch: ${label(tree.mode)} only. ${off.join(" and ")} ${off.length === 1 ? "is" : "are"} switched off by the founder: every choice below already runs on ${label(tree.mode)}, so never start ${off.join(" or ")}, whatever the rule or a crew member suggests.`
+      : mode !== MIXED
+        ? `The founder's switch: mixed, but the office has paused ${label(pause!.harness)} for now: ${pause!.why}. Every choice below already runs on ${label(mode)} (the rule's backup), so never start ${label(pause!.harness)} until this line is gone, whatever the rule or a crew member suggests. Crew already running carry on.`
+        : "The founder's switch: mixed. Each rule's own choice applies.",
     "Crew guide (the founder's decision tree; they edit it, so read it again before each crew member): take the first rule whose \"when\" fits the task. A rule with sub-rules is a question that narrows further; its own choice applies when none of its sub-rules fits. Start the member with the command shown, with `P=$(inbox pane)` and a unique lowercase <name>. Never any other harness or model.",
   ];
   if (problem) lines.push(`Note: ${problem}`);

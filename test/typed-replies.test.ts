@@ -188,7 +188,7 @@ test("one thing at a time per agent: the founder's answer goes before a waiting 
   assert.match(typed[1]!.text, /How is the fit going\?/);
 });
 
-test("a lead the office starts runs the inbox hook through --settings, unless its settings already do", () => {
+test("a lead the office starts runs the inbox hook and statusline through --settings, unless its settings already do", () => {
   const config = mkdtempSync(join(tmpdir(), "claude-config-"));
   const worktree = mkdtempSync(join(tmpdir(), "lead-worktree-"));
   const before = process.env.CLAUDE_CONFIG_DIR;
@@ -200,12 +200,17 @@ test("a lead the office starts runs the inbox hook through --settings, unless it
     assert.deepEqual(Object.keys(settings.hooks).sort(), ["SessionStart", "Stop", "UserPromptSubmit"]);
     assert.match(settings.hooks.Stop![0]!.hooks[0]!.command, /^INBOX_URL='http:\/\/127\.0\.0\.1:\d+' '\/.*\/bin\/inbox' hook claude$/);
 
+    assert.match((settings as unknown as { statusLine: { command: string } }).statusLine.command, /^INBOX_URL='http:\/\/127\.0\.0\.1:\d+' '\/.*\/bin\/inbox' statusline$/, "it tells the office the plan's limits");
+    const only = (args: string[]) => (args.length ? Object.keys(JSON.parse(args[1]!) as object) : []);
+
     writeFileSync(join(config, "settings.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "inbox hook claude" }] }] } }));
-    assert.deepEqual(hookSettings(worktree), [], "a second hook would hand each reply over twice");
+    assert.deepEqual(only(hookSettings(worktree)), ["statusLine"], "a second hook would hand each reply over twice");
     writeFileSync(join(config, "settings.json"), "{}");
     mkdirSync(join(worktree, ".claude"));
     writeFileSync(join(worktree, ".claude", "settings.local.json"), '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/x/bin/inbox hook claude"}]}]}}');
-    assert.deepEqual(hookSettings(worktree), []);
+    assert.deepEqual(only(hookSettings(worktree)), ["statusLine"]);
+    writeFileSync(join(config, "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "my-line" } }));
+    assert.deepEqual(hookSettings(worktree), [], "the founder's own statusline is never replaced");
   } finally {
     if (before === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = before;
