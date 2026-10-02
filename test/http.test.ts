@@ -92,6 +92,10 @@ test("an agent finds its project and talks to another agent by name", async () =
     assert.equal((await again.json()).id, (await said.json()).id, "a retried request sends nothing twice");
     const unknown = await post("/api/agent/team", { session: { harness: "pi", sessionId: "nope" } });
     assert.equal(unknown.status, 404);
+    // `inbox pane` tells the office which team a new pane is for; someone on no team has none to tell.
+    const pane = await post("/api/agent/pane", { session: { harness: "pi", sessionId: "s1", paneId: "p1" }, paneId: "p9" });
+    assert.deepEqual(await pane.json(), { recorded: false });
+    assert.equal((await post("/api/agent/pane", { session: { harness: "pi", sessionId: "nope" }, paneId: "p9" })).status, 404);
     for (let i = 0; i < 50 && !typed.length; i++) await new Promise((r) => setTimeout(r, 10));
     assert.equal(typed.length, 1, "the message is typed as soon as it is sent, since the other agent is free");
     assert.match(typed[0]!, /^p2: \[Message from/);

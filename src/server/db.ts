@@ -139,6 +139,14 @@ CREATE TABLE IF NOT EXISTS team_worktrees (
   added_at TEXT NOT NULL
 );
 
+-- Panes an agent on a team opened with inbox pane for its crew: whoever first runs in one and is
+-- placed nowhere joins that team as a member. The record goes once used, or when it is stale.
+CREATE TABLE IF NOT EXISTS pane_teams (
+  pane_id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  opened_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS world_agents (
   id TEXT PRIMARY KEY,
   identity TEXT NOT NULL UNIQUE,

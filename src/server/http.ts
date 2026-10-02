@@ -117,6 +117,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/agent\/replies$/, (_r, b: { session: SessionInput; mode?: "live" | "boundary" | "pull" }) => inbox.pendingReplies(b.session, b.mode ?? "pull")],
     // Agent protocol: the office
     ["POST", /^\/api\/agent\/team$/, (_r, b: { session: SessionInput }) => needWorld().brief(b.session)],
+    ["POST", /^\/api\/agent\/pane$/, (_r, b) => needWorld().paneOpened(b.session, b.paneId)],
     ["POST", /^\/api\/agent\/crew$/, () => ({ text: needWorld().crewTree().text() })],
     ["POST", /^\/api\/agent\/say$/, (_r, b) => needWorld().messages.say(needWorld().resolve(b.session), b)],
     ["POST", /^\/api\/agent\/events$/, (_r, b: { session: SessionInput; events?: ActivityEvent[] }) => needWorld().report(b.session, Array.isArray(b.events) ? b.events : [])],

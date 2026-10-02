@@ -73,6 +73,9 @@ const str = (v: unknown): string => (v == null ? "" : String(v));
 
 const NONE: ReadonlySet<string> = new Set();
 
+/** How long a pane opened for a team keeps its record while nothing runs there. */
+const PANE_RECORD_LIFE_MS = 24 * 60 * 60 * 1000;
+
 /** How long the folders beside known repositories are trusted before they are read again. */
 const SCAN_CACHE_MS = 3000;
 
@@ -203,6 +206,8 @@ export class World {
       Object.assign(row, { team_id: team.id, role: "member" });
     }
 
+    this.placeInOpenedPanes(agents, rows, teams);
+
     const seen = new Set(agents.map((a) => a.identity));
     this.seatLeads(agents, rows, seen);
     // A standing team keeps its members' desks, and a project its lead's, while they are neither running nor holding a task.
@@ -244,6 +249,42 @@ export class World {
       herdr: this.source?.available() ? "connected" : "unavailable",
       ...(this.switches ? { switches: this.switches.view(world) } : {}),
     };
+  }
+
+  /**
+   * An agent placed nowhere that runs in a pane someone on a team opened for its crew (`inbox pane`) joins that
+   * team as a member, never its lead. This comes after the worktree rules, so an agent in a project's own worktree
+   * or one of its lanes stays where they put it, and the checkout it works in becomes neither a lane nor a project.
+   * A record goes once an agent runs in its pane, or a day after the pane was opened.
+   */
+  private placeInOpenedPanes(agents: Joined[], rows: Map<string, Row>, teams: Team[]): void {
+    const cutoff = new Date(this.now().getTime() - PANE_RECORD_LIFE_MS).toISOString();
+    this.db.prepare("DELETE FROM pane_teams WHERE opened_at < ?").run(cutoff);
+    const opened = new Map((this.db.prepare("SELECT pane_id, team_id FROM pane_teams").all() as Row[]).map((r) => [str(r.pane_id), str(r.team_id)]));
+    if (!opened.size) return;
+    for (const a of agents) {
+      if (!a.paneId || a.status === "offline" || !opened.has(a.paneId)) continue;
+      const row = rows.get(a.identity)!;
+      const teamId = opened.get(a.paneId)!;
+      if (!row.team_id && teams.some((t) => t.id === teamId)) {
+        this.db.prepare("UPDATE world_agents SET team_id = ?, role = 'member' WHERE id = ?").run(teamId, str(row.id));
+        Object.assign(row, { team_id: teamId, role: "member" });
+      }
+      this.db.prepare("DELETE FROM pane_teams WHERE pane_id = ?").run(a.paneId);
+    }
+  }
+
+  /**
+   * `inbox pane` run by `session` opened `paneId`: whoever first runs there and is placed nowhere joins the caller's
+   * team. Nothing is recorded for a caller on no team.
+   */
+  paneOpened(session: SessionInput, paneId: unknown): { recorded: boolean } {
+    if (typeof paneId !== "string" || !paneId) throw new InboxError(400, "paneOpened needs the new pane's id");
+    const team = this.resolve(session).teamId;
+    if (!team) return { recorded: false };
+    this.db.prepare("INSERT OR REPLACE INTO pane_teams (pane_id, team_id, opened_at) VALUES (?, ?, ?)").run(paneId, team, this.now().toISOString());
+    this.onChange("world");
+    return { recorded: true };
   }
 
   /**

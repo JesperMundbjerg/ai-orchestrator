@@ -309,8 +309,12 @@ async function main(argv: string[]): Promise<void> {
     }
     case "switch":
       return switchAgents(arg);
-    case "pane":
-      return console.log(await openPane(resolve(flags.cwd ?? process.cwd())));
+    case "pane": {
+      const paneId = await openPane(resolve(flags.cwd ?? process.cwd()));
+      // The agent that starts there joins the caller's team even outside its worktree. Opening the pane has worked, so this only warns.
+      await call("/api/agent/pane", { session: session(), paneId }).catch((err: Error) => console.error(`inbox: the pane is open, but the office was not told whose crew it is for: ${err.message}`));
+      return console.log(paneId);
+    }
     case "hook":
       if (arg !== "claude") throw new Error("supported hooks: claude");
       return claudeHook();
