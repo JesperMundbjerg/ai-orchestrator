@@ -169,7 +169,7 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
           <button className="ghost small" type="button" aria-expanded={controlsOpen} aria-controls="world-controls-popover" onClick={() => setControlsOpen((open) => !open)}>Controls</button>
           {controlsOpen ? (
             <div className="world-controls-popover" id="world-controls-popover" role="dialog" aria-label="Office controls">
-              <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · <kbd>Shift</kbd> run · drag to turn · scroll or <kbd>+</kbd><kbd>−</kbd> to zoom · click someone
+              <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · <kbd>Q</kbd><kbd>E</kbd> turn · <kbd>Shift</kbd> run faster · drag to turn · scroll or <kbd>+</kbd><kbd>−</kbd> to zoom · click someone
             </div>
           ) : null}
         </div>

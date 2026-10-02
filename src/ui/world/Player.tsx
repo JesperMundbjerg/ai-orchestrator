@@ -28,8 +28,8 @@ export interface FlyTarget {
 const pitchAt = (lift: number) => LEVEL_PITCH + lift * (OVERVIEW_PITCH - LEVEL_PITCH);
 
 /**
- * You, in first person: WASD or the arrow keys walk, Shift runs, dragging turns the view
- * and scrolling (or pinching, or + and -) zooms. Zooming out past the widest view lifts you
+ * You, in first person: WASD or the arrow keys walk, Q/E or the left/right arrows turn, Shift runs,
+ * dragging turns the view, and scrolling (or pinching, or + and -) zooms. Zooming out past the widest view lifts you
  * up and tilts the view down, for an overview of the building; zooming in
  * brings you back down first. The pointer stays free, so a click still reaches the person
  * under it.
@@ -147,9 +147,10 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
     const step = Math.min(dt, 0.1);
     const forward = Number(k.has("KeyW") || k.has("ArrowUp")) - Number(k.has("KeyS") || k.has("ArrowDown"));
     const strafe = Number(k.has("KeyD")) - Number(k.has("KeyA"));
-    const turn = Number(k.has("ArrowRight")) - Number(k.has("ArrowLeft"));
+    const turn = Number(k.has("ArrowRight") || k.has("KeyE")) - Number(k.has("ArrowLeft") || k.has("KeyQ"));
     if (forward || strafe || turn) flight.current = null;
-    v.yaw += turn * 1.8 * step;
+    const turnSpeed = k.has("ShiftLeft") || k.has("ShiftRight") ? 2.7 : 1.8;
+    v.yaw += turn * turnSpeed * step;
 
     const f = flight.current;
     if (f) {
