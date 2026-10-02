@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openPane } from "./pane.ts";
+import { pipelineCommand, deliveryBinding } from "./pipeline.ts";
 import { installHooksCommand } from "./pipeline-hooks.ts";
 import { acknowledge, call, fetchReplies, formatReply, get } from "../shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
@@ -77,6 +78,17 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox handoff "Title" --summary "what was done, where, how to check it" [--to TEAM]
   inbox handoff --work ID --summary "what changed"      hand it over again after changes
   inbox review ID accept|changes --notes "…"            your team's verdict on work handed to it
+      protected handoff/review: --run RUN [--round N --candidate SHA --node INTERNAL_REVIEW]
+      milestone/try --run RUN binds the exact run candidate, not the lead's checkout
+  inbox pipeline start [--base BASE --candidate SHA --checkout DIR --work ID --work-round N]
+  inbox pipeline branch RUN --select field=value (repeat) --notes "why" [--candidate SHA]
+  inbox pipeline assign RUN NODE AGENT
+  inbox pipeline report RUN NODE --report FILE --notes "result"
+  inbox pipeline done RUN NODE [--report FILE --check "command" --exit-code 0] --notes "disposition"
+  inbox pipeline status [RUN]
+  inbox pipeline gate --operation push|pr|merge|land|publish --repo PATH --ref REF --candidate SHA --run RUN [--round N]
+      --json FILE supplies an operation payload (including structured evidence); --revision N is an optimistic lock
+      --client-id ID makes a lost-response retry replay-safe. Gate is preflight, not a publication receipt.
   inbox switch NAME [--to claude|pi] [--model M] [--effort E]
                                   move an agent to the other harness: it writes a handoff, a new session takes over its
                                   name, team, role and messages, and its old pane closes; the model follows the crew guide
@@ -113,6 +125,11 @@ const OPTIONS = {
   json: { type: "string" },
   next: { type: "string" },
   summary: { type: "string" },
+  run: { type: "string" }, base: { type: "string" }, candidate: { type: "string" }, checkout: { type: "string" },
+  revision: { type: "string" }, round: { type: "string" }, select: { type: "string", multiple: true },
+  report: { type: "string", multiple: true }, "exit-code": { type: "string" }, "work-round": { type: "string" },
+  "client-id": { type: "string" }, operation: { type: "string" }, repo: { type: "string" }, ref: { type: "string" },
+  delivery: { type: "string" }, node: { type: "string" },
   to: { type: "string" },
   work: { type: "string" },
   cwd: { type: "string" },
@@ -174,6 +191,7 @@ async function submit(type: ItemType, title: string | undefined): Promise<void> 
     session: s,
     project: projectRoot(s.cwd ?? process.cwd()),
     task: flags.task ? { title: flags.task } : undefined,
+    ...(flags.run ? { pipeline: { runId: flags.run } } : {}),
     item,
   });
   for (const hint of lengthHints(item)) console.error(`inbox: hint: ${hint}`);
@@ -321,6 +339,8 @@ async function main(argv: string[]): Promise<void> {
       const saved = await call<{ story: string }>("/api/agent/story", { session: session(), text: arg });
       return console.log(`Office story saved: ${saved.story}`);
     }
+    case "pipeline":
+      return pipelineCommand(parsed.positionals.slice(1), flags, session());
     case "team":
       return console.log((await call<TeamBrief>("/api/agent/team", { session: session() })).text);
     case "crew":
@@ -333,13 +353,15 @@ async function main(argv: string[]): Promise<void> {
       return console.log(`Sent to ${to}: it is typed into their terminal once they are free (${message.deliveries.length} ${message.deliveries.length === 1 ? "agent" : "agents"}).`);
     }
     case "handoff": {
-      const { work } = await call<{ work: Work }>("/api/agent/handoff", { session: session(), title: arg, summary: flags.summary, to: flags.to, work: flags.work, clientId: randomUUID() });
+      const s = session(); const pipeline = await deliveryBinding(s, flags.run, "handoff", flags);
+      const { work } = await call<{ work: Work }>("/api/agent/handoff", { session: s, title: arg, summary: flags.summary, to: flags.to, work: flags.work, clientId: flags["client-id"] ?? randomUUID(), pipeline });
       return console.log(`Handed over as work ${work.id} (round ${work.round}). The verdict arrives as a message; \`inbox team\` shows where it stands.`);
     }
     case "review": {
       const verdict = parsed.positionals[2];
       if (!arg || !verdict) throw new Error('inbox review needs the work id and a verdict: inbox review ID accept|changes --notes "…"');
-      const { work } = await call<{ work: Work }>("/api/agent/review", { session: session(), work: arg, verdict, notes: flags.notes });
+      const s = session(); const pipeline = await deliveryBinding(s, flags.run, "review", flags);
+      const { work } = await call<{ work: Work }>("/api/agent/review", { session: s, work: arg, verdict, notes: flags.notes, pipeline, round: flags["work-round"] ? Number(flags["work-round"]) : undefined, clientId: flags["client-id"] ?? randomUUID() });
       return console.log(`Work ${work.id} is ${work.state === "accepted" ? "accepted" : "sent back with your notes"}; whoever handed it over is told.`);
     }
     case "switch":

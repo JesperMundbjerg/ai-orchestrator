@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { migratePipelines } from "./pipelines/migration.ts";
 
 export function dataDir(): string {
   return process.env.INBOX_DATA_DIR ?? join(homedir(), ".review-inbox");
@@ -334,7 +335,7 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
 }, (db) => {
   // Snapshot counts and first-image lookup must search one item's revision, not scan all evidence.
   db.exec("CREATE INDEX IF NOT EXISTS evidence_item_revision_kind ON evidence (item_id, revision, kind)");
-}];
+}, migratePipelines];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) {

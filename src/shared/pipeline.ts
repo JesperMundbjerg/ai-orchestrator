@@ -2,6 +2,11 @@
 // provenance labels, not instructions to branch on a harness or execute project code.
 import type { SessionInput } from "./types.ts";
 
+// Kept here so adapter and editor share one optional, vendor-neutral graph contract.
+declare module "./types.ts" {
+  interface ProjectAdapter { pipeline?: PipelineGraph | null }
+}
+
 export type PipelineValue = string | boolean;
 export interface PipelineField {
   id: string;
@@ -135,6 +140,8 @@ export interface PipelineEvidence extends PipelineEvidenceInput {
   round: number;
   createdAt: string;
   sha256?: string;
+  /** Browser-safe URL for the copied, hash-bound evidence; never link storedPath. */
+  fileUrl?: string;
   /** Stored attachment path outside worktrees; the original path is not read again. */
   storedPath?: string;
 }
@@ -169,6 +176,10 @@ export interface PipelineRun {
 export interface PipelineGateInput {
   runId: string;
   delivery: "handoff" | "review" | "dev";
+  /** Repo-local hooks use these for protected Git delivery (release is not a v1 boundary). */
+  operation?: "push" | "pr" | "merge" | "land" | "publish";
+  repo?: string;
+  ref?: string;
   /** Exact run round and immutable commit expected by the caller. */
   round: number;
   candidate: string;

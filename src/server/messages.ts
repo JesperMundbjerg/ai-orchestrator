@@ -23,6 +23,8 @@ import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { AgentSource } from "./world.ts";
 import { AgentStartingError } from "./agent-starting.ts";
 import { requestFingerprint } from "./db.ts";
+import type { PipelineGateInput } from "../shared/pipeline.ts";
+import type { Pipelines } from "./pipelines/store.ts";
 
 type Replay = { clientId?: string; scope: string; fingerprint: string };
 const replayRequest = (operation: string, caller: string | null, target: string | null, input: unknown, clientId?: string): Replay =>
@@ -63,6 +65,8 @@ export class Messages {
   replies: Pick<Inbox, "typeable" | "claimTyping" | "typed"> | null = null;
   /** Where images you attach are stored, when the service wires them in; without it a message carries none. */
   uploads: Uploads | null = null;
+  /** Domain gate, wired by World. Checks and delivery ledger share this store's transaction. */
+  pipelines: Pipelines | null = null;
   /** Agents being switched to another harness: what waits for them is held until the new session has its brief. */
   held: () => ReadonlySet<string> = () => new Set();
   /** Agents a reply is being typed into; like a message being sent, it keeps them busy. */
@@ -220,9 +224,9 @@ export class Messages {
    * Finished work passed to a team to review: the team named, or the one the sender's team hands
    * its work to. Handing over the same work again after changes starts its next round.
    */
-  handoff(from: WorldAgent, input: { title?: string; summary?: string; to?: string; work?: string; clientId?: string }): { work: Work; message: Message } {
+  handoff(from: WorldAgent, input: { title?: string; summary?: string; to?: string; work?: string; clientId?: string; pipeline?: PipelineGateInput }): { work: Work; message: Message } {
     const replay = replayRequest("handoff", from.id, input.work ?? input.to?.trim().toLowerCase() ?? "@handsTo", {
-      title: input.title?.trim() ?? "", summary: input.summary?.trim() ?? "", to: input.to?.trim().toLowerCase() ?? null, work: input.work ?? null,
+      title: input.title?.trim() ?? "", summary: input.summary?.trim() ?? "", to: input.to?.trim().toLowerCase() ?? null, work: input.work ?? null, pipeline: input.pipeline ?? null,
     }, input.clientId);
     const repeat = this.byClientId(replay);
     if (repeat) return { work: this.replayWork(repeat), message: repeat };
@@ -245,6 +249,7 @@ export class Messages {
     // Resolve every fixed recipient before writing any work, then commit the entire use case.
     const to = recipients(state, team, from.id);
     return this.atomic(() => {
+      const pipelineRun = this.pipelines?.requireDelivery(from, "handoff", input.pipeline);
       const at = this.now().toISOString();
       const id = earlier?.id ?? randomUUID().slice(0, 8);
       if (earlier) {
@@ -255,16 +260,17 @@ export class Messages {
       }
       const work = this.workById(id);
       const message = this.store("handoff", from.id, team.id, summary, id, to, replay);
+      if (pipelineRun) this.pipelines!.delivered(pipelineRun, work.id, work.round, Boolean(input.pipeline?.nodeId));
       return { work, message };
     });
   }
 
   /** The reviewing team's verdict, sent back to whoever handed the work over. */
-  review(by: WorldAgent, input: { work?: string; verdict?: string; notes?: string; clientId?: string; round?: number }): { work: Work; message: Message } {
+  review(by: WorldAgent, input: { work?: string; verdict?: string; notes?: string; clientId?: string; round?: number; pipeline?: PipelineGateInput }): { work: Work; message: Message } {
     const work = this.workById(input.work ?? "");
     const round = input.round ?? work.round;
     if (!Number.isSafeInteger(round) || round < 1) throw new InboxError(400, "review round must be a positive integer");
-    const replay = replayRequest("review", by.id, work.id, { verdict: input.verdict ?? null, notes: input.notes?.trim() ?? "", round }, input.clientId);
+    const replay = replayRequest("review", by.id, work.id, { verdict: input.verdict ?? null, notes: input.notes?.trim() ?? "", round, pipeline: input.pipeline ?? null }, input.clientId);
     const repeat = this.byClientId(replay);
     if (repeat) return { work: this.replayWork(repeat), message: repeat };
     if (by.teamId !== work.toTeamId) throw new InboxError(403, "only the team the work was handed to can review it");
@@ -284,9 +290,12 @@ export class Messages {
       throw new InboxError(409, `this work is already ${work.state === "accepted" ? "accepted" : "sent back"}`);
     }
     return this.atomic(() => {
+      const gate = input.pipeline ? { ...input.pipeline, workId: work.id, workRound: round } : undefined;
+      const pipelineRun = verdict === "accepted" ? this.pipelines?.requireDelivery(by, "review", gate) : null;
       this.db.prepare("UPDATE work SET state = ?, reviewer_id = ?, notes = ?, updated_at = ? WHERE id = ?").run(verdict, by.id, notes, this.now().toISOString(), work.id);
       const said = verdict === "accepted" ? "Accepted." : "Changes requested.";
       const message = this.store("review", by.id, null, notes ? `${said}\n\n${notes}` : said, work.id, [work.fromAgentId], replay);
+      if (pipelineRun) this.pipelines!.delivered(pipelineRun, work.id, round);
       return { work: this.workById(work.id), message };
     });
   }

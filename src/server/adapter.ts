@@ -7,10 +7,11 @@ import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { HARNESSES, type AdapterLane, type Harness, type ProjectAdapter } from "../shared/types.ts";
 import { projectSlug } from "../shared/slug.ts";
+import { validateGraph } from "./pipelines/model.ts";
 
 export const ADAPTER_FILE = "orchestrator.json";
 
-const KNOWN = ["project", "integrationBranch", "preview", "comments", "decisions", "checks", "reviewers", "land", "lanes"];
+const KNOWN = ["project", "integrationBranch", "preview", "comments", "decisions", "checks", "reviewers", "land", "lanes", "pipeline"];
 
 type Json = Record<string, unknown>;
 
@@ -104,6 +105,11 @@ export function parseAdapter(text: string, repoRoot: string, repoName: string): 
     });
   }
 
+  let pipeline;
+  if (top.pipeline !== undefined && top.pipeline !== null) {
+    try { pipeline = validateGraph(top.pipeline); }
+    catch (err) { c.errors.push(err instanceof Error ? err.message : "invalid pipeline"); }
+  }
   const adapter: ProjectAdapter = {
     project,
     integrationBranch: c.string(top.integrationBranch, "integrationBranch"),
@@ -119,6 +125,7 @@ export function parseAdapter(text: string, repoRoot: string, repoName: string): 
     reviewers: reviewers && { perSlice: c.strings(reviewers.perSlice, "reviewers.perSlice"), cap: c.string(reviewers.cap, "reviewers.cap") },
     land: land && { mode: c.string(land.mode, "land.mode"), publish: c.string(land.publish, "land.publish"), setup: c.string(land.setup, "land.setup") },
     lanes,
+    ...(top.pipeline !== undefined ? { pipeline: pipeline ?? null } : {}),
   };
   if (c.errors.length) return { adapter: null, problems: c.errors.map((e) => `${ADAPTER_FILE}: ${e}`) };
   return { adapter, problems: ignored };

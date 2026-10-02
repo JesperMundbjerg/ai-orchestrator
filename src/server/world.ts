@@ -24,6 +24,7 @@ import { startFlags, type CrewTreeStore } from "./crewtree.ts";
 import { Adapters } from "./adapter.ts";
 import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
+import { Pipelines } from "./pipelines/store.ts";
 import { SessionFiles } from "./models.ts";
 import { allocateName, NAMES } from "./names.ts";
 import type { Usage } from "./usage.ts";
@@ -154,6 +155,7 @@ export class World {
   /** The last status seen per team, so a team is announced when it becomes blocked, not while it stays so. */
   private announced: Map<string, TeamStatus> | null = null;
   readonly messages: Messages;
+  readonly pipelines: Pipelines;
   /** The founder's crew tree; the service sets it. Leads read it, so an edit reaches them without a restart. */
   crew: CrewTreeStore | null = null;
   private activity = new Activity();
@@ -180,6 +182,8 @@ export class World {
     this.now = now;
     this.files = files;
     this.messages = new Messages(db, source, () => this.state(), now, (redrawOnly) => this.onChange(redrawOnly ? "activity" : "world"));
+    this.pipelines = new Pipelines(db, () => this.state(), { now, changed: () => this.onChange("world") });
+    this.messages.pipelines = this.pipelines;
   }
 
   state(): WorldState {
@@ -587,6 +591,7 @@ export class World {
         ? me.role === "lead" ? "You lead it: divide the work among your crew and keep them moving." : `${lead ? lead.name : "Its lead"} leads it and divides the work; take yours from them.`
         : me.role === "lead" ? `Your office name is ${me.name}. ${FIRST_MATE}` : `${lead ? lead.name : "Its first mate"} is its first mate: take your work from them and report back with \`inbox say ${lead?.name ?? "NAME"} "…"\`, not to the founder.`;
       lines.push(part);
+      lines.push(this.pipelines.brief(team.id, me.id));
       if (me.role === "lead" && !team.standing && this.crew) lines.push(this.crew.text());
       if (team.purpose) lines.push(`Purpose: ${team.purpose}`);
       lines.push(`On it: ${state.agents.filter((a) => a.teamId === team.id && a.id !== me.id).map(status).join("; ") || "just you"}.`);
@@ -751,6 +756,7 @@ export class World {
       purpose ? `The project: ${purpose}` : "",
       FIRST_MATE,
       STORY_INTRO,
+      this.pipelines.brief(team.id),
       '`inbox team` shows your office name, your crew and what waits for you; `inbox say NAME "text"` reaches anyone in the office.',
       next ? `When the work is done, hand it to ${next} for review: inbox handoff "title" --summary "what was done, where, how to check it".` : "",
     ].filter(Boolean).join(" ");

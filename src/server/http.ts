@@ -22,6 +22,7 @@ import type { Machine } from "./machine.ts";
 import type { Switches } from "./switch.ts";
 import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
+import { pipelineSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema } from "./pipelines/protocol.ts";
 
 const TYPES: Record<string, string> = {
   ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
@@ -66,8 +67,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   }
 
   // A page that will not show inline is said at submit time, not discovered by the founder.
-  const submitWithWarnings = (req: IncomingMessage, body: SubmitInput) => {
-    const result = inbox.submit(body);
+  const submitWithWarnings = (req: IncomingMessage, body: SubmitInput & { pipeline?: { runId: string } }) => {
+    const actor = body.pipeline ? needWorld().resolve(body.session) : null;
+    const snapshot = actor && body.pipeline ? needWorld().pipelines.presentation(actor, body.pipeline.runId) : null;
+    const result = inbox.submit(snapshot ? { ...body, item: { ...body.item, context: [body.item.context, snapshot].filter(Boolean).join("\n\n") } } : body);
+    if (actor && body.pipeline) needWorld().pipelines.bindItem(actor, body.pipeline.runId, result.itemId, result.revision);
     const origin = `http://${req.headers.host ?? "localhost"}`;
     const warnings = inbox.item(result.itemId).pages.map((p) => inlineProblem(p.url, origin)).filter((w): w is string => w !== null);
     return warnings.length ? { ...result, warnings } : result;
@@ -106,6 +110,17 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("GET", /^\/api\/world\/teams\/([\w-]+)\/worktrees$/, emptySchema, (_r, _b, [id]) => needWorld().worktrees(id!)),
     route("POST", /^\/api\/world\/teams\/([\w-]+)\/worktrees$/, validation.worktreeSchema, (_r, b, [id]) => needWorld().addWorktree(id!, b.path)),
     route("POST", /^\/api\/world\/teams\/([\w-]+)\/worktrees\/remove$/, validation.worktreeSchema, (_r, b, [id]) => needWorld().removeWorktree(id!, b.path)),
+    route("GET", /^\/api\/world\/teams\/([\w-]+)\/pipeline\/palette$/, emptySchema, (_r, _b, [id]) => needWorld().pipelines.palette(id!)),
+    route("GET", /^\/api\/world\/teams\/([\w-]+)\/pipeline$/, emptySchema, (_r, _b, [id]) => needWorld().pipelines.teamView(id!)),
+    route("PUT", /^\/api\/world\/teams\/([\w-]+)\/pipeline$/, overrideSchema, (_r, b, [id]) => needWorld().pipelines.saveOverride(id!, b)),
+    route("PUT", /^\/api\/world\/teams\/([\w-]+)\/pipeline\/layout$/, layoutSchema, (_r, b, [id]) => needWorld().pipelines.saveLayout(id!, b)),
+    route("POST", /^\/api\/agent\/pipeline\/start$/, pipelineSchemas.start, (_r, b) => needWorld().pipelines.start(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/pipeline\/branch$/, pipelineSchemas.branch, (_r, b) => needWorld().pipelines.branch(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/pipeline\/assign$/, pipelineSchemas.assign, (_r, b) => needWorld().pipelines.assign(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/pipeline\/report$/, pipelineSchemas.report, (_r, b) => needWorld().pipelines.report(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/pipeline\/done$/, pipelineSchemas.done, (_r, b) => needWorld().pipelines.done(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/pipeline\/status$/, pipelineSchemas.status, (_r, b) => needWorld().pipelines.status(needWorld().resolve(b.session), b.runId)),
+    route("POST", /^\/api\/agent\/pipeline\/gate$/, pipelineSchemas.gate, (_r, b) => needWorld().pipelines.gate(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/world\/teams\/([\w-]+)\/merge$/, validation.mergeSchema, (_r, b, [id]) => needWorld().mergeTeam(id!, b.into)),
     route("POST", /^\/api\/world\/all-leads\/messages$/, validation.allLeadsSchema, (_r, b) => needWorld().messages.tellAllLeads(b)),
     route("POST", /^\/api\/world\/teams\/([\w-]+)\/messages$/, validation.messageSchema, (_r, b, [id]) => needWorld().messages.instruct(id!, b)),
@@ -126,7 +141,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("GET", /^\/api\/machine$/, emptySchema, () => needMachine().state()),
     route("POST", /^\/api\/machine\/browsers\/(\d+)\/close$/, emptySchema, (_r, _b, [pid]) => needMachine().close(Number(pid))),
     // Agent protocol
-    route("POST", /^\/api\/agent\/items$/, protocol.submit.request, (r, b) => submitWithWarnings(r, b)),
+    route("POST", /^\/api\/agent\/items$/, pipelineSubmitSchema, (r, b) => submitWithWarnings(r, b)),
     route("POST", /^\/api\/agent\/activity$/, protocol.activity.request, (_r, b) => inbox.activity(b)),
     route("POST", /^\/api\/agent\/replies$/, protocol.replies.request, (_r, b) => inbox.pendingReplies(b.session, b.mode ?? "pull")),
     // Agent protocol: the office
@@ -151,8 +166,8 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
       }
       return {};
     }),
-    route("POST", /^\/api\/agent\/handoff$/, protocol.handoff.request, (_r, b) => needWorld().messages.handoff(needWorld().resolve(b.session), b)),
-    route("POST", /^\/api\/agent\/review$/, protocol.review.request, (_r, b) => needWorld().messages.review(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/handoff$/, deliveryHandoffSchema, (_r, b) => needWorld().messages.handoff(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/review$/, deliveryReviewSchema, (_r, b) => needWorld().messages.review(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/ack$/, protocol.acknowledge.request, (_r, b) => inbox.acknowledge(b.session, b.deliveryId, b.error)),
     route("POST", /^\/api\/agent\/withdraw$/, protocol.withdraw.request, (_r, b) => inbox.closeItem(b.session, b.item, "withdrawn")),
     route("POST", /^\/api\/agent\/resolve$/, protocol.resolve.request, (_r, b) => inbox.closeItem(b.session, b.item, "resolved")),
@@ -189,6 +204,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
       const method = req.method ?? "GET";
       const allowed = new Set(routes.filter(([, pattern]) => pattern.test(url.pathname)).map(([m]) => m));
       if (url.pathname === "/api/events") allowed.add("GET");
+      if (/^\/api\/pipeline\/evidence\/([\w-]+)$/.test(url.pathname)) { allowed.add("GET"); allowed.add("HEAD"); }
       if (/^\/files\/([\w-]+)$/.test(url.pathname)) { allowed.add("GET"); allowed.add("HEAD"); }
       if (/^\/uploads\/([\w.-]+)$/.test(url.pathname)) allowed.add("GET");
       if (!allowed.size && opts.staticDir && !url.pathname.startsWith("/api/")) allowed.add("GET");
@@ -219,6 +235,13 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
         const found = inbox.evidenceFile(file[1]!);
         if (!found || !existsSync(found.path)) throw new InboxError(404, "no such attachment");
         return sendEvidence(req, res, found.path, TYPES[extname(found.path).toLowerCase()] ?? "application/octet-stream");
+      }
+
+      const pipelineFile = url.pathname.match(/^\/api\/pipeline\/evidence\/([\w-]+)$/);
+      if (pipelineFile && (method === "GET" || method === "HEAD")) {
+        const path = needWorld().pipelines.evidenceFile(pipelineFile[1]!);
+        if (!existsSync(path)) throw new InboxError(404, "no pipeline attachment");
+        return sendEvidence(req, res, path, TYPES[extname(path).toLowerCase()] ?? "application/octet-stream");
       }
 
       const upload = url.pathname.match(/^\/uploads\/([\w.-]+)$/);

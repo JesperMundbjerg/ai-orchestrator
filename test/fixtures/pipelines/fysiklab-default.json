@@ -1,0 +1,2446 @@
+{
+  "pipeline": {
+    "version": 1,
+    "id": "fysiklab-dev-v1",
+    "label": "FysikLab — lead-owned dev delivery",
+    "entry": "plan",
+    "fields": [
+      {
+        "id": "kind",
+        "label": "Primary work kind",
+        "type": "enum",
+        "options": [
+          "framework",
+          "new-lesson",
+          "existing-lesson",
+          "bug-fix",
+          "docs-only"
+        ]
+      },
+      {
+        "id": "target",
+        "label": "New content target",
+        "type": "enum",
+        "options": [
+          "new-route",
+          "new-chapter",
+          "new-step"
+        ]
+      },
+      {
+        "id": "format",
+        "label": "Content format",
+        "type": "enum",
+        "options": [
+          "lesson",
+          "interactive-lab"
+        ]
+      },
+      {
+        "id": "writtenSpec",
+        "label": "Written step spec already banked?",
+        "type": "boolean"
+      },
+      {
+        "id": "coreSim",
+        "label": "Manifest core: no Danish namespace?",
+        "type": "boolean"
+      },
+      {
+        "id": "chapterCritics",
+        "label": "Explicitly named chapter design critics",
+        "type": "enum",
+        "options": [
+          "none",
+          "curious",
+          "ux",
+          "director",
+          "curious-ux",
+          "curious-director",
+          "ux-director",
+          "all"
+        ]
+      },
+      {
+        "id": "stepCritics",
+        "label": "Explicitly named step design critics",
+        "type": "enum",
+        "options": [
+          "none",
+          "curious",
+          "ux",
+          "director",
+          "curious-ux",
+          "curious-director",
+          "ux-director",
+          "all"
+        ]
+      },
+      {
+        "id": "labCritics",
+        "label": "Explicitly named lab design critics",
+        "type": "enum",
+        "options": [
+          "none",
+          "curious",
+          "ux",
+          "director",
+          "curious-ux",
+          "curious-director",
+          "ux-director",
+          "all"
+        ]
+      },
+      {
+        "id": "dispatched",
+        "label": "Dispatched fix-comments slice?",
+        "type": "boolean"
+      },
+      {
+        "id": "glb",
+        "label": "Runtime GLB integration?",
+        "type": "boolean"
+      },
+      {
+        "id": "camera",
+        "label": "Lesson camera records changed?",
+        "type": "boolean"
+      },
+      {
+        "id": "structural",
+        "label": "Additional architecture scope not already covered?",
+        "type": "boolean"
+      },
+      {
+        "id": "scientific",
+        "label": "Scientific scope not already covered?",
+        "type": "boolean"
+      },
+      {
+        "id": "danish",
+        "label": "Danish changed outside prescribed chapter review?",
+        "type": "boolean"
+      },
+      {
+        "id": "sharedComments",
+        "label": "Shared comment diff review requested?",
+        "type": "boolean"
+      },
+      {
+        "id": "legal",
+        "label": "Assets/licences/privacy/dependencies changed?",
+        "type": "boolean"
+      },
+      {
+        "id": "metadata",
+        "label": "New route or metadata changed?",
+        "type": "boolean"
+      },
+      {
+        "id": "voice",
+        "label": "Offline voice/script regression needed?",
+        "type": "boolean"
+      },
+      {
+        "id": "frameAudit",
+        "label": "Frame critic explicitly requested beyond authoring skill?",
+        "type": "boolean"
+      },
+      {
+        "id": "finishedAudit",
+        "label": "Final-checks explicitly requested?",
+        "type": "boolean"
+      },
+      {
+        "id": "visible",
+        "label": "Final user-visible change?",
+        "type": "boolean"
+      },
+      {
+        "id": "showRequested",
+        "label": "Presentation requested beyond new content?",
+        "type": "boolean"
+      },
+      {
+        "id": "approvalRequired",
+        "label": "Founder acceptance explicitly required?",
+        "type": "boolean"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "plan",
+        "label": "First mate plans bounded wave",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Own scope/base/queue ids, flags, source versions, instruction citations, task boundaries and crew assignments. Read AGENTS.md and the current charter. No intermediary routing agent."
+      },
+      {
+        "id": "kind",
+        "label": "Kind of work?",
+        "kind": "condition",
+        "field": "kind",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "framework",
+        "label": "Framework implementation and focused regressions",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Assigned crew names the contract/invariant, eliminates the replaced path, updates callers and verifies the scoped regression."
+      },
+      {
+        "id": "frameworkArchitecture",
+        "label": "Required framework architecture review",
+        "kind": "step",
+        "source": "agent:.claude/agents/architecture-reviewer.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Always required for the framework branch. One scoped report; first mate dispositions findings. Do not repeat through the generic risk flag for the same scope."
+      },
+      {
+        "id": "modify",
+        "label": "Modify owned lesson/lab and synchronize render truth",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Use lesson_sim.md or interactive_lab.md; same-pass spec/locales/records changes. No automatic new-chapter roster."
+      },
+      {
+        "id": "bug",
+        "label": "Fix-comments charter and owned slice",
+        "kind": "step",
+        "source": "command:.claude/commands/fix-comments.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Read docs/fix-comments-charter.md. Record ids/reproduction, repair scope and architecture/physics risks. Ordinary dispatched slices never add taste/retro/other audit agents."
+      },
+      {
+        "id": "docs",
+        "label": "Documentation change: verify claims, headers and links",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Non-executable documentation only; scientific claims still require the scientific flag. Workflow resources are not docs-only."
+      },
+      {
+        "id": "newTarget",
+        "label": "What is new?",
+        "kind": "condition",
+        "field": "target",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "newSim",
+        "label": "New-sim scaffold: route, manifest, locales and compiling shell",
+        "kind": "step",
+        "source": "skill:.claude/skills/new-sim/SKILL.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "format",
+        "label": "Lesson or interactiveLab?",
+        "kind": "condition",
+        "field": "format",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "reuseChapter",
+        "label": "Chapter reuse hunt before minting drawables",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Read new-chapter step 1. Per-subject reuse/extend/mint inventory and reason, existing APIs/call sites. No unchecked skill-ran receipt."
+      },
+      {
+        "id": "reuseArchitecture",
+        "label": "Architecture reviews reuse inventory before build",
+        "kind": "step",
+        "source": "agent:.claude/agents/architecture-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "lab",
+        "label": "Implement interactive lab against interactive_lab.md",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Pure SI physics split, standard shell, vars/guide/URL state and focused tests. No imaginary lab-implementer agent."
+      },
+      {
+        "id": "chapter",
+        "label": "New-chapter implementation and registered spec fidelity",
+        "kind": "step",
+        "source": "skill:.claude/skills/new-chapter/SKILL.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Build specified steps/records/locales and registration; mandatory checks then frames then the prescribed physics/frame/Danish outputs below. Lead schedules them."
+      },
+      {
+        "id": "newStep",
+        "label": "New-step goal, Known/Assumed and ordered beat/spec design",
+        "kind": "step",
+        "source": "skill:.claude/skills/new-step/SKILL.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Write goal and spec before code. Definitions before use, controls predict/measure, baseline/final lesson-doctor warnings. Named critics only when requested."
+      },
+      {
+        "id": "implementStep",
+        "label": "Implement banked step and reuse hunt",
+        "kind": "step",
+        "source": "skill:.claude/skills/implement-step/SKILL.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Spec citation, graphic/interaction diff, remove placeholder leftovers, synchronized spec and named desktop/phone captures. Do not reopen banked intent with unsolicited taste critics."
+      },
+      {
+        "id": "writtenSpec",
+        "label": "Written step spec exists?",
+        "kind": "condition",
+        "field": "writtenSpec",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "chapterCritics",
+        "label": "Only the founder-named design critics",
+        "kind": "condition",
+        "field": "chapterCritics",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "chapterCritics-curious",
+        "label": "Named curious critic on pre-code design",
+        "kind": "step",
+        "source": "agent:.claude/agents/curious-learner-critic.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Attach exact task/founder instruction, goal/beat/staging material, report and lead design disposition. Not an automatic taste roster."
+      },
+      {
+        "id": "chapterCritics-ux",
+        "label": "Named ux critic on pre-code design",
+        "kind": "step",
+        "source": "agent:.claude/agents/ux-critic.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Attach exact task/founder instruction, goal/beat/staging material, report and lead design disposition. Not an automatic taste roster."
+      },
+      {
+        "id": "chapterCritics-director",
+        "label": "Named director critic on pre-code design",
+        "kind": "step",
+        "source": "agent:.claude/agents/chapter-director.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Attach exact task/founder instruction, goal/beat/staging material, report and lead design disposition. Not an automatic taste roster."
+      },
+      {
+        "id": "stepCritics",
+        "label": "Only the founder-named design critics",
+        "kind": "condition",
+        "field": "stepCritics",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "stepCritics-curious",
+        "label": "Named curious critic on pre-code design",
+        "kind": "step",
+        "source": "agent:.claude/agents/curious-learner-critic.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Attach exact task/founder instruction, goal/beat/staging material, report and lead design disposition. Not an automatic taste roster."
+      },
+      {
+        "id": "stepCritics-ux",
+        "label": "Named ux critic on pre-code design",
+        "kind": "step",
+        "source": "agent:.claude/agents/ux-critic.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Attach exact task/founder instruction, goal/beat/staging material, report and lead design disposition. Not an automatic taste roster."
+      },
+      {
+        "id": "stepCritics-director",
+        "label": "Named director critic on pre-code design",
+        "kind": "step",
+        "source": "agent:.claude/agents/chapter-director.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Attach exact task/founder instruction, goal/beat/staging material, report and lead design disposition. Not an automatic taste roster."
+      },
+      {
+        "id": "labCritics",
+        "label": "Only the founder-named design critics",
+        "kind": "condition",
+        "field": "labCritics",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "labCritics-curious",
+        "label": "Named curious critic on pre-code design",
+        "kind": "step",
+        "source": "agent:.claude/agents/curious-learner-critic.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Attach exact task/founder instruction, goal/beat/staging material, report and lead design disposition. Not an automatic taste roster."
+      },
+      {
+        "id": "labCritics-ux",
+        "label": "Named ux critic on pre-code design",
+        "kind": "step",
+        "source": "agent:.claude/agents/ux-critic.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Attach exact task/founder instruction, goal/beat/staging material, report and lead design disposition. Not an automatic taste roster."
+      },
+      {
+        "id": "labCritics-director",
+        "label": "Named director critic on pre-code design",
+        "kind": "step",
+        "source": "agent:.claude/agents/chapter-director.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Attach exact task/founder instruction, goal/beat/staging material, report and lead design disposition. Not an automatic taste roster."
+      },
+      {
+        "id": "chapterChecks-typecheck",
+        "label": "Authoring typecheck",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "npm run typecheck; attach actual command, scope, exit/results and log. Checks precede reviewer captures."
+      },
+      {
+        "id": "chapterChecks-lint",
+        "label": "Authoring lint",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "npm run lint; attach actual command, scope, exit/results and log. Checks precede reviewer captures."
+      },
+      {
+        "id": "chapterChecks-check",
+        "label": "Authoring check",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "npm run check; attach actual command, scope, exit/results and log. Checks precede reviewer captures."
+      },
+      {
+        "id": "chapterChecks-doctor",
+        "label": "Authoring doctor",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "lesson-doctor for the owned lesson; attach actual command, scope, exit/results and log. Checks precede reviewer captures."
+      },
+      {
+        "id": "chapterChecks-desktop",
+        "label": "Named desktop storyboard frames",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "artifact"
+        ],
+        "instructions": "Real final-preview captures with chapter/step.beat/capture mode and inspection-scale crops. Never fabricate unavailable frames."
+      },
+      {
+        "id": "chapterChecks-phone",
+        "label": "Named phone storyboard frames",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "artifact"
+        ],
+        "instructions": "Real final-preview captures with chapter/step.beat/capture mode and inspection-scale crops. Never fabricate unavailable frames."
+      },
+      {
+        "id": "chapterChecks-frames",
+        "label": "Frame critic reads captured pixels only",
+        "kind": "step",
+        "source": "agent:.claude/agents/frame-critic.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "chapterChecks-disposition",
+        "label": "Lead dispositions authoring outputs and spec fidelity",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Resolve concrete findings, cite source reports and synchronize spec/registered/fidelity fields. Reuse covering reports, not repeat reviewer sign-off loops."
+      },
+      {
+        "id": "chapterChecks-physics",
+        "label": "Required new-chapter physics accuracy report",
+        "kind": "step",
+        "source": "agent:.claude/agents/physics-accuracy-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "chapterChecks-locale",
+        "label": "Core manifest or Danish review?",
+        "kind": "condition",
+        "field": "coreSim",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "chapterChecks-danish",
+        "label": "Required non-core Danish classroom terminology review",
+        "kind": "step",
+        "source": "agent:.claude/agents/danish-translator-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "stepChecks-typecheck",
+        "label": "Authoring typecheck",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "npm run typecheck; attach actual command, scope, exit/results and log. Checks precede reviewer captures."
+      },
+      {
+        "id": "stepChecks-lint",
+        "label": "Authoring lint",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "npm run lint; attach actual command, scope, exit/results and log. Checks precede reviewer captures."
+      },
+      {
+        "id": "stepChecks-check",
+        "label": "Authoring check",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "npm run check; attach actual command, scope, exit/results and log. Checks precede reviewer captures."
+      },
+      {
+        "id": "stepChecks-doctor",
+        "label": "Authoring doctor",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "lesson-doctor for the owned lesson; attach actual command, scope, exit/results and log. Checks precede reviewer captures."
+      },
+      {
+        "id": "stepChecks-desktop",
+        "label": "Named desktop storyboard frames",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "artifact"
+        ],
+        "instructions": "Real final-preview captures with chapter/step.beat/capture mode and inspection-scale crops. Never fabricate unavailable frames."
+      },
+      {
+        "id": "stepChecks-phone",
+        "label": "Named phone storyboard frames",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "artifact"
+        ],
+        "instructions": "Real final-preview captures with chapter/step.beat/capture mode and inspection-scale crops. Never fabricate unavailable frames."
+      },
+      {
+        "id": "stepChecks-frames",
+        "label": "Frame critic reads captured pixels only",
+        "kind": "step",
+        "source": "agent:.claude/agents/frame-critic.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "stepChecks-disposition",
+        "label": "Lead dispositions authoring outputs and spec fidelity",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Resolve concrete findings, cite source reports and synchronize spec/registered/fidelity fields. Reuse covering reports, not repeat reviewer sign-off loops."
+      },
+      {
+        "id": "aux",
+        "label": "First mate applies implementation flags",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Record camera/GLB scope. Capture/review only after these edits. Blender assets-only work belongs in a separate repository/run."
+      },
+      {
+        "id": "glb",
+        "label": "Runtime GLB model integration",
+        "kind": "step",
+        "source": "agent:.claude/agents/glb-model-integrator.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Measurements, orientation/scale/pivots, real-scene motion/placement frames, export/hash/compression, useModel and licence credits."
+      },
+      {
+        "id": "camera",
+        "label": "Lesson-camera records/controller/replay procedure",
+        "kind": "step",
+        "source": "skill:.claude/skills/lesson-camera/SKILL.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Authored camera records, one controller, continuity/replay and portrait/boundary evidence. Lab camera follows interactive_lab.md."
+      },
+      {
+        "id": "preReview",
+        "label": "Prescribed pre-review checks then rendered captures",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Retain exact NC/IS check receipts, then captured frame paths. Refresh affected checks after GLB/camera edits. No invented full sweep for a tiny fix."
+      },
+      {
+        "id": "risks",
+        "label": "Lead records applicable review flags and semantic claims",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Name final structural/scientific/visible scope and false-flag reasons. Generic architecture/physics flags mean additional scope not already covered by authoring/framework reports."
+      },
+      {
+        "id": "architecture",
+        "label": "Scoped architecture diff review",
+        "kind": "step",
+        "source": "agent:.claude/agents/architecture-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "physics",
+        "label": "Scoped physics accuracy review",
+        "kind": "step",
+        "source": "agent:.claude/agents/physics-accuracy-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "voice",
+        "label": "Offline voice-tutor regression results",
+        "kind": "step",
+        "source": "skill:.claude/skills/voice-tutor-test/SKILL.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Free offline tests first: per-test pass/fail/not-run and actual observations. No office model calls; live conversations require a separately authorized product-test scope, never an automatic gate."
+      },
+      {
+        "id": "repairs",
+        "label": "Lead dispositions, crew repairs and spec sync",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Map findings to applied/declined-with-technical-evidence; resolve concrete blockers. Out-of-scope improvements are not delivery debt. No advisory re-review loop."
+      },
+      {
+        "id": "dispatchReviews",
+        "label": "Ordinary dispatched slice?",
+        "kind": "condition",
+        "field": "dispatched",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "extended",
+        "label": "Non-fix requested/relevant review fan-out",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Only activated scopes; never a repo-wide census or implicit taste audit. The ordinary dispatched branch bypasses this roster entirely."
+      },
+      {
+        "id": "danish",
+        "label": "Danish translation review",
+        "kind": "step",
+        "source": "agent:.claude/agents/danish-translator-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "comments",
+        "label": "Shared comment diff review",
+        "kind": "step",
+        "source": "agent:.claude/agents/comment-executioner.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "legal",
+        "label": "Scoped legal/provenance review",
+        "kind": "step",
+        "source": "agent:.claude/agents/legal-issues-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "seo",
+        "label": "Route/SEO metadata review",
+        "kind": "step",
+        "source": "agent:.claude/agents/seo-metadata-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "frameAudit",
+        "label": "Explicit finished-frame audit",
+        "kind": "step",
+        "source": "agent:.claude/agents/frame-critic.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "finalAudit",
+        "label": "Explicit final-checks audit procedure",
+        "kind": "step",
+        "source": "command:.claude/commands/final-checks.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Only the separately requested finished chapter/lab scope; one report per named role and honest unavailable probes. Not an automatic fix-comment roster."
+      },
+      {
+        "id": "auditArchitecture",
+        "label": "Final audit architecture",
+        "kind": "step",
+        "source": "agent:.claude/agents/architecture-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "auditComments",
+        "label": "Final audit shared comments",
+        "kind": "step",
+        "source": "agent:.claude/agents/comment-executioner.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "auditPhysics",
+        "label": "Final audit scientific claims",
+        "kind": "step",
+        "source": "agent:.claude/agents/physics-accuracy-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "auditDanish",
+        "label": "Final audit Danish",
+        "kind": "step",
+        "source": "agent:.claude/agents/danish-translator-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "auditLegal",
+        "label": "Final audit legal scope",
+        "kind": "step",
+        "source": "agent:.claude/agents/legal-issues-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "auditPerformance",
+        "label": "Final audit render lifecycle/mobile risk",
+        "kind": "step",
+        "source": "agent:.claude/agents/r3f-performance-reviewer.md",
+        "evidence": [
+          "report"
+        ]
+      },
+      {
+        "id": "auditFormat",
+        "label": "Lesson grounding only for lessons",
+        "kind": "condition",
+        "field": "format",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "auditGrounding",
+        "label": "Requested spec/render-truth chapter grounding",
+        "kind": "step",
+        "source": "agent:.claude/agents/chapter-grounding-reviewer.md",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Matched live probes and spec/render truth; lint-specs/roundtrip after spec edits. Missing access/authorization is disclosed, never a pass."
+      },
+      {
+        "id": "dispatchChecks",
+        "label": "Dispatched check tier?",
+        "kind": "condition",
+        "field": "dispatched",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "changed",
+        "label": "check:changed before the intended commit",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "npm run check:changed BEFORE committing while diff supplies scope. Log unrelated-owner failures distinctly; never sweep or silently repair them."
+      },
+      {
+        "id": "checkKind",
+        "label": "Non-dispatched check tier by work kind",
+        "kind": "condition",
+        "field": "kind",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "docChecks",
+        "label": "Doc index, headers, references and applicable spec checks",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "Use the existing doc-index/spec/link npm scripts from package.json, with actual command, exit status and scoped log."
+      },
+      {
+        "id": "final-typecheck",
+        "label": "Final full typecheck",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "npm run typecheck plus scoped regressions, bound to final intended bytes; no repeat just for a badge."
+      },
+      {
+        "id": "final-lint",
+        "label": "Final full lint",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "npm run lint plus scoped regressions, bound to final intended bytes; no repeat just for a badge."
+      },
+      {
+        "id": "final-check",
+        "label": "Final full check",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "npm run check plus scoped regressions, bound to final intended bytes; no repeat just for a badge."
+      },
+      {
+        "id": "finalFormat",
+        "label": "Lesson-doctor for lessons",
+        "kind": "condition",
+        "field": "format",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "finalDoctor",
+        "label": "Final lesson-doctor warnings and result",
+        "kind": "step",
+        "source": "builtin:check",
+        "evidence": [
+          "check"
+        ],
+        "instructions": "Run existing lesson-doctor against owned lesson and record baseline/final warnings, concrete blockers and actual result."
+      },
+      {
+        "id": "visible",
+        "label": "Final user-visible change?",
+        "kind": "condition",
+        "field": "visible",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "visual",
+        "label": "Visual-check on final owned live preview",
+        "kind": "step",
+        "source": "skill:.claude/skills/visual-check/SKILL.md",
+        "evidence": [
+          "artifact",
+          "report"
+        ],
+        "instructions": "Exact state/step.beat, desktop/phone interactions and actual observations/PNG inspection. GLB/camera output captured after their edits. Unavailable capture is blocked/partial, never a pass."
+      },
+      {
+        "id": "pin",
+        "label": "Owner commits intended work; lead pins ready SHA",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "Commit ONLY intended work; refresh --candidate HEAD with the same intended-tree fingerprint to retain receipts. Dirty dev delivery is refused. Use an owned clean candidate checkout; never stash/sweep another owner."
+      },
+      {
+        "id": "showKind",
+        "label": "New content must be presented",
+        "kind": "condition",
+        "field": "kind",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "show",
+        "label": "First mate presents milestone/try with run snapshot",
+        "kind": "step",
+        "source": "builtin:work",
+        "evidence": [
+          "report"
+        ],
+        "instructions": "inbox milestone/try --run RUN; exact item id/revision and candidate, real frames/pages and honest limitations. Submission is not acceptance."
+      },
+      {
+        "id": "showRequested",
+        "label": "Other presentation explicitly requested?",
+        "kind": "condition",
+        "field": "showRequested",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "approval",
+        "label": "Founder acceptance explicitly required?",
+        "kind": "condition",
+        "field": "approvalRequired",
+        "source": "builtin:condition"
+      },
+      {
+        "id": "founder",
+        "label": "Founder accepts exact run-bound item revision",
+        "kind": "approval",
+        "source": "builtin:founder-approval",
+        "evidence": [
+          "approval"
+        ],
+        "instructions": "Explicit founder accept of matching try/milestone revision and candidate. Stale/withdrawn/resolved replies and approve-all automation never satisfy this requirement."
+      },
+      {
+        "id": "dev",
+        "label": "First mate lands pinned candidate and publishes origin/dev",
+        "kind": "delivery",
+        "source": "builtin:deliver",
+        "delivery": "dev",
+        "instructions": "Gate is preflight only. Canonical main .claude/hooks/worktree-sync.mjs land <owned-checkout> <full-SHA>; normal publication to origin/dev required. publication-pending is unfinished: retry publish, never re-land. No force-push, main push or PR merge. Only AFTER publication: linked fixed markers, report actual landed mapping/publishedDev/receipt; founder marker verification is later feedback."
+      },
+      {
+        "id": "mixedDispatchKind",
+        "label": "Dispatched new content keeps full skill checks too",
+        "kind": "condition",
+        "field": "kind",
+        "source": "builtin:condition"
+      }
+    ],
+    "edges": [
+      {
+        "id": "e1",
+        "from": "plan",
+        "to": "kind"
+      },
+      {
+        "id": "e2",
+        "from": "kind",
+        "to": "framework",
+        "port": "framework"
+      },
+      {
+        "id": "e3",
+        "from": "framework",
+        "to": "frameworkArchitecture"
+      },
+      {
+        "id": "e4",
+        "from": "kind",
+        "to": "modify",
+        "port": "existing-lesson"
+      },
+      {
+        "id": "e5",
+        "from": "kind",
+        "to": "bug",
+        "port": "bug-fix"
+      },
+      {
+        "id": "e6",
+        "from": "kind",
+        "to": "docs",
+        "port": "docs-only"
+      },
+      {
+        "id": "e7",
+        "from": "kind",
+        "to": "newTarget",
+        "port": "new-lesson"
+      },
+      {
+        "id": "e8",
+        "from": "newTarget",
+        "to": "newSim",
+        "port": "new-route"
+      },
+      {
+        "id": "e9",
+        "from": "newSim",
+        "to": "format"
+      },
+      {
+        "id": "e10",
+        "from": "newTarget",
+        "to": "reuseChapter",
+        "port": "new-chapter"
+      },
+      {
+        "id": "e11",
+        "from": "format",
+        "to": "reuseChapter",
+        "port": "lesson"
+      },
+      {
+        "id": "e12",
+        "from": "reuseChapter",
+        "to": "reuseArchitecture"
+      },
+      {
+        "id": "e13",
+        "from": "newTarget",
+        "to": "writtenSpec",
+        "port": "new-step"
+      },
+      {
+        "id": "e14",
+        "from": "writtenSpec",
+        "to": "newStep",
+        "port": "false"
+      },
+      {
+        "id": "e15",
+        "from": "writtenSpec",
+        "to": "implementStep",
+        "port": "true"
+      },
+      {
+        "id": "e16",
+        "from": "reuseArchitecture",
+        "to": "chapterCritics"
+      },
+      {
+        "id": "e17",
+        "from": "chapterCritics-curious",
+        "to": "chapter"
+      },
+      {
+        "id": "e18",
+        "from": "chapterCritics-ux",
+        "to": "chapter"
+      },
+      {
+        "id": "e19",
+        "from": "chapterCritics-director",
+        "to": "chapter"
+      },
+      {
+        "id": "e20",
+        "from": "chapterCritics",
+        "to": "chapter",
+        "port": "none"
+      },
+      {
+        "id": "e21",
+        "from": "chapterCritics",
+        "to": "chapterCritics-curious",
+        "port": "curious"
+      },
+      {
+        "id": "e22",
+        "from": "chapterCritics",
+        "to": "chapterCritics-ux",
+        "port": "ux"
+      },
+      {
+        "id": "e23",
+        "from": "chapterCritics",
+        "to": "chapterCritics-director",
+        "port": "director"
+      },
+      {
+        "id": "e24",
+        "from": "chapterCritics",
+        "to": "chapterCritics-curious",
+        "port": "curious-ux"
+      },
+      {
+        "id": "e25",
+        "from": "chapterCritics",
+        "to": "chapterCritics-ux",
+        "port": "curious-ux"
+      },
+      {
+        "id": "e26",
+        "from": "chapterCritics",
+        "to": "chapterCritics-curious",
+        "port": "curious-director"
+      },
+      {
+        "id": "e27",
+        "from": "chapterCritics",
+        "to": "chapterCritics-director",
+        "port": "curious-director"
+      },
+      {
+        "id": "e28",
+        "from": "chapterCritics",
+        "to": "chapterCritics-ux",
+        "port": "ux-director"
+      },
+      {
+        "id": "e29",
+        "from": "chapterCritics",
+        "to": "chapterCritics-director",
+        "port": "ux-director"
+      },
+      {
+        "id": "e30",
+        "from": "chapterCritics",
+        "to": "chapterCritics-curious",
+        "port": "all"
+      },
+      {
+        "id": "e31",
+        "from": "chapterCritics",
+        "to": "chapterCritics-ux",
+        "port": "all"
+      },
+      {
+        "id": "e32",
+        "from": "chapterCritics",
+        "to": "chapterCritics-director",
+        "port": "all"
+      },
+      {
+        "id": "e33",
+        "from": "newStep",
+        "to": "stepCritics"
+      },
+      {
+        "id": "e34",
+        "from": "stepCritics-curious",
+        "to": "implementStep"
+      },
+      {
+        "id": "e35",
+        "from": "stepCritics-ux",
+        "to": "implementStep"
+      },
+      {
+        "id": "e36",
+        "from": "stepCritics-director",
+        "to": "implementStep"
+      },
+      {
+        "id": "e37",
+        "from": "stepCritics",
+        "to": "implementStep",
+        "port": "none"
+      },
+      {
+        "id": "e38",
+        "from": "stepCritics",
+        "to": "stepCritics-curious",
+        "port": "curious"
+      },
+      {
+        "id": "e39",
+        "from": "stepCritics",
+        "to": "stepCritics-ux",
+        "port": "ux"
+      },
+      {
+        "id": "e40",
+        "from": "stepCritics",
+        "to": "stepCritics-director",
+        "port": "director"
+      },
+      {
+        "id": "e41",
+        "from": "stepCritics",
+        "to": "stepCritics-curious",
+        "port": "curious-ux"
+      },
+      {
+        "id": "e42",
+        "from": "stepCritics",
+        "to": "stepCritics-ux",
+        "port": "curious-ux"
+      },
+      {
+        "id": "e43",
+        "from": "stepCritics",
+        "to": "stepCritics-curious",
+        "port": "curious-director"
+      },
+      {
+        "id": "e44",
+        "from": "stepCritics",
+        "to": "stepCritics-director",
+        "port": "curious-director"
+      },
+      {
+        "id": "e45",
+        "from": "stepCritics",
+        "to": "stepCritics-ux",
+        "port": "ux-director"
+      },
+      {
+        "id": "e46",
+        "from": "stepCritics",
+        "to": "stepCritics-director",
+        "port": "ux-director"
+      },
+      {
+        "id": "e47",
+        "from": "stepCritics",
+        "to": "stepCritics-curious",
+        "port": "all"
+      },
+      {
+        "id": "e48",
+        "from": "stepCritics",
+        "to": "stepCritics-ux",
+        "port": "all"
+      },
+      {
+        "id": "e49",
+        "from": "stepCritics",
+        "to": "stepCritics-director",
+        "port": "all"
+      },
+      {
+        "id": "e50",
+        "from": "format",
+        "to": "labCritics",
+        "port": "interactive-lab"
+      },
+      {
+        "id": "e51",
+        "from": "labCritics-curious",
+        "to": "lab"
+      },
+      {
+        "id": "e52",
+        "from": "labCritics-ux",
+        "to": "lab"
+      },
+      {
+        "id": "e53",
+        "from": "labCritics-director",
+        "to": "lab"
+      },
+      {
+        "id": "e54",
+        "from": "labCritics",
+        "to": "lab",
+        "port": "none"
+      },
+      {
+        "id": "e55",
+        "from": "labCritics",
+        "to": "labCritics-curious",
+        "port": "curious"
+      },
+      {
+        "id": "e56",
+        "from": "labCritics",
+        "to": "labCritics-ux",
+        "port": "ux"
+      },
+      {
+        "id": "e57",
+        "from": "labCritics",
+        "to": "labCritics-director",
+        "port": "director"
+      },
+      {
+        "id": "e58",
+        "from": "labCritics",
+        "to": "labCritics-curious",
+        "port": "curious-ux"
+      },
+      {
+        "id": "e59",
+        "from": "labCritics",
+        "to": "labCritics-ux",
+        "port": "curious-ux"
+      },
+      {
+        "id": "e60",
+        "from": "labCritics",
+        "to": "labCritics-curious",
+        "port": "curious-director"
+      },
+      {
+        "id": "e61",
+        "from": "labCritics",
+        "to": "labCritics-director",
+        "port": "curious-director"
+      },
+      {
+        "id": "e62",
+        "from": "labCritics",
+        "to": "labCritics-ux",
+        "port": "ux-director"
+      },
+      {
+        "id": "e63",
+        "from": "labCritics",
+        "to": "labCritics-director",
+        "port": "ux-director"
+      },
+      {
+        "id": "e64",
+        "from": "labCritics",
+        "to": "labCritics-curious",
+        "port": "all"
+      },
+      {
+        "id": "e65",
+        "from": "labCritics",
+        "to": "labCritics-ux",
+        "port": "all"
+      },
+      {
+        "id": "e66",
+        "from": "labCritics",
+        "to": "labCritics-director",
+        "port": "all"
+      },
+      {
+        "id": "e67",
+        "from": "chapter",
+        "to": "chapterChecks-typecheck"
+      },
+      {
+        "id": "e68",
+        "from": "chapterChecks-typecheck",
+        "to": "chapterChecks-lint"
+      },
+      {
+        "id": "e69",
+        "from": "chapterChecks-lint",
+        "to": "chapterChecks-check"
+      },
+      {
+        "id": "e70",
+        "from": "chapterChecks-check",
+        "to": "chapterChecks-doctor"
+      },
+      {
+        "id": "e71",
+        "from": "chapterChecks-doctor",
+        "to": "chapterChecks-desktop"
+      },
+      {
+        "id": "e72",
+        "from": "chapterChecks-doctor",
+        "to": "chapterChecks-phone"
+      },
+      {
+        "id": "e73",
+        "from": "chapterChecks-desktop",
+        "to": "chapterChecks-frames"
+      },
+      {
+        "id": "e74",
+        "from": "chapterChecks-phone",
+        "to": "chapterChecks-frames"
+      },
+      {
+        "id": "e75",
+        "from": "chapterChecks-frames",
+        "to": "chapterChecks-disposition"
+      },
+      {
+        "id": "e76",
+        "from": "chapterChecks-doctor",
+        "to": "chapterChecks-physics"
+      },
+      {
+        "id": "e77",
+        "from": "chapterChecks-physics",
+        "to": "chapterChecks-disposition"
+      },
+      {
+        "id": "e78",
+        "from": "chapterChecks-doctor",
+        "to": "chapterChecks-locale"
+      },
+      {
+        "id": "e79",
+        "from": "chapterChecks-locale",
+        "to": "chapterChecks-disposition",
+        "port": "true"
+      },
+      {
+        "id": "e80",
+        "from": "chapterChecks-locale",
+        "to": "chapterChecks-danish",
+        "port": "false"
+      },
+      {
+        "id": "e81",
+        "from": "chapterChecks-danish",
+        "to": "chapterChecks-disposition"
+      },
+      {
+        "id": "e82",
+        "from": "implementStep",
+        "to": "stepChecks-typecheck"
+      },
+      {
+        "id": "e83",
+        "from": "stepChecks-typecheck",
+        "to": "stepChecks-lint"
+      },
+      {
+        "id": "e84",
+        "from": "stepChecks-lint",
+        "to": "stepChecks-check"
+      },
+      {
+        "id": "e85",
+        "from": "stepChecks-check",
+        "to": "stepChecks-doctor"
+      },
+      {
+        "id": "e86",
+        "from": "stepChecks-doctor",
+        "to": "stepChecks-desktop"
+      },
+      {
+        "id": "e87",
+        "from": "stepChecks-doctor",
+        "to": "stepChecks-phone"
+      },
+      {
+        "id": "e88",
+        "from": "stepChecks-desktop",
+        "to": "stepChecks-frames"
+      },
+      {
+        "id": "e89",
+        "from": "stepChecks-phone",
+        "to": "stepChecks-frames"
+      },
+      {
+        "id": "e90",
+        "from": "stepChecks-frames",
+        "to": "stepChecks-disposition"
+      },
+      {
+        "id": "e91",
+        "from": "frameworkArchitecture",
+        "to": "aux"
+      },
+      {
+        "id": "e92",
+        "from": "modify",
+        "to": "aux"
+      },
+      {
+        "id": "e93",
+        "from": "bug",
+        "to": "aux"
+      },
+      {
+        "id": "e94",
+        "from": "docs",
+        "to": "aux"
+      },
+      {
+        "id": "e95",
+        "from": "lab",
+        "to": "aux"
+      },
+      {
+        "id": "e96",
+        "from": "chapterChecks-disposition",
+        "to": "aux"
+      },
+      {
+        "id": "e97",
+        "from": "stepChecks-disposition",
+        "to": "aux"
+      },
+      {
+        "id": "e98",
+        "from": "aux",
+        "to": "preReview"
+      },
+      {
+        "id": "e99",
+        "from": "aux",
+        "to": "glb",
+        "when": {
+          "field": "glb",
+          "equals": true
+        }
+      },
+      {
+        "id": "e100",
+        "from": "aux",
+        "to": "camera",
+        "when": {
+          "field": "camera",
+          "equals": true
+        }
+      },
+      {
+        "id": "e101",
+        "from": "glb",
+        "to": "preReview"
+      },
+      {
+        "id": "e102",
+        "from": "camera",
+        "to": "preReview"
+      },
+      {
+        "id": "e103",
+        "from": "preReview",
+        "to": "risks"
+      },
+      {
+        "id": "e104",
+        "from": "risks",
+        "to": "architecture",
+        "when": {
+          "field": "structural",
+          "equals": true
+        }
+      },
+      {
+        "id": "e105",
+        "from": "architecture",
+        "to": "repairs"
+      },
+      {
+        "id": "e106",
+        "from": "risks",
+        "to": "physics",
+        "when": {
+          "field": "scientific",
+          "equals": true
+        }
+      },
+      {
+        "id": "e107",
+        "from": "physics",
+        "to": "repairs"
+      },
+      {
+        "id": "e108",
+        "from": "risks",
+        "to": "voice",
+        "when": {
+          "field": "voice",
+          "equals": true
+        }
+      },
+      {
+        "id": "e109",
+        "from": "voice",
+        "to": "repairs"
+      },
+      {
+        "id": "e110",
+        "from": "risks",
+        "to": "dispatchReviews"
+      },
+      {
+        "id": "e111",
+        "from": "dispatchReviews",
+        "to": "repairs",
+        "port": "true"
+      },
+      {
+        "id": "e112",
+        "from": "dispatchReviews",
+        "to": "extended",
+        "port": "false"
+      },
+      {
+        "id": "e113",
+        "from": "extended",
+        "to": "repairs"
+      },
+      {
+        "id": "e114",
+        "from": "extended",
+        "to": "danish",
+        "when": {
+          "field": "danish",
+          "equals": true
+        }
+      },
+      {
+        "id": "e115",
+        "from": "danish",
+        "to": "repairs"
+      },
+      {
+        "id": "e116",
+        "from": "extended",
+        "to": "comments",
+        "when": {
+          "field": "sharedComments",
+          "equals": true
+        }
+      },
+      {
+        "id": "e117",
+        "from": "comments",
+        "to": "repairs"
+      },
+      {
+        "id": "e118",
+        "from": "extended",
+        "to": "legal",
+        "when": {
+          "field": "legal",
+          "equals": true
+        }
+      },
+      {
+        "id": "e119",
+        "from": "legal",
+        "to": "repairs"
+      },
+      {
+        "id": "e120",
+        "from": "extended",
+        "to": "seo",
+        "when": {
+          "field": "metadata",
+          "equals": true
+        }
+      },
+      {
+        "id": "e121",
+        "from": "seo",
+        "to": "repairs"
+      },
+      {
+        "id": "e122",
+        "from": "extended",
+        "to": "frameAudit",
+        "when": {
+          "field": "frameAudit",
+          "equals": true
+        }
+      },
+      {
+        "id": "e123",
+        "from": "frameAudit",
+        "to": "repairs"
+      },
+      {
+        "id": "e124",
+        "from": "extended",
+        "to": "finalAudit",
+        "when": {
+          "field": "finishedAudit",
+          "equals": true
+        }
+      },
+      {
+        "id": "e125",
+        "from": "finalAudit",
+        "to": "auditArchitecture"
+      },
+      {
+        "id": "e126",
+        "from": "auditArchitecture",
+        "to": "repairs"
+      },
+      {
+        "id": "e127",
+        "from": "finalAudit",
+        "to": "auditComments"
+      },
+      {
+        "id": "e128",
+        "from": "auditComments",
+        "to": "repairs"
+      },
+      {
+        "id": "e129",
+        "from": "finalAudit",
+        "to": "auditPhysics"
+      },
+      {
+        "id": "e130",
+        "from": "auditPhysics",
+        "to": "repairs"
+      },
+      {
+        "id": "e131",
+        "from": "finalAudit",
+        "to": "auditDanish"
+      },
+      {
+        "id": "e132",
+        "from": "auditDanish",
+        "to": "repairs"
+      },
+      {
+        "id": "e133",
+        "from": "finalAudit",
+        "to": "auditLegal"
+      },
+      {
+        "id": "e134",
+        "from": "auditLegal",
+        "to": "repairs"
+      },
+      {
+        "id": "e135",
+        "from": "finalAudit",
+        "to": "auditPerformance"
+      },
+      {
+        "id": "e136",
+        "from": "auditPerformance",
+        "to": "repairs"
+      },
+      {
+        "id": "e137",
+        "from": "finalAudit",
+        "to": "auditFormat"
+      },
+      {
+        "id": "e138",
+        "from": "auditFormat",
+        "to": "repairs",
+        "port": "interactive-lab"
+      },
+      {
+        "id": "e139",
+        "from": "auditFormat",
+        "to": "auditGrounding",
+        "port": "lesson"
+      },
+      {
+        "id": "e140",
+        "from": "auditGrounding",
+        "to": "repairs"
+      },
+      {
+        "id": "e141",
+        "from": "repairs",
+        "to": "dispatchChecks"
+      },
+      {
+        "id": "e142",
+        "from": "dispatchChecks",
+        "to": "changed",
+        "port": "true"
+      },
+      {
+        "id": "e143",
+        "from": "dispatchChecks",
+        "to": "checkKind",
+        "port": "false"
+      },
+      {
+        "id": "e144",
+        "from": "checkKind",
+        "to": "docChecks",
+        "port": "docs-only"
+      },
+      {
+        "id": "e145",
+        "from": "checkKind",
+        "to": "final-typecheck",
+        "port": "framework"
+      },
+      {
+        "id": "e146",
+        "from": "checkKind",
+        "to": "final-typecheck",
+        "port": "new-lesson"
+      },
+      {
+        "id": "e147",
+        "from": "checkKind",
+        "to": "final-typecheck",
+        "port": "existing-lesson"
+      },
+      {
+        "id": "e148",
+        "from": "checkKind",
+        "to": "final-typecheck",
+        "port": "bug-fix"
+      },
+      {
+        "id": "e149",
+        "from": "final-typecheck",
+        "to": "final-lint"
+      },
+      {
+        "id": "e150",
+        "from": "final-lint",
+        "to": "final-check"
+      },
+      {
+        "id": "e151",
+        "from": "final-check",
+        "to": "finalFormat"
+      },
+      {
+        "id": "e152",
+        "from": "finalFormat",
+        "to": "finalDoctor",
+        "port": "lesson"
+      },
+      {
+        "id": "e153",
+        "from": "changed",
+        "to": "visible"
+      },
+      {
+        "id": "e154",
+        "from": "docChecks",
+        "to": "visible"
+      },
+      {
+        "id": "e155",
+        "from": "finalDoctor",
+        "to": "visible"
+      },
+      {
+        "id": "e156",
+        "from": "finalFormat",
+        "to": "visible",
+        "port": "interactive-lab"
+      },
+      {
+        "id": "e157",
+        "from": "visible",
+        "to": "visual",
+        "port": "true"
+      },
+      {
+        "id": "e158",
+        "from": "visible",
+        "to": "pin",
+        "port": "false"
+      },
+      {
+        "id": "e159",
+        "from": "visual",
+        "to": "pin"
+      },
+      {
+        "id": "e160",
+        "from": "pin",
+        "to": "showKind"
+      },
+      {
+        "id": "e161",
+        "from": "showKind",
+        "to": "show",
+        "port": "new-lesson"
+      },
+      {
+        "id": "e162",
+        "from": "showKind",
+        "to": "showRequested",
+        "port": "framework"
+      },
+      {
+        "id": "e163",
+        "from": "showKind",
+        "to": "showRequested",
+        "port": "existing-lesson"
+      },
+      {
+        "id": "e164",
+        "from": "showKind",
+        "to": "showRequested",
+        "port": "bug-fix"
+      },
+      {
+        "id": "e165",
+        "from": "showKind",
+        "to": "showRequested",
+        "port": "docs-only"
+      },
+      {
+        "id": "e166",
+        "from": "showRequested",
+        "to": "show",
+        "port": "true"
+      },
+      {
+        "id": "e167",
+        "from": "showRequested",
+        "to": "approval",
+        "port": "false"
+      },
+      {
+        "id": "e168",
+        "from": "show",
+        "to": "approval"
+      },
+      {
+        "id": "e169",
+        "from": "approval",
+        "to": "founder",
+        "port": "true"
+      },
+      {
+        "id": "e170",
+        "from": "approval",
+        "to": "dev",
+        "port": "false"
+      },
+      {
+        "id": "e171",
+        "from": "founder",
+        "to": "dev"
+      },
+      {
+        "id": "e172",
+        "from": "dispatchChecks",
+        "to": "mixedDispatchKind",
+        "port": "true"
+      },
+      {
+        "id": "e173",
+        "from": "mixedDispatchKind",
+        "to": "final-typecheck",
+        "port": "new-lesson"
+      },
+      {
+        "id": "e174",
+        "from": "mixedDispatchKind",
+        "to": "changed",
+        "port": "framework"
+      },
+      {
+        "id": "e175",
+        "from": "mixedDispatchKind",
+        "to": "changed",
+        "port": "existing-lesson"
+      },
+      {
+        "id": "e176",
+        "from": "mixedDispatchKind",
+        "to": "changed",
+        "port": "bug-fix"
+      },
+      {
+        "id": "e177",
+        "from": "mixedDispatchKind",
+        "to": "changed",
+        "port": "docs-only"
+      }
+    ],
+    "positions": {
+      "plan": {
+        "x": 0,
+        "y": 0
+      },
+      "kind": {
+        "x": 0,
+        "y": 180
+      },
+      "bug": {
+        "x": 0,
+        "y": 360
+      },
+      "docs": {
+        "x": 320,
+        "y": 360
+      },
+      "framework": {
+        "x": 640,
+        "y": 360
+      },
+      "modify": {
+        "x": 960,
+        "y": 360
+      },
+      "newTarget": {
+        "x": 1280,
+        "y": 360
+      },
+      "frameworkArchitecture": {
+        "x": 0,
+        "y": 540
+      },
+      "newSim": {
+        "x": 320,
+        "y": 540
+      },
+      "writtenSpec": {
+        "x": 640,
+        "y": 540
+      },
+      "format": {
+        "x": 0,
+        "y": 720
+      },
+      "newStep": {
+        "x": 320,
+        "y": 720
+      },
+      "labCritics": {
+        "x": 0,
+        "y": 900
+      },
+      "reuseChapter": {
+        "x": 320,
+        "y": 900
+      },
+      "stepCritics": {
+        "x": 640,
+        "y": 900
+      },
+      "labCritics-curious": {
+        "x": 0,
+        "y": 1080
+      },
+      "labCritics-director": {
+        "x": 320,
+        "y": 1080
+      },
+      "labCritics-ux": {
+        "x": 640,
+        "y": 1080
+      },
+      "reuseArchitecture": {
+        "x": 960,
+        "y": 1080
+      },
+      "stepCritics-curious": {
+        "x": 1280,
+        "y": 1080
+      },
+      "stepCritics-director": {
+        "x": 1600,
+        "y": 1080
+      },
+      "stepCritics-ux": {
+        "x": 1920,
+        "y": 1080
+      },
+      "chapterCritics": {
+        "x": 0,
+        "y": 1260
+      },
+      "implementStep": {
+        "x": 320,
+        "y": 1260
+      },
+      "lab": {
+        "x": 640,
+        "y": 1260
+      },
+      "chapterCritics-curious": {
+        "x": 0,
+        "y": 1440
+      },
+      "chapterCritics-director": {
+        "x": 320,
+        "y": 1440
+      },
+      "chapterCritics-ux": {
+        "x": 640,
+        "y": 1440
+      },
+      "stepChecks-typecheck": {
+        "x": 960,
+        "y": 1440
+      },
+      "chapter": {
+        "x": 0,
+        "y": 1620
+      },
+      "stepChecks-lint": {
+        "x": 320,
+        "y": 1620
+      },
+      "chapterChecks-typecheck": {
+        "x": 0,
+        "y": 1800
+      },
+      "stepChecks-check": {
+        "x": 320,
+        "y": 1800
+      },
+      "chapterChecks-lint": {
+        "x": 0,
+        "y": 1980
+      },
+      "stepChecks-doctor": {
+        "x": 320,
+        "y": 1980
+      },
+      "chapterChecks-check": {
+        "x": 0,
+        "y": 2160
+      },
+      "stepChecks-desktop": {
+        "x": 320,
+        "y": 2160
+      },
+      "stepChecks-phone": {
+        "x": 640,
+        "y": 2160
+      },
+      "chapterChecks-doctor": {
+        "x": 0,
+        "y": 2340
+      },
+      "stepChecks-frames": {
+        "x": 320,
+        "y": 2340
+      },
+      "chapterChecks-desktop": {
+        "x": 0,
+        "y": 2520
+      },
+      "chapterChecks-locale": {
+        "x": 320,
+        "y": 2520
+      },
+      "chapterChecks-phone": {
+        "x": 640,
+        "y": 2520
+      },
+      "chapterChecks-physics": {
+        "x": 960,
+        "y": 2520
+      },
+      "stepChecks-disposition": {
+        "x": 1280,
+        "y": 2520
+      },
+      "chapterChecks-danish": {
+        "x": 0,
+        "y": 2700
+      },
+      "chapterChecks-frames": {
+        "x": 320,
+        "y": 2700
+      },
+      "chapterChecks-disposition": {
+        "x": 0,
+        "y": 2880
+      },
+      "aux": {
+        "x": 0,
+        "y": 3060
+      },
+      "camera": {
+        "x": 0,
+        "y": 3240
+      },
+      "glb": {
+        "x": 320,
+        "y": 3240
+      },
+      "preReview": {
+        "x": 0,
+        "y": 3420
+      },
+      "risks": {
+        "x": 0,
+        "y": 3600
+      },
+      "architecture": {
+        "x": 0,
+        "y": 3780
+      },
+      "dispatchReviews": {
+        "x": 320,
+        "y": 3780
+      },
+      "physics": {
+        "x": 640,
+        "y": 3780
+      },
+      "voice": {
+        "x": 960,
+        "y": 3780
+      },
+      "extended": {
+        "x": 0,
+        "y": 3960
+      },
+      "comments": {
+        "x": 0,
+        "y": 4140
+      },
+      "danish": {
+        "x": 320,
+        "y": 4140
+      },
+      "finalAudit": {
+        "x": 640,
+        "y": 4140
+      },
+      "frameAudit": {
+        "x": 960,
+        "y": 4140
+      },
+      "legal": {
+        "x": 1280,
+        "y": 4140
+      },
+      "seo": {
+        "x": 1600,
+        "y": 4140
+      },
+      "auditArchitecture": {
+        "x": 0,
+        "y": 4320
+      },
+      "auditComments": {
+        "x": 320,
+        "y": 4320
+      },
+      "auditDanish": {
+        "x": 640,
+        "y": 4320
+      },
+      "auditFormat": {
+        "x": 960,
+        "y": 4320
+      },
+      "auditLegal": {
+        "x": 1280,
+        "y": 4320
+      },
+      "auditPerformance": {
+        "x": 1600,
+        "y": 4320
+      },
+      "auditPhysics": {
+        "x": 1920,
+        "y": 4320
+      },
+      "auditGrounding": {
+        "x": 0,
+        "y": 4500
+      },
+      "repairs": {
+        "x": 0,
+        "y": 4680
+      },
+      "dispatchChecks": {
+        "x": 0,
+        "y": 4860
+      },
+      "checkKind": {
+        "x": 0,
+        "y": 5040
+      },
+      "mixedDispatchKind": {
+        "x": 320,
+        "y": 5040
+      },
+      "changed": {
+        "x": 0,
+        "y": 5220
+      },
+      "docChecks": {
+        "x": 320,
+        "y": 5220
+      },
+      "final-typecheck": {
+        "x": 640,
+        "y": 5220
+      },
+      "final-lint": {
+        "x": 0,
+        "y": 5400
+      },
+      "final-check": {
+        "x": 0,
+        "y": 5580
+      },
+      "finalFormat": {
+        "x": 0,
+        "y": 5760
+      },
+      "finalDoctor": {
+        "x": 0,
+        "y": 5940
+      },
+      "visible": {
+        "x": 0,
+        "y": 6120
+      },
+      "visual": {
+        "x": 0,
+        "y": 6300
+      },
+      "pin": {
+        "x": 0,
+        "y": 6480
+      },
+      "showKind": {
+        "x": 0,
+        "y": 6660
+      },
+      "showRequested": {
+        "x": 0,
+        "y": 6840
+      },
+      "show": {
+        "x": 0,
+        "y": 7020
+      },
+      "approval": {
+        "x": 0,
+        "y": 7200
+      },
+      "founder": {
+        "x": 0,
+        "y": 7380
+      },
+      "dev": {
+        "x": 0,
+        "y": 7560
+      }
+    },
+    "pathRules": [
+      {
+        "when": {
+          "field": "kind",
+          "equals": "docs-only"
+        },
+        "prefixes": [
+          "docs",
+          "README.md",
+          "CHANGELOG.md",
+          "lesson_sim.md",
+          "interactive_lab.md"
+        ],
+        "only": true,
+        "message": "Docs-only cannot contain code, executable instruction resources, hooks or configuration; split mixed scopes."
+      },
+      {
+        "prefixes": [
+          ".claude",
+          ".pi",
+          "AGENTS.md",
+          "package.json",
+          "package-lock.json"
+        ],
+        "require": {
+          "field": "structural",
+          "equals": true
+        },
+        "message": "Workflow/dependency changes require explicit additional architecture scope."
+      },
+      {
+        "prefixes": [
+          "space-app/app",
+          "space-app/public",
+          "space-app/messages"
+        ],
+        "require": {
+          "field": "visible",
+          "equals": true
+        },
+        "message": "Routes/public assets/locales need the visible-change branch or a separately scoped non-visible policy override."
+      }
+    ]
+  }
+}
