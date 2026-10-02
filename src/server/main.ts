@@ -10,6 +10,7 @@ import { Herdr } from "./herdr.ts";
 import { createInboxServer } from "./http.ts";
 import { CrewTreeStore } from "./crewtree.ts";
 import { Inbox } from "./inbox.ts";
+import { AutoApprove } from "./autoapprove.ts";
 import { Machine } from "./machine.ts";
 import { Switches } from "./switch.ts";
 import { startIntegrations, startupConfig } from "./startup-config.ts";
@@ -24,6 +25,7 @@ const dir = dataDir();
 const herdr = new Herdr();
 const db = openDatabase(join(dir, "inbox.sqlite"));
 const inbox = new Inbox(db, join(dir, "files"), herdr);
+const autoApprove = new AutoApprove(db, inbox);
 const world = new World(db, herdr, () => inbox.state());
 world.crew = new CrewTreeStore(dir);
 world.crew.seed();
@@ -59,6 +61,7 @@ setInterval(() => {
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();
 
-createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches, usage }).listen(port, "127.0.0.1", () => {
+createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches, usage, autoApprove }).listen(port, "127.0.0.1", () => {
+  autoApprove.sweep();
   console.log(`Review inbox on http://localhost:${port}  (data: ${dir})`);
 });

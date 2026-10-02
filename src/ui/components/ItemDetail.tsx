@@ -235,7 +235,7 @@ function ConversationTab({ detail: { item, history, replies } }: { detail: ItemD
         if (h.kind === "reply.queued" && reply) {
           return (
             <li key={h.id} className="msg user">
-              <div className="msg-head">You · {actionLabel(reply.action, item.type)} · {clock(h.at)} · revision {reply.revision}</div>
+              <div className="msg-head">{h.detail.autoApproved ? "Approve all" : "You"} · {actionLabel(reply.action, item.type)} · {clock(h.at)} · revision {reply.revision}</div>
               {reply.choice ? <div className="msg-choice">Option {reply.choice.toUpperCase()}</div> : null}
               {reply.text ? <Prose text={reply.text} /> : null}
               <Images ids={reply.images} />

@@ -77,6 +77,8 @@ export class Inbox {
   /** The office's assigned project, if known; otherwise the submitting session's worktree. */
   presentationPath: (session: Binding) => string | null = (session) => session.cwd;
   onChange: (reason: string) => void = () => {};
+  /** Server-side inbox automation, run after a submission commits (including replays). */
+  onSubmitted: (itemId: string) => void = () => {};
 
   constructor(db: DatabaseSync, filesDir: string, presence: PresenceSource, now: () => Date = () => new Date()) {
     this.db = db;
@@ -248,6 +250,7 @@ export class Inbox {
       this.db.prepare("UPDATE tasks SET updated_at = ? WHERE id = ?").run(now, taskId);
       return { itemId, taskId, revision, changed: true };
     });
+    this.onSubmitted(result.itemId);
     if (result.changed) this.onChange("item");
     return result;
   }
@@ -405,7 +408,7 @@ export class Inbox {
 
   // ── User actions ──────────────────────────────────────────────────────────────────────
 
-  answer(itemId: string, input: { id?: string; revision: number; action: ReplyAction; choice?: string | null; text?: string; images?: string[] }): Reply {
+  answer(itemId: string, input: { id?: string; revision: number; action: ReplyAction; choice?: string | null; text?: string; images?: string[] }, source?: "approve_all"): Reply {
     const deliveryId = input.id ?? randomUUID();
     // The answer id belongs to the founder's answer operation, target and exact revision.
     const fingerprint = requestFingerprint(["answer", "founder", itemId, input.revision, input.action, input.choice ?? null, input.text?.trim() ?? "", [...new Set(input.images ?? [])].sort()]);
@@ -446,7 +449,7 @@ export class Inbox {
       this.db.prepare("UPDATE items SET state = 'answer_queued', snoozed_until = NULL, updated_at = ? WHERE id = ?").run(now, itemId);
       if (option) this.db.prepare("UPDATE tasks SET last_decision = ? WHERE id = ?").run(`${option.label} (${item.title})`, task.id);
       if (input.action === "accept" && item.type === "milestone") this.db.prepare("UPDATE tasks SET last_accepted_milestone = ? WHERE id = ?").run(item.title, task.id);
-      this.log("user", "reply.queued", { taskId: task.id, itemId }, { deliveryId, action: input.action, choice });
+      this.log(source ? "system" : "user", "reply.queued", { taskId: task.id, itemId }, { deliveryId, action: input.action, choice, ...(source ? { autoApproved: true } : {}) });
     });
     this.onChange("reply");
     return this.reply(deliveryId);

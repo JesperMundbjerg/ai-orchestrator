@@ -4,6 +4,7 @@ import { CrewGuide } from "./components/CrewGuide.tsx";
 import { DecisionSheet } from "./components/DecisionSheet.tsx";
 import { MachineWarning } from "./components/MachineWarning.tsx";
 import { Queue } from "./components/Queue.tsx";
+import { AutoApproveToggle } from "./components/AutoApproveToggle.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { TaskBoard } from "./components/TaskBoard.tsx";
 import { TeamBoard } from "./components/TeamBoard.tsx";
@@ -65,6 +66,8 @@ export function App() {
   }
 
   return (
+    <div className="inbox-shell">
+      <header className="inbox-top"><strong>Review Inbox</strong><AutoApproveToggle tick={tick} /></header>
     <div className={`app${decisionSheet ? " decisions-app" : ""}`}>
       <Sidebar state={state} route={route} navigate={navigate} />
       {decisionSheet ? (
@@ -102,6 +105,7 @@ export function App() {
       ) : (
         <TaskBoard state={state} parked={route.view === "parked"} projectId={route.projectId} onOpenItem={(itemId) => navigate({ view: "needs", itemId })} />
       )}
+    </div>
     </div>
   );
 }

@@ -16,6 +16,7 @@ import { Inbox, InboxError } from "./inbox.ts";
 import { sendEvidence } from "./evidence.ts";
 import { projectQueue } from "./queue.ts";
 import { UPLOAD_BODY_LIMIT } from "./uploads.ts";
+import type { AutoApprove } from "./autoapprove.ts";
 import type { Herdr } from "./herdr.ts";
 import type { Machine } from "./machine.ts";
 import type { Switches } from "./switch.ts";
@@ -35,7 +36,7 @@ function route<T>(method: string, pattern: RegExp, schema: Schema<T>, handler: (
   return [method, pattern, (req, body, params) => handler(req, schema.parse(body), params)];
 }
 
-export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage }): Server {
+export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove }): Server {
   const clients = new Set<ServerResponse>();
   const broadcast = (reason: string) => {
     for (const res of clients) res.write(`event: changed\ndata: ${JSON.stringify({ reason })}\n\n`);
@@ -75,6 +76,8 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   const routes: Route[] = [
     // UI
     route("GET", /^\/api\/state$/, emptySchema, () => inbox.state()),
+    route("GET", /^\/api\/auto-approve$/, emptySchema, () => needAutoApprove().state()),
+    route("POST", /^\/api\/auto-approve$/, validation.autoApproveSchema, (_r, b) => needAutoApprove().setEnabled(b.enabled)),
     route("GET", /^\/api\/items\/([\w-]+)$/, emptySchema, (_r, _b, [id]) => inbox.detail(id!)),
     route("POST", /^\/api\/items\/([\w-]+)\/replies$/, validation.answerSchema, (_r, b, [id]) => inbox.answer(id!, b)),
     route("POST", /^\/api\/items\/([\w-]+)\/snooze$/, validation.snoozeSchema, (_r, b, [id]) => inbox.snooze(id!, b.until)),
@@ -154,6 +157,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/agent\/withdraw$/, protocol.withdraw.request, (_r, b) => inbox.closeItem(b.session, b.item, "withdrawn")),
     route("POST", /^\/api\/agent\/resolve$/, protocol.resolve.request, (_r, b) => inbox.closeItem(b.session, b.item, "resolved")),
   ];
+
+  function needAutoApprove(): AutoApprove {
+    if (!opts.autoApprove) throw new InboxError(404, "this service has no approve-all setting");
+    return opts.autoApprove;
+  }
 
   function needWorld(): World {
     if (!world) throw new InboxError(404, "this service runs without the office world");

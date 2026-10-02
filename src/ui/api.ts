@@ -13,6 +13,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
+  autoApprove: () => request<{ enabled: boolean; count: number }>("GET", "/api/auto-approve"),
+  setAutoApprove: (enabled: boolean) => request<{ enabled: boolean; count: number }>("POST", "/api/auto-approve", { enabled }),
   state: () => request<InboxState>("GET", "/api/state"),
   detail: (itemId: string) => request<ItemDetail>("GET", `/api/items/${itemId}`),
   answer: (itemId: string, body: { id: string; revision: number; action: ReplyAction; choice?: string; text?: string; images?: string[] }) =>

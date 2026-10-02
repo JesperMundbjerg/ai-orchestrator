@@ -3,6 +3,7 @@ import { Canvas } from "@react-three/fiber";
 import { Color } from "three";
 import type { InboxState, ItemType, UsageMeter, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
+import { AutoApproveToggle } from "../components/AutoApproveToggle.tsx";
 import { useItemDetail } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
 import { Avatar } from "./Avatar.tsx";
@@ -151,6 +152,7 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
           {world.agents.length} {world.agents.length === 1 ? "agent" : "agents"} · {world.herdr === "connected" ? "live from herdr" : "herdr not running: no live status"}
         </span>
         <span className="spacer" />
+        <AutoApproveToggle tick={tick} />
         <button className="ghost small" onClick={() => flyTo([0, office.frontDoor.z - 2.5], Math.PI)} title="Face the open door, then walk into the wilds">Front door ↗</button>
         {entries.length ? (
           <button className="primary small" onClick={() => setAnswering(entries[0]!.item.id)}>

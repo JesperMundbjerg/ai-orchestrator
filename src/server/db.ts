@@ -327,6 +327,10 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
     UPDATE agent_switches SET effect = 'opening' WHERE step = 'opening' AND new_pane IS NULL;
     UPDATE agent_switches SET effect = 'starting' WHERE step = 'starting';`);
   db.exec("UPDATE agent_switches SET effect = 'briefing', brief_state = 'uncertain' WHERE step = 'briefing'");
+}, (db) => {
+  db.exec(`CREATE TABLE IF NOT EXISTS auto_approve (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1), enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1))
+  ); INSERT OR IGNORE INTO auto_approve (singleton, enabled) VALUES (1, 0);`);
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {

@@ -20,6 +20,7 @@ export const taskPatchSchema = object({
   lastDecision: maybeText, lastAcceptedMilestone: maybeText, parked: optional(boolean),
 });
 export const pinSchema = object({ pinned: boolean });
+export const autoApproveSchema = object({ enabled: boolean });
 export const uploadSchema = object({ data: nonempty });
 export const teamCreateSchema = object({
   name: nonempty, purpose: maybeText, handsTo: optional(nullable(text)), repository: maybeText, standing: optional(boolean),
