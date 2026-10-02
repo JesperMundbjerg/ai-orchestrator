@@ -21,7 +21,7 @@ const url = `http://localhost:${port}`;
 const out = process.env.WILDS_OUTPUT ?? join(homedir(), ".review-inbox/handoffs/agent-office/wilds");
 await mkdir(out, { recursive: true });
 const office = spawn(process.execPath, ["src/server/main.ts"], {
-  env: { ...process.env, HOME: home, INBOX_DATA_DIR: join(home, "data"), INBOX_PORT: String(port), HERDR_BIN_PATH: join(home, "no-herdr"), HERDR_SOCKET_PATH: join(home, "no.sock") },
+  env: { ...process.env, HOME: home, INBOX_DATA_DIR: join(home, "data"), INBOX_PORT: String(port), HERDR_BIN_PATH: "/usr/bin/false", HERDR_SOCKET_PATH: "/nonexistent" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 let logs = "", browser;
@@ -35,6 +35,8 @@ try {
     if (i > 100) throw new Error(`Scratch office failed: ${logs}`);
     await delay(100);
   }
+  const scratchWorld = await (await fetch(`${url}/api/world`)).json();
+  assert.equal(scratchWorld.agents.length, 0, "scratch office must not see any live agents");
   browser = await chromium.launch({ headless: true, args: ["--use-angle=metal"] });
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
   const errors = [];
@@ -108,11 +110,6 @@ try {
   assert.ok(animal);
   await pose({ x: animal.x, z: animal.z + 8, yaw: 0, pitch: -0.08 });
   screenshots.animals = await shot("animals");
-  // The other layout has an actual open south gate too; verify it before leaving.
-  await page.getByRole("button", { name: "Ring", exact: true }).click();
-  await page.getByRole("button", { name: "Front door ↗" }).click();
-  await delay(2000);
-  screenshots.ringGate = await shot("ring-gate");
   assert.deepEqual(errors, []);
   const result = { date: new Date().toISOString(), browser: await browser.version(), url, viewport: "1440x1000 DPR 1", renderer: "Chromium headless, ANGLE Metal", method: "Built production UI; empty scratch office, Building layout; real Shift+W at 9 m/s in a straight line. 20 snapshots per location, retained heap via CDP forced GC. Frame intervals include intentional 20fps pacing; frameWork is Wilds callback through after-render (CPU submission, not GPU time). Geometry uploads are lazy: fixed 81 terrain slots and 13 instance batches, first encountered slots upload during the first part of the walk, then plateau.", distanceMetres: endZ - startZ, metrics, stillIntervalMs, screenshots, errors };
   await writeFile(join(out, "measurements.json"), JSON.stringify(result, null, 2));

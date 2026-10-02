@@ -1,6 +1,6 @@
 # Beyond the office
 
-Use **Front door ↗**, then W to walk out (Shift runs). **Your desk** returns home. The Building's existing sliding door stays open; Ring has a 2.4 m south gate. Existing furniture, garden and agent routes are unchanged.
+Use **Front door ↗**, then W to walk out (Shift runs). **Your desk** returns home. The Building's existing sliding door stays open. Building is the supported layout; Ring is being retired. Existing furniture, garden and agent routes are unchanged.
 
 ## Budgets
 
@@ -32,6 +32,6 @@ PLAYWRIGHT_MODULE='/Users/jesper/projects/motion video/node_modules/playwright/i
   node test/wilds.browser.mjs
 ```
 
-It starts only a free-port scratch service with a temporary HOME/data directory and no herdr; Chromium is headless with ANGLE Metal, and both processes close in `finally`. It walks about 1 km with **real Shift+W**, samples renderer.info, CDP JS heap before/after GC, paced frame intervals and CPU frame submission times at start/middle/end, checks the still rate, and captures near/far/lake/animals/front-door/ring-gate screenshots. Evidence goes only to `~/.review-inbox/handoffs/agent-office/wilds/` (or `WILDS_OUTPUT`). It does not open or modify the live inbox database or port 4870.
+It starts only a free-port scratch service with a temporary HOME/data directory, `HERDR_SOCKET_PATH=/nonexistent` and `HERDR_BIN_PATH=/usr/bin/false`, and asserts that no live agents are visible. Chromium is headless with ANGLE Metal, and both processes close in `finally`. It walks about 1 km with **real Shift+W**, samples renderer.info, CDP JS heap before/after GC, paced frame intervals and CPU frame submission times at start/middle/end, checks the still rate, and captures near/far/lake/animals/front-door screenshots in Building only. Evidence goes only to `~/.review-inbox/handoffs/agent-office/wilds/` (or `WILDS_OUTPUT`). It does not open or modify the live inbox database or port 4870.
 
 `?wildsMeasure=1` enables a bounded read-only `window.__wilds.read()` sample ring and a `wilds-measure-pose` event for reproducible screenshot poses. Pose events are used only *after* the measured walk. Neither hook is active in the ordinary office view. CPU times are not GPU frame timings; intentional 50 ms/200 ms pacing is included in the separate frame-interval numbers.
