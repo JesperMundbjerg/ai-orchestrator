@@ -5,6 +5,7 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Herdr } from "../src/server/herdr.ts";
+import { AgentStartingError } from "../src/server/agent-starting.ts";
 
 test("a status event from herdr's socket updates presence well before the next poll", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "herdr-test-"));
@@ -48,6 +49,24 @@ test("a status event from herdr's socket updates presence well before the next p
   client!.write(`${JSON.stringify({ type: "pane_agent_status_changed", pane_id: "w1:p1", workspace_id: "w1", agent_status: "working" })}\n`);
   assert.ok((await changed) < 1500);
   assert.equal(herdr.live()[0]?.status, "working");
+});
+
+test("only herdr's definite not-active refusal identifies a safely retryable startup prompt", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "herdr-starting-test-"));
+  const output = join(dir, "error.json");
+  const bin = join(dir, "herdr");
+  writeFileSync(bin, `#!/bin/sh\ncat '${output}'\nexit 1\n`);
+  chmodSync(bin, 0o755);
+  const herdr = new Herdr(bin, join(dir, "unused.sock"));
+  t.after(() => herdr.stop());
+  for (const message of ["agent wX:p1 is not an active named agent", "agent_prompt_stalled", "timed out", "agent not found", "PTY actor closed", "agent is asking something"]) {
+    writeFileSync(output, JSON.stringify({ error: { message } }));
+    await assert.rejects(herdr.prompt("wX:p1", "Start ECG"), (err: Error) => {
+      assert.equal(err.message, message);
+      assert.equal(err instanceof AgentStartingError, message === "agent wX:p1 is not an active named agent");
+      return true;
+    });
+  }
 });
 
 async function until(check: () => boolean): Promise<void> {

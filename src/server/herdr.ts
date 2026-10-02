@@ -15,6 +15,7 @@ import { HARNESSES, type Harness, type Presence } from "../shared/types.ts";
 import type { PresenceSource } from "./inbox.ts";
 import type { AgentSource, LiveAgent } from "./world.ts";
 import { StaleWorking } from "./stale.ts";
+import { AgentStartingError, agentIsStarting } from "./agent-starting.ts";
 import { nextSplit, type PaneRect } from "../shared/panes.ts";
 
 const run = promisify(execFile);
@@ -200,7 +201,8 @@ export class Herdr implements PresenceSource, AgentSource {
     try {
       await run(this.bin, ["agent", "prompt", paneId, text, "--wait", "--until", "working", "--until", "blocked", "--timeout", "15000"], { timeout: 20_000 });
     } catch (err) {
-      throw new Error(herdrError(err));
+      const message = herdrError(err);
+      throw agentIsStarting(message) ? new AgentStartingError(message) : new Error(message);
     }
   }
 

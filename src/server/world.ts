@@ -181,7 +181,7 @@ export class World {
     this.inbox = inbox;
     this.now = now;
     this.files = files;
-    this.messages = new Messages(db, source, () => this.state(), now, () => this.onChange("world"));
+    this.messages = new Messages(db, source, () => this.state(), now, (redrawOnly) => this.onChange(redrawOnly ? "activity" : "world"));
   }
 
   state(): WorldState {

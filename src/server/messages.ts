@@ -20,6 +20,7 @@ import { OfficeNotices } from "./notices.ts";
 import { Undelivered } from "./undelivered.ts";
 import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { AgentSource } from "./world.ts";
+import { AgentStartingError } from "./agent-starting.ts";
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? "" : String(v));
@@ -36,6 +37,8 @@ const MAX_TEXT = 8000;
 const FREE: ReadonlySet<WorldAgent["status"]> = new Set(["idle", "done"]);
 /** What queued up while an agent was busy is typed as one prompt; this many at most, the rest in the next. */
 const MAX_BATCHED = 50;
+/** Startup refusals are safe to retry, but a pane with nobody behind it must not wait forever. */
+const STARTUP_WAIT_MS = 3 * 60_000;
 /** A combined prompt keeps its newest messages in full up to about this many characters; older ones shrink to a line. */
 const BATCH_FULL_CHARS = 6000;
 /** How much of an older message its one line keeps. */
@@ -47,7 +50,7 @@ export class Messages {
   private source: AgentSource | null;
   private world: () => WorldState;
   private now: () => Date;
-  private changed: () => void;
+  private changed: (redrawOnly?: boolean) => void;
   /** The inbox's replies waiting for a pane, when the service wires them in. */
   replies: Pick<Inbox, "typeable" | "claimTyping" | "typed"> | null = null;
   /** Where images you attach are stored, when the service wires them in; without it a message carries none. */
@@ -77,7 +80,7 @@ export class Messages {
     ]);
   }
 
-  constructor(db: DatabaseSync, source: AgentSource | null, world: () => WorldState, now: () => Date, changed: () => void) {
+  constructor(db: DatabaseSync, source: AgentSource | null, world: () => WorldState, now: () => Date, changed: (redrawOnly?: boolean) => void) {
     this.db = db;
     this.source = source;
     this.world = world;
@@ -274,7 +277,7 @@ export class Messages {
   async deliver(state: WorldState): Promise<void> {
     const agents = new Map(state.agents.map((a) => [a.id, a]));
     const pending = this.db
-      .prepare("SELECT d.agent_id, d.state, m.* FROM message_deliveries d JOIN messages m ON m.id = d.message_id WHERE d.state IN ('queued', 'sending') ORDER BY m.rowid")
+      .prepare("SELECT d.agent_id, d.state, d.updated_at AS queued_at, m.* FROM message_deliveries d JOIN messages m ON m.id = d.message_id WHERE d.state IN ('queued', 'sending') ORDER BY m.rowid")
       .all() as Row[];
     const busy = new Set<string>([...this.typingTo, ...this.held()]);
     const queued = new Map<string, Row[]>();
@@ -294,6 +297,19 @@ export class Messages {
       if (busy.has(agentId)) continue;
       busy.add(agentId);
       const agent = agents.get(agentId);
+      // A new project's lead can have a desk before herdr has registered its session.
+      // Do not apply a startup deadline to established offline leads: they still wait to return.
+      const starting = this.db.prepare(`SELECT t.lead_pane FROM teams t JOIN world_agents a ON a.team_id = t.id
+        WHERE a.id = ? AND a.role = 'lead' AND a.ran_at IS NULL AND t.lead_pane IS NOT NULL AND t.standing = 0`).get(agentId) as Row | undefined;
+      if (starting && !state.agents.some((a) => a.paneId === starting.lead_pane)) {
+        const fail = this.db.prepare("UPDATE message_deliveries SET state = 'failed', error = ?, updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'queued'");
+        let failed = false;
+        for (const row of rows) if (this.startupExpired(row)) {
+          failed = Boolean(fail.run("The agent did not start within 3 minutes of queuing this delivery.", this.now().toISOString(), str(row.id), agentId).changes) || failed;
+        }
+        if (failed) this.changed();
+        continue;
+      }
       if (agent?.paneId && FREE.has(agent.status)) sends.push(this.send(rows.slice(0, MAX_BATCHED), agent, state));
     }
     await Promise.all(sends);
@@ -316,24 +332,38 @@ export class Messages {
     this.replies!.typed(reply.deliveryId, error);
   }
 
-  /** One prompt for everything that waited, acknowledged for all of it or failed for all of it. */
+  private startupExpired(row: Row): boolean {
+    return this.now().getTime() - Date.parse(str(row.queued_at)) >= STARTUP_WAIT_MS;
+  }
+
+  /** One prompt for everything that waited; only a definite startup refusal is safe to requeue. */
   private async send(rows: Row[], agent: WorldAgent, state: WorldState): Promise<void> {
     if (!this.source) return;
     // Claimed before typing, so two deliveries running at once never type the same message twice.
     const claim = this.db.prepare("UPDATE message_deliveries SET state = 'sending', updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'queued'");
-    const messages = rows.filter((row) => claim.run(this.now().toISOString(), str(row.id), agent.id).changes > 0).map((row) => toMessage(row, []));
+    const claimed = rows.filter((row) => claim.run(this.now().toISOString(), str(row.id), agent.id).changes > 0);
+    const messages = claimed.map((row) => toMessage(row, []));
     if (!messages.length) return;
     this.undelivered.drained();
     this.changed();
     let error: string | null = null;
+    let starting = false;
     try {
       await this.source.prompt(agent.paneId!, this.combined(messages, agent, state));
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
+      starting = err instanceof AgentStartingError;
     }
     const done = this.db.prepare("UPDATE message_deliveries SET state = ?, error = ?, updated_at = ? WHERE message_id = ? AND agent_id = ?");
-    for (const message of messages) done.run(error ? "failed" : "delivered", error, this.now().toISOString(), message.id, agent.id);
-    this.changed();
+    for (const row of claimed) {
+      const requeue = starting && !this.startupExpired(row);
+      // Preserve the queue/Retry age: retries neither extend the deadline nor hide the wait.
+      done.run(requeue ? "queued" : error ? "failed" : "delivered", requeue ? null : error,
+        requeue ? str(row.queued_at) : this.now().toISOString(), str(row.id), agent.id);
+    }
+    // A safe refusal waits for the next presence event or poll, not a recursive reaction
+    // to its own requeue (which would hammer a pane that is still starting).
+    this.changed(starting);
   }
 
   /** What one prompt says: a single message as it is, several as one list with who sent each and how long ago. */
