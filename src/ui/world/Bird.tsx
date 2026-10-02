@@ -12,10 +12,10 @@ type V3 = [number, number, number];
  * Baked vertex colours keep the office's faceted style; only the wrists and shoulders move.
  */
 function birdGeometry() {
-  const bake = (draw: (blob: (at: V3, size: V3, color: string, cone?: boolean, yaw?: number) => void) => void) => {
+  const bake = (draw: (blob: (at: V3, size: V3, color: string, cone?: boolean, yaw?: number, round?: boolean) => void) => void) => {
     const parts: BufferGeometry[] = [];
-    draw((at, size, hex, cone = false, yaw = 0) => {
-      const source = cone ? new ConeGeometry(1, 1, 4).rotateX(-Math.PI / 2) : new IcosahedronGeometry(1, 0);
+    draw((at, size, hex, cone = false, yaw = 0, round = false) => {
+      const source = cone ? new ConeGeometry(1, 1, 4).rotateX(-Math.PI / 2) : new IcosahedronGeometry(1, round ? 1 : 0);
       const part = source.index ? source.toNonIndexed() : source;
       if (part !== source) source.dispose();
       part.deleteAttribute("uv");
@@ -30,11 +30,12 @@ function birdGeometry() {
     return geometry;
   };
   const body = bake(blob => {
-    blob([0, 0, 0], [0.32, 0.34, 0.37], "#eee0bd");
-    blob([0, 0.1, 0.08], [0.31, 0.28, 0.34], "#82634b");
-    blob([0, 0.08, -0.2], [0.28, 0.3, 0.24], "#d7773e");
-    blob([0, 0.32, -0.24], [0.255, 0.255, 0.25], "#947153");
-    blob([0, 0.25, -0.41], [0.19, 0.17, 0.105], "#e4924d");
+    // One subdivision on the round core only; feathers stay crisp, twenty-face forms.
+    blob([0, 0, 0], [0.32, 0.34, 0.37], "#eee0bd", false, 0, true);
+    blob([0, 0.1, 0.08], [0.31, 0.28, 0.34], "#82634b", false, 0, true);
+    blob([0, 0.08, -0.2], [0.28, 0.3, 0.24], "#d7773e", false, 0, true);
+    blob([0, 0.32, -0.24], [0.255, 0.255, 0.25], "#947153", false, 0, true);
+    blob([0, 0.25, -0.41], [0.16, 0.14, 0.105], "#e4924d", false, 0, true);
     blob([0, 0.28, -0.53], [0.065, 0.05, 0.16], "#493a30", true);
     for (const side of [-1, 1]) {
       blob([side * 0.212, 0.35, -0.34], [0.059, 0.067, 0.055], "#f3dfb4");
