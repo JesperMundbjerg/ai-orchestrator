@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openPane } from "./pane.ts";
+import { installHooksCommand } from "./pipeline-hooks.ts";
 import { acknowledge, call, fetchReplies, formatReply, get } from "../shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
@@ -288,6 +289,7 @@ async function statusline(): Promise<void> {
 }
 
 async function main(argv: string[]): Promise<void> {
+  if (argv[0] === "pipeline" && argv[1] === "install-hooks") return installHooksCommand(argv.slice(2));
   const parsed = parseArgs({ args: argv, allowPositionals: true, options: OPTIONS, tokens: true });
   flags = parsed.values;
   order = parsed.tokens.flatMap((t) => (t.kind === "option" ? [{ name: t.name, value: t.value }] : []));
