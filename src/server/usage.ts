@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Harness, Team, UsageMeter, UsageShare, UsageView } from "../shared/types.ts";
 import type { CrewPause } from "./crewtree.ts";
+import type { OfficeNotices } from "./notices.ts";
 import type { LimitReading } from "../shared/usage.ts";
 
 export type { LimitReading };
@@ -110,6 +111,13 @@ const windowOfMinutes = (m: unknown): UsageWindow | null => {
   return n > 0 && n <= 360 ? "five_hour" : n >= 9000 && n <= 11000 ? "week" : null;
 };
 
+/**
+ * A meter at PAUSE_AT or more holds whatever its age, until its window resets (use only grows
+ * until then, and a meter whose window has reset shows 0). Only a reading with no known reset is
+ * trusted no longer than it is fresh, so it cannot hold for ever.
+ */
+const high = (m: UsageMeter | undefined): m is UsageMeter => !!m && m.usedPercent !== null && m.usedPercent >= PAUSE_AT && (m.resetsAt !== null || !m.stale);
+
 const windowOf = (r: LimitReading): UsageWindow | null =>
   r.window === "five_hour" || r.window === "week" ? r.window : windowOfMinutes(r.windowMinutes);
 
@@ -134,7 +142,8 @@ export class Usage {
       resets_at TEXT,
       as_of TEXT NOT NULL,
       source TEXT NOT NULL
-    )`);
+    );
+    CREATE TABLE IF NOT EXISTS usage_told (key TEXT PRIMARY KEY, at TEXT NOT NULL)`);
   }
 
   /** Reads the session files in the background: quickly while catching up, then every few seconds. */
@@ -214,27 +223,27 @@ export class Usage {
   }
 
   /**
-   * The founder's rule for the crew guide: Claude's 5-hour window, when a fresh reading puts it at
-   * PAUSE_AT or more. Null otherwise, including with no reading at all.
+   * The founder's rule for the crew guide: Claude's 5-hour window, when a reading puts it at
+   * PAUSE_AT or more, held until its reset whatever its age. Null otherwise, including with no
+   * reading at all.
    */
   claudePause(): { percent: number; resetsAt: string | null } | null {
     const m = this.meters().find((x) => x.id === "claude.five_hour");
-    return m && m.usedPercent !== null && !m.stale && m.usedPercent >= PAUSE_AT ? { percent: m.usedPercent, resetsAt: m.resetsAt } : null;
+    return high(m) ? { percent: m.usedPercent!, resetsAt: m.resetsAt } : null;
   }
 
   /**
    * The mirror image, for Pi's Codex: any Codex meter (the week, and the 5-hour window when a plan
-   * reports one) at PAUSE_AT or more. A high reading holds whatever its age, since use only grows
-   * until its window resets (a meter whose window has reset shows 0 and no longer counts). When
-   * several are high it holds until the last of them resets.
+   * reports one) at PAUSE_AT or more, held as Claude's is. When several are high it holds until the
+   * last of them resets.
    */
   codexPause(): { meter: UsageMeter; percent: number; resetsAt: string | null } | null {
-    const high = this.meters().filter((m) => m.id.startsWith("codex.") && m.usedPercent !== null && m.usedPercent >= PAUSE_AT);
-    if (!high.length) return null;
+    const over = this.meters().filter((m) => m.id.startsWith("codex.") && high(m));
+    if (!over.length) return null;
     const last = (m: UsageMeter) => (m.resetsAt ? Date.parse(m.resetsAt) : Infinity);
-    const worst = high.reduce((a, b) => (last(b) > last(a) || (last(b) === last(a) && b.usedPercent! > a.usedPercent!) ? b : a));
+    const worst = over.reduce((a, b) => (last(b) > last(a) || (last(b) === last(a) && b.usedPercent! > a.usedPercent!) ? b : a));
     // With any high meter's end unknown, so is when it starts again.
-    return { meter: worst, percent: worst.usedPercent!, resetsAt: high.some((m) => !m.resetsAt) ? null : worst.resetsAt };
+    return { meter: worst, percent: worst.usedPercent!, resetsAt: over.some((m) => !m.resetsAt) ? null : worst.resetsAt };
   }
 
   /**
@@ -252,6 +261,35 @@ export class Usage {
     const p = this.claudePause();
     if (!p) return null;
     return { harness: "claude", why: `the founder's 5-hour Claude use is ${Math.round(p.percent)}%${time(p.resetsAt, { hour: "2-digit", minute: "2-digit" }, " when its window starts again")}` };
+  }
+
+  /**
+   * When Claude's 5-hour window and Codex are both at PAUSE_AT or more, the crew guide keeps Claude
+   * Code (see crewPause): Pi would meet Codex's limit, which resets later. The founder is told once
+   * per Claude pause, since new crew may stop at Claude's limit soon. Only under Mix, the one switch
+   * where the guide steers by limits. True when a notice was recorded.
+   */
+  tellFounder(notices: OfficeNotices, mixed: boolean): boolean {
+    if (!mixed) return false;
+    const pause = this.claudePause();
+    const codex = this.codexPause();
+    if (!pause || !codex) return false;
+    const key = `claude-paused-codex-near:${pause.resetsAt ?? codex.resetsAt ?? "unknown"}`;
+    const time = (at: string | null, opts: Intl.DateTimeFormatOptions) => (at ? new Date(at).toLocaleString("en-GB", opts) : null);
+    const claudeUntil = time(pause.resetsAt, { hour: "2-digit", minute: "2-digit" });
+    const codexUntil = time(codex.resetsAt, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    const at = this.now().getTime();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const told = this.db.prepare("INSERT OR IGNORE INTO usage_told (key, at) VALUES (?, ?)").run(key, new Date(at).toISOString()).changes > 0;
+      if (told) notices.record("Claude and Codex both near their limits",
+        `Your 5-hour Claude use is ${Math.round(pause.percent)}%${claudeUntil ? ` (until ${claudeUntil})` : ""} and Codex's ${codex.meter.window === "week" ? "week" : "5-hour window"} is at ${Math.round(codex.percent)}%${codexUntil ? ` (it resets ${codexUntil})` : ""}. The crew guide keeps Claude Code, which starts again sooner, so new crew may stop at its limit soon.`, [], at);
+      this.db.exec("COMMIT");
+      return told;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
   }
 
   /** Claude Code's cache of its last `/usage` read, and the newest Codex rollout's latest limits. */

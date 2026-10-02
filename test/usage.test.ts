@@ -11,6 +11,7 @@ import { CrewTreeStore } from "../src/server/crewtree.ts";
 import { openDatabase } from "../src/server/db.ts";
 import { createInboxServer } from "../src/server/http.ts";
 import { Inbox } from "../src/server/inbox.ts";
+import { OfficeNotices } from "../src/server/notices.ts";
 import { Usage, type UsageRoots } from "../src/server/usage.ts";
 
 const NOW = new Date("2026-10-02T15:00:00Z");
@@ -187,7 +188,7 @@ test("a file read part-way is picked up where it stopped, and a line still being
   assert.equal(tokens(), 20);
 });
 
-test("the founder's rule: Claude crew pause at 90% of a fresh 5-hour reading, and only then", () => {
+test("the founder's rule: Claude crew pause at 90% of the 5-hour reading, until it resets, and only then", () => {
   let now = NOW;
   const u = usage(roots(), () => now);
   assert.equal(u.claudePause(), null, "no reading never pauses anything");
@@ -197,7 +198,18 @@ test("the founder's rule: Claude crew pause at 90% of a fresh 5-hour reading, an
   assert.deepEqual(u.claudePause(), { percent: 92, resetsAt: iso(new Date(NOW.getTime() + 3600_000)) });
   assert.match(u.crewPause()!.why, /^the founder's 5-hour Claude use is 92%, until \d\d:\d\d when its window starts again$/);
   now = new Date(NOW.getTime() + 31 * 60_000);
-  assert.equal(u.claudePause(), null, "a stale reading pauses nothing");
+  assert.equal(meter(u, "claude.five_hour").stale, true);
+  assert.equal(u.claudePause()!.percent, 92, "a high reading holds with age, until its window resets");
+  now = new Date(NOW.getTime() + 61 * 60_000);
+  assert.equal(u.claudePause(), null, "the window has reset");
+
+  // With no known end to hold until, a reading is trusted only while fresh.
+  now = NOW;
+  const v = usage(roots(), () => now);
+  v.record("claude", [{ window: "five_hour", usedPercent: 95 }], "statusline");
+  assert.equal(v.claudePause()!.percent, 95);
+  now = new Date(NOW.getTime() + 31 * 60_000);
+  assert.equal(v.claudePause(), null);
 });
 
 test("near the limit the crew guide gives the Pi backups under Mix, and changes nothing on Claude Code only or Pi only", () => {
@@ -246,6 +258,35 @@ test("a harness posts its limits to the service, which says a change and refuses
   } finally {
     server.close();
   }
+});
+
+test("when Claude's 5-hour window and Codex are both near their limits, the guide keeps Claude and the founder is told once per pause", () => {
+  const db = openDatabase(":memory:");
+  let now = NOW;
+  const u = new Usage(db, () => now, roots());
+  const notices = new OfficeNotices(db);
+  const told = () => db.prepare("SELECT text FROM messages WHERE to_founder = 1 AND from_office = 1").all() as Array<{ text: string }>;
+  const hour = (n: number) => iso(new Date(NOW.getTime() + n * 3600_000));
+
+  u.record("codex", [{ window: "week", usedPercent: 94, resetsAt: "2026-10-03T16:58:17Z" }], "codex-rollout", ago(120));
+  assert.equal(u.tellFounder(notices, true), false, "Claude is not paused: nothing to say");
+  u.record("claude", [{ window: "five_hour", usedPercent: 92, resetsAt: hour(2) }], "statusline");
+  u.record("codex", [{ window: "week", usedPercent: 85, resetsAt: "2026-10-03T16:58:17Z" }], "pi-headers", ago(1));
+  assert.equal(u.tellFounder(notices, true), false, "Codex has room: nothing to say");
+
+  u.record("codex", [{ window: "week", usedPercent: 94, resetsAt: "2026-10-03T16:58:17Z" }], "pi-headers");
+  assert.equal(u.tellFounder(notices, true), true);
+  assert.match(told()[0]!.text, /^Your 5-hour Claude use is 92% \(until \d\d:\d\d\) and Codex's week is at 94% \(it resets \w+ \d\d:\d\d\)\. The crew guide keeps Claude Code, which starts again sooner, so new crew may stop at its limit soon\.$/);
+  assert.equal(u.tellFounder(notices, true), false, "once per pause");
+  assert.equal(u.tellFounder(notices, false), false, "only under Mix");
+  assert.equal(told().length, 1);
+
+  // The next 5-hour window pauses again later: that is a new pause, told again.
+  now = new Date(NOW.getTime() + 3 * 3600_000);
+  u.record("claude", [{ window: "five_hour", usedPercent: 95, resetsAt: hour(7) }], "statusline");
+  u.record("codex", [{ window: "week", usedPercent: 97, resetsAt: "2026-10-03T16:58:17Z" }], "pi-headers");
+  assert.equal(u.tellFounder(notices, true), true);
+  assert.equal(told().length, 2);
 });
 
 test("Codex's windows are told by their length, whichever of primary and secondary carries them, from headers and from a rollout", () => {

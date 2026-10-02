@@ -4,6 +4,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { MIXED } from "../shared/crewtree.ts";
 import { dataDir, openDatabase } from "./db.ts";
 import { Herdr } from "./herdr.ts";
 import { createInboxServer } from "./http.ts";
@@ -24,7 +25,7 @@ const inbox = new Inbox(db, join(dir, "files"), herdr);
 const world = new World(db, herdr, () => inbox.state());
 world.crew = new CrewTreeStore(dir);
 world.crew.seed();
-// The plan's limits and each agent's use; near Claude's 5-hour limit the crew guide gives Pi under Mix.
+// The plan's limits and each agent's use; near Claude's 5-hour limit the crew guide gives Pi under Mix, and near Codex's limits Claude.
 const usage = new Usage(db);
 world.usage = usage;
 world.crew.pause = () => usage.crewPause();
@@ -49,6 +50,11 @@ usage.start();
 void switches.resume();
 setInterval(() => {
   inbox.wakeDue();
+  try {
+    if (usage.tellFounder(world.messages.founderNotices, world.crew?.state().tree.mode === MIXED)) world.onChange("usage");
+  } catch (err) {
+    console.error(`usage: ${(err as Error).message}`);
+  }
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();
 
