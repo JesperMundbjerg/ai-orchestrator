@@ -7,7 +7,7 @@ import { api } from "../api.ts";
 import { leftBeforeArrival } from "../../shared/delivery.ts";
 import { ago } from "../format.ts";
 import { AttachedImages, Images, useAttachments } from "../components/Attach.tsx";
-import { SEND_HINT, sendOnEnter } from "../sendKey.ts";
+import { sendOnEnter } from "../sendKey.ts";
 import { WaitingMessage } from "../components/WaitingMessage.tsx";
 
 const DELIVERY_LABEL = { queued: "waiting until free", sending: "typing…", delivered: "took it up", failed: "not delivered" } as const;
@@ -206,7 +206,7 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
       <textarea
         value={text}
         rows={3}
-        placeholder={`What should ${team.name} do? ${lead?.name ?? (team.standing ? "The lead" : "The first mate")} ${team.standing ? "divides it among the crew" : "plans it and runs the crew"}.`}
+        placeholder={`Write to ${team.name}…`}
         onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
         onKeyDown={sendOnEnter(send)}
@@ -214,7 +214,7 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
       <AttachedImages attachments={attachments} />
       <div className="row">
         <button className="primary small" type="submit" disabled={!canSend}>Send to {team.name}</button>
-        <span className="muted small-note">{lead ? `Typed into ${lead.name}'s terminal once free · ${SEND_HINT}. Paste or drop images to show them.` : "Nobody on it yet."}</span>
+        {!lead ? <span className="muted small-note">Nobody on it yet.</span> : null}
       </div>
       {error ? <div className="warn">{error}</div> : null}
     </form>
@@ -316,7 +316,7 @@ export function TellAgent({ agent }: { agent: WorldAgent }) {
         rows={3}
         autoFocus
         aria-label={`Message ${agent.name}`}
-        placeholder={`Write to ${agent.name}… Paste or drop images to show them.`}
+        placeholder={`Write to ${agent.name}…`}
         onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
         onKeyDown={(e) => {
@@ -327,7 +327,7 @@ export function TellAgent({ agent }: { agent: WorldAgent }) {
       <AttachedImages attachments={attachments} />
       <div className="row">
         <button className="primary small" type="submit" disabled={!canSend}>Send</button>
-        <span className="muted small-note">{agent.paneId ? `Typed into ${agent.name}'s terminal once free · ${SEND_HINT}` : `${agent.name} is not running; it waits until they are.`}</span>
+        {!agent.paneId ? <span className="muted small-note">{agent.name} is not running; it waits until they are.</span> : null}
       </div>
       {error ? <div className="warn">{error}</div> : null}
     </form>
