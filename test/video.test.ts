@@ -221,7 +221,7 @@ test("Pi review_submit advertises videos and forwards absolute paths in order al
   let sent: SubmitInput | undefined;
   t.mock.method(globalThis, "fetch", async (_url: string, opts: RequestInit) => {
     sent = JSON.parse(String(opts.body));
-    return Response.json({ itemId: "item", revision: 1, changed: true });
+    return Response.json({ itemId: "item", taskId: "task", revision: 1, changed: true });
   });
   await tool.execute("call", { type: "milestone", title: "Animation", screenshots: ["/tmp/photo.png"], videos: ["/tmp/first.mp4", "/tmp/second.mov"] }, undefined, undefined, {
     cwd: tmpdir(), sessionManager: { getSessionFile: () => "/tmp/session.jsonl" }, isIdle: () => true,
