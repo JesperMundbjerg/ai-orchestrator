@@ -112,6 +112,24 @@ test("agent identity, nested fields, arrays, enums and URLs are checked before d
   }
 });
 
+test("opaque tool inputs still validate helper calls consumed by activity bookkeeping", async (t) => {
+  const f = fixture(t);
+  await f.request("POST", "/api/agent/items", submit);
+  for (const calls of [[null], [5], [[]]]) {
+    const out = await f.request("POST", "/api/agent/events", { session, events: [{ kind: "tool", tool: "agents", callId: "call", input: { calls } }] });
+    assert.equal(out.status, 400, out.text);
+    assert.equal(out.body.details[0].path, "events.0.input.calls.0");
+    const hook = await f.request("POST", "/api/hooks/claude", { hook_event_name: "PreToolUse", tool_name: "agents", tool_input: { calls } });
+    assert.equal(hook.status, 400);
+    assert.equal(hook.body.details[0].path, "tool_input.calls.0");
+  }
+  const valid = await f.request("POST", "/api/agent/events", { session, events: [{ kind: "tool", tool: "agents", callId: "call", input: { calls: [{ name: "reviewer", extra: true }] } }] });
+  assert.equal(valid.status, 200, valid.text);
+  assert.equal(f.world.state().agents[0]!.helpers[0]!.type, "reviewer");
+  // Other tools' input is not our schema: arbitrary JSON stays available to their integrations.
+  assert.equal((await f.request("POST", "/api/agent/events", { session, events: [{ kind: "tool", tool: "unrelated", input: { calls: [null] } }] })).status, 200);
+});
+
 test("UI mutations refuse coercion and silent dropping of wrongly typed known fields", async (t) => {
   const f = fixture(t);
   const posted = await f.request("POST", "/api/agent/items", submit);

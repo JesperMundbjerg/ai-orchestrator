@@ -96,11 +96,16 @@ export const sessionSchema: Schema<SessionInput> = refine(object({
 export const effortReportSchema: Schema<EffortReport> = object({
   current: nonempty, levels: list(nonempty), result: optional(object({ id: nonempty, error: maybeText })),
 });
-export const eventSchema: Schema<ActivityEvent> = object({
+// Tool input is otherwise opaque. Helper tools' calls are consumed by the service,
+// so malformed entries must not reach activity bookkeeping as unchecked objects.
+export function validateToolInput(tool: string | undefined, input: Record<string, unknown> | undefined, path: string): void {
+  if ((tool === "agent" || tool === "agents") && Array.isArray(input?.calls)) list(record).parse(input.calls, `${path}.calls`);
+}
+export const eventSchema: Schema<ActivityEvent> = refine(object({
   kind: oneOf(["tool", "tool_end", "idle", "helper_start", "helper_stop", "model", "session_name", "effort"]),
   tool: maybeText, input: optional(record), callId: maybeText, helperId: maybeText, helperType: maybeText,
   model: optional(object({ id: nonempty, label: text })), sessionName: optional(nullText), effort: optional(effortReportSchema),
-});
+}), (e, p) => { if (e.kind === "tool") validateToolInput(e.tool, e.input, fieldPath(p, "input")); });
 const pageString = refine(nonempty, (s, p) => {
   httpUrl.parse(parsePage(s).url, p);
 });

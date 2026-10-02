@@ -2,7 +2,7 @@
 // start from unknown. Syntax/type checks belong here, state/revision rules stay in the domain.
 import {
   object, optional, nullable, list, text, nonempty, boolean, positiveInteger, oneOf,
-  timestamp, record, refine, fail, type Schema,
+  timestamp, record, refine, fail, validateToolInput, type Schema,
 } from "../shared/agent-protocol.ts";
 import type { CrewRule, CrewTree } from "../shared/crewtree.ts";
 
@@ -56,7 +56,9 @@ export const crewTreeSchema: Schema<CrewTree> = refine(object({
 
 // Hooks are deliberately extensible records: these are only the fields this service consumes.
 // Valid hook input still receives {} and never produces a harness decision.
-export const claudeHookSchema = object({
+export const claudeHookSchema = refine(object({
   session_id: maybeText, cwd: maybeText, hook_event_name: maybeText, agent_id: maybeText,
   agent_type: maybeText, model: maybeText, transcript_path: maybeText, tool_name: maybeText, tool_input: optional(record),
+}), (hook, path) => {
+  if (hook.hook_event_name === "PreToolUse") validateToolInput(hook.tool_name, hook.tool_input, path ? `${path}.tool_input` : "tool_input");
 });
