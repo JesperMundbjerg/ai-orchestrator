@@ -177,7 +177,7 @@ export function WorkRow({ work, world, agents }: { work: Work; world: WorldState
 }
 
 /** Your instruction to a team: typed into its first mate's (or lead's) terminal once free. */
-export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAgent[] }) {
+export function TellTeam({ team, members, autoFocus = false }: { team: WorldTeam; members: WorldAgent[]; autoFocus?: boolean }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -206,10 +206,14 @@ export function TellTeam({ team, members }: { team: WorldTeam; members: WorldAge
       <textarea
         value={text}
         rows={3}
+        autoFocus={autoFocus}
         placeholder={`Write to ${team.name}…`}
         onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
-        onKeyDown={sendOnEnter(send)}
+        onKeyDown={(e) => {
+          sendOnEnter(send)(e);
+          if (e.key === "Escape") e.currentTarget.blur();
+        }}
       />
       <AttachedImages attachments={attachments} />
       <div className="row">

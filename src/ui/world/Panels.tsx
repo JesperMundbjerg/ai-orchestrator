@@ -187,7 +187,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
         </ul>
       </div>
 
-      <TellTeam team={team} members={members} />
+      <TellTeam team={team} members={members} autoFocus />
 
       {work.length ? (
         <div>
