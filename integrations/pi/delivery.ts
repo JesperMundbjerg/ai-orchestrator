@@ -4,7 +4,7 @@
 export const DELIVERY_ENTRY = "review-inbox-delivery-v1";
 type Phase = "attempt" | "received" | "failed" | "retryable";
 interface DeliveryState { sessionId: string; id: string; phase: Phase; text: string; error?: string }
-export interface ReceiptMessage { role: string; content: unknown }
+export interface ReceiptMessage { role: string; content?: unknown }
 
 function messageText(message: ReceiptMessage): string | null {
   if (message.role !== "user") return null;

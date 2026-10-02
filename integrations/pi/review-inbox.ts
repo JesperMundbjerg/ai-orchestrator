@@ -31,7 +31,9 @@ interface PiContext {
   isIdle(): boolean;
 }
 interface PiApi {
-  on(event: "session_start" | "session_shutdown" | "agent_end", handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: "session_start", handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: "session_shutdown", handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
+  on(event: "agent_end", handler: (event: unknown, ctx: PiContext) => void | Promise<void>): void;
   on(event: "tool_call", handler: (event: { toolName: string; toolCallId: string; input: unknown }, ctx: PiContext) => void): void;
   on(event: "model_select", handler: (event: { model: PiModel }, ctx: PiContext) => void): void;
   on(event: "session_info_changed", handler: (event: { name: string | undefined }, ctx: PiContext) => void): void;
@@ -97,10 +99,10 @@ export default function reviewInbox(pi: PiApi): void {
       "Put a result in front of the user in their Review Inbox and get their answer back in this conversation. " +
       "Use at a meaningful point, not for every turn: `decide` for a concrete question with 2-3 options (or none, for an open question the user answers in words: you get \"Answer: <text>\"; one option is refused), " +
       "`try` for a preview the user should interact with (or `pages`, a walkthrough of live pages they step through), `milestone` for an increment to accept or send back. A `try` comes back as \"Approved\" or \"Needs changes\" with a note saying what. " +
-      "Write a decision the way an engineer asks a colleague, e.g. title \"Should the tutor cover the slider or push it aside?\", " +
-      "request \"I need this to finish the isotope step. Until you answer I'll keep it docked.\", " +
-      "options [\"Overlay: tutor covers the right third; slider hidden while it talks\", \"Docked: the stage narrows; everything stays visible\"], " +
-      "recommendation \"Docked, because the lesson depends on the slider staying in view\". " +
+      "Write a decision the way an engineer asks a colleague, e.g. title \"Should search cover the note or sit beside it?\", " +
+      "request \"I need this to finish note search. Until you answer I'll keep it docked.\", " +
+      "options [\"Overlay: search covers part of the draft\", \"Docked: the editor narrows; the draft stays visible\"], " +
+      "recommendation \"Docked, because writers need the draft in view\". " +
       "Attach screenshots as evidence. Resubmitting the same key revises the item. The answer arrives later as a user message.",
     parameters: Type.Object({
       type: Type.Union([Type.Literal("decide"), Type.Literal("try"), Type.Literal("milestone")]),
@@ -113,7 +115,7 @@ export default function reviewInbox(pi: PiApi): void {
       preview_url: Type.Optional(Type.String()),
       pages: Type.Optional(Type.Array(
         Type.Object({
-          url: Type.String({ description: "http(s) URL of a live page, e.g. http://localhost:3000/sim/isotopes?step=1. Use localhost: dev servers such as Next only answer on localhost, not 127.0.0.1" }),
+          url: Type.String({ description: "http(s) URL of a live page, e.g. http://localhost:3000/notes?view=search. Use localhost: dev servers such as Next only answer on localhost, not 127.0.0.1" }),
           label: Type.Optional(Type.String({ description: "Short name, e.g. \"Step 2\"" })),
           look: Type.Optional(Type.String({ description: "What to look at on this page" })),
         }),
@@ -125,7 +127,7 @@ export default function reviewInbox(pi: PiApi): void {
       videos: Type.Optional(Type.Array(Type.String({ description: "Absolute path of an MP4, WebM or MOV video to attach (up to 200 MB each; browser-supported codecs)" }))),
       key: Type.Optional(Type.String({ description: "Stable id; reuse it to revise this item" })),
       blocking: Type.Optional(Type.Boolean({ description: "true if you are waiting on this answer rather than continuing other work" })),
-      task_title: Type.Optional(Type.String({ description: "Name of your overall task, e.g. \"Voice teacher\"" })),
+      task_title: Type.Optional(Type.String({ description: "Name of your overall task, e.g. \"Note search\"" })),
     }),
     async execute(_id, p, _signal, _onUpdate, ctx) {
       const session = sessionOf(ctx);
