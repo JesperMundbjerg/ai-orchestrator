@@ -98,6 +98,30 @@ test("an adoption failure rolls back every ALTER and its version and can be retr
   openDatabase(file).close();
 });
 
+test("a COPY of pre-checkpoint switches adopts uncertain operations conservatively", () => {
+  const dir = mkdtempSync(join(tmpdir(), "legacy-switch-copy-"));
+  const original = join(dir, "old.db");
+  const copy = join(dir, "migration.db");
+  const old = openDatabase(original);
+  old.exec("ALTER TABLE agent_switches DROP COLUMN effect; ALTER TABLE agent_switches DROP COLUMN brief_state; PRAGMA user_version = 3;");
+  for (const step of ["waiting", "opening", "starting", "briefing", "queued", "done"]) {
+    old.prepare(`INSERT INTO agent_switches (id, agent_id, agent_name, cwd, from_harness, to_harness, model, effort, step, says, started_at, updated_at)
+      VALUES (?, 'a', 'Alma', '/scratch', 'claude', 'pi', 'model', 'high', ?, '', 'x', 'x')`).run(step, step);
+  }
+  old.close();
+  const bytes = readFileSync(original);
+  copyFileSync(original, copy);
+  const db = openDatabase(copy);
+  try {
+    for (const [step, effect] of [["waiting", "legacy_handoff"], ["opening", "opening"], ["starting", "starting"], ["briefing", "briefing"], ["queued", null], ["done", null]]) {
+      assert.equal(db.prepare("SELECT effect FROM agent_switches WHERE id = ?").get(step)!.effect, effect);
+    }
+    assert.equal(db.prepare("SELECT brief_state FROM agent_switches WHERE id = 'briefing'").get()!.brief_state, "uncertain");
+    assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+  } finally { db.close(); }
+  assert.deepEqual(readFileSync(original), bytes);
+});
+
 test("a future schema is refused without modifying the file", () => {
   const file = join(mkdtempSync(join(tmpdir(), "future-db-")), "inbox.db");
   const future = new DatabaseSync(file);

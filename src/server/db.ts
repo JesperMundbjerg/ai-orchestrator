@@ -320,6 +320,15 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
   addColumn(db, "replies", "claim_owner", "TEXT");
   // Old claims did not record their transport. Never guess that they are safe to reroute.
   db.exec("UPDATE replies SET claim_transport = 'legacy' WHERE claimed_at IS NOT NULL AND claim_transport IS NULL");
+}, (db) => {
+  addColumn(db, "agent_switches", "effect", "TEXT");
+  addColumn(db, "agent_switches", "brief_state", "TEXT CHECK (brief_state IN ('queued', 'sending', 'delivered', 'uncertain'))");
+  // Pre-upgrade opening rows may already have allocated a pane whose result was lost.
+  // With no intent ledger we must not assume that opening is safe to replay.
+  db.exec(`UPDATE agent_switches SET effect = 'legacy_handoff' WHERE step = 'waiting';
+    UPDATE agent_switches SET effect = 'opening' WHERE step = 'opening' AND new_pane IS NULL;
+    UPDATE agent_switches SET effect = 'starting' WHERE step = 'starting';`);
+  db.exec("UPDATE agent_switches SET effect = 'briefing', brief_state = 'uncertain' WHERE step = 'briefing'");
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {

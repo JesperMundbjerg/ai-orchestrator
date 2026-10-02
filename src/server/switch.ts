@@ -17,6 +17,7 @@ import { HARNESS_INFO } from "../shared/harnesses.ts";
 import { DEFAULT_LEAD, MIXED, defaultBackup, type CrewChoice, type CrewRule, type CrewTree } from "../shared/crewtree.ts";
 import { startFlags } from "./crewtree.ts";
 import { InboxError } from "./inbox.ts";
+import { AgentStartingError } from "./agent-starting.ts";
 import { agentId, hookSettings, liveIdentity, type AgentSource, type LiveAgent, type World } from "./world.ts";
 
 /** What a switch needs from herdr beyond what the office already uses. */
@@ -57,6 +58,8 @@ const opt = (v: unknown): string | null => (v == null ? null : String(v));
 
 /** A failure the switch reports as it is; anything else is reported by its message. */
 class Refused extends Error {}
+/** Unknown effect outcomes need recovery, not permission to repeat the effect. */
+class RecoveryRequired extends Error {}
 
 /** Two names for one model: the crew tree says "opus", the harness reports "claude-opus-5-5" or "anthropic/claude-opus-5-5". */
 function sameModel(a: string, b: string): boolean {
@@ -104,7 +107,7 @@ function herdrName(text: string): string {
   return /^[a-z]/.test(slug) ? slug : `a-${slug}`;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export class Switches {
   private db: DatabaseSync;
@@ -113,6 +116,7 @@ export class Switches {
   private dir: string;
   private now: () => Date;
   private timing: SwitchTiming;
+  private sleep: (ms: number) => Promise<void>;
   private hidden = new Set<string>();
   private held = new Set<string>();
   private driving = new Map<string, Promise<void>>();
@@ -120,13 +124,14 @@ export class Switches {
   private tree: { at: number; tree: CrewTree | null } | null = null;
 
   /** `dir` is the service's data directory: handoffs are written under it. */
-  constructor(db: DatabaseSync, world: World, source: SwitchSource | null, dir: string, opts: { now?: () => Date; timing?: Partial<SwitchTiming> } = {}) {
+  constructor(db: DatabaseSync, world: World, source: SwitchSource | null, dir: string, opts: { now?: () => Date; timing?: Partial<SwitchTiming>; sleep?: (ms: number) => Promise<void> } = {}) {
     this.db = db;
     this.world = world;
     this.source = source;
     this.dir = dir;
     this.now = opts.now ?? (() => new Date());
     this.timing = { ...SWITCH_TIMING, ...opts.timing };
+    this.sleep = opts.sleep ?? sleep;
     world.hiddenPanes = () => this.hidden;
     world.messages.held = () => this.held;
     world.switches = this;
@@ -136,7 +141,7 @@ export class Switches {
   /** Picks up every switch a restart interrupted, where it was. */
   async resume(): Promise<void> {
     await this.source?.refresh?.().catch(() => {});
-    const open = (this.db.prepare("SELECT id, batch_id FROM agent_switches WHERE step NOT IN ('done', 'failed') ORDER BY seq, started_at").all() as Row[]);
+    const open = (this.db.prepare("SELECT id, batch_id FROM agent_switches WHERE step NOT IN ('done', 'failed') OR effect = 'cleanup' ORDER BY seq, started_at").all() as Row[]);
     for (const batch of new Set(open.flatMap((r) => (r.batch_id ? [str(r.batch_id)] : [])))) void this.runBatch(batch);
     for (const r of open) if (!r.batch_id) void this.drive(str(r.id));
   }
@@ -145,8 +150,9 @@ export class Switches {
   start(ref: string, opts: { to?: unknown; model?: unknown; effort?: unknown } = {}): AgentSwitch {
     const agent = this.find(ref);
     const id = this.insert(agent, this.plan(agent, opts), null, 0);
+    const started = this.get(id);
     void this.drive(id);
-    return this.get(id);
+    return started;
   }
 
   /** Switches every running agent on `from`, one by one; those that cannot be are said, not switched. */
@@ -164,8 +170,9 @@ export class Switches {
         skipped.push({ name: agent.name, why: (err as Error).message });
       }
     }
+    const switches = ids.map((id) => this.get(id));
     if (ids.length) void this.runBatch(batchId);
-    return { batchId, switches: ids.map((id) => this.get(id)), skipped };
+    return { batchId, switches, skipped };
   }
 
   get(id: string): AgentSwitch {
@@ -178,7 +185,7 @@ export class Switches {
     return (this.db.prepare("SELECT * FROM agent_switches ORDER BY started_at DESC, seq DESC LIMIT 100").all() as Row[]).map(toSwitch);
   }
 
-  /** Resolves once the switch has finished, done or failed. */
+  /** Resolves when the runner finishes or stops for explicit recovery. */
   async settled(id: string): Promise<AgentSwitch> {
     const s = this.get(id);
     if (s.batchId) await this.batches.get(s.batchId);
@@ -195,7 +202,7 @@ export class Switches {
       offers[a.id] = { harness: to, label: label(to), model: choice.model, effort: choice.effort, refused: this.refusal(a, to) };
     }
     const since = new Date(this.now().getTime() - RECENT_MS).toISOString();
-    const recent = (this.db.prepare("SELECT * FROM agent_switches WHERE step NOT IN ('done', 'failed') OR updated_at >= ? ORDER BY started_at, seq").all(since) as Row[]).map(toSwitch);
+    const recent = (this.db.prepare("SELECT * FROM agent_switches WHERE step NOT IN ('done', 'failed') OR effect = 'cleanup' OR updated_at >= ? ORDER BY started_at, seq").all(since) as Row[]).map(toSwitch);
     return { offers, recent };
   }
 
@@ -224,7 +231,7 @@ export class Switches {
     if (mode !== MIXED && mode !== to) return `the founder has switched ${label(to)} off in the crew guide`;
     if (!agent.cwd) return `${agent.name} has no checkout for a new session to start in`;
     if (!this.source?.available()) return "herdr is not running, and the switch goes through it";
-    const active = this.db.prepare("SELECT to_harness FROM agent_switches WHERE agent_id = ? AND step NOT IN ('done', 'failed')").get(agent.id) as Row | undefined;
+    const active = this.db.prepare("SELECT to_harness FROM agent_switches WHERE agent_id = ? AND (step NOT IN ('done', 'failed') OR effect = 'cleanup')").get(agent.id) as Row | undefined;
     if (active) return `${agent.name} is already being switched to ${label(str(active.to_harness) as Harness)}`;
     return null;
   }
@@ -255,7 +262,7 @@ export class Switches {
     const says = batchId && seq > 0 ? `Waiting for its turn: the others on ${label(agent.harness)} are switched first` : this.waitingSays(agent);
     this.db.prepare(`INSERT INTO agent_switches (id, agent_id, agent_name, cwd, from_harness, to_harness, model, effort, step, says, batch_id, seq, started_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, agent.id, agent.name, agent.cwd!, agent.harness, to, choice.model, choice.effort, batchId ? "queued" : "waiting", says, batchId, seq, at, at);
+      .run(id, agent.id, agent.name, agent.cwd!, agent.harness, to, choice.model, choice.effort, batchId && seq > 0 ? "queued" : "waiting", says, batchId, seq, at, at);
     this.changed();
     return id;
   }
@@ -272,12 +279,14 @@ export class Switches {
       const rows = this.db.prepare("SELECT id FROM agent_switches WHERE batch_id = ? ORDER BY seq").all(batchId) as Row[];
       for (const r of rows) {
         const s = this.row(str(r.id))!;
-        if (FINISHED.has(s.step as SwitchStep)) continue;
+        if (FINISHED.has(s.step as SwitchStep) && s.effect !== "cleanup") continue;
         if (s.step === "queued") {
           const agent = this.world.state().agents.find((a) => a.id === str(s.agent_id));
           this.update(str(s.id), { step: "waiting", says: agent ? this.waitingSays(agent) : `Waiting for ${str(s.agent_name)}` });
         }
         await this.drive(str(r.id));
+        const after = this.row(str(r.id))!;
+        if (!FINISHED.has(after.step as SwitchStep) || after.effect === "cleanup") return;
       }
     })().finally(() => this.batches.delete(batchId));
     this.batches.set(batchId, run);
@@ -290,15 +299,17 @@ export class Switches {
     const run = (async () => {
       for (;;) {
         const s = this.row(id);
-        if (!s || FINISHED.has(s.step as SwitchStep) || s.step === "queued") return;
+        if (!s || (FINISHED.has(s.step as SwitchStep) && s.effect !== "cleanup") || s.step === "queued" || (s.error && s.effect !== "cleanup")) return;
         let next: "wait" | "next";
         try {
+          if (s.effect === "cleanup") { await this.cleanup(s); return; }
           next = await this.advance(s);
         } catch (err) {
-          await this.fail(id, err);
+          if (err instanceof RecoveryRequired) this.pause(id, err.message);
+          else await this.fail(id, err);
           return;
         }
-        if (next === "wait") await sleep(this.timing.pollMs);
+        if (next === "wait") await this.sleep(this.timing.pollMs);
       }
     })().catch((err: Error) => console.error(`switch ${id}: ${err.message}`)).finally(() => this.driving.delete(id));
     this.driving.set(id, run);
@@ -316,6 +327,7 @@ export class Switches {
     const at = this.now().getTime();
     switch (s.step as SwitchStep) {
       case "waiting": {
+        if (s.effect === "legacy_handoff") throw new RecoveryRequired("the legacy handoff prompt outcome is unknown; inspect the old session before continuing");
         const agent = this.agent(s);
         if (!agent.paneId) {
           this.update(id, { step: "opening", says: `${name} is not running, so there is no handoff to write. Opening a pane for ${label(to)}` });
@@ -325,11 +337,14 @@ export class Switches {
           if (at - Date.parse(str(s.started_at)) > this.timing.freeMs) throw new Refused(`${name} stayed busy for ${minutes(this.timing.freeMs)}`);
           return "wait";
         }
-        const file = this.handoffPath(name);
+        const file = this.handoffPath(s);
         mkdirSync(join(file, ".."), { recursive: true });
-        await source.prompt(agent.paneId, handoffPrompt(name, label(to), file));
         const oldName = source.live().find((l) => l.paneId === agent.paneId)?.name ?? null;
-        this.update(id, { step: "handoff", handoff: file, old_pane: agent.paneId, old_name: oldName, asked_at: this.now().toISOString(), says: `Asked ${name} to write a handoff to ${file}` });
+        // Persist address and operation identity before typing. A restart waits for this
+        // same file; it never asks again just because the prompt's response was lost.
+        this.update(id, { step: "handoff", effect: "handoff", handoff: file, old_pane: agent.paneId, old_name: oldName, asked_at: this.now().toISOString(), says: `Asking ${name} to write a handoff to ${file}` });
+        await source.prompt(agent.paneId, handoffPrompt(name, label(to), file));
+        this.update(id, { effect: null, says: `Asked ${name} to write a handoff to ${file}` });
         return "next";
       }
       case "handoff": {
@@ -337,7 +352,7 @@ export class Switches {
         const file = str(s.handoff);
         const written = fileState(file);
         if (written && written.size > 0 && (!agent.paneId || FREE.has(agent.status) || at - written.mtimeMs >= this.timing.quietMs)) {
-          this.update(id, { step: "opening", says: `${name} wrote its handoff. Opening a pane for ${label(to)} beside it` });
+          this.update(id, { step: "opening", effect: null, says: `${name} wrote its handoff. Opening a pane for ${label(to)} beside it` });
           return "next";
         }
         if (!agent.paneId) throw new Refused(`${name} stopped running before it wrote its handoff`);
@@ -345,6 +360,7 @@ export class Switches {
         return "wait";
       }
       case "opening": {
+        if (s.effect === "opening") throw new RecoveryRequired(`pane creation outcome is unknown for operation switch:${id}:opening; inspect that tagged pane instead of opening another`);
         const why = this.refusalNow(s);
         if (why) throw new Refused(why);
         const agent = this.agent(s);
@@ -355,15 +371,18 @@ export class Switches {
         const base = herdrName(oldName ?? name).replace(/-(claude|pi)(-\d+)?$/, "").slice(0, 24);
         let newName = `${base}-${to}`;
         for (let n = 2; taken.has(newName); n++) newName = `${base}-${to}-${n}`;
-        const pane = await source.openPane(str(s.cwd), beside, name);
-        this.update(id, { step: "starting", new_pane: pane, new_name: newName, old_pane: agent.paneId, old_name: oldName, says: `Starting ${label(to)} (${str(s.model)}, ${str(s.effort)} effort) ${agent.paneId ? `beside ${name}` : "in its checkout"}` });
+        this.update(id, { effect: "opening", new_name: newName, old_pane: agent.paneId, old_name: oldName, says: `Opening a pane (operation switch:${id}:opening)` });
+        const pane = await source.openPane(str(s.cwd), beside, `${name} [switch:${id}:opening]`);
+        this.update(id, { step: "starting", effect: null, new_pane: pane, says: `Starting ${label(to)} (${str(s.model)}, ${str(s.effort)} effort) ${agent.paneId ? `beside ${name}` : "in its checkout"}` });
         return "next";
       }
       case "starting": {
         const pane = str(s.new_pane);
         const running = () => source.live().some((l) => l.paneId === pane && l.harness === to);
         if (!running()) {
+          if (s.effect === "starting") throw new RecoveryRequired(`launch outcome is unknown in pane ${pane}; inspect it before launching again`);
           const choice = { harness: to, model: str(s.model), effort: str(s.effort) };
+          this.update(id, { effect: "starting" });
           try {
             await source.startAgent(pane, str(s.new_name), to, [...startFlags(choice), ...(to === "claude" ? hookSettings(str(s.cwd)) : [])]);
           } catch (err) {
@@ -374,12 +393,14 @@ export class Switches {
           if (!running()) throw new Refused(`${label(to)} did not start in the new pane`);
         }
         const old = opt(s.old_pane);
-        this.update(id, { step: "closing", says: old ? `${label(to)} is running. Closing ${name}'s ${label(from)} pane` : `${label(to)} is running` });
+        this.update(id, { step: "closing", effect: null, says: old ? `${label(to)} is running. Closing ${name}'s ${label(from)} pane` : `${label(to)} is running` });
         return "next";
       }
       case "closing": {
+        if (!source.live().some((l) => l.paneId === s.new_pane && l.harness === to)) throw new Refused("the new session stopped before the old pane could close");
         const old = opt(s.old_pane);
         if (old && source.live().some((l) => l.paneId === old)) {
+          this.update(id, { effect: "closing" });
           try {
             await source.closePane(old);
           } catch (err) {
@@ -387,7 +408,7 @@ export class Switches {
             if (source.live().some((l) => l.paneId === old)) throw new Refused(`${name}'s ${label(from)} pane would not close (herdr: ${(err as Error).message})`);
           }
         }
-        this.update(id, { step: "taking_over", says: `${name} is taking over in the ${label(to)} session` });
+        this.update(id, { step: "taking_over", effect: null, says: `${name} is taking over in the ${label(to)} session` });
         return "next";
       }
       case "taking_over": {
@@ -400,20 +421,29 @@ export class Switches {
         }
         await source.refresh?.().catch(() => {});
         live = source.live().find((l) => l.paneId === pane) ?? live;
-        if (!live) throw new Refused(`the new ${label(to)} session stopped before it could take over`);
+        if (!live || live.harness !== to) throw new Refused(`the new ${label(to)} session stopped before it could take over`);
         this.takeOver(s, live);
         return "next";
       }
       case "briefing": {
+        if (s.effect === "briefing") throw new RecoveryRequired("brief delivery was not confirmed; it may have arrived. Verify receipt before releasing ordinary deliveries");
         const agent = this.agent(s);
+        if (!agent.paneId || agent.paneId !== s.new_pane) throw new RecoveryRequired("the replacement session left before its brief arrived");
+        // The brief is a prerequisite, not an ordinary message. Busy/trust-prompt waits
+        // stay queued here and all existing messages remain held, even across restarts.
+        if (!FREE.has(agent.status)) return "wait";
         const text = briefPrompt(name, label(from), opt(s.handoff), agent.role === "lead");
+        this.update(id, { effect: "briefing", brief_state: "sending" });
         try {
           await source.prompt(str(s.new_pane), text);
-        } catch {
-          // It cannot take a prompt now (asking whether to trust the folder, say): it gets the brief as a message once it is free.
-          this.world.messages.notice(agent.id, text);
+        } catch (err) {
+          if (err instanceof AgentStartingError) {
+            this.update(id, { effect: null, brief_state: "queued", says: `${name}'s brief is queued until the new session can take it; ordinary deliveries are held` });
+            return "wait";
+          }
+          throw new RecoveryRequired(`brief delivery was not confirmed (${(err as Error).message}); it may have arrived. Verify receipt before releasing ordinary deliveries`);
         }
-        this.update(id, { step: "done", says: `${name} runs on ${label(to)} now (${str(s.model)}, ${str(s.effort)} effort)${opt(s.handoff) ? ", with its handoff" : ""}` });
+        this.update(id, { step: "done", effect: null, brief_state: "delivered", says: `${name} runs on ${label(to)} now (${str(s.model)}, ${str(s.effort)} effort)${opt(s.handoff) ? ", with its handoff" : ""}` });
         return "next";
       }
       default:
@@ -442,7 +472,7 @@ export class Switches {
           .run(agentId(`${before}|switched|${str(s.id)}`), before, `${str(s.agent_name)} (${label(str(s.from_harness) as Harness)})`, at, at);
       }
       if (s.old_pane) this.db.prepare("UPDATE teams SET lead_pane = ? WHERE lead_pane = ?").run(str(s.new_pane), str(s.old_pane));
-      this.write(str(s.id), { step: "briefing", says: `${str(s.agent_name)} has taken over. Giving the ${label(str(s.to_harness) as Harness)} session its brief` });
+      this.write(str(s.id), { step: "briefing", effect: null, brief_state: "queued", says: `${str(s.agent_name)} has taken over. Its brief is queued; ordinary deliveries are held until it arrives` });
     });
     this.recount();
     this.world.onChange("world");
@@ -462,16 +492,38 @@ export class Switches {
     const s = this.row(id);
     if (!s) return;
     const why = (err as Error)?.message ?? String(err);
-    const name = str(s.agent_name);
-    const to = str(s.to_harness) as Harness;
-    let after: string;
-    if (UNDOABLE.has(s.step as SwitchStep)) {
-      if (s.new_pane) await this.source?.closePane(str(s.new_pane)).catch(() => {});
-      after = `${name} is left as it was`;
-    } else {
-      after = `${name}'s old pane is already closed; the ${label(to)} session${s.new_pane ? ` in pane ${str(s.new_pane)}` : ""} carries on`;
+    if (s.effect === "opening" && !s.new_pane) {
+      this.pause(id, `pane creation outcome is unknown for operation switch:${id}:opening (${why}); inspect that tagged pane instead of opening another`);
+      return;
     }
-    this.update(id, { step: "failed", error: why, says: `Not switched: ${why}. ${after}.` });
+    if (!UNDOABLE.has(s.step as SwitchStep) || (s.step === "closing" && s.old_pane && !this.source?.live().some((l) => l.paneId === s.old_pane))) {
+      this.pause(id, `${why}; the old pane is already closed. Ordinary deliveries stay held until the brief is confirmed`);
+      return;
+    }
+    // Record rollback before closing a known resource. A restart can safely retry
+    // closing this exact pane, never allocate or launch another replacement.
+    this.update(id, { step: "failed", effect: s.new_pane ? "cleanup" : null, error: why, says: `Not switched: ${why}. ${str(s.agent_name)} is left as it was${s.new_pane ? "; closing its new pane" : ""}.` });
+    if (s.new_pane) await this.cleanup(this.row(id)!);
+  }
+
+  private pause(id: string, why: string): void {
+    const s = this.row(id);
+    this.update(id, { error: why, says: `Recovery required: ${why}.`, ...(s?.step === "briefing" ? { brief_state: "uncertain" } : {}) });
+  }
+
+  private async cleanup(s: Row): Promise<void> {
+    try {
+      if (!this.source) throw new Error("herdr is not available");
+      await this.source.closePane(str(s.new_pane));
+    } catch (err) {
+      // Closing an absent resource is already done. All other outcomes remain visible
+      // and retain their checkpoint for the next restart's cleanup attempt.
+      if (!/pane.*(?:not found|does not exist)|no such pane/i.test((err as Error).message)) {
+        this.update(str(s.id), { says: `Cleanup pending: ${(err as Error).message}. Close replacement pane ${str(s.new_pane)}; ${str(s.agent_name)} is left as it was.` });
+        return;
+      }
+    }
+    this.update(str(s.id), { effect: null, says: `Not switched: ${str(s.error)}. ${str(s.agent_name)} is left as it was.` });
   }
 
   /** What the founder may have changed since the switch was asked for: the switch, or the agent itself. */
@@ -496,9 +548,9 @@ export class Switches {
     return (mates.find((a) => a.role === "lead") ?? mates[0])?.paneId ?? null;
   }
 
-  private handoffPath(name: string): string {
-    const stamp = this.now().toISOString().replace(/[:.]/g, "-");
-    return join(this.dir, "handoffs", "switch", `${herdrName(name)}-${stamp}.md`);
+  private handoffPath(s: Row): string {
+    const stamp = str(s.started_at).replace(/[:.]/g, "-");
+    return join(this.dir, "handoffs", "switch", `${herdrName(str(s.agent_name))}-${stamp}-${str(s.id)}.md`);
   }
 
   private row(id: string): Row | undefined {
@@ -527,9 +579,9 @@ export class Switches {
    * deliveries wait: everyone being switched, until the new session has its brief.
    */
   private recount(): void {
-    const rows = this.db.prepare("SELECT * FROM agent_switches WHERE step NOT IN ('done', 'failed', 'queued')").all() as Row[];
+    const rows = this.db.prepare("SELECT * FROM agent_switches WHERE step NOT IN ('done', 'failed') OR effect = 'cleanup'").all() as Row[];
     this.hidden = new Set(rows.flatMap((r) => [
-      ...(r.new_pane && ["starting", "closing", "taking_over"].includes(str(r.step)) ? [str(r.new_pane)] : []),
+      ...(r.new_pane && (["starting", "closing", "taking_over"].includes(str(r.step)) || r.effect === "cleanup") ? [str(r.new_pane)] : []),
       ...(r.old_pane && r.step === "taking_over" ? [str(r.old_pane)] : []),
     ]));
     this.held = new Set(rows.map((r) => str(r.agent_id)));

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/server/db.ts";
@@ -21,14 +21,14 @@ function fakeHerdr() {
   const prompts: Array<{ pane: string; text: string }> = [];
   const cwds = new Map<string, string>();
   let panes = 0;
-  const hooks: { onPrompt?: (pane: string, text: string) => void; startAgent?: (pane: string) => Promise<void> | void; seen?: () => void } = {};
+  const hooks: { onPrompt?: (pane: string, text: string) => Promise<void> | void; startAgent?: (pane: string) => Promise<void> | void; seen?: () => void } = {};
   const source: SwitchSource = {
     available: () => true,
     live: () => live,
     prompt: async (pane, text) => {
       events.push(`prompt ${pane}`);
       prompts.push({ pane, text });
-      hooks.onPrompt?.(pane, text);
+      await hooks.onPrompt?.(pane, text);
     },
     notify: async () => {},
     createWorktree: async () => ({ paneId: "unused" }),
@@ -63,14 +63,14 @@ function fakeHerdr() {
   };
 }
 
-function office(db: DatabaseSync = openDatabase(":memory:"), herdr = fakeHerdr(), mode = "mixed", timing: Partial<typeof TIMING> = {}) {
+function office(db: DatabaseSync = openDatabase(":memory:"), herdr = fakeHerdr(), mode = "mixed", timing: Partial<typeof TIMING> = {}, scheduler: { now?: () => Date; sleep?: (ms: number) => Promise<void> } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "switch-test-"));
   const presence: PresenceSource = { available: () => true, forSession: () => null, resolvePane: () => null };
-  const inbox = new Inbox(db, join(dir, "files"), presence);
-  const world = new World(db, herdr.source, () => inbox.state());
+  const inbox = new Inbox(db, join(dir, "files"), presence, scheduler.now);
+  const world = new World(db, herdr.source, () => inbox.state(), scheduler.now);
   world.crew = new CrewTreeStore(dir, { piStore: join(dir, "none.json") });
   if (mode !== "mixed") world.crew.save({ ...world.crew.state().tree, mode } satisfies CrewTree);
-  const switches = new Switches(db, world, herdr.source, dir, { timing: { ...TIMING, ...timing } });
+  const switches = new Switches(db, world, herdr.source, dir, { timing: { ...TIMING, ...timing }, ...scheduler });
   return { db, world, switches, herdr, dir };
 }
 
@@ -144,7 +144,7 @@ test("a running agent writes its handoff, the new harness takes over its name, t
   assert.match(h.events[2]!, /start new1 pi kestrel-pi --model openai-codex\/gpt-6\.1-sol:high/);
   assert.match(h.events[4]!, /rename new1 kestrel$/, "the new session goes by the old herdr name");
   const handoff = done.handoff!;
-  assert.match(handoff, new RegExp(`handoffs/switch/${kestrel.name.toLowerCase()}-[0-9T-]+Z\\.md$`));
+  assert.match(handoff, new RegExp(`handoffs/switch/${kestrel.name.toLowerCase()}-[0-9T-]+Z-[a-f0-9]{8}\\.md$`));
   assert.match(h.prompts[1]!.text, new RegExp(`You are ${kestrel.name}.*read the handoff it wrote for you: ${handoff.replaceAll(".", "\\.")}`));
 
   // The message queued for it went to nobody during the switch, and reaches the new session after its brief.
