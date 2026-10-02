@@ -13,7 +13,7 @@ import { reviewExcerpt } from "./review-excerpt.ts";
 const DOING_MS = 120_000;
 /** A helper nobody hears from for this long is taken to be gone. */
 const HELPER_MS = 30 * 60_000;
-/** Tools that start sub-agents: Pi's fysiklab `agent` / `agents`. Claude reports its own through SubagentStart. */
+/** Tools that start sub-agents: Pi extensions' `agent` / `agents`. Claude reports its own through SubagentStart. */
 const PI_HELPER_TOOLS = new Set(["agent", "agents"]);
 
 interface Doing { text: string; at: number }

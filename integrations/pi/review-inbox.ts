@@ -5,6 +5,7 @@
 // Install: add this file's absolute path to `extensions` in ~/.pi/agent/settings.json.
 
 import { Type } from "typebox";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Deliveries, type ReceiptMessage } from "./delivery.ts";
 import { acknowledge, call, fetchReplies, formatReply } from "../../src/shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../../src/shared/decision.ts";
@@ -13,8 +14,8 @@ import { projectRoot } from "../../src/shared/project.ts";
 import { codexHeaderReadings } from "../../src/shared/usage.ts";
 import type { ActivityEvent, EffortReport, ItemType, SessionInput, SubmitResult } from "../../src/shared/types.ts";
 
-// Receipt/persistence APIs verified against @earendil-works/pi-coding-agent 0.86.0.
-// The slice is kept here so ordinary inbox startup needs no runtime Pi SDK dependency.
+// Receipt/persistence APIs supported against the pinned Pi SDK 0.86.0, checked below.
+// Keep the narrow testable slice and an erased SDK import: no runtime SDK dependency.
 interface PiModel { id: string; provider: string; reasoning?: boolean; thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>> }
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -275,3 +276,6 @@ export default function reviewInbox(pi: PiApi): void {
     timer = null;
   });
 }
+
+// The adapter must accept the real pinned SDK API, not just our mocks.
+reviewInbox satisfies (pi: ExtensionAPI) => void;
