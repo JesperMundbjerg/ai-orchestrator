@@ -5,6 +5,8 @@
 
 /** While you or anyone walks, the view turns or zooms, or a flight is under way. */
 export const MOVING_FPS = 20;
+/** First-person motion outside needs smaller steps than watching the office's avatars. */
+export const OUTDOOR_FPS = 60;
 /** While someone ambles in the garden or the view settles, without the cost of full motion. */
 export const AMBLING_FPS = 10;
 /** When nothing moves but the small things: breathing, lamps, tools, wheels, ducks. */
@@ -21,6 +23,8 @@ export const SHADOW_MS = 200;
 /** The pace of one office's frames, on a clock in milliseconds (performance.now in the browser). */
 export class Pacer {
   lastMotion = -Infinity;
+  lastOutdoorMotion = -Infinity;
+  outdoors = false;
   lastAmble = -Infinity;
   lastFrame = -Infinity;
   lastShadow = -Infinity;
@@ -29,6 +33,15 @@ export class Pacer {
   moved(now: number): void {
     this.lastMotion = Math.max(this.lastMotion, now);
   }
+
+  /** Only the player's outdoor motion, never wildlife or office avatars, earns this rate. */
+  walkedOutside(now: number): void {
+    this.lastOutdoorMotion = Math.max(this.lastOutdoorMotion, now);
+    this.moved(now);
+  }
+
+  /** Returning indoors immediately restores office pacing, even during the outdoor linger. */
+  outside(value: boolean): void { this.outdoors = value; }
 
   /** Someone out in the garden walked in this frame: worth drawing, but no hurry. */
   ambled(now: number): void {
@@ -49,7 +62,8 @@ export class Pacer {
     if (!visible) return null;
     const settling = now - this.lastMotion < LINGER_MS + SETTLE_MS;
     const ambling = now - this.lastAmble < AMBLE_LINGER_MS;
-    const every = 1000 / (this.moving(now) ? MOVING_FPS : settling || ambling ? AMBLING_FPS : STILL_FPS);
+    const outdoorMotion = this.outdoors && now - this.lastOutdoorMotion < LINGER_MS;
+    const every = 1000 / (outdoorMotion ? OUTDOOR_FPS : this.moving(now) ? MOVING_FPS : settling || ambling ? AMBLING_FPS : STILL_FPS);
     return Math.max(0, Math.min(every, this.lastFrame + every - now));
   }
 

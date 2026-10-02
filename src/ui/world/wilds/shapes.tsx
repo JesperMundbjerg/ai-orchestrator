@@ -1,5 +1,5 @@
 // Baked low-poly models: one coloured geometry per kind/LOD, not meshes per tree or limb.
-import { BoxGeometry, BufferGeometry, Color, ConeGeometry, CylinderGeometry, Float32BufferAttribute, IcosahedronGeometry, Matrix4, Quaternion, Vector3 } from "three";
+import { BoxGeometry, BufferGeometry, Color, ConeGeometry, CylinderGeometry, Float32BufferAttribute, IcosahedronGeometry, Matrix4, MeshStandardMaterial, Quaternion, Vector3 } from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import type { Kind, Lod } from "./land.ts";
 import type { Species } from "./animals.ts";
@@ -7,6 +7,12 @@ import type { Species } from "./animals.ts";
 type V3 = [number, number, number];
 class Model {
   parts: BufferGeometry[] = [];
+  animated = false;
+  motion = { pivot: [0, 0, 0] as V3, axis: 0, amplitude: 0, offset: 0 };
+  limb(pivot: V3, axis: number, amplitude: number, offset: number, draw: () => void) {
+    this.motion = { pivot, axis, amplitude, offset }; draw();
+    this.motion = { pivot: [0, 0, 0], axis: 0, amplitude: 0, offset: 0 };
+  }
   add(g: BufferGeometry, at: V3, size: V3, hex: string, tilt = 0) {
     const raw = g.index ? g.toNonIndexed() : g;
     if (raw !== g) g.dispose();
@@ -15,6 +21,16 @@ class Model {
     const c = new Color(hex), colors = new Float32Array(raw.getAttribute("position").count * 3);
     for (let i = 0; i < colors.length; i += 3) c.toArray(colors, i);
     raw.setAttribute("color", new Float32BufferAttribute(colors, 3));
+    if (this.animated) {
+      const count = raw.getAttribute("position").count;
+      const pivots = new Float32Array(count * 3), motions = new Float32Array(count * 3);
+      for (let i = 0; i < count; i++) {
+        pivots.set(this.motion.pivot, i * 3);
+        motions.set([this.motion.axis, this.motion.amplitude, this.motion.offset], i * 3);
+      }
+      raw.setAttribute("limbPivot", new Float32BufferAttribute(pivots, 3));
+      raw.setAttribute("limbMotion", new Float32BufferAttribute(motions, 3));
+    }
     this.parts.push(raw);
   }
   blob(at: V3, size: V3, color: string, detail = 0) { this.add(new IcosahedronGeometry(1, detail), at, size, color); }
@@ -43,8 +59,29 @@ export function scenery(kind: Kind, lod: Lod): BufferGeometry {
   }
   return m.finish();
 }
+/** Static baked vertices, rigid local pivots, and two floats per instance; no skeleton or extra draws. */
+export function animalMaterial(): MeshStandardMaterial {
+  const material = new MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1 });
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', `#include <common>
+attribute vec3 limbPivot;
+attribute vec3 limbMotion;
+attribute vec2 instanceGait;
+mat3 limbRotation() {
+  float a = sin(instanceGait.x + limbMotion.z) * instanceGait.y * limbMotion.y;
+  float c = cos(a), s = sin(a);
+  if (limbMotion.x > 1.5) return mat3(c,s,0., -s,c,0., 0.,0.,1.);
+  return mat3(1.,0.,0., 0.,c,s, 0.,-s,c);
+}`)
+      .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\nobjectNormal = limbRotation() * objectNormal;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\ntransformed = limbPivot + limbRotation() * (transformed - limbPivot);');
+  };
+  material.customProgramCacheKey = () => 'wilds-rigid-gait-v1';
+  return material;
+}
+
 export function creature(kind: Species): BufferGeometry {
-  const m = new Model();
+  const m = new Model(); m.animated = true;
   if (kind === "deer") {
     m.blob([0, 0.95, 0], [0.32, 0.4, 0.67], "#b7895b");
     m.blob([0, 1.43, 0.43], [0.19, 0.48, 0.23], "#bb9269");
@@ -53,7 +90,8 @@ export function creature(kind: Species): BufferGeometry {
     for (const s of [-1, 1]) {
       m.blob([s * 0.23, 2.02, 0.53], [0.12, 0.22, 0.07], "#ad8158");
       m.blob([s * 0.17, 1.86, 0.76], [0.035, 0.035, 0.035], "#252c28");
-      for (const z of [-0.42, 0.4]) m.box([s * 0.23, 0.42, z], [0.09, 0.84, 0.1], "#846445");
+      for (const z of [-0.42, 0.4]) m.limb([s * 0.23, 0.84, z], 1, 0.65, s * z > 0 ? 0 : Math.PI, () =>
+        m.box([s * 0.23, 0.42, z], [0.09, 0.84, 0.1], "#846445"));
     }
     m.blob([0, 1.05, -0.65], [0.15, 0.18, 0.15], "#e8dcc7");
   } else if (kind === "rabbit") {
@@ -62,7 +100,8 @@ export function creature(kind: Species): BufferGeometry {
     for (const s of [-1, 1]) {
       m.blob([s * 0.085, 0.69, 0.22], [0.045, 0.22, 0.06], "#ab967f");
       m.blob([s * 0.135, 0.47, 0.33], [0.026, 0.026, 0.026], "#252c28");
-      m.blob([s * 0.17, 0.08, 0.11], [0.11, 0.08, 0.18], "#b4a38d");
+      for (const z of [-0.19, 0.19]) m.limb([s * 0.17, 0.22, z], 1, 0.8, z < 0 ? Math.PI : 0, () =>
+        m.blob([s * 0.17, 0.08, z], [0.09, 0.08, z < 0 ? 0.2 : 0.13], "#b4a38d"));
     }
     m.blob([0, 0.27, -0.31], [0.12, 0.12, 0.12], "#efe8d8");
   } else {
@@ -70,7 +109,12 @@ export function creature(kind: Species): BufferGeometry {
     m.blob([0, 0.15, 0], [0.22, 0.16, 0.36], duck ? "#b7aa8f" : "#566879");
     m.blob([0, 0.37, 0.25], [0.13, 0.14, 0.15], duck ? "#3c7157" : "#425568");
     m.box([0, 0.34, 0.41], [0.1, 0.045, 0.17], "#d2a34f");
-    if (!duck) for (const s of [-1, 1]) m.blob([s * 0.4, 0.16, -0.04], [0.45, 0.04, 0.22], "#728393");
+    for (const s of [-1, 1]) {
+      if (duck) m.limb([s * 0.13, 0.08, 0], 1, 0.8, s < 0 ? Math.PI : 0, () =>
+        m.box([s * 0.13, -0.04, 0.06], [0.1, 0.035, 0.18], "#d2a34f"));
+      else m.limb([s * 0.17, 0.16, -0.04], 2, s * 0.85, 0, () =>
+        m.blob([s * 0.4, 0.16, -0.04], [0.45, 0.04, 0.22], "#728393"));
+    }
   }
   return m.finish();
 }

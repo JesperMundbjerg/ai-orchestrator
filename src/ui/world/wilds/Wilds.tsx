@@ -1,10 +1,11 @@
 import { addAfterEffect, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useRef } from "react";
-import { BufferAttribute, BufferGeometry, Group, InstancedMesh, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry } from "three";
+import { BufferAttribute, BufferGeometry, Group, InstancedBufferAttribute, InstancedMesh, Mesh, MeshStandardMaterial, Object3D, PlaneGeometry } from "three";
 import type { Rect } from "../building.ts";
 import { ANIMAL_RADIUS, MAX_ANIMALS, populate, stepAnimals, type Animal, type Species } from "./animals.ts";
 import { CHUNK, GRID, MAX_CHUNKS, Stream, WATER, type Chunk, type Kind } from "./land.ts";
-import { creature, scenery } from "./shapes.tsx";
+import { animalMaterial, creature, scenery } from "./shapes.tsx";
+import { gaitPose } from "./gait.ts";
 
 const KINDS: Kind[] = ["pine", "oak", "rock", "grass", "shore"];
 const SPECIES: Species[] = ["deer", "rabbit", "duck", "bird"];
@@ -31,6 +32,7 @@ export function Wilds({ office }: { office: Rect }) {
   const drawing = useRef<Drawing | null>(null);
   const matrix = useRef(new Object3D());
   const frameStart = useRef(0);
+  const work = useRef({ rebuildMs: 0, installMs: 0, swaps: 0 });
   const size = JSON.stringify(office);
   useEffect(() => {
     const root = new Group();
@@ -58,8 +60,11 @@ export function Wilds({ office }: { office: Rect }) {
       plants.set(`${lod}:${kind}`, mesh); root.add(mesh); geometries.push(g);
     }
     const life = new Map<Species, InstancedMesh>();
+    const lifeMaterial = animalMaterial();
     for (const kind of SPECIES) {
-      const g = creature(kind), mesh = new InstancedMesh(g, material, MAX_ANIMALS);
+      const g = creature(kind);
+      g.setAttribute('instanceGait', new InstancedBufferAttribute(new Float32Array(MAX_ANIMALS * 2), 2));
+      const mesh = new InstancedMesh(g, lifeMaterial, MAX_ANIMALS);
       mesh.count = 0; mesh.frustumCulled = false;
       life.set(kind, mesh); root.add(mesh); geometries.push(g);
     }
@@ -83,6 +88,7 @@ export function Wilds({ office }: { office: Rect }) {
       busy = false;
       if (stopped) return;
       // A teleport may have invalidated this request. Do not install or cache stale results.
+      const installStart = performance.now();
       if (stream.accept(data)) {
         const mesh = d.free.pop()!;
         const g = mesh.geometry;
@@ -96,6 +102,7 @@ export function Wilds({ office }: { office: Rect }) {
         d.slots.set(data.key, mesh);
         d.dirty = true;
       }
+      work.current.installMs += performance.now() - installStart;
       // A worker message is itself a task-sized slice. No render-rate promotion during loading.
       d.pump();
     };
@@ -104,7 +111,7 @@ export function Wilds({ office }: { office: Rect }) {
       stopped = true; worker.terminate(); drawing.current = null;
       scene.remove(root);
       for (const mesh of [...plants.values(), ...life.values(), water]) mesh.dispose();
-      geometries.forEach((g) => g.dispose()); material.dispose(); waterMaterial.dispose();
+      geometries.forEach((g) => g.dispose()); material.dispose(); waterMaterial.dispose(); lifeMaterial.dispose();
     };
   }, [scene, size]);
 
@@ -115,6 +122,7 @@ export function Wilds({ office }: { office: Rect }) {
     if (!d) return;
     const { x, z } = camera.position;
     if (d.stream.move(x, z)) {
+      work.current.swaps++;
       for (const [key, mesh] of d.slots) if (!d.stream.chunks.has(key)) {
         mesh.visible = false; d.free.push(mesh); d.slots.delete(key);
       }
@@ -123,6 +131,7 @@ export function Wilds({ office }: { office: Rect }) {
     d.pump();
     const o = matrix.current;
     if (d.dirty) {
+      const rebuildStart = performance.now();
       for (const mesh of d.plants.values()) mesh.count = 0;
       d.water.count = 0;
       for (const w of d.stream.desired) {
@@ -142,6 +151,7 @@ export function Wilds({ office }: { office: Rect }) {
       }
       for (const mesh of [...d.plants.values(), d.water]) mesh.instanceMatrix.needsUpdate = true;
       d.dirty = false;
+      work.current.rebuildMs = performance.now() - rebuildStart;
     }
     if (Math.hypot(x - d.animalX, z - d.animalZ) > 3) {
       d.animals = populate(d.animals, x, z, office); d.animalX = x; d.animalZ = z;
@@ -159,26 +169,36 @@ export function Wilds({ office }: { office: Rect }) {
     for (const mesh of d.life.values()) mesh.count = 0;
     for (const a of d.animals) {
       const mesh = d.life.get(a.kind)!;
-      const hop = a.kind === "rabbit" ? Math.max(0, Math.sin(a.phase * (a.fleeing ? 16 : 7))) * 0.12 : Math.sin(a.phase * 8) * 0.015;
-      o.position.set(a.x, a.y + hop, a.z); o.rotation.set(0, a.yaw, a.kind === "bird" ? Math.sin(a.phase * 7) * 0.18 : 0); o.scale.setScalar(1); o.updateMatrix();
+      const pose = gaitPose(a.kind, a.gait ?? 0, a.speed ?? 0);
+      (mesh.geometry.getAttribute('instanceGait') as InstancedBufferAttribute).setXY(mesh.count, pose.phase, pose.strength);
+      o.position.set(a.x, a.y + pose.hop, a.z); o.rotation.set(0, a.yaw, 0); o.scale.setScalar(1); o.updateMatrix();
       mesh.setMatrixAt(mesh.count++, o.matrix);
     }
-    for (const mesh of d.life.values()) mesh.instanceMatrix.needsUpdate = true;
+    for (const mesh of d.life.values()) {
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.geometry.getAttribute('instanceGait').needsUpdate = true;
+    }
   }, -0.5);
 
   // Opt-in read-only instrumentation. Fixed-size sample ring, no performance history leak.
   useEffect(() => {
     if (!new URLSearchParams(location.search).has("wildsMeasure")) return;
     const intervals: number[] = [], costs: number[] = [];
+    const samples: object[] = [];
+    let seq = 0;
     let last = performance.now();
     const off = addAfterEffect(() => {
       const now = performance.now();
-      intervals.push(now - last); costs.push(now - frameStart.current); last = now;
+      intervals.push(now - last); costs.push(now - frameStart.current);
+      samples.push({ seq: ++seq, time: now, interval: now - last, cpu: now - frameStart.current, z: camera.position.z, calls: gl.info.render.calls, triangles: gl.info.render.triangles, geometries: gl.info.memory.geometries, ...work.current });
+      if (samples.length > 240) samples.shift();
+      work.current.rebuildMs = 0; work.current.installMs = 0; work.current.swaps = 0;
+      last = now;
       if (intervals.length > 240) { intervals.shift(); costs.shift(); }
     });
-    const api = { read: () => ({ position: camera.position.toArray(), calls: gl.info.render.calls, triangles: gl.info.render.triangles, geometries: gl.info.memory.geometries, textures: gl.info.memory.textures, chunks: drawing.current?.stream.chunks.size ?? 0, terrainSlots: drawing.current ? drawing.current.slots.size + drawing.current.free.length : 0, instanceBatches: drawing.current ? drawing.current.plants.size + drawing.current.life.size + 1 : 0, pending: drawing.current?.stream.desired.filter((w) => !drawing.current?.stream.chunks.has(w.key)).length ?? 0, animals: drawing.current?.animals.map((a) => ({ ...a })) ?? [], intervals: [...intervals], costs: [...costs] }) };
+    const api = { read: () => ({ officeVisible: scene.getObjectByName('Office — visibility gate')?.visible, samples: [...samples], position: camera.position.toArray(), calls: gl.info.render.calls, triangles: gl.info.render.triangles, geometries: gl.info.memory.geometries, textures: gl.info.memory.textures, chunks: drawing.current?.stream.chunks.size ?? 0, terrainSlots: drawing.current ? drawing.current.slots.size + drawing.current.free.length : 0, instanceBatches: drawing.current ? drawing.current.plants.size + drawing.current.life.size + 1 : 0, pending: drawing.current?.stream.desired.filter((w) => !drawing.current?.stream.chunks.has(w.key)).length ?? 0, animals: drawing.current?.animals.map((a) => ({ ...a })) ?? [], intervals: [...intervals], costs: [...costs] }) };
     Object.assign(window, { __wilds: api });
     return () => { off(); Reflect.deleteProperty(window, "__wilds"); };
-  }, [camera, gl]);
+  }, [camera, gl, scene]);
   return null;
 }

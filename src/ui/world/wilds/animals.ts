@@ -4,7 +4,7 @@ import { away, CHUNK, chunkAt, ground, hash, WATER } from "./land.ts";
 export const MAX_ANIMALS = 12;
 export const ANIMAL_RADIUS = 36;
 export type Species = "deer" | "rabbit" | "duck" | "bird";
-export interface Animal { id: string; kind: Species; x: number; z: number; y: number; yaw: number; homeX: number; homeZ: number; phase: number; fleeing: boolean }
+export interface Animal { id: string; kind: Species; x: number; z: number; y: number; yaw: number; homeX: number; homeZ: number; phase: number; fleeing: boolean; speed?: number; gait?: number }
 /** Local candidates only. No global animal history; revisiting regenerates the same population. */
 export function populate(previous: Animal[], x: number, z: number, office: Rect): Animal[] {
   const [cx, cz] = chunkAt(x, z), candidates: Animal[] = [];
@@ -31,7 +31,11 @@ export function stepAnimals(animals: Animal[], x: number, z: number, dt: number,
     const speed = a.fleeing ? (a.kind === "duck" ? 1.3 : 3.8) : a.kind === "bird" ? 1.8 : 0.45;
     const nx = a.x + Math.sin(angle) * speed * step, nz = a.z + Math.cos(angle) * speed * step, h = ground(nx, nz, office);
     const habitat = a.kind === "bird" || (a.kind === "duck" ? h < WATER - 0.08 : h > WATER + 0.12);
-    if (habitat && away(office, nx, nz) > 6) { a.x = nx; a.z = nz; }
+    a.speed = habitat && away(office, nx, nz) > 6 ? speed : 0;
+    if (a.speed) { a.x = nx; a.z = nz; }
+    // Distance, not wall-clock time: blocked animals plant their feet; fleeing speeds the cycle.
+    const cadence = Math.min(a.speed * (a.kind === "deer" ? 5 : a.kind === "rabbit" ? 14 : 9), a.kind === "rabbit" ? 28 : 24);
+    a.gait = ((a.gait ?? a.phase) + step * cadence) % (Math.PI * 2);
     a.yaw = angle;
     a.y = a.kind === "duck" ? WATER : ground(a.x, a.z, office) + (a.kind === "bird" ? 5 + Math.sin(a.phase) * 0.6 : 0);
   }
