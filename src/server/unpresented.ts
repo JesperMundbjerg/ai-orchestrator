@@ -4,22 +4,8 @@ import type { DatabaseSync } from "node:sqlite";
 import type { WorldAgent, WorldState, WorldTeam } from "../shared/types.ts";
 import { checkoutOf, git } from "./worktrees.ts";
 
-export function migrateUnpresented(db: DatabaseSync): void {
-  const columns = new Set((db.prepare("PRAGMA table_info(items)").all() as Array<{ name: string }>).map((c) => c.name));
-  if (!columns.has("presented_head")) db.exec("ALTER TABLE items ADD COLUMN presented_head TEXT");
-  if (!columns.has("presented_path")) db.exec("ALTER TABLE items ADD COLUMN presented_path TEXT");
-  db.exec("CREATE INDEX IF NOT EXISTS items_presented ON items (presented_path, presented_head, state)");
-  db.exec(`CREATE TABLE IF NOT EXISTS unpresented_work (
-    path TEXT PRIMARY KEY, presented_head TEXT,
-    reminded_head TEXT, reminded_at INTEGER, reminded_lead TEXT, reminded_message INTEGER
-  )`);
-  db.exec(`CREATE TABLE IF NOT EXISTS whole_team_idle (
-    path TEXT PRIMARY KEY, members TEXT, message_after INTEGER,
-    notified INTEGER NOT NULL DEFAULT 0, reminded_at INTEGER
-  )`);
-  const idleColumns = new Set((db.prepare("PRAGMA table_info(whole_team_idle)").all() as Array<{ name: string }>).map((c) => c.name));
-  if (!idleColumns.has("head")) db.exec("ALTER TABLE whole_team_idle ADD COLUMN head TEXT");
-}
+// Compatibility for older storage callers; schema implementation belongs only to db.ts.
+export { migrateUnpresented } from "./db.ts";
 
 export interface PresentedPoint { path: string; head: string }
 /** A subfolder still means its whole worktree. Missing/deleted repositories do not break posting. */

@@ -17,18 +17,6 @@ export class MessageLoops {
 
   constructor(db: DatabaseSync) {
     this.db = db;
-    db.exec(`CREATE TABLE IF NOT EXISTS message_loops (
-      pair TEXT PRIMARY KEY,
-      sender_id TEXT NOT NULL,
-      last_at INTEGER NOT NULL,
-      recent TEXT NOT NULL,
-      warned INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS message_loop_trips (
-      pair TEXT PRIMARY KEY,
-      last_at INTEGER NOT NULL,
-      escalated INTEGER NOT NULL
-    )`);
   }
 
   /** Called inside the message's transaction, once per new message (not per delivery or Retry). */

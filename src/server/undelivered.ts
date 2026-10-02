@@ -11,7 +11,6 @@ export class Undelivered {
   constructor(db: DatabaseSync, free: ReadonlySet<WorldAgent["status"]>) {
     this.db = db;
     this.free = free;
-    db.exec("CREATE TABLE IF NOT EXISTS undelivered_episodes (agent_id TEXT PRIMARY KEY)");
   }
 
   /** Called by the sender as well as the poll, so a drain between polls rearms immediately. */

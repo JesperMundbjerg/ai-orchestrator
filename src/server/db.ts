@@ -302,10 +302,8 @@ function adoptLegacy(db: DatabaseSync): void {
         DROP TABLE team_orders;
       `);
   }
-  if (!columns("items").has("presented_head")) db.exec("ALTER TABLE items ADD COLUMN presented_head TEXT");
-  if (!columns("items").has("presented_path")) db.exec("ALTER TABLE items ADD COLUMN presented_path TEXT");
+  migrateUnpresented(db);
   db.exec(AUXILIARY_SCHEMA);
-  if (!columns("whole_team_idle").has("head")) db.exec("ALTER TABLE whole_team_idle ADD COLUMN head TEXT");
 }
 
 // Keep migration numbers append-only. Runtime interrupted-send recovery belongs to the
@@ -344,16 +342,32 @@ export function requestFingerprint(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 }
 
+/** Compatibility entry point for older additive-presentation migration callers. Database
+ * adoption invokes it inside the version transaction; standalone calls are atomic too. */
+export function migrateUnpresented(db: DatabaseSync): void {
+  const ownsTransaction = !db.isTransaction;
+  if (ownsTransaction) db.exec("BEGIN IMMEDIATE");
+  try {
+    addColumn(db, "items", "presented_head", "TEXT");
+    addColumn(db, "items", "presented_path", "TEXT");
+    db.exec(`CREATE INDEX IF NOT EXISTS items_presented ON items (presented_path, presented_head, state);
+      CREATE TABLE IF NOT EXISTS unpresented_work (
+        path TEXT PRIMARY KEY, presented_head TEXT,
+        reminded_head TEXT, reminded_at INTEGER, reminded_lead TEXT, reminded_message INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS whole_team_idle (
+        path TEXT PRIMARY KEY, members TEXT, message_after INTEGER,
+        notified INTEGER NOT NULL DEFAULT 0, reminded_at INTEGER, head TEXT
+      );`);
+    addColumn(db, "whole_team_idle", "head", "TEXT");
+    if (ownsTransaction) db.exec("COMMIT");
+  } catch (err) {
+    if (ownsTransaction) db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
 const AUXILIARY_SCHEMA = `
-CREATE INDEX IF NOT EXISTS items_presented ON items (presented_path, presented_head, state);
-CREATE TABLE IF NOT EXISTS unpresented_work (
-  path TEXT PRIMARY KEY, presented_head TEXT,
-  reminded_head TEXT, reminded_at INTEGER, reminded_lead TEXT, reminded_message INTEGER
-);
-CREATE TABLE IF NOT EXISTS whole_team_idle (
-  path TEXT PRIMARY KEY, members TEXT, message_after INTEGER,
-  notified INTEGER NOT NULL DEFAULT 0, reminded_at INTEGER, head TEXT
-);
 CREATE TABLE IF NOT EXISTS usage_readings (
   meter TEXT PRIMARY KEY, used_percent REAL NOT NULL, resets_at TEXT,
   as_of TEXT NOT NULL, source TEXT NOT NULL

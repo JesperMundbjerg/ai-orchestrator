@@ -7,12 +7,6 @@ export class OfficeNotices {
   private db: DatabaseSync;
   constructor(db: DatabaseSync) {
     this.db = db;
-    db.exec(`CREATE TABLE IF NOT EXISTS office_notices (
-      message_id TEXT PRIMARY KEY REFERENCES messages(id),
-      title TEXT NOT NULL,
-      agent_ids TEXT NOT NULL,
-      notified INTEGER NOT NULL DEFAULT 0
-    )`);
   }
 
   record(title: string, body: string, agentIds: string[], at: number): void {

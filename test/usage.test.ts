@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { CrewTree } from "../src/shared/crewtree.ts";
 import type { Team } from "../src/shared/types.ts";
 import { codexHeaderReadings } from "../src/shared/usage.ts";
@@ -26,7 +25,7 @@ function roots(): UsageRoots {
 }
 
 const lines = (...entries: unknown[]) => entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
-const usage = (r: UsageRoots, now = () => NOW) => new Usage(new DatabaseSync(":memory:"), now, r);
+const usage = (r: UsageRoots, now = () => NOW) => new Usage(openDatabase(":memory:"), now, r);
 const meter = (u: Usage, id: string) => u.meters().find((m) => m.id === id)!;
 
 test("a reading is kept per meter; an older one never overwrites a newer, and one goes stale after 30 minutes", () => {

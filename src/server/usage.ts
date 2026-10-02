@@ -143,14 +143,6 @@ export class Usage {
     this.db = db;
     this.now = now;
     this.roots = roots;
-    db.exec(`CREATE TABLE IF NOT EXISTS usage_readings (
-      meter TEXT PRIMARY KEY,
-      used_percent REAL NOT NULL,
-      resets_at TEXT,
-      as_of TEXT NOT NULL,
-      source TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS usage_told (key TEXT PRIMARY KEY, at TEXT NOT NULL)`);
   }
 
   /** Reads the session files in the background: quickly while catching up, then every few seconds. */
