@@ -1,9 +1,16 @@
 // Creative reviews are standing state, not message visits. One reviewer per room; existing
 // occupants keep their room until finished, even when agents arrive or the world reorders.
-import type { Work, WorldAgent } from "../../shared/types.ts";
+import type { ReviewExcerpt, Work, WorldAgent } from "../../shared/types.ts";
 import { isReviewHelper } from "../../shared/review.ts";
 import { doorway, place, type BuildingPlan, type Room } from "./building.ts";
 import type { Spot } from "./spatial.ts";
+
+/** The server's fallback is display state, never a made-up helper read. */
+export function projectedExcerpt(reviewer: WorldAgent | null): ReviewExcerpt | null {
+  return reviewer?.helpers.filter((h) => isReviewHelper(h) && h.excerpt)
+    .sort((a, b) => (b.excerpt?.viewedAt ?? 0) - (a.excerpt?.viewedAt ?? 0) || a.id.localeCompare(b.id))[0]?.excerpt
+    ?? reviewer?.reviewExcerpt ?? null;
+}
 
 export type Meetings = Map<string, number>;
 export const meetingLength = (room: Room) => Math.max(2, Math.min(4.2, 2 * room.half[1] - 3.4));

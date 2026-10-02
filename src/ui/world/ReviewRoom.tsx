@@ -1,6 +1,6 @@
 import { CanvasTexture, SRGBColorSpace } from "three";
 import type { ReviewExcerpt, WorldAgent } from "../../shared/types.ts";
-import { isReviewHelper } from "../../shared/review.ts";
+import { projectedExcerpt } from "./meeting.ts";
 import type { Room } from "./building.ts";
 import { useTexture } from "./useTexture.ts";
 
@@ -60,15 +60,14 @@ export function codeSlide(excerpt: ReviewExcerpt | null, name: string | null) {
     });
   } else {
     g.fillStyle = "#d4e0df"; g.font = "36px cursive"; g.fillText("Read carefully. Sketch together. Make it simpler.", 100, 380);
-    g.font = "25px monospace"; g.fillText("The next safe source excerpt will appear here.", 100, 457);
+    g.font = "25px monospace"; g.fillText(name ? "No safe source available in this checkout." : "Bring a review to put code on the screen.", 100, 457);
   }
   g.fillStyle = "#a8c4c8"; g.font = "24px monospace"; g.fillText(name ? `${name} / reviewing` : "Room ready / bring an idea", 48, 772);
   return texture(c);
 }
 
 export function ReviewRoom({ room, index, reviewer }: { room: Room; index: number; reviewer: WorldAgent | null }) {
-  const excerpt = reviewer?.helpers.filter((h) => isReviewHelper(h) && h.excerpt)
-    .sort((a, b) => (b.excerpt?.viewedAt ?? 0) - (a.excerpt?.viewedAt ?? 0))[0]?.excerpt ?? null;
+  const excerpt = projectedExcerpt(reviewer);
   const board = useTexture(() => architectureBoard(index), [index]);
   const screen = useTexture(() => codeSlide(excerpt, reviewer?.name ?? null), [JSON.stringify(excerpt), reviewer?.name]);
   return <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>

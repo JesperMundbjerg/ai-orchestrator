@@ -18,6 +18,7 @@ import type {
 import { serviceUrl } from "../shared/agent-client.ts";
 import { STORY_INTRO, STORY_MAX_CHARS } from "../shared/story.ts";
 import { Activity } from "./activity.ts";
+import { ReviewFallback } from "./review-fallback.ts";
 import { DEFAULT_LEAD, type CrewChoice } from "../shared/crewtree.ts";
 import { startFlags, type CrewTreeStore } from "./crewtree.ts";
 import { Adapters } from "./adapter.ts";
@@ -156,6 +157,7 @@ export class World {
   /** The founder's crew tree; the service sets it. Leads read it, so an edit reaches them without a restart. */
   crew: CrewTreeStore | null = null;
   private activity = new Activity();
+  private reviewFallback = new ReviewFallback(undefined, () => this.onChange("activity"));
   private efforts = new Efforts();
   /** Session files, for the model of an agent whose harness does not report it. */
   private files: SessionFiles;
@@ -274,13 +276,16 @@ export class World {
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
     this.appointLeads(world, teams, rows);
+    const work = this.messages.work();
+    const now = this.now().getTime();
+    for (const agent of world) agent.reviewExcerpt = this.reviewFallback.forAgent(agent, world, work, teams, now);
 
     return {
       agents: world,
       teams: teams.map((team) => ({ ...team, unpresentedCommits: team.standing ? 0 : this.unpresented.count(team.path), ...teamStatus(world.filter((a) => a.teamId === team.id)) })),
       messages: this.messages.list(),
       withFounder: this.messages.withFounder(),
-      work: this.messages.work(),
+      work,
       repositories: this.repositories(world, teams),
       herdr: this.source?.available() ? "connected" : "unavailable",
       ...(this.switches ? { switches: this.switches.view(world) } : {}),

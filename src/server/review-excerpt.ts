@@ -8,7 +8,8 @@ const SOURCE = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css", ".
 const privatePath = (p: string) => p.split(/[\\/]/).some((s) => s.startsWith(".") || /(?:secret|credential|password|token|private[-_]?key|^id_rsa$)/i.test(s));
 const inside = (root: string, file: string) => { const p = relative(root, file); return p !== "" && p !== ".." && !p.startsWith(`..${sep}`) && !isAbsolute(p); };
 
-export function reviewExcerpt(cwd: string | null, path: string, offset: unknown = 1): ReviewExcerpt | null {
+/** windowSeed selects a full twelve-line window only after the same whole-file safety checks. */
+export function reviewExcerpt(cwd: string | null, path: string, offset: unknown = 1, windowSeed?: number): ReviewExcerpt | null {
   if (!cwd || !path || privatePath(path)) return null;
   let fd: number | undefined;
   try {
@@ -26,7 +27,14 @@ export function reviewExcerpt(cwd: string | null, path: string, offset: unknown 
     // send even the filename when a file was withheld. This is deliberately conservative.
     if (/[\x00-\x08\x0e-\x1f]|PRIVATE KEY|password|secret|token|api[_-]?key|authorization|Bearer\s+\S+|AKIA[0-9A-Z]{16}|[A-Za-z0-9_+\/-]{40,}/i.test(text)) return null;
     const lines = text.split(/\r?\n/);
-    const startLine = typeof offset === "number" && Number.isFinite(offset) ? Math.max(1, Math.min(lines.length, Math.floor(offset))) : 1;
+    let startLine = windowSeed !== undefined && Number.isFinite(windowSeed)
+      ? 1 + (Math.abs(Math.floor(windowSeed)) % Math.max(1, lines.length - 11))
+      : typeof offset === "number" && Number.isFinite(offset) ? Math.max(1, Math.min(lines.length, Math.floor(offset))) : 1;
+    if (windowSeed !== undefined && !lines.slice(startLine - 1, startLine + 11).some((s) => s.trim())) {
+      const firstCode = lines.findIndex((s) => s.trim());
+      if (firstCode < 0) return null;
+      startLine = Math.min(firstCode + 1, Math.max(1, lines.length - 11));
+    }
     return { path: local.split(sep).join("/"), startLine, lines: lines.slice(startLine - 1, startLine + 11).map((s) => s.slice(0, 100)) };
   } catch {
     return null;

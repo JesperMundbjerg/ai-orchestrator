@@ -2,10 +2,25 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Work, WorldAgent } from "../src/shared/types.ts";
 import { buildingRoute, planBuilding, place } from "../src/ui/world/building.ts";
-import { meetingPlan, reviewing } from "../src/ui/world/meeting.ts";
+import { meetingPlan, projectedExcerpt, reviewing } from "../src/ui/world/meeting.ts";
 
 const agent = (id: string, type = "code-reviewer"): WorldAgent => ({ id, name: id, identity: id, harness: "manual", cwd: null, project: null, branch: null, status: "working", title: null, paneId: null, taskIds: [], teamId: "t", role: "member", waitingOnYou: false, doing: null, helpers: type ? [{ id: "h", type, startedAt: "" }] : [], model: null, sessionName: null, ran: true });
 const team = { id: "t", name: "Team", purpose: "", handsTo: null, path: null, branch: null, standing: true, worktrees: [], createdAt: "" };
+
+test("projector uses server code without helper reads, but the newest real review read wins", () => {
+  const a = agent("a");
+  const fallback = { path: "fallback.ts", startLine: 1, lines: ["fallback"] };
+  a.reviewExcerpt = fallback;
+  assert.deepEqual(projectedExcerpt(a), fallback);
+  const read = { path: "read.ts", startLine: 8, lines: ["real read"], viewedAt: 20 };
+  a.helpers[0]!.excerpt = read;
+  a.helpers.push({ id: "older", type: "reviewer", startedAt: "", excerpt: { ...read, viewedAt: 10 } });
+  assert.deepEqual(projectedExcerpt(a), read);
+  a.helpers = [];
+  assert.deepEqual(projectedExcerpt(a), fallback, "handed-over work need not have a helper");
+  assert.equal(projectedExcerpt(null), null);
+  assert.equal(projectedExcerpt(agent("idle", "")), null);
+});
 
 test("review definitions and pending office work choose reviewers, not authors or finished work", () => {
   const a = agent("a", ".claude/agents/architecture-reviewer.md"), b = agent("b", ""), c = agent("c", "builder");

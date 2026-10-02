@@ -334,6 +334,8 @@ export interface WorldAgent {
   doing: string | null;
   /** Sub-agents it has running, such as reviewers. */
   helpers: Helper[];
+  /** Server-selected safe projector code while reviewing; a reported helper read wins. */
+  reviewExcerpt?: ReviewExcerpt | null;
   /** The model its harness last reported for this session; null when it has not said. */
   model: AgentModel | null;
   capabilities?: Pick<Capabilities, "changeEffort" | "effortUnavailable">;
