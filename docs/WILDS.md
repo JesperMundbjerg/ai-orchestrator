@@ -28,11 +28,12 @@ npm run build
 Production-browser check:
 
 ```sh
-PLAYWRIGHT_MODULE='/Users/jesper/projects/motion video/node_modules/playwright/index.mjs' \
+scratch_home=$(mktemp -d)
+HOME="$scratch_home" WILDS_OUTPUT="$scratch_home/artifacts/wilds" \
   node test/wilds.browser.mjs
 ```
 
-It starts only a free-port scratch service with a temporary HOME/data directory, `HERDR_SOCKET_PATH=/nonexistent` and `HERDR_BIN_PATH=/usr/bin/false`, and asserts that no live agents are visible. Chromium is headless with ANGLE Metal, and both processes close in `finally`. It walks about 1 km with **real Shift+W**, samples renderer.info, CDP JS heap before/after GC, paced frame intervals and CPU frame submission times at start/middle/end, checks the still rate, and captures near/far/lake/animals/front-door screenshots in Building only. Evidence goes only to `~/.review-inbox/handoffs/agent-office/wilds/` (or `WILDS_OUTPUT`). It does not open or modify the live inbox database or port 4870.
+It starts only a free-port scratch service with a temporary HOME/data directory, `HERDR_SOCKET_PATH=/nonexistent` and `HERDR_BIN_PATH=/usr/bin/false`, and asserts that no live agents are visible. Chromium is headless with ANGLE Metal, and both processes close in `finally`. It walks about 1 km with **real Shift+W**, samples renderer.info, CDP JS heap before/after GC, paced frame intervals and CPU frame submission times at start/middle/end, checks the still rate, and captures near/far/lake/animals/front-door screenshots in Building only. The command above sends evidence to the temporary artifact directory via `WILDS_OUTPUT`; without an override the script uses its caller HOME. Keep the temporary HOME override so no artifacts go into your real inbox data. `PLAYWRIGHT_MODULE` may point to an installed module if normal `playwright` resolution is unavailable. It does not open or modify the live inbox database or port 4870.
 
 `?wildsMeasure=1` enables a bounded read-only `window.__wilds.read()` sample ring (including sequential per-frame samples, instance-rebuild and worker-install CPU time) and a `wilds-measure-pose` event for reproducible screenshot poses. Pose events are used only *after* the measured walk. Neither hook is active in the ordinary office view. CPU times are not GPU frame timings; intentional pacing is included in the separate frame-interval numbers.
 
@@ -41,11 +42,12 @@ It starts only a free-port scratch service with a temporary HOME/data directory,
 `test/wilds-fix.browser.mjs` captures **every rendered frame over a real 1 km Shift+W walk**, not just three small windows. It polls the bounded sample ring, asserts no missing frames, and does no forced GC, screenshot or teleport during the measured kilometre. Run against a production build:
 
 ```sh
-PLAYWRIGHT_MODULE='/Users/jesper/projects/motion video/node_modules/playwright/index.mjs' \
+scratch_home=$(mktemp -d)
+HOME="$scratch_home" PLAYWRIGHT_MODULE="$(pwd)/node_modules/playwright/index.mjs" \
   WILDS_RUN=final WILDS_VIDEO=1 node test/wilds-fix.browser.mjs
 ```
 
-Evidence is under `~/.review-inbox/handoffs/agent-office/wilds-fix/`: full frame traces and before/after summaries, screenshots, and timestamped animal clips. The scratch-service restrictions above still apply. Post-walk checks cover all four species, looking back at the office, turning away, returning home, and the still rate. The before run used `55b9dff` with only the same measurement hooks added.
+With the command above, evidence stays under the temporary HOME's `.review-inbox/handoffs/agent-office/wilds-fix/`: full frame traces and before/after summaries, screenshots, and timestamped animal clips. The current investigation script requires `PLAYWRIGHT_MODULE`; use the installed dependency's absolute path, not a personal checkout path. Preserve wanted artifacts before deleting the temporary HOME. The scratch-service restrictions above still apply. Post-walk checks cover all four species, looking back at the office, turning away, returning home, and the still rate. The before run used `55b9dff` with only the same measurement hooks added.
 
 The dominant observed problem was **pacing**, not a chunk-generation stall: almost every before frame took over 33 ms, with CPU submission p95 below 1 ms. Chunk swaps, instance rebuilds, fogged far terrain and small terrain-buffer uploads did not produce long hitches in this walk. The wilds already neither cast nor receive shadows. However, the office behind the camera still contributed shadow-map submissions until the player was 112 m beyond its bounds. Frustum-gating that intact group removed those early extra draws. Fixed GPU pools and the worker/sliced installation remain unchanged rather than adding an unproven streaming rewrite.
 
