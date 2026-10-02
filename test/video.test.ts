@@ -185,7 +185,8 @@ test("existing databases gain video support without losing evidence URLs, order 
     const schema = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'evidence'").get() as { sql: string }).sql.replace("'image', 'video',", "'image',");
     db.exec(`ALTER TABLE evidence RENAME TO old_evidence; ${schema};
       INSERT INTO evidence SELECT * FROM old_evidence ORDER BY rowid;
-      DROP TABLE old_evidence; UPDATE evidence SET rowid = rowid + 10;`);
+      DROP TABLE old_evidence; UPDATE evidence SET rowid = rowid + 10;
+      PRAGMA user_version = 0;`); // This synthetic older database predates the version ledger.
     db.close();
     db = openDatabase(file);
     const migrated = new Inbox(db, join(dir, "files"), none);
