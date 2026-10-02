@@ -14,11 +14,12 @@ test("Pi waits until free, uses setter once, reports readback and external think
   const reports: any[] = [];
   let idle = false, sets = 0, calls = 0;
   let current = "high";
-  const ctx = { cwd: "/tmp/pi-effort-test", model, sessionManager: { getSessionFile: () => "/tmp/session.jsonl" }, isIdle: () => idle };
+  const ctx = { cwd: "/tmp/pi-effort-test", model, sessionManager: { getSessionFile: () => "/tmp/session.jsonl", getEntries: () => [] }, isIdle: () => idle };
   const api = {
     on: (name: string, fn: (...args: any[]) => any) => handlers.set(name, fn), registerTool: () => {},
     getSessionName: () => "test", getThinkingLevel: () => current,
     setThinkingLevel: (level: string) => { sets++; current = level; handlers.get("thinking_level_select")!({ level }, ctx); },
+    appendEntry: () => {},
     sendUserMessage: () => assert.fail("effort must not prompt a model"),
   };
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {

@@ -5,6 +5,7 @@
 // Install: add this file's absolute path to `extensions` in ~/.pi/agent/settings.json.
 
 import { Type } from "typebox";
+import { Deliveries, type ReceiptMessage } from "./delivery.ts";
 import { acknowledge, call, fetchReplies, formatReply } from "../../src/shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../../src/shared/decision.ts";
 import { modelLabel } from "../../src/shared/models.ts";
@@ -12,7 +13,8 @@ import { projectRoot } from "../../src/shared/project.ts";
 import { codexHeaderReadings } from "../../src/shared/usage.ts";
 import type { ActivityEvent, EffortReport, ItemType, SessionInput, SubmitResult } from "../../src/shared/types.ts";
 
-// The slice of Pi's extension API this uses (the full types ship with @earendil-works/pi-coding-agent).
+// Receipt/persistence APIs verified against @earendil-works/pi-coding-agent 0.86.0.
+// The slice is kept here so ordinary inbox startup needs no runtime Pi SDK dependency.
 interface PiModel { id: string; provider: string; reasoning?: boolean; thinkingLevelMap?: Partial<Record<ThinkingLevel, string | null>> }
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -25,7 +27,7 @@ export function thinkingLevels(model: PiModel | undefined): ThinkingLevel[] {
 interface PiContext {
   cwd: string;
   model?: PiModel;
-  sessionManager: { getSessionFile(): string | undefined };
+  sessionManager: { getSessionFile(): string | undefined; getEntries?(): readonly unknown[] };
   isIdle(): boolean;
 }
 interface PiApi {
@@ -43,6 +45,8 @@ interface PiApi {
     execute(id: string, params: any, signal: AbortSignal | undefined, onUpdate: unknown, ctx: PiContext): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown }>;
   }): void;
   sendUserMessage(text: string, options?: { deliverAs: "steer" | "followUp" }): void;
+  appendEntry?(customType: string, data?: unknown): void;
+  on(event: "message_end", handler: (event: { message: ReceiptMessage }, ctx: PiContext) => void): void;
   getSessionName(): string | undefined;
   getThinkingLevel(): ThinkingLevel;
   setThinkingLevel(level: ThinkingLevel): void;
@@ -53,7 +57,7 @@ const POLL_MS = 2000;
 const BACKOFF_MS = 10_000;
 
 /** The session id is the session FILE'S PATH, not the id in the file's header: replies are addressed to it, so anyone submitting for this agent must use the path too. */
-function sessionOf(ctx: PiContext): SessionInput | null {
+function sessionOf(ctx: PiContext): (SessionInput & { sessionId: string }) | null {
   const file = ctx.sessionManager.getSessionFile();
   return file ? { harness: "pi", sessionId: file, cwd: ctx.cwd } : null;
 }
@@ -83,8 +87,8 @@ export default function reviewInbox(pi: PiApi): void {
   let generation = 0;
   let effortResult: EffortReport["result"];
   const effortReport = (ctx: PiContext): EffortReport => ({ current: pi.getThinkingLevel(), levels: thinkingLevels(ctx.model), result: effortResult });
-  // Replies already handed to Pi: if only the acknowledgement failed, retry that, never the send.
-  const sent = new Set<string>();
+  let deliveries: Deliveries | null = null;
+  let deliverySession: string | null = null;
 
   pi.registerTool({
     name: "review_submit",
@@ -172,9 +176,17 @@ export default function reviewInbox(pi: PiApi): void {
   });
 
   pi.on("session_start", (_event, ctx) => {
-    const session = sessionOf(ctx);
-    if (!session) return;
     const run = ++generation;
+    if (timer) clearTimeout(timer);
+    timer = null;
+    const session = sessionOf(ctx);
+    deliveries = null;
+    deliverySession = session?.sessionId ?? null;
+    if (!session) return;
+    // Fail closed on older SDKs without durable receipt support; no fire-and-forget success.
+    const receiptSupport = typeof pi.appendEntry === "function" && typeof ctx.sessionManager.getEntries === "function";
+    const receipts = receiptSupport ? new Deliveries(session.sessionId, ctx.sessionManager.getEntries!(), (type, data) => pi.appendEntry!(type, data)) : null;
+    deliveries = receipts;
     effortResult = undefined;
     report(ctx, ...modelEvent(ctx.model), ...nameEvent(pi.getSessionName()), { kind: "effort", effort: effortReport(ctx) });
     let reachable = false;
@@ -197,16 +209,25 @@ export default function reviewInbox(pi: PiApi): void {
         }
         for (const reply of await fetchReplies(session, "live")) {
           if (run !== generation) return;
-          if (!sent.has(reply.deliveryId)) {
+          if (!receipts) {
+            await acknowledge(session, reply.deliveryId, "Pi lacks durable message receipt support; use Pi 0.86.0 or pull delivery");
+            continue;
+          }
+          const message = receipts.attempt(reply.deliveryId, formatReply(reply));
+          if (message !== null) {
             try {
-              pi.sendUserMessage(formatReply(reply), ctx.isIdle() ? undefined : { deliverAs: "followUp" });
-              sent.add(reply.deliveryId);
+              pi.sendUserMessage(message, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
             } catch (err) {
-              await acknowledge(session, reply.deliveryId, `Pi could not take the message: ${(err as Error).message}`);
-              continue;
+              receipts.failed(reply.deliveryId, `Pi could not take the message: ${(err as Error).message}`);
             }
           }
-          await acknowledge(session, reply.deliveryId);
+          // Returning from sendUserMessage confirms nothing. A queued follow-up or async
+          // preflight rejection stays uncertain until its actual user message is observed.
+          const ack = receipts.acknowledgement(reply.deliveryId);
+          if (ack && run === generation) {
+            await acknowledge(session, reply.deliveryId, ack.error);
+            if (run === generation) receipts.acknowledged(reply.deliveryId);
+          }
         }
         // An office started again keeps nothing in memory: tell it the name and model again.
         if (!reachable) report(ctx, ...modelEvent(ctx.model), ...nameEvent(pi.getSessionName()));
@@ -220,6 +241,10 @@ export default function reviewInbox(pi: PiApi): void {
       timer.unref?.();
     };
     void poll();
+  });
+
+  pi.on("message_end", (e, ctx) => {
+    if (sessionOf(ctx)?.sessionId === deliverySession) deliveries?.observe(e.message);
   });
 
   pi.on("tool_call", (e, ctx) => report(ctx, { kind: "tool", tool: e.toolName, callId: e.toolCallId, input: (e.input ?? {}) as Record<string, unknown> }));
@@ -242,6 +267,8 @@ export default function reviewInbox(pi: PiApi): void {
 
   pi.on("session_shutdown", () => {
     generation++;
+    deliveries = null;
+    deliverySession = null;
     if (timer) clearTimeout(timer);
     timer = null;
   });
