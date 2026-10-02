@@ -83,6 +83,8 @@ try {
   await page.goto(`${origin}/#/world`);
   await page.waitForFunction(() => !!window.__scene().motion);
   await hook('SubagentStart', { agent_id: 'reviewer', agent_type: 'code-reviewer' });
+  await state(); // Cold snapshots schedule background git and return without waiting.
+  await page.waitForFunction(() => window.__scene().reviewer?.reviewExcerpt?.path === 'lesson.ts');
   const fallback = (await state()).agents[0];
   assert.equal(fallback.helpers[0].excerpt, undefined, 'no helper read was reported');
   assert.equal(fallback.reviewExcerpt.path, 'lesson.ts', 'branch code without agent work');
@@ -118,6 +120,8 @@ try {
   const author = world.state().agents.find((a) => a.cwd === authorCwd);
   world.updateAgent(author.id, { teamId: authors.id, role: 'lead' });
   const handed = world.messages.handoff(world.agent(author.id), { title: 'Authored change', summary: 'Check authored.ts', to: team.name });
+  await state();
+  await page.waitForFunction(() => window.__scene().reviewer?.reviewExcerpt?.path === 'authored.ts');
   const pending = (await state()).agents.find((a) => a.id === id);
   assert.deepEqual(pending.helpers, []);
   assert.equal(pending.reviewExcerpt.path, 'authored.ts', 'helperless review uses author checkout, not reviewer checkout');
