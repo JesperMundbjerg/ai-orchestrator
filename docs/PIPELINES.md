@@ -67,10 +67,16 @@ The pre-push hook checks **every protected remote ref in Git's actual stdin**, u
 
 If the office/gate is unavailable, protected delivery fails closed with **“Restart the office and retry; editing, tests and local commits remain available.”** There is no cached green response, broad environment bypass, model call, or reasoning intermediary.
 
-These are workflow guardrails. They do not stop an owner disabling hooks, `git push --no-verify`, shell aliases/indirection, unlisted delivery scripts, remote execution or another machine. Protect remote branches/required checks separately. The canonical landing path must be guarded and exercised before claiming the pilot is enforced.
+These are workflow guardrails. They do not stop an owner disabling hooks, `git push --no-verify`, shell aliases/indirection, unlisted delivery scripts, remote execution or another machine. **Codex app-server `command/exec` and `thread/shellCommand` are outside the model-tool `PreToolUse` dispatch**: do not claim those RPCs are blocked by the project command hook. Git's repo-local pre-push hook remains the backstop for their protected pushes, but an uninstrumented landing script can still mutate a local integration branch before pushing. Protect remote branches/required checks separately. The canonical landing path must be guarded and exercised before claiming the pilot is enforced.
 
 ## Scratch verification
 
 `test/pipeline-hooks.test.ts` creates only temporary Git repos. It covers settings merge safety, idempotence, dry-run, uninstall with concurrent additions, hooks-path chaining/restoration, linked worktrees, protected-ref candidates, merge safety, landing-script indirection, and fail-closed behavior while ordinary work continues.
 
-The installed Codex 0.156.1 smoke test runs its **real hook dispatcher** against a loopback-only canned SSE transcript: no inference, external model service or real credentials. A protected `exec_command` produces the unavailable-gate denial in Codex's tool result, and its marker is not created. It uses temporary HOME/CODEX_HOME and session-only trust for the scratch hook; it skips when that installed version is absent. No test installs into FysikLab or the running office's checkout.
+Manual verification (not part of `npm test` or CI):
+
+```sh
+node --test test/pipeline-hooks-codex.manual.ts
+```
+
+**Verified on installed Codex 0.156.1, 2026-10-02:** its real hook dispatcher consumed a loopback-only canned SSE transcript; the protected `exec_command` returned our unavailable-gate denial as its tool output and did not create even its semicolon-separated marker. No inference or external model service ran. The script uses temporary HOME/CODEX_HOME, an environment whitelist without API tokens/auth-file overrides, and session-only trust for the known scratch hook. It requires that version rather than silently asserting another version's behavior. No verification installs into FysikLab or the running office's checkout.

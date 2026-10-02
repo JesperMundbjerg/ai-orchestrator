@@ -3,9 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, chmodSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawn, spawnSync } from "node:child_process";
-import { createServer } from "node:http";
-import { once } from "node:events";
+import { spawnSync } from "node:child_process";
 import { commandBoundaries, guardPrePush, guardTool, installHooks, type HookConfig } from "../src/cli/pipeline-hooks.ts";
 
 function scratch(t: { after: (fn: () => void) => void }) {
@@ -145,40 +143,6 @@ test("linked worktree installs local harness files and respects the shared Git p
   s.install({ uninstall: true });
   installHooks(worktree, { uninstall: true });
   assert.equal(existsSync(join(s.repo, ".git/hooks/pre-push")), false);
-});
-
-// Installed harness smoke: a loopback-only canned transcript exercises Codex's real
-// hook dispatcher, without inference, real credentials, or an external model endpoint.
-test("Codex 0.156.1 discovers project hooks and really blocks an exec_command (no inference)", { timeout: 30000 }, async (t) => {
-  const version = spawnSync("codex", ["--version"], { encoding: "utf8" });
-  if (version.error || !version.stdout.includes("0.156.1")) return t.skip("requires installed Codex 0.156.1");
-  const s = scratch(t); s.install({ inboxCommand: ["/nonexistent/inbox"] });
-  const home = join(s.root, "home"); const codexHome = join(home, "codex"); mkdirSync(codexHome, { recursive: true });
-  const marker = join(s.repo, "must-not-exist"); let count = 0; const requests: any[] = [];
-  const server = createServer(async (req, res) => {
-    if (req.method !== "POST" || !req.url?.endsWith("/responses")) { res.writeHead(404); res.end(); return; }
-    let body = ""; for await (const chunk of req) body += chunk;
-    requests.push(JSON.parse(body)); count++;
-    const id = `fixture-${count}`;
-    const events: any[] = [{ type: "response.created", response: { id } }];
-    if (count === 1) events.push({ type: "response.output_item.done", item: { type: "function_call", call_id: "blocked-delivery", name: "exec_command", arguments: JSON.stringify({ cmd: `git push origin HEAD:dev; touch '${marker}'`, workdir: s.repo, max_output_tokens: 1000 }) } });
-    events.push({ type: "response.completed", response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } });
-    res.writeHead(200, { "Content-Type": "text/event-stream" }); res.end(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join(""));
-  });
-  server.listen(0, "127.0.0.1"); await once(server, "listening"); t.after(() => server.close());
-  const address = server.address(); assert.ok(address && typeof address !== "string");
-  writeFileSync(join(codexHome, "config.toml"), `model = "scratch-fixture"\nmodel_provider = "scratch"\n[model_providers.scratch]\nname = "No-inference scratch"\nbase_url = "http://127.0.0.1:${address.port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n[projects.${JSON.stringify(resolve(s.repo))}]\ntrust_level = "trusted"\n[analytics]\nenabled = false\n`);
-  const child = spawn("codex", ["exec", "--dangerously-bypass-hook-trust", "--skip-git-repo-check", "--sandbox", "danger-full-access", "--json", "scratch fixture"], { cwd: s.repo, env: { ...process.env, HOME: home, CODEX_HOME: codexHome, OPENAI_API_KEY: "", CODEX_API_KEY: "", HERDR_SOCKET_PATH: "/nonexistent", HERDR_BIN_PATH: "/usr/bin/false", OTEL_SDK_DISABLED: "true" } });
-  child.stdin.end();
-  t.after(() => child.kill("SIGKILL")); let output = ""; let stderr = "";
-  child.stdout.on("data", (b) => output += b); child.stderr.on("data", (b) => stderr += b);
-  t.after(() => { if (count !== 2) console.error({ count, output, stderr }); });
-  const [code] = await once(child, "exit");
-  assert.equal(code, 0, stderr + output);
-  assert.equal(existsSync(marker), false, "denied command must not run");
-  assert.equal(count, 2, stderr + output);
-  const toolResult = requests[1].input.find((i: any) => i.type === "function_call_output");
-  assert.match(toolResult?.output ?? "", /Restart the office and retry/);
 });
 
 test("Git itself refuses protected publication while ordinary feature pushes continue during outage", (t) => {
