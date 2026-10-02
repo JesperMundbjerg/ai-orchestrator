@@ -33,7 +33,8 @@ function fixture(t: TestContext) {
       acks.push(body);
       if (lostAck) throw new Error("lost acknowledgement response");
     }
-    return new Response(JSON.stringify(url.endsWith("/replies") ? [reply] : url.endsWith("/effort") ? { request: null } : { ok: true }));
+    const receipt = { id: reply.deliveryId, itemId: reply.itemId, revision: reply.revision, action: reply.action, choice: reply.choice, text: reply.text, images: [], state: body.error ? "failed" : "delivered", error: body.error ?? null, createdAt: reply.createdAt, deliveredAt: body.error ? null : reply.createdAt };
+    return new Response(JSON.stringify(url.endsWith("/replies") ? [reply] : url.endsWith("/effort") ? { request: null } : url.endsWith("/ack") ? receipt : { ok: true }));
   });
   const load = () => { reviewInbox(api as unknown as Parameters<typeof reviewInbox>[0]); handlers.get("session_start")!({}, ctx); };
   const tick = async (ms = 2000) => { t.mock.timers.tick(ms); await flush(); };
