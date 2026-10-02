@@ -454,9 +454,9 @@ export class World {
    */
   report(session: SessionInput, events: ActivityEvent[], helperId: string | null = null, modelFor?: (known: AgentModel | null) => AgentModel | null): { ok: boolean } {
     if (!events.length && !helperId && !modelFor) return { ok: true };
-    let agent: WorldAgent;
+    let agent: Pick<WorldAgent, "id" | "cwd">;
     try {
-      agent = this.resolve(session);
+      agent = this.activityAgent(session);
     } catch {
       return { ok: false };
     }
@@ -496,7 +496,7 @@ export class World {
 
   /** The integration reports actual state and fetches only its own pending request. */
   pollEffort(session: SessionInput, report: EffortReport) {
-    this.resolve(session);
+    this.activityAgent(session);
     if (!session.harness || !session.sessionId) throw new InboxError(400, "effort control needs a session id and harness");
     this.report(session, [{ kind: "effort", effort: report }]);
     return { request: this.efforts.pending(session.harness, session.sessionId, this.now().getTime()) };
@@ -506,6 +506,22 @@ export class World {
     const { doing, helpers } = this.activity.of(agentId, this.now().getTime());
     // A tool line is only true while the agent works; herdr knows when it stopped.
     return { doing: status === "working" || status === "unknown" ? doing : null, helpers };
+  }
+
+  /** Activity and two-second effort polls need only the caller, not a drawing of the
+   * whole office. Follow current presence (including duplicate identities and hidden
+   * panes) and the persisted id: a harness switch can keep an id under a new identity.
+   * First sightings and task-only callers still take the normal registration path. */
+  private activityAgent(session: SessionInput): Pick<WorldAgent, "id" | "cwd"> {
+    const live = this.join([]);
+    const pane = session.paneId ?? live.find((a) => a.harness === session.harness && a.sessionId === session.sessionId)?.paneId;
+    const agent = pane ? live.find((a) => a.paneId === pane) : undefined;
+    if (agent) {
+      const row = this.db.prepare("SELECT id FROM world_agents WHERE identity = ? AND removed = 0 AND ran_at IS NOT NULL")
+        .get(agent.identity) as Row | undefined;
+      if (row) return { id: str(row.id), cwd: agent.cwd };
+    }
+    return this.resolve(session);
   }
 
   /**
