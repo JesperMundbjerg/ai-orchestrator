@@ -92,7 +92,7 @@ try {
   const weekly = initial.find((f) => f.id === 'week');
   await page.evaluate(({ spot }) => {
     const { store, view } = window.__scene();
-    Object.assign(view, { x: spot.pos[0] + 1.6, z: spot.pos[1] + 2.8, yaw: -0.52, pitch: -0.37, lift: 0, fov: 45 });
+    Object.assign(view, { x: spot.pos[0] + 2, z: spot.pos[1] + 3.5, yaw: -0.52, pitch: -0.22, lift: 0, fov: 50 });
     store.invalidate();
   }, weekly);
   await page.waitForTimeout(800);
