@@ -79,7 +79,7 @@ test("feeders there is no room for are left out, the first ones kept", () => {
   assert.deepEqual(spots.map((s) => s.id), many.slice(0, spots.length).map((m) => m.id));
 });
 
-test("the band on the post is green, amber from 70% used and red from 90%", () => {
+test("the band and remaining-usage ring are green, amber from 70% used and red from 90%", () => {
   assert.equal(toneOf(0), "green");
   assert.equal(toneOf(69.9), "green");
   assert.equal(toneOf(70), "amber");
@@ -96,9 +96,8 @@ test("a fresh reading fills the feeder with what is left and says when it resets
   assert.ok(Math.abs(look.seed - 0.38) < 1e-9);
   assert.equal(look.faded, false);
   assert.equal(look.empty, false);
-  assert.equal(look.label, "Claude week 62%, resets Fri 08:00");
-  // 2026-10-09 06:00 is 6 days 15 h 55 min away, out of a 7-day window.
-  assert.ok(Math.abs(look.left! - (6 * 24 * 60 + 15 * 60 + 55) / (7 * 24 * 60)) < 1e-9);
+  assert.equal(look.label, "Claude week · 62% used · resets in 6 d 16 h");
+  assert.equal(look.left, 0.38);
   assert.equal(meterLook(meter({ usedPercent: 0 }), NOW).seed, 1);
 });
 
@@ -107,6 +106,7 @@ test("at its limit the feeder is empty, the birds stay away, and it never shows 
     const look = meterLook(meter({ usedPercent: used }), NOW);
     assert.equal(look.empty, true);
     assert.equal(look.seed, 0);
+    assert.equal(look.left, 0);
     assert.equal(look.birds, 0);
     assert.equal(look.tone, "red");
   }
@@ -150,7 +150,8 @@ test("a stale reading shows faded and says as of when; an unknown one faded, wit
   const stale = meterLook(meter({ stale: true }), NOW, "UTC");
   assert.equal(stale.faded, true);
   assert.ok(Math.abs(stale.seed - 0.38) < 1e-9);
-  assert.equal(stale.label, "Claude week 62% as of Fri 14:00, resets Fri 06:00");
+  assert.equal(stale.left, stale.seed);
+  assert.equal(stale.label, "Claude week · 62% used as of Fri 14:00 · resets in 6 d 16 h");
   const unknown = meterLook(meter({ usedPercent: null, resetsAt: null, asOf: null }), NOW);
   assert.deepEqual(unknown, { seed: 0, tone: "green", faded: true, empty: false, birds: 0, left: null, label: "Claude week: no reading yet" });
 });
@@ -160,12 +161,34 @@ test("past its reset with no new reading, a feeder shows full and faded until on
   assert.equal(look.seed, 1);
   assert.equal(look.faded, true);
   assert.equal(look.empty, false);
-  assert.equal(look.left, 0);
+  assert.equal(look.left, 1);
   assert.equal(look.label, "Claude week reset Fri 14:00, not yet confirmed");
 });
 
-test("the ring counts down a 5-hour window by its own length", () => {
-  const look = meterLook(meter({ window: "five_hour", resetsAt: new Date(NOW + 2.5 * 3600 * 1000).toISOString() }), NOW);
-  assert.ok(Math.abs(look.left! - 0.5) < 1e-9);
+test("the ring tracks usage left without quantisation, independent of the window and its reset time", () => {
+  for (const window of ["five_hour", "week"] as const) {
+    for (const usedPercent of [-5, 0, 20, 76, 76.01, 99.99, 100, 104]) {
+      for (const resetsAt of [null, "invalid", new Date(NOW + 10 * 3600_000).toISOString()]) {
+        const m = meter({ window, usedPercent, resetsAt });
+        const look = meterLook(m, NOW);
+        assert.equal(look.left, Math.max(0, Math.min(1, (100 - usedPercent) / 100)));
+        assert.equal(look.left, look.seed);
+        assert.equal(meterLook(m, NOW + 3600_000).left, look.left, "elapsed time does not drain the ring");
+      }
+    }
+  }
+});
+
+test("the hover/pin label counts down to reset, even with no usage reading", () => {
+  const m = meter({ usedPercent: 76, resetsAt: new Date(NOW + 10 * 3600_000).toISOString() });
+  assert.equal(meterLook(m, NOW).label, "Claude week · 76% used · resets in 10 h");
+  assert.equal(meterLook(m, NOW + 9 * 3600_000 + 58 * 60_000).label, "Claude week · 76% used · resets in 2 min");
+  assert.equal(meterLook(m, NOW + 10 * 3600_000 - 1).label, "Claude week · 76% used · resets in 1 min");
+  const unknown = meterLook({ ...m, usedPercent: null }, NOW);
+  assert.equal(unknown.left, null);
+  assert.equal(unknown.label, "Claude week: no reading yet · resets in 10 h");
+  for (const resetsAt of [null, "invalid"]) {
+    assert.equal(meterLook({ ...m, resetsAt }, NOW).label, "Claude week · 76% used");
+  }
   assert.equal(when(new Date("2026-10-02T06:00:00Z"), "UTC"), "Fri 06:00");
 });

@@ -15,7 +15,8 @@
 //   faded    a reading that is stale or unknown, or whose window has reset since, shows faded;
 //            one whose window has reset shows full until a new reading confirms it; an unknown
 //            one shows an empty glass and no birds, but no fallen seed either
-//   ring     on the ground round the post, what is left of the window until it resets
+//   ring     on the ground round the post, the share of the limit left (100 − used%), in the
+//            feeder's tone; it animates with the seed. The hover/pin label says when it resets
 
 import type { UsageMeter } from "../../shared/types.ts";
 import type { Garden, Rect } from "./building.ts";
@@ -29,11 +30,8 @@ export type Tone = "green" | "amber" | "red";
 
 export const TONES: Record<Tone, string> = { green: "#4fae5c", amber: "#e9a23b", red: "#d9493f" };
 
-/** How long each window runs, from one reset to the next. */
-export const WINDOW_MS: Record<UsageMeter["window"], number> = { five_hour: 5 * 3600 * 1000, week: 7 * 24 * 3600 * 1000 };
-
 /**
- * A feeder: the ground round its post (where birds peck and the countdown ring lies), its glass's
+ * A feeder: the ground round its post (where birds peck and the usage ring lies), its glass's
  * radius and height, and the post's height up to the tray. A weekly limit's is big, a 5-hour limit's smaller.
  */
 export const FEEDER: Record<UsageMeter["window"], { radius: number; glass: number; height: number; post: number }> = {
@@ -69,7 +67,7 @@ export function meterGround(garden: Garden): Rect {
 export interface MeterSpot {
   id: string;
   pos: Vec2;
-  /** The ground round the post; the countdown ring lies just outside it. */
+  /** The ground round the post; the usage ring lies just outside it. */
   radius: number;
   /** The glass's radius and height, and the post's height up to the tray. */
   glass: number;
@@ -102,9 +100,9 @@ export interface MeterLook {
   empty: boolean;
   /** How many birds are at the feeder. */
   birds: number;
-  /** What is left of the window until it resets, 0 to 1; null when the reset is not known. */
+  /** Share of the limit left, 0 to 1, matching the seed; null when usage is unknown. */
   left: number | null;
-  /** What hovering over it says: "Claude week 62%, resets Fri 08:00". */
+  /** What hovering over or pinning it says: "Claude week · 76% used · resets in 10 h". */
   label: string;
 }
 
@@ -118,24 +116,33 @@ export function when(at: Date, timeZone?: string): string {
   return `${part("weekday")} ${part("hour")}:${part("minute")}`;
 }
 
+/** A reset countdown rounded up, so a future reset never says zero minutes. */
+function resetIn(ms: number): string {
+  const minutes = Math.ceil(ms / 60_000);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.ceil(minutes / 60);
+  if (hours < 48) return `${hours} h`;
+  const remainder = hours % 24;
+  return `${Math.floor(hours / 24)} d${remainder ? ` ${remainder} h` : ""}`;
+}
+
 /** What a meter shows at `now`. */
 export function meterLook(m: UsageMeter, now: number, timeZone?: string): MeterLook {
   const resets = m.resetsAt ? Date.parse(m.resetsAt) : NaN;
   const known = Number.isFinite(resets);
   const reset = known && resets <= now;
   const used = m.usedPercent;
-  const left = known ? Math.max(0, Math.min(1, (resets - now) / WINDOW_MS[m.window])) : null;
   const resetsAt = known ? when(new Date(resets), timeZone) : null;
+  const tail = known ? (reset ? ` · reset ${resetsAt}` : ` · resets in ${resetIn(resets - now)}`) : "";
   if (used === null) {
-    return { seed: 0, tone: "green", faded: true, empty: false, birds: 0, left, label: `${m.label}: no reading yet` };
+    return { seed: 0, tone: "green", faded: true, empty: false, birds: 0, left: null, label: `${m.label}: no reading yet${tail}` };
   }
   if (reset) {
     // The window started again since the reading; until a new one comes, it shows full.
-    return { seed: 1, tone: "green", faded: true, empty: false, birds: birdsAt(1, m.window), left: 0, label: `${m.label} reset ${resetsAt}, not yet confirmed` };
+    return { seed: 1, tone: "green", faded: true, empty: false, birds: birdsAt(1, m.window), left: 1, label: `${m.label} reset ${resetsAt}, not yet confirmed` };
   }
   const percent = Math.max(0, Math.round(used));
   const asOf = m.stale && m.asOf ? ` as of ${when(new Date(m.asOf), timeZone)}` : m.stale ? " (stale)" : "";
-  const tail = resetsAt ? `, resets ${resetsAt}` : "";
   const seed = Math.max(0, Math.min(1, (100 - used) / 100));
   return {
     seed,
@@ -143,8 +150,8 @@ export function meterLook(m: UsageMeter, now: number, timeZone?: string): MeterL
     faded: m.stale,
     empty: seed === 0,
     birds: birdsAt(seed, m.window),
-    left,
-    label: `${m.label} ${percent}%${asOf}${tail}`,
+    left: seed,
+    label: `${m.label} · ${percent}% used${asOf}${tail}`,
   };
 }
 

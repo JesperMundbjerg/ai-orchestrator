@@ -10,7 +10,7 @@ import { SEED, SEEDS, seedGrain } from "./Seed.tsx";
 
 // The usage meters as bird feeders on the east lawn (meters.ts says where and what each shows):
 // a glass of seed on a wooden post under a little roof, the seed at what is left of the limit, a
-// band round the post in its tone, a ring on the ground counting down to the reset. A handful of
+// band and a ground ring in its tone, the ring showing the same share left as the seed. A handful of
 // shared shapes; the birds are two instanced draws for every feeder together, and they only hop
 // and peck at whatever rate the office is drawn, so they never keep it busy.
 
@@ -35,7 +35,7 @@ const fade = (hex: string, faded: boolean, by = 0.6) => {
   return `#${(faded ? c.lerp(FADED, by) : c).getHexString()}`;
 };
 
-/** The meters' feeders in the garden, the birds at them, and the ring round each counting down a minute at a time. */
+/** The meters' feeders, birds and remaining-usage rings; refresh the reset labels each minute. */
 export function Meters({ garden, meters }: { garden: Garden; meters: UsageMeter[] }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -67,15 +67,20 @@ function Feeder({ spot, look }: { spot: MeterSpot; look: MeterLook }) {
   const [hovered, setHovered] = useState(false);
   const [pinned, setPinned] = useState(false);
   const fill = useRef<Mesh>(null);
+  const ring = useRef<Mesh>(null);
   const shown = useRef(look.seed);
+  const ringShown = useRef<number>(-1);
 
   const band = useMemo(() => fade(TONES[look.tone], look.faded), [look.tone, look.faded]);
   const seed = look.faded ? fade(SEED, true, 0.35) : "#ffffff";
   const wood = fade(WOOD, look.faded, 0.4);
-  // The countdown: what is left of the window, a full ring just after a reset, from the north round.
-  const left = look.left === null ? 0 : Math.round(look.left * 240) / 240;
-  const countdown = useMemo(() => (left > 0 ? new RingGeometry(1.22, RING_OUT, Math.max(3, Math.ceil(left * 40)), 1, Math.PI / 2, left * Math.PI * 2) : null), [left]);
-  useEffect(() => () => countdown?.dispose(), [countdown]);
+  // One mutable arc per feeder: no quantisation or geometry allocation while it animates.
+  const remaining = useMemo(() => {
+    const geometry = new RingGeometry(1.22, RING_OUT, 40, 1, Math.PI / 2);
+    geometry.computeBoundingSphere(); // Keep full-ring bounds even when the first reading is empty.
+    return geometry;
+  }, []);
+  useEffect(() => () => remaining.dispose(), [remaining]);
   const tagWidth = Math.min(1100, 70 + look.label.length * 18);
   const tag = useMemo(
     () => textTexture([{ text: look.label, size: 36, color: "#ffffff", weight: 600 }], { width: tagWidth, height: 68, background: "rgba(16,20,28,0.72)", radius: 32 }),
@@ -96,6 +101,20 @@ function Feeder({ spot, look }: { spot: MeterSpot; look: MeterLook }) {
     mesh.visible = shown.current > 0.004;
     mesh.scale.set(r * 0.94, h * level, r * 0.94);
     mesh.position.y = base + (h * level) / 2;
+    // The ring shares the seed's eased value, including refills; time only changes the label.
+    if (ring.current) ring.current.visible = shown.current > 0;
+    if (ringShown.current !== shown.current) {
+      const positions = remaining.getAttribute("position");
+      for (let row = 0; row < 2; row++) {
+        const radius = row === 0 ? 1.22 : RING_OUT;
+        for (let i = 0; i <= 40; i++) {
+          const angle = Math.PI / 2 + (i / 40) * shown.current * Math.PI * 2;
+          positions.setXY(row * 41 + i, radius * Math.cos(angle), radius * Math.sin(angle));
+        }
+      }
+      positions.needsUpdate = true;
+      ringShown.current = shown.current;
+    }
   });
 
   const over = (e: ThreeEvent<PointerEvent>) => {
@@ -145,11 +164,9 @@ function Feeder({ spot, look }: { spot: MeterSpot; look: MeterLook }) {
       <mesh geometry={TRACK} position={[0, 0.012, 0]} rotation-x={-Math.PI / 2} scale={spot.radius}>
         <meshBasicMaterial color="#2f3a2a" transparent opacity={0.28} depthWrite={false} />
       </mesh>
-      {countdown ? (
-        <mesh geometry={countdown} position={[0, 0.014, 0]} rotation-x={-Math.PI / 2} scale={spot.radius}>
-          <meshBasicMaterial color="#f4efe2" transparent opacity={look.faded ? 0.45 : 0.9} depthWrite={false} />
-        </mesh>
-      ) : null}
+      <mesh ref={ring} geometry={remaining} position={[0, 0.014, 0]} rotation-x={-Math.PI / 2} scale={spot.radius}>
+        <meshBasicMaterial color={band} transparent opacity={look.faded ? 0.45 : 0.9} depthWrite={false} />
+      </mesh>
       {hovered || pinned ? (
         <sprite position={[0, base + h + r * 0.84 + 0.3, 0]} scale={[(tagWidth / 68) * 0.2, 0.2, 1]}>
           <spriteMaterial map={tag} transparent depthWrite={false} depthTest={false} fog={false} />
