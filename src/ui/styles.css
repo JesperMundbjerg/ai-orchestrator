@@ -1,46 +1,63 @@
 :root {
-  --bg: #f6f7f9;
-  --panel: #ffffff;
-  --panel-2: #f0f2f5;
-  --line: #e2e5ea;
-  --text: #1b1f24;
-  --muted: #667085;
-  --accent: #3b6fe0;
-  --accent-soft: #e8efff;
+  /* Garden palette: opaque reading surfaces, forest ink, sage and warm paper. */
+  --bg: #edf1e6;
+  --panel: #f8faf2;
+  --panel-2: #e5ecdb;
+  --line: #c5d0b8;
+  --control-line: #7b8d71;
+  --text: #243322;
+  --muted: #4b5b43;
+  --accent: #32613d;
+  --accent-soft: #e0ecd7;
   --on-accent: #ffffff;
-  --decide: #8a4fd8;
-  --decide-soft: #f2eaff;
-  --try: #0f8a6c;
-  --try-soft: #e2f6ef;
-  --milestone: #c26a12;
-  --milestone-soft: #fdf0e1;
-  --warn: #c2361f;
-  --ok: #178a4f;
-  --radius: 10px;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
+  --decide: #536230;
+  --decide-soft: #eaf0d8;
+  --try: #28634c;
+  --try-soft: #e0efe4;
+  --milestone: #805020;
+  --milestone-soft: #f5ead5;
+  --warn: #a03629;
+  --ok: #28613c;
+  --paper: #fbf7e9;
+  --paper-you: #edf2df;
+  --paper-fibre: rgba(101, 85, 40, 0.025);
+  --paper-shadow: 0 2px 3px rgba(45, 57, 30, 0.08), 0 5px 12px -8px rgba(45, 57, 30, 0.2);
+  --radius: 12px;
+  --garden-radius: 20px 12px 22px 12px / 12px 20px 14px 20px;
+  --note-radius: 5px 9px 6px 11px / 9px 5px 11px 6px;
+  --shadow: 0 2px 4px rgba(36, 51, 34, 0.05), 0 8px 24px -12px rgba(36, 51, 34, 0.18);
+  /* Two tiny, static corner sprigs. Leaves stay in the padding, never over the text.
+     Backgrounds add no accessible content, hit targets or extra compositing layers. */
+  --vine-start: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='116' viewBox='0 0 72 116'%3E%3Cpath d='M7 113C14 89 2 69 8 44S26 7 69 7' fill='none' stroke='%23748e60' stroke-width='1.2'/%3E%3Cg fill='%238aa575'%3E%3Cpath d='M9 90Q-1 81 4 73Q14 78 9 90ZM8 65Q18 52 12 47Q4 52 8 65ZM10 36Q1 28 6 20Q17 25 10 36ZM23 13Q21 2 32 2Q34 11 23 13ZM39 9Q47 19 54 13Q49 5 39 9Z'/%3E%3C/g%3E%3C/svg%3E");
+  --vine-end: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='72' height='116' viewBox='0 0 72 116'%3E%3Cg transform='translate(72 116) rotate(180)'%3E%3Cpath d='M7 113C14 89 2 69 8 44S26 7 69 7' fill='none' stroke='%23748e60' stroke-width='1.2'/%3E%3Cg fill='%238aa575'%3E%3Cpath d='M9 90Q-1 81 4 73Q14 78 9 90ZM8 65Q18 52 12 47Q4 52 8 65ZM10 36Q1 28 6 20Q17 25 10 36ZM23 13Q21 2 32 2Q34 11 23 13ZM39 9Q47 19 54 13Q49 5 39 9Z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f1216;
-    --panel: #161a20;
-    --panel-2: #1d2229;
-    --line: #2a3038;
-    --text: #e7eaee;
-    --muted: #8b95a3;
-    --accent: #7aa2ff;
-    --accent-soft: #1d2a47;
-    --on-accent: #0b1020;
-    --decide: #b692ff;
-    --decide-soft: #2a2140;
-    --try: #4fd1a9;
-    --try-soft: #15302a;
-    --milestone: #f0a55a;
-    --milestone-soft: #33261a;
-    --warn: #ff7a66;
-    --ok: #4fd18a;
-    --shadow: none;
+    --bg: #141e17;
+    --panel: #1e2a20;
+    --panel-2: #2b3829;
+    --line: #3e4d38;
+    --control-line: #839776;
+    --text: #edf3e5;
+    --muted: #bbc9af;
+    --accent: #b0d49b;
+    --accent-soft: #30432b;
+    --on-accent: #1c301c;
+    --decide: #cedca0;
+    --decide-soft: #364025;
+    --try: #a4d6b8;
+    --try-soft: #263f32;
+    --milestone: #e8c394;
+    --milestone-soft: #443824;
+    --warn: #ffb4a3;
+    --ok: #afd59a;
+    --paper: #31382a;
+    --paper-you: #2c3c29;
+    --paper-fibre: rgba(229, 214, 159, 0.025);
+    --paper-shadow: 0 2px 4px rgba(0, 0, 0, 0.2), 0 6px 14px -8px rgba(0, 0, 0, 0.4);
+    --shadow: 0 6px 24px -12px rgba(0, 0, 0, 0.5);
     color-scheme: dark;
   }
 }
@@ -576,3 +593,113 @@ button.link { background: none; border: 0; padding: 0; font: inherit; color: var
 .switch-progress { display: inline-flex; gap: 6px; align-items: baseline; color: var(--muted, #888); }
 .switch-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; animation: switch-pulse 1s ease-in-out infinite alternate; }
 @keyframes switch-pulse { from { opacity: 0.25; } to { opacity: 1; } }
+
+/* ── Garden surfaces ──────────────────────────────────────────────────────────────
+   Decoration belongs to the office and project board. Review sheets share the
+   palette only: no vines or texture competing with a decision or live preview. */
+.world-panel, .world-top, .world-legend, .world-hint,
+.world-modal-card, .world-caller, .team-column, .team-activity > section,
+dialog.all-leads-dialog {
+  background-color: var(--panel);
+  background-image: var(--vine-start), var(--vine-end);
+  background-position: left top, right bottom;
+  background-size: 72px 116px;
+  background-repeat: no-repeat;
+  border-radius: var(--garden-radius);
+  box-shadow: var(--shadow);
+  /* Solid surfaces keep contrast independent of the scene behind them. */
+  backdrop-filter: none;
+}
+.world-panel { padding: 18px; }
+.world-top, .world-legend, .world-hint { padding: 10px 20px; background-size: 48px 76px; }
+.world-modal-card, .world-caller { padding: 18px 20px; }
+.team-column, .team-activity > section { padding: 18px; }
+.team-activity > section { border: 1px solid var(--line); min-width: 0; }
+.team-column.lounge { background-color: var(--panel-2); }
+/* Keep the title and hide control together, with project actions on another row. */
+.world-panel.teams .panel-head { flex-wrap: wrap; justify-content: flex-start; }
+.world-panel.teams .panel-head > .spacer { flex-basis: 35%; }
+.world-panel .panel-head > strong, .team-column-head strong { color: var(--accent); }
+.team-go { background: linear-gradient(110deg, var(--panel-2), var(--panel)); border-radius: 14px 8px 16px 8px; min-width: 0; }
+.team-row > .ghost { border-radius: 8px 12px 12px 8px; }
+.team-name { overflow-wrap: anywhere; }
+.team-go.blocked, .team-column.blocked { border-color: var(--warn); }
+.team-blocked, .delivery.failed { color: var(--warn); }
+.world-caller { border-top-color: var(--warn); }
+
+/* Seed packets: identical aligned rows, with a folded seam and a leaf-shaped
+   status lamp. No rotated text or alternating indents in a dense member list. */
+.member-list { gap: 6px; }
+.member {
+  border-radius: 5px 14px 5px 14px;
+  border-color: var(--line);
+  border-left: 3px solid var(--control-line);
+  background: linear-gradient(100deg, var(--panel-2), var(--panel));
+  padding: 7px 10px;
+  box-shadow: 0 1px 2px rgba(36, 51, 34, 0.05);
+}
+.member > .lamp { border-radius: 1px 8px 1px 8px; transform: rotate(-15deg); }
+.member:hover, .team-go:hover { border-color: var(--accent); }
+.member-name { min-width: 0; }
+.card-member .member-name { white-space: normal; overflow-wrap: anywhere; }
+.card-member { grid-template-columns: auto minmax(0, 1fr) auto; }
+.all-leads-list label {
+  background: linear-gradient(100deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--control-line);
+  border-radius: 5px 14px 5px 14px;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+}
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+/* Paper notes: texture is far quieter than the ink. Direction still comes from
+   alignment and labels; the paper tint is only a secondary cue. */
+.say.you, .say.them, .order, .order.to-you, .order.from-you, .work {
+  background-color: var(--paper);
+  background-image: repeating-linear-gradient(8deg, transparent 0 3px, var(--paper-fibre) 3px 4px);
+  border: 1px solid var(--line);
+  border-radius: var(--note-radius);
+  box-shadow: var(--paper-shadow);
+}
+.say { padding: 9px 12px; }
+.say.you, .order.from-you { background-color: var(--paper-you); }
+.say.them, .order.to-you, .order.instruction { border-left: 3px solid var(--accent); }
+.order.handoff, .order.review { border-left: 3px solid var(--try); }
+.chat, .order-list { gap: 8px; }
+.between { opacity: 1; }
+.work-state.in_review, .delivery.sending { background: var(--accent-soft); }
+.work-state.accepted, .delivery.delivered { background: var(--try-soft); }
+.delivery.failed, .work-state.changes_requested { background: var(--milestone-soft); }
+.agent-doing { background: var(--accent-soft); }
+
+/* Controls stay recognisable and keyboard focus is visible on every surface. */
+:where(button, a, input, textarea, select, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.agent-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.ghost, .note, .option, .instruct textarea, .team-form input, .team-form textarea,
+.team-form select, .agent-seat select { border-color: var(--control-line); }
+.instruct textarea, .note { background: var(--panel); }
+input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
+.chip-count { opacity: 1; }
+.pin { color: var(--muted); }
+.primary, .ghost { border-radius: 9px 12px 9px 12px; }
+.team-board .board-head { padding-bottom: 8px; }
+.team-board .board-head h1 { color: var(--accent); }
+/* Small screens keep the same reading order; nothing decorative adds width. */
+@media (max-width: 600px) {
+  .team-columns { grid-template-columns: minmax(0, 1fr); }
+  .team-column, .team-activity > section { padding: 16px; }
+  .world-top { flex-wrap: wrap; gap: 6px; }
+  .world-panel.agent { padding: 16px; }
+  .agent-seat label:first-child { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+  .agent-seat select { max-width: 100%; }
+}
+@media (forced-colors: active) {
+  .world-panel, .world-top, .world-legend, .world-hint, .world-modal-card,
+  .world-caller, .team-column, .team-activity > section, dialog.all-leads-dialog,
+  .all-leads-list label, .member, .team-go,
+  .say.you, .say.them, .order, .work { background-image: none; box-shadow: none; }
+}
