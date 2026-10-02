@@ -15,7 +15,7 @@ import type { Team, WorldAgent } from "../../shared/types.ts";
 
 export type Vec2 = [number, number];
 
-export type Zone = "team" | "queue" | "lounge" | "caller" | "garden";
+export type Zone = "team" | "queue" | "lounge" | "caller" | "garden" | "meeting";
 
 export type Pose = "look" | "pick" | "watch" | "chat" | "stretch";
 

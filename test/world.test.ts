@@ -877,7 +877,7 @@ test("an agent shows the model its harness reports, only for the session that re
 test("a Claude Code hook call becomes activity, with a sub-agent's own tools kept apart", () => {
   const hook = (event: string, extra: Record<string, unknown> = {}) => claudeHookEvents({ hook_event_name: event, session_id: "s", ...extra });
   assert.deepEqual(hook("SubagentStart", { agent_id: "h1", agent_type: "architecture-reviewer" }).events, [{ kind: "helper_start", helperId: "h1", helperType: "architecture-reviewer" }]);
-  assert.deepEqual(hook("PreToolUse", { agent_id: "h1", tool_name: "Read", tool_input: {} }), { events: [], helperId: "h1" });
+  assert.deepEqual(hook("PreToolUse", { agent_id: "h1", tool_name: "Read", tool_input: {} }), { events: [{ kind: "tool", tool: "Read", input: {}, helperId: "h1" }], helperId: "h1" });
   assert.deepEqual(hook("PreToolUse", { tool_name: "Bash", tool_input: { command: "npm test", description: "Run the tests" } }).events, [{ kind: "tool", tool: "Bash", input: { command: "npm test", description: "Run the tests" } }]);
   assert.deepEqual(hook("Stop").events, [{ kind: "idle" }]);
   assert.equal(describeTool("Bash", { command: "npm test" }), "Running npm test");

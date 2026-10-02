@@ -384,6 +384,16 @@ export interface Helper {
   /** Its kind, such as "architecture-reviewer". */
   type: string;
   startedAt: string;
+  /** Safe, checkout-relative source last viewed by this helper; prepared by the service. */
+  excerpt?: ReviewExcerpt | null;
+}
+
+export interface ReviewExcerpt {
+  /** Event time, for choosing the last read when several reviewers run. */
+  viewedAt?: number;
+  path: string;
+  startLine: number;
+  lines: string[];
 }
 
 /**

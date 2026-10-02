@@ -449,7 +449,7 @@ export class World {
     const now = this.now().getTime();
     if (helperId) this.activity.touchHelper(agent.id, helperId, now);
     let changed = false;
-    for (const e of events) changed = this.activity.record(agent.id, e, now) || changed;
+    for (const e of events) changed = this.activity.record(agent.id, e, now, agent.cwd) || changed;
     const sessionId = session.sessionId ?? null;
     const model = events.findLast((e) => e.kind === "model")?.model ?? modelFor?.(this.activity.modelOf(agent.id, sessionId)) ?? null;
     if (model?.id && model.label) changed = this.activity.setModel(agent.id, sessionId, model) || changed;

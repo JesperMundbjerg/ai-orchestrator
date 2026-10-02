@@ -8,6 +8,8 @@ import { Furniture, Kit, officeChair, plant, sofa } from "./Furniture.tsx";
 import { stationsFor, studio } from "./crafts.ts";
 import { Crafts } from "./Crafts.tsx";
 import { GardenScene } from "./Garden.tsx";
+import { ReviewRoom } from "./ReviewRoom.tsx";
+import { meetingLength } from "./meeting.ts";
 import { Meters } from "./Meters.tsx";
 import { plantGarden, treesRound } from "./planting.ts";
 import { Pipeline, useTexture } from "./Office.tsx";
@@ -72,7 +74,10 @@ export function BuildingOffice({ plan, agents, teams, work, queueLength, meters 
         <TeamBoard key={c.team.id} corner={c} room={plan.rooms.find((r) => r.teamId === c.team.id)!} agents={agents} teams={teams} work={work} />
       ))}
       {plan.rooms.filter((r) => r.kind === "bay" && !r.teamId).map((r, i) => <FreeBay key={i} room={r} />)}
-      {meetings.map((r, i) => <MeetingRoom key={i} room={r} n={i + 1} />)}
+      {meetings.map((r, i) => <group key={i}>
+        <MeetingRoom room={r} n={i + 1} />
+        <ReviewRoom room={r} index={i} reviewer={[...agents.values()].find((a) => plan.spots.get(a.id)?.group === `meeting:${i}`) ?? null} />
+      </group>)}
       {buildingPipelines(plan).map((p) => (
         <Pipeline key={p.fromTeamId} path={p.path} busy={work.some((w) => w.fromTeamId === p.fromTeamId && w.toTeamId === p.toTeamId && w.state === "in_review")} />
       ))}
@@ -158,19 +163,18 @@ function furnish(plan: BuildingPlan) {
   plant(la, 0.8 - lw, 0.6 - ld, 1.5);
   plant(la, 0.8 - lw, ld - 1.4, 1.1);
 
-  // The meeting rooms: a table with office chairs down both sides, and a TV on the back wall.
+  // Creative review rooms: table and chairs; boards and projector are in ReviewRoom.
   for (const room of plan.rooms.filter((r) => r.kind === "meeting")) {
     const add = kit.in(room);
     const [hw, hd] = room.half;
-    const length = Math.max(2, Math.min(4.2, 2 * hd - 3.4));
+    const length = meetingLength(room);
     const chairs = Math.max(2, Math.floor(length / 0.9));
     add("wood", [0, 0.74, -0.3], [1.3, 0.05, length]);
     for (const dz of [-1, 1]) add("metal", [0, 0.36, -0.3 + dz * (length / 2 - 0.4)], [0.1, 0.72, 0.1]);
     for (const side of [-1, 1]) for (let i = 0; i < chairs; i++) {
-      officeChair(add, side * 0.95, -0.3 - length / 2 + (i + 0.5) * (length / chairs), side * (Math.PI / 2), chair());
+      officeChair(add, side * 0.95, -0.3 - length / 2 + (i + 0.5) * (length / chairs), -side * (Math.PI / 2), chair());
     }
-    add("metal", [0, 1.55, 0.2 - hd], [Math.min(2.4, hw * 2 - 1.2), 1.36, 0.06]);
-    add("screen", [0, 1.55, 0.235 - hd], [Math.min(2.3, hw * 2 - 1.3), 1.28, 0.005], 0, "#2c3a4d");
+    add("fabric", [0, 0.009, -0.3], [3.5, 0.014, length + 1], 0, "#bdad99");
     plant(add, hw - 0.5, 0.5 - hd, 1.2);
   }
 
@@ -337,7 +341,7 @@ function FreeBay({ room }: { room: Room }) {
 function MeetingRoom({ room, n }: { room: Room; n: number }) {
   return (
     <group position={[room.center[0], 0, room.center[1]]} rotation-y={room.facing}>
-      <Sign lines={[{ text: `Meeting room ${n}`, size: 56, color: "#ffffff", weight: 800 }]} size={[512, 110]} width={1.6} height={0.34} position={[0, 2.5, room.half[1] + 0.04]} />
+      <Sign lines={[{ text: `Creative review ${n}`, size: 56, color: "#ffffff", weight: 800 }]} size={[512, 110]} width={1.6} height={0.34} position={[0, 2.5, room.half[1] + 0.04]} />
     </group>
   );
 }

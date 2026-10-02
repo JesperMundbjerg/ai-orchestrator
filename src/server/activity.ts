@@ -6,6 +6,8 @@ import { basename } from "node:path";
 import { modelLabel } from "../shared/models.ts";
 import type { ActivityEvent, AgentModel, Helper } from "../shared/types.ts";
 import { claudeTranscriptModel } from "./models.ts";
+import { isReviewHelper } from "../shared/review.ts";
+import { reviewExcerpt } from "./review-excerpt.ts";
 
 /** A tool line stops being shown this long after it was reported, in case its end never comes. */
 const DOING_MS = 120_000;
@@ -58,13 +60,26 @@ export class Activity {
   }
 
   /** Records an event; true when what the office shows changed. */
-  record(agentId: string, event: ActivityEvent, now: number): boolean {
+  record(agentId: string, event: ActivityEvent, now: number, cwd: string | null = null): boolean {
     const before = JSON.stringify(this.of(agentId, now));
     const helpers = this.helpers.get(agentId) ?? new Map<string, Running>();
     this.helpers.set(agentId, helpers);
     const startedAt = new Date(now).toISOString();
     switch (event.kind) {
       case "tool": {
+        if (event.helperId) {
+          const helper = helpers.get(event.helperId);
+          if (helper) {
+            helper.seen = now;
+            if (isReviewHelper(helper) && /^(read|view)$/i.test(event.tool ?? "")) {
+              const input = event.input ?? {};
+              const path = input.file_path ?? input.path;
+              const excerpt = typeof path === "string" ? reviewExcerpt(cwd, path, input.offset ?? input.start_line) : null;
+              helper.excerpt = excerpt ? { ...excerpt, viewedAt: now } : null;
+            }
+          }
+          break; // A helper's tools never replace its parent's activity.
+        }
         this.doing.set(agentId, { text: describeTool(event.tool ?? "", event.input ?? {}), at: now });
         if (event.callId && PI_HELPER_TOOLS.has(event.tool ?? "")) {
           const calls = Array.isArray(event.input?.calls) ? (event.input.calls as Array<{ name?: unknown }>) : [event.input ?? {}];
@@ -158,11 +173,11 @@ export function claudeHookEvents(hook: Record<string, unknown>): { events: Activ
   const type = typeof hook.agent_type === "string" ? hook.agent_type : undefined;
   if (name === "SubagentStart" && helperId) return { events: [{ kind: "helper_start", helperId, helperType: type }], helperId: null };
   if (name === "SubagentStop" && helperId) return { events: [{ kind: "helper_stop", helperId }], helperId: null };
-  if (helperId) return { events: [], helperId };
   if (name === "PreToolUse") {
     const input = hook.tool_input && typeof hook.tool_input === "object" ? (hook.tool_input as Record<string, unknown>) : {};
-    return { events: [{ kind: "tool", tool: String(hook.tool_name ?? ""), input }], helperId: null };
+    return { events: [{ kind: "tool", tool: String(hook.tool_name ?? ""), input, ...(helperId ? { helperId } : {}) }], helperId };
   }
+  if (helperId) return { events: [], helperId };
   if (name === "Stop" || name === "SessionEnd") return { events: [{ kind: "idle" }], helperId: null };
   return { events: [], helperId: null };
 }

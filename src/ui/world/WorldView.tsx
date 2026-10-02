@@ -12,6 +12,7 @@ import { CALLER, planOffice, queueOrder, SPAWN, YOUR_VIEW, type OfficePlan, type
 import { callerIn, isBuilding, planBuilding, routeIn, savedLayout, saveLayout, viewIn, type BuildingPlan, type Layout } from "./building.ts";
 import { IDLE_MS, inPark, nextPastime, outForABreak, parkPlan, type Park } from "./park.ts";
 import { BuildingOffice } from "./BuildingOffice.tsx";
+import { meetingPlan, reviewing, type Meetings } from "./meeting.ts";
 import { CallerCard, CallerNote } from "./Caller.tsx";
 import { Office } from "./Office.tsx";
 import { Jars } from "./Jars.tsx";
@@ -65,7 +66,7 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
   const queue = useMemo(() => (world ? queueOrder(world.agents, entries.map((e) => e.task.id)) : []), [world, entries]);
   // The office as drawn, and where everyone is in it: in the building, whoever is idle is out in the garden.
   const office = useMemo(() => (world ? (layout === "building" ? planBuilding : planOffice)(world.agents, world.teams, queue) : null), [world, queue, layout]);
-  const plan = usePark(world, office);
+  const plan = useMeetings(world, usePark(world, office));
   const waiting = useMemo(() => {
     const out = new Map<string, Waiting>();
     if (!world) return out;
@@ -312,7 +313,7 @@ function usePark(world: WorldState | null, office: OfficePlan | null): OfficePla
     return next;
   }, [world]);
   const building = office && isBuilding(office) ? office : null;
-  const out = useMemo(() => (world && building ? outForABreak(world.agents, idleSince, now, building.queue) : new Set<string>()), [world, building, idleSince, now]);
+  const out = useMemo(() => (world && building ? outForABreak(world.agents.filter((a) => !reviewing(world.agents, world.work).has(a.id)), idleSince, now, building.queue) : new Set<string>()), [world, building, idleSince, now]);
   // Look again when the next member has been idle long enough, or the next one in the garden takes up something new.
   useEffect(() => {
     if (!building) return;
@@ -330,6 +331,16 @@ function usePark(world: WorldState | null, office: OfficePlan | null): OfficePla
     park.current = next.park;
     return next.plan;
   }, [building, office, out, now, idleSince]);
+}
+
+function useMeetings(world: WorldState | null, office: OfficePlan | null): OfficePlan | null {
+  const previous = useRef<Meetings>(new Map());
+  return useMemo(() => {
+    if (!world || !office || !isBuilding(office)) { previous.current = new Map(); return office; }
+    const next = meetingPlan(office, world.agents, world.work, previous.current);
+    previous.current = next.meetings;
+    return next.plan;
+  }, [world, office]);
 }
 
 /**
@@ -415,7 +426,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
       />
       <OfficeEdge bounds={office.bounds}>
       {isBuilding(office) ? (
-        <BuildingOffice plan={office} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} meters={world.usage?.meters ?? NO_METERS} />
+        <BuildingOffice plan={isBuilding(plan) ? plan : office} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} meters={world.usage?.meters ?? NO_METERS} />
       ) : (
         <Office plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
       )}
@@ -431,7 +442,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
           <group key={`${layout}:${a.id}`}>
             <Avatar
               agent={a}
-              spot={call ?? visit?.spot ?? home}
+              spot={call ?? (home.zone === "meeting" ? home : visit?.spot ?? home)}
               enterFrom={arrivals.has(a.id) ? plan.entrance : null}
               waiting={w ? { count: w.count, type: w.type } : null}
               selected={selected === a.id}
