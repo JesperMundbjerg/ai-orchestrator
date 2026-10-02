@@ -311,11 +311,17 @@ function adoptLegacy(db: DatabaseSync): void {
 // Keep migration numbers append-only. Runtime interrupted-send recovery belongs to the
 // owning service, not to schema migration. Redundant legacy constructor DDL is harmless.
 const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
-  db.exec(`ALTER TABLE messages ADD COLUMN replay_scope TEXT;
-    ALTER TABLE messages ADD COLUMN replay_fingerprint TEXT;
-    ALTER TABLE messages ADD COLUMN replay_work TEXT;
-    ALTER TABLE replies ADD COLUMN replay_fingerprint TEXT;`);
+  addColumn(db, "messages", "replay_scope", "TEXT");
+  addColumn(db, "messages", "replay_fingerprint", "TEXT");
+  addColumn(db, "messages", "replay_work", "TEXT");
+  addColumn(db, "replies", "replay_fingerprint", "TEXT");
 }];
+
+function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+  }
+}
 
 /** Canonical request identity: object key order is irrelevant, array order is significant. */
 export function requestFingerprint(value: unknown): string {
