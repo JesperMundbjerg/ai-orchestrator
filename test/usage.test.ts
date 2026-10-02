@@ -247,3 +247,92 @@ test("a harness posts its limits to the service, which says a change and refuses
     server.close();
   }
 });
+
+test("Codex's windows are told by their length, whichever of primary and secondary carries them, from headers and from a rollout", () => {
+  const u = usage(roots());
+  u.record("codex", codexHeaderReadings({
+    "x-codex-primary-used-percent": "30", "x-codex-primary-window-minutes": "300", "x-codex-primary-reset-after-seconds": "3600",
+    "x-codex-secondary-used-percent": "60", "x-codex-secondary-window-minutes": "10080", "x-codex-secondary-reset-at": "1791046697",
+  }, NOW.getTime()), "pi-headers");
+  assert.deepEqual(u.meters().map((m) => [m.id, m.label, m.usedPercent]), [
+    ["claude.five_hour", "Claude 5-hour", null], ["claude.week", "Claude week", null], ["codex.week", "Codex week", 60], ["codex.five_hour", "Codex 5-hour", 30],
+  ]);
+  assert.equal(meter(u, "codex.five_hour").resetsAt, iso(new Date(NOW.getTime() + 3600_000)));
+
+  // A rollout the way a plan with both windows writes it, the week first this time.
+  const r = roots();
+  const day = join(r.codex, "2026", "10", "02");
+  mkdirSync(day, { recursive: true });
+  const window = (used: number, minutes: number, resets: number) => ({ used_percent: used, window_minutes: minutes, resets_at: resets });
+  writeFileSync(join(day, "rollout-2026-10-02T10-00-00-01a0ee74-5a58-7122-907e-f27f0a724531.jsonl"), lines(
+    { timestamp: iso(ago(5)), type: "event_msg", payload: { type: "token_count", info: null, rate_limits: { primary: window(71, 10080, 1791046697), secondary: window(44, 300, Math.floor(NOW.getTime() / 1000) + 7200) } } },
+  ));
+  const v = usage(r);
+  assert.deepEqual([meter(v, "codex.week").usedPercent, meter(v, "codex.week").resetsAt], [71, "2026-10-03T16:58:17.000Z"]);
+  assert.deepEqual([meter(v, "codex.five_hour").usedPercent, meter(v, "codex.five_hour").resetsAt], [44, iso(new Date(NOW.getTime() + 7200_000))]);
+});
+
+test("the mirror rule: a Codex meter at 90% or more pauses Pi until it resets, whatever its age; both high keeps Claude", () => {
+  let now = NOW;
+  const u = usage(roots(), () => now);
+  const hour = (n: number) => iso(new Date(NOW.getTime() + n * 3600_000));
+  assert.equal(u.codexPause(), null, "no reading pauses nothing");
+  u.record("codex", [{ window: "week", usedPercent: 89.9, resetsAt: hour(30) }], "pi-headers");
+  assert.equal(u.codexPause(), null);
+  assert.equal(u.crewPause(), null);
+
+  u.record("codex", [{ window: "week", usedPercent: 91, resetsAt: hour(30) }], "pi-headers");
+  assert.equal(u.codexPause()!.percent, 91);
+  assert.match(u.crewPause()!.why, /^the founder's weekly Codex use is 91%, until \w+ \d\d:\d\d when its window starts again$/);
+  assert.equal(u.crewPause()!.harness, "pi");
+
+  now = new Date(NOW.getTime() + 20 * 3600_000);
+  assert.equal(meter(u, "codex.week").stale, true);
+  assert.equal(u.crewPause()!.harness, "pi", "a high reading holds with age, until its window resets");
+  now = new Date(NOW.getTime() + 31 * 3600_000);
+  assert.equal(u.codexPause(), null, "the window has reset");
+  assert.equal(u.crewPause(), null);
+
+  now = NOW;
+  const v = usage(roots(), () => now);
+  v.record("codex", [{ window: "week", usedPercent: 40, resetsAt: hour(30) }, { window: "five_hour", usedPercent: 93, resetsAt: hour(2) }], "codex-rollout");
+  assert.match(v.crewPause()!.why, /^the founder's 5-hour Codex use is 93%, until \d\d:\d\d when its window starts again$/, "the 5-hour window alone pauses Pi");
+
+  v.record("claude", [{ window: "five_hour", usedPercent: 95, resetsAt: hour(3) }], "statusline");
+  assert.equal(v.claudePause()!.percent, 95);
+  assert.equal(v.crewPause()!.harness, "pi", "both high: Pi is paused and Claude kept");
+  v.record("codex", [{ window: "five_hour", usedPercent: 10, resetsAt: hour(2) }], "pi-headers");
+  assert.equal(v.crewPause()!.harness, "claude", "only Claude high: the Claude pause as before");
+});
+
+test("near Codex's limit the crew guide gives the Claude backups under Mix, and changes nothing on Claude Code only or Pi only", () => {
+  const dir = mkdtempSync(join(tmpdir(), "usage-crew-"));
+  const crew = new CrewTreeStore(dir, { piStore: join(dir, "none.json") });
+  crew.seed();
+  const tree = structuredClone(crew.state().tree) as CrewTree;
+  const astra = { harness: "pi", model: "openai-codex/gpt-6-astra", effort: "high" };
+  tree.rules[0]!.use = astra;
+  tree.rules[0]!.backup = { harness: "claude", model: "opus", effort: "high" };
+  tree.fallback = { ...tree.fallback, ...astra, backup: { harness: "claude", model: "sonnet", effort: "high" } };
+  tree.lead = { ...tree.lead, use: astra, backup: { harness: "claude", model: "opus", effort: "medium" } };
+  crew.save(tree);
+  const plain = crew.text();
+  assert.match(plain, /--kind pi/);
+  assert.equal(crew.lead().harness, "pi");
+
+  crew.pause = () => ({ harness: "pi", why: "the founder's weekly Codex use is 94%, until Sat 16:58 when its window starts again" });
+  const paused = crew.text();
+  assert.match(paused, /^The founder's switch: mixed, but the office has paused Pi for now: the founder's weekly Codex use is 94%, until Sat 16:58 when its window starts again\. Every choice below already runs on Claude Code/m);
+  assert.ok(!/--kind pi/.test(paused), "no Pi start line is offered");
+  assert.equal((paused.match(/--kind claude/g) ?? []).length, (plain.match(/Start: /g) ?? []).length, "every rule gives its Claude backup");
+  assert.equal(crew.lead().harness, "claude", "a new project's lead too");
+  assert.equal(crew.state().tree.mode, "mixed", "the founder's setting is never changed");
+
+  crew.save({ ...tree, mode: "claude" });
+  assert.ok(!/--kind pi/.test(crew.text()));
+  assert.doesNotMatch(crew.text(), /paused/);
+  crew.save({ ...tree, mode: "pi" });
+  assert.ok(!/--kind claude/.test(crew.text()), "Pi only never moves to Claude Code");
+  assert.doesNotMatch(crew.text(), /paused/);
+  assert.equal(crew.lead().harness, "pi");
+});

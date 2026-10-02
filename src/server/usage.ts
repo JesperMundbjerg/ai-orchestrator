@@ -104,8 +104,14 @@ const toIso = (v: unknown): string | null => {
   return null;
 };
 
+/** Codex names a window by its length, not by which of primary/secondary carries it: 300 minutes is the 5-hour one, 10080 the week. */
+const windowOfMinutes = (m: unknown): UsageWindow | null => {
+  const n = Number(m);
+  return n > 0 && n <= 360 ? "five_hour" : n >= 9000 && n <= 11000 ? "week" : null;
+};
+
 const windowOf = (r: LimitReading): UsageWindow | null =>
-  r.window === "five_hour" || r.window === "week" ? r.window : r.windowMinutes === 300 ? "five_hour" : r.windowMinutes === 10080 ? "week" : null;
+  r.window === "five_hour" || r.window === "week" ? r.window : windowOfMinutes(r.windowMinutes);
 
 export class Usage {
   private db: DatabaseSync;
@@ -216,12 +222,36 @@ export class Usage {
     return m && m.usedPercent !== null && !m.stale && m.usedPercent >= PAUSE_AT ? { percent: m.usedPercent, resetsAt: m.resetsAt } : null;
   }
 
-  /** The crew guide's pause, in words a lead reads: why Claude Code is paused, and until when. */
+  /**
+   * The mirror image, for Pi's Codex: any Codex meter (the week, and the 5-hour window when a plan
+   * reports one) at PAUSE_AT or more. A high reading holds whatever its age, since use only grows
+   * until its window resets (a meter whose window has reset shows 0 and no longer counts). When
+   * several are high it holds until the last of them resets.
+   */
+  codexPause(): { meter: UsageMeter; percent: number; resetsAt: string | null } | null {
+    const high = this.meters().filter((m) => m.id.startsWith("codex.") && m.usedPercent !== null && m.usedPercent >= PAUSE_AT);
+    if (!high.length) return null;
+    const last = (m: UsageMeter) => (m.resetsAt ? Date.parse(m.resetsAt) : Infinity);
+    const worst = high.reduce((a, b) => (last(b) > last(a) || (last(b) === last(a) && b.usedPercent! > a.usedPercent!) ? b : a));
+    // With any high meter's end unknown, so is when it starts again.
+    return { meter: worst, percent: worst.usedPercent!, resetsAt: high.some((m) => !m.resetsAt) ? null : worst.resetsAt };
+  }
+
+  /**
+   * The crew guide's pause, in words a lead reads: why a harness is paused, and until when. Codex's
+   * limit pauses Pi (new crew get the Claude backups); Claude's pauses Claude Code. When both are
+   * high Claude is kept, the founder's default, and its 5-hour window is also the one that ends sooner.
+   */
   crewPause(): CrewPause | null {
+    const time = (at: string | null, opts: Intl.DateTimeFormatOptions, tail: string) => (at ? `, until ${new Date(at).toLocaleString("en-GB", opts)}${tail}` : "");
+    const x = this.codexPause();
+    if (x) {
+      const week = x.meter.window === "week";
+      return { harness: "pi", why: `the founder's ${week ? "weekly" : "5-hour"} Codex use is ${Math.round(x.percent)}%${time(x.resetsAt, { ...(week ? { weekday: "short" as const } : {}), hour: "2-digit", minute: "2-digit" }, " when its window starts again")}` };
+    }
     const p = this.claudePause();
     if (!p) return null;
-    const until = p.resetsAt ? `, until ${new Date(p.resetsAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })} when its window starts again` : "";
-    return { harness: "claude", why: `the founder's 5-hour Claude use is ${Math.round(p.percent)}%${until}` };
+    return { harness: "claude", why: `the founder's 5-hour Claude use is ${Math.round(p.percent)}%${time(p.resetsAt, { hour: "2-digit", minute: "2-digit" }, " when its window starts again")}` };
   }
 
   /** Claude Code's cache of its last `/usage` read, and the newest Codex rollout's latest limits. */
