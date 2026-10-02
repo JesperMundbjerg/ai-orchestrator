@@ -1,20 +1,20 @@
 import { createContext, useContext, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import type { Group, Mesh } from "three";
-import type { OfficePlan } from "./layout.ts";
+import type { BuildingPlan } from "./building.ts";
 import { DARTS, POOL } from "./lounge.ts";
 import { PLAYS, type GamePlayback, type GameSeat } from "./games.ts";
 export const GameContext = createContext<GamePlayback | null>(null);
 export const useGames = () => useContext(GameContext);
 import { usePace } from "./Pace.tsx";
 import { textTexture } from "./label.ts";
-import { useTexture } from "./Office.tsx";
+import { useTexture } from "./useTexture.ts";
 
 function Box({ at, size, color }: { at: [number,number,number]; size: [number,number,number]; color: string }) {
   return <mesh position={at} castShadow receiveShadow><boxGeometry args={size}/><meshStandardMaterial color={color} roughness={0.8}/></mesh>;
 }
 /** Always present furniture; only the active game asks the pacer for animation. */
-export function GamesScene({ plan }: { plan: OfficePlan }) {
+export function GamesScene({ plan }: { plan: BuildingPlan }) {
   const playing=[...plan.spots.values()].flatMap(s=>s.game?[s.game]:[]);
   const pool=playing.filter(g=>g.kind==="pool");
   const darts=playing.find(g=>g.kind==="darts");

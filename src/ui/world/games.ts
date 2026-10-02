@@ -1,7 +1,7 @@
 // A tiny baked library, generated once. Playback is a frame lookup, never physics or random work.
 import type { WorldAgent } from "../../shared/types.ts";
-import { doorway, isBuilding } from "./building.ts";
-import { type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
+import { doorway, type BuildingPlan } from "./building.ts";
+import type { Spot, Vec2 } from "./spatial.ts";
 import { DARTS, POOL, localPlace, loungeSeats } from "./lounge.ts";
 import { hash, outForABreak } from "./park.ts";
 export type V3 = [number, number, number];
@@ -46,18 +46,19 @@ export function playAt(seat: GameSeat, now: number): PlayFrame & { active: boole
   const player=seat.kind==="pool" ? turn%2 : 0;
   return {...frame, active:seconds>=0, player};
 }
-export function loungeEntry(plan: OfficePlan): Vec2[] {
-  if(isBuilding(plan)) { const r=plan.rooms.find(r=>r.kind==="lounge")!, d=doorway(r,0); return [d.out,d.inside]; }
-  return [localPlace(plan.lounge.center,plan.lounge.facing,[0,plan.ring-plan.path])];
+export function loungeEntry(plan: BuildingPlan): Vec2[] {
+  const room = plan.rooms.find(r => r.kind === "lounge")!;
+  const door = doorway(room, 0);
+  return [door.out, door.inside];
 }
-export function gameSpots(plan: OfficePlan): Spot[] {
+export function gameSpots(plan: BuildingPlan): Spot[] {
   const {center,facing}=plan.lounge, at=(p:Vec2)=>localPlace(center,facing,p), entry=loungeEntry(plan);
   return [0,1].map((i):Spot=>({pos:at([POOL[0],POOL[1]+(i===0?2:-2)]),facing:facing+(i===0?Math.PI:0),zone:"lounge",group:"lounge",
     approach:[...entry,at([1.65,3.4]),at([1.65,POOL[1]+(i===0?2:-2)])]})).concat([{pos:at([DARTS[0],DARTS[1]+2.35]),facing:facing+Math.PI,zone:"lounge",group:"lounge",approach:[...entry,at([1.65,3.4]),at([DARTS[0],3.4])]}]);
 }
 export type Games = Map<string, Spot>;
 /** Retain players while eligible. Never reserve a table for one player, nor keep busy/queued people. */
-export function chooseGames(plan: OfficePlan, agents: WorldAgent[], since: ReadonlyMap<string,number>, now: number, before: Games = new Map()): Games {
+export function chooseGames(plan: BuildingPlan, agents: WorldAgent[], since: ReadonlyMap<string,number>, now: number, before: Games = new Map()): Games {
   const out=outForABreak(agents,since,now,plan.queue);
   const eligible=agents.filter(a=>a.status==="idle"&&!a.waitingOnYou&&!plan.queue.includes(a.id)&&(!a.teamId||out.has(a.id))).map(a=>a.id);
   const order=eligible.sort((a,b)=>hash(a)-hash(b)||a.localeCompare(b));
@@ -98,5 +99,5 @@ export class GamePlayback {
   }
 }
 
-/** Real sofa seats for idle spectators, also used by the ring's initial layout. */
-export const seatsInLounge = (plan:OfficePlan) => loungeSeats(plan.lounge.center,plan.lounge.facing,loungeEntry(plan));
+/** Real sofa seats for idle spectators. */
+export const seatsInLounge = (plan:BuildingPlan) => loungeSeats(plan.lounge.center,plan.lounge.facing,loungeEntry(plan));

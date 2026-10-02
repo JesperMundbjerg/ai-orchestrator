@@ -121,7 +121,7 @@ try {
     await pose({ x: 0, z: 60, yaw: Math.PI, pitch: -.12 });
     const away = await read(); assert.equal(away.officeVisible, false);
     officeCheck = { facingCalls: facing.calls, awayCalls: away.calls };
-    await page.getByRole('button', { name: 'Your desk' }).click(); await delay(2000);
+    await page.reload(); await page.waitForFunction(() => !!window.__wilds?.read()); await delay(2000);
     assert.equal((await read()).officeVisible, true);
     await page.screenshot({ path: join(out, 'home.png') });
     assert.ok(summary(samples.map(f => f.interval)).p95 < 35, 'outdoor motion must not regress to office pacing');

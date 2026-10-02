@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Team, TeamStatus, WorldAgent, WorldTeam } from "../src/shared/types.ts";
-import type { Corner } from "../src/ui/world/layout.ts";
+import type { Corner } from "../src/ui/world/spatial.ts";
 import { FIGURE_WIDTH, figureGrid, nameLines, teamBoard, wobble, wrap } from "../src/ui/world/corkboard.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({

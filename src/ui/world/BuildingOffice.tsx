@@ -12,11 +12,12 @@ import { ReviewRoom } from "./ReviewRoom.tsx";
 import { meetingLength } from "./meeting.ts";
 import { Meters } from "./Meters.tsx";
 import { plantGarden, treesRound } from "./planting.ts";
-import { Pipeline, useTexture } from "./Office.tsx";
+import { Pipeline } from "./Pipeline.tsx";
+import { useTexture } from "./useTexture.ts";
 import { freeBoard, teamBoard } from "./corkboard.ts";
 import { CorkBoard } from "./CorkBoard.tsx";
 import { COUCHES, COFFEE } from "./lounge.ts";
-import { WALL_H, type Corner, type Vec2 } from "./layout.ts";
+import { WALL_H, type Corner, type Vec2 } from "./spatial.ts";
 
 /** The windows run from the sill to the head, in panes this wide at most; the wall (`WALL_H`, open to the sky) goes on above them. */
 const SILL = 0.85;

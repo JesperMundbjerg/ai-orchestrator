@@ -1,7 +1,7 @@
 // What each team member makes in their room instead of sitting at a desk. Pure: which craft a
 // place in a room gets, what its station is made of, and how far the piece on it has come.
 //
-//   where    a station stands where the plan puts a desk (layout.ts, building.ts), in the same
+//   where    a station stands where the plan puts a desk (building.ts), in the same
 //            footprint (DESK_SIZE, shrunk by the desk's scale), so everything that kept walkers
 //            and rooms clear of desks keeps them clear of stations. Its person stands where the
 //            desk's did, SEAT in front of it, facing it
@@ -13,8 +13,7 @@
 //            a new one is started. A free place, or one whose maker is away, keeps its piece
 //            where it got to; every place starts somewhere along, so a room looks lived in
 
-import type { Corner, Desk, Vec2 } from "./layout.ts";
-import { DESK_SIZE } from "./layout.ts";
+import { DESK_SIZE, type Corner, type Desk, type Vec2 } from "./spatial.ts";
 
 export type Craft = "woodwork" | "painting" | "pottery" | "sculpture" | "weaving";
 

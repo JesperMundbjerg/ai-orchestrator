@@ -1,4 +1,4 @@
-// A lead at your desk: what their team is stuck on, and what you can do about it from here.
+// A lead at the clearing: what their team is stuck on, and what you can do about it from here.
 //
 //   someone waits for your answer → the same answer card as the inbox, screenshots first when it has them
 //   someone is stuck at a prompt  → who, in one line, and: let the lead handle it, or open that agent

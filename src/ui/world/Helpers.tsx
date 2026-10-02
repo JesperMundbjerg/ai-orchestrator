@@ -4,7 +4,7 @@ import type { Group } from "three";
 import type { Helper } from "../../shared/types.ts";
 import { Body } from "./Avatar.tsx";
 import { textTexture } from "./label.ts";
-import type { Spot } from "./layout.ts";
+import type { Spot } from "./spatial.ts";
 import { lookFor } from "./look.ts";
 
 /**

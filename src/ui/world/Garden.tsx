@@ -22,7 +22,7 @@ import {
   type Mesh,
 } from "three";
 import type { Garden, Rect } from "./building.ts";
-import type { Vec2 } from "./layout.ts";
+import type { Vec2 } from "./spatial.ts";
 import { benchNook, pondEdge, type Planting, type Tree } from "./planting.ts";
 
 // The garden as it grows: every tree, plant, rock and paving slab is an instance of one of a few

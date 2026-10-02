@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Team, WorldAgent } from "../src/shared/types.ts";
 import { COFFEE } from "../src/ui/world/lounge.ts";
-import { YOUR_VIEW, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
+import { CLEARING_VIEW, type Spot, type Vec2 } from "../src/ui/world/spatial.ts";
 import { buildingPipelines, buildingRoute, callerIn, doorway, DOOR_WIDTH, MIN_CONSOLES, PATH_HALF, place, planBuilding, teamDesks, type BuildingPlan, type Garden, type Rect, type Room } from "../src/ui/world/building.ts";
 import { groundOf, HEADROOM, inWater, plantGarden, type Planting } from "../src/ui/world/planting.ts";
 import { visitSpot } from "../src/ui/world/visits.ts";
@@ -138,7 +138,7 @@ test("everyone has a place in the building: team seats, waiting for you on the c
   assert.equal(plan.spots.get("t0-lead")?.zone, "team");
   const places = [...plan.spots.values()].map((s) => s.pos.map((v) => v.toFixed(2)).join(","));
   assert.equal(new Set(places).size, places.length, "no two agents share a place");
-  // The first team sits straight ahead of your desk, the second to its right.
+  // The first team sits straight ahead of the clearing, the second to its right.
   const [first, second] = plan.corners;
   assert.ok(Math.abs(first!.center[0]) < 1e-9 && first!.center[1] < 0);
   assert.ok(second!.center[0] > 0);
@@ -212,7 +212,7 @@ test("every seat is reached from the front door through a doorway, along the wal
   }
 });
 
-test("walks between any two places, visits and calls to your desk keep off walls and desks", () => {
+test("walks between any two places, visits and calls to the clearing keep off walls and desks", () => {
   const plan = building(7, (i) => (i === 2 ? 10 : 3), ["q1", "q2", "q3"]);
   const spots = [...plan.spots.entries()];
   const callerSpot = callerIn(plan);
@@ -223,7 +223,7 @@ test("walks between any two places, visits and calls to your desk keep off walls
       assertClearWalk(plan, from.pos, buildingRoute(plan, from.pos, from, to), `${fromId} to ${toId}`);
     }
   }
-  // Back from your desk to their own seat, as a lead does once sent back.
+  // Back from the clearing to their own seat, as a lead does once sent back.
   const lead = plan.spots.get("t3-lead")!;
   assertClearWalk(plan, callerSpot(0).pos, buildingRoute(plan, callerSpot(0).pos, callerSpot(0), lead), "caller home");
 });
@@ -315,7 +315,7 @@ test("the garden lies in the middle of the hall: paths, beds and the pond inside
     assert.ok(g.beds.some((b) => inRect(b, [px - r, pz - r], 0.2) && inRect(b, [px + r, pz + r], 0.2)), `${what}: the pond lies in a bed`);
     // Where you stand is on the clearing, and the clearing is in front, towards the door.
     assert.ok(inRect(g.clearing, [0, 0], 1) && inRect(g.clearing, [0.3, 3.7], 0.5), `${what}: you stand on the clearing`);
-    assert.ok(YOUR_VIEW[1] > g.area.maxZ && YOUR_VIEW[1] < plan.loop.maxZ + 1.5, `${what}: "Your desk" looks at the garden from its front`);
+    assert.ok(CLEARING_VIEW[1] > g.area.maxZ && CLEARING_VIEW[1] < plan.loop.maxZ + 1.5, `${what}: the opening view looks at the garden from its front`);
     assert.ok(g.clearing.minZ > g.walk.maxZ, `${what}: the clearing is in front of the walk`);
     // Paths and beds do not overlap: nothing planted where people walk.
     for (const p of [...g.paths, g.clearing]) for (const b of g.beds) {
@@ -365,7 +365,7 @@ test("the garden grows the same every time, and so looks the same on every rende
   assert.deepEqual(plantGarden(a.garden), plantGarden(b.garden));
 });
 
-test("from where \"Your desk\" puts you, nothing growing stands between you and the leads who come to you or those waiting for you", () => {
+test("from the opening view, nothing growing stands between you and the leads who come to you or those waiting for you", () => {
   for (const n of [1, 6, 12]) {
     const plan = building(n, () => 3, Array.from({ length: 20 }, (_, i) => `q${i}`));
     const { planting } = planted(plan.garden);
@@ -376,7 +376,7 @@ test("from where \"Your desk\" puts you, nothing growing stands between you and 
     ];
     const seen = [...Array.from({ length: 12 }, (_, i) => callerIn(plan)(i)), ...plan.queue.map((id) => plan.spots.get(id)!)];
     for (const s of seen) {
-      for (const b of blocks) assert.ok(segmentGap(YOUR_VIEW, s.pos, b.pos, b.pos) > b.r, `${n} teams: ${b.what} at ${b.pos} hides the ${s.zone} at ${s.pos}`);
+      for (const b of blocks) assert.ok(segmentGap(CLEARING_VIEW, s.pos, b.pos, b.pos) > b.r, `${n} teams: ${b.what} at ${b.pos} hides the ${s.zone} at ${s.pos}`);
     }
   }
 });
@@ -437,9 +437,9 @@ test("leads who come to you and agents waiting for you stand apart on the cleari
     }
     const all = [...callers, ...waiting];
     all.forEach((a, i) => all.slice(i + 1).forEach((b) => assert.ok(dist(a.pos, b.pos) > 0.6, `${what}: ${a.pos} and ${b.pos} have room`)));
-    // The first lead stands where your desk's callers stood, so turning to face them still works; the first in line stands nearest you.
+    // The first lead stands at the clearing, so turning to face them works; the first in line stands nearest you.
     assert.deepEqual(callers[0]!.pos, [-1.2, 1]);
-    const toYou = (s: Spot) => dist(s.pos, YOUR_VIEW);
+    const toYou = (s: Spot) => dist(s.pos, CLEARING_VIEW);
     assert.ok(waiting.slice(1, 10).every((s) => toYou(s) > toYou(waiting[0]!)), `${what}: the first in line is nearest you`);
     // The callers stand left of the way in, those waiting right of it, so the way in stays open.
     for (const c of callers) assert.ok(c.pos[0] < -0.6, `${what}: caller left of the way in`);
@@ -520,9 +520,9 @@ test("the garden's places each stand on a path facing what they are for, clear o
     for (const s of places.flower) assert.ok(planting.plants.some((p) => p.kind === "flowers" && dist(p.pos, s.pos) <= 1.1 && faces(s, p.pos)), `${what}: picks a flower from ${s.pos}`);
     for (const s of places.ducks) assert.ok(faces(s, plan.garden.pond.center) && dist(s.pos, plan.garden.pond.center) - plan.garden.pond.radius < 3, `${what}: watches the pond from ${s.pos}`);
     for (const [a, b] of places.chat) assert.ok(faces(a, b.pos) && faces(b, a.pos) && dist(a.pos, b.pos) < 1.5, `${what}: two chat face to face at ${a.pos}`);
-    // Nobody in the garden stands between "Your desk" and those who come to you or wait for you.
+    // Nobody in the garden stands between the opening view and those who come to you or wait for you.
     const seen = [...Array.from({ length: 12 }, (_, i) => callerIn(plan)(i)), ...plan.queue.map((id) => plan.spots.get(id)!)];
-    for (const s of standing) for (const c of seen) assert.ok(segmentGap(YOUR_VIEW, c.pos, s.pos, s.pos) > 0.6, `${what}: ${s.pos} hides the ${c.zone} at ${c.pos}`);
+    for (const s of standing) for (const c of seen) assert.ok(segmentGap(CLEARING_VIEW, c.pos, s.pos, s.pos) > 0.6, `${what}: ${s.pos} hides the ${c.zone} at ${c.pos}`);
   }
 });
 
@@ -602,7 +602,7 @@ test("someone coming out, going back or taking up something new moves nobody els
   }
 });
 
-test("from any place in the garden to any other, back to a desk or over to your desk, the walk keeps to the paths", () => {
+test("from any place in the garden to any other, back to a desk or over to the clearing, the walk keeps to the paths", () => {
   const { parked } = park(10);
   const plan = parked;
   const places = parkPlaces(plan.garden, plan.loop);

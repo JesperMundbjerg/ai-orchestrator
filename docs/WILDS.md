@@ -63,4 +63,4 @@ Measured in headless Chromium 149, ANGLE Metal, **1440×1000 DPR 1**, empty Buil
 | Frames over 33.3 ms | 2,122 / 2,131 | 0 / 6,015 |
 | Frames over 100 ms | 0 | 0 |
 
-Resident chunks remain 81, terrain slots 81, instance batches 13. Geometry allocation plateaus at 193 by about 225 m in both runs. Still frames remain about 202 ms; leg animation adds no draw calls. A post-walk turn at the same position, 60 m from the origin, restored the office facing it (282 calls with shadows) and culled it facing away (35 calls); **Your desk** restored it as well. Final animal screenshots and timestamp-preserving MP4s cover deer, rabbit, duck and bird.
+Resident chunks remain 81, terrain slots 81, instance batches 13. Geometry allocation plateaus at 193 by about 225 m in both runs. Still frames remain about 202 ms; leg animation adds no draw calls. A post-walk turn at the same position, 60 m from the origin, restored the office facing it (282 calls with shadows) and culled it facing away (35 calls); reopening the office restores its indoor view as well. Final animal screenshots and timestamp-preserving MP4s cover deer, rabbit, duck and bird.

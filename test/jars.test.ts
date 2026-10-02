@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Team, UsageMeter, UsageShare, UsageView, WorldAgent } from "../src/shared/types.ts";
-import { planOffice, DESK_SIZE } from "../src/ui/world/layout.ts";
+import { DESK_SIZE } from "../src/ui/world/spatial.ts";
 import { planBuilding } from "../src/ui/world/building.ts";
 import { JAR, jarLook, jarSpots, meterTokens, settleFill } from "../src/ui/world/jars.ts";
 
@@ -11,7 +11,7 @@ const teams: Team[] = ["busy", "small", "empty"].map((id) => ({ id, name: id, st
 const usage: UsageView = { meters: [meter("b", "Second week"), meter("short", "Short", "five_hour"), meter("a", "First week")], agents: {}, teams: { busy: use(1_200_000, 800_000), small: use(120_000, 0) } };
 
 test("two data-labelled weekly jars use one busiest-project scale, including mixed usage", () => {
-  const spots = jarSpots(planOffice([], teams, []).corners, usage);
+  const spots = jarSpots(planBuilding([], teams, []).corners, usage);
   assert.equal(spots.length, 3);
   assert.deepEqual(spots.map((s) => s.jars.map((j) => j.fill)), [[0.6, 0.4], [0.06, 0], [0, 0]]);
   assert.deepEqual(spots[0]!.jars.map((j) => j.label), ["First week", "Second week"]);
@@ -19,11 +19,11 @@ test("two data-labelled weekly jars use one busiest-project scale, including mix
   assert.match(spots[0]!.jars[1]!.text, /800k tokens · share unavailable/);
   assert.equal(spots[2]!.jars[0]!.text, "First week · 0 tokens · 0%");
   const reordered = { ...usage, meters: [...usage.meters].reverse() };
-  assert.deepEqual(jarSpots(planOffice([], teams, []).corners, reordered), spots);
+  assert.deepEqual(jarSpots(planBuilding([], teams, []).corners, reordered), spots);
 });
 
 test("empty weeks are truly empty; hidden/finished projects do not distort the visible scale", () => {
-  const corners = planOffice([], teams, []).corners;
+  const corners = planBuilding([], teams, []).corners;
   assert.ok(jarSpots(corners, { ...usage, teams: {} }).every((s) => s.jars.every((j) => j.fill === 0)));
   const extra = { ...usage, teams: { ...usage.teams, hidden: use(1e12, 0) } };
   assert.equal(jarSpots(corners, extra)[0]!.jars[0]!.fill, 0.6);
@@ -40,13 +40,13 @@ test("legacy data never splits tokens using percentages; unscaled new data retai
   assert.equal(jarLook("b", "Arbitrary week", use(100, 200), 300).fill, 2 / 3);
 });
 
-for (const plan of [planOffice, planBuilding]) test(`${plan.name}: side tables stay clear of crafts and walking approaches`, () => {
+test("side tables stay clear of crafts and walking approaches", () => {
   const agents: WorldAgent[] = teams.flatMap((t) => Array.from({ length: 46 }, (_, i) => ({
     id: `${t.id}-${i}`, identity: `${t.id}-${i}`, name: `Maker ${i}`, harness: "manual", cwd: t.path,
     project: null, branch: null, status: "done", title: null, paneId: null, taskIds: [], teamId: t.id,
     role: i === 0 ? "lead" : "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true,
   })));
-  const office = plan(agents, teams, []);
+  const office = planBuilding(agents, teams, []);
   const spots = jarSpots(office.corners, usage);
   for (const s of spots) {
     const corner = office.corners.find((c) => c.team.id === s.teamId)!;

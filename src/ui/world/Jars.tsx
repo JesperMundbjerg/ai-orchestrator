@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import { CylinderGeometry, type Mesh } from "three";
 import type { UsageView } from "../../shared/types.ts";
-import type { Corner } from "./layout.ts";
+import type { Corner } from "./spatial.ts";
 import { hash } from "./crafts.ts";
 import { JAR, jarSpots, settleFill, type JarLook } from "./jars.ts";
 import { textTexture } from "./label.ts";

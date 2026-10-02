@@ -3,7 +3,7 @@
 
 import type { TeamStatus, Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
 import { whyStuck } from "../../shared/stuck.ts";
-import type { Corner } from "./layout.ts";
+import type { Corner } from "./spatial.ts";
 
 export interface Board {
   /** Cut out of paper, across the top. */

@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { WorldAgent, WorldTeam } from "../src/shared/types.ts";
-import { calls, GRACE_MS } from "../src/ui/world/visits.ts";
+import { calls as callsIn, GRACE_MS } from "../src/ui/world/visits.ts";
+import { callerIn, planBuilding } from "../src/ui/world/building.ts";
+
+function calls(teams: WorldTeam[], agents: Map<string, WorldAgent>, sentBack: ReadonlySet<string>, grace?: Parameters<typeof callsIn>[4]) {
+  const office = planBuilding([...agents.values()], teams, []);
+  return callsIn(teams, agents, sentBack, callerIn(office), grace);
+}
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}) =>
   ({ id, name: id, status: "working", teamId: "t1", role: "member", waitingOnYou: false, taskIds: [], ...extra }) as WorldAgent;

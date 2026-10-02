@@ -18,7 +18,7 @@
 
 import type { WorldAgent } from "../../shared/types.ts";
 import { benchSeats, intoGarden, onEdge, seatSpot, strollSpot, type BuildingPlan, type Garden, type Rect } from "./building.ts";
-import { yawTo, type Pose, type Spot, type Vec2 } from "./layout.ts";
+import { yawTo, type Pose, type Spot, type Vec2 } from "./spatial.ts";
 import { benchNook, plantGarden } from "./planting.ts";
 
 /** A project member idle this long goes out to the garden. */

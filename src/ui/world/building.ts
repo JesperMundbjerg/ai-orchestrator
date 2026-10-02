@@ -1,7 +1,6 @@
-// The office as one building, the other layout beside the ring. Pure: from the world state and
-// the queue order it returns the same plan as the ring does (each agent's spot, each team's
-// desks), plus the building's rooms and walls, and the walking route between two spots.
-// Coordinates are metres on the floor as [x, z], your desk at the origin, north (-z) ahead.
+// The office as one building. Pure: from the world state and the queue order it returns
+// each agent's spot, each team's desks, the rooms and walls, and walking routes.
+// Coordinates are metres on the floor as [x, z], the clearing at the origin, north (-z) ahead.
 //
 //   hall     an open hall with an indoor garden in its middle, open to the sky: a walk with
 //            benches round a planted bed that a stepping-stone trail winds through, borders
@@ -22,12 +21,10 @@
 //            station (crafts.ts)
 //   south    the lounge and kitchen west of the front door, two glass meeting rooms east of it
 //
-// Where your desk stood, the origin, is now the clearing: you stand there, facing north.
+// You start at the clearing, facing north.
 
 import type { Team, WorldAgent } from "../../shared/types.ts";
-import { CALLER, callerSpot, route, SPAWN, viewOf, YOUR_VIEW, yawTo, type Corner, type Desk, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
-
-export type Layout = "ring" | "building";
+import { CALLER, SPAWN, CLEARING_VIEW, yawTo, type Corner, type Desk, type Spot, type Vec2 } from "./spatial.ts";
 
 export interface Rect {
   minX: number;
@@ -84,8 +81,14 @@ export interface Garden {
   benches: Bench[];
 }
 
-export interface BuildingPlan extends OfficePlan {
-  layout: "building";
+export interface BuildingPlan {
+  corners: Corner[];
+  lounge: { center: Vec2; facing: number };
+  /** Where someone new walks in from: the front door's lobby. */
+  entrance: Vec2;
+  spots: Map<string, Spot>;
+  queue: string[];
+  bounds: Rect;
   rooms: Room[];
   walls: Wall[];
   /** The outside of the building. */
@@ -232,12 +235,8 @@ export function planBuilding(agents: WorldAgent[], teams: Team[], queue: string[
   const frontDoor = { x: 0, z: outline.maxZ, width: FRONT_DOOR };
   const margin = 3;
   return {
-    layout: "building",
     corners,
     lounge: { center: lounge.center, facing: lounge.facing },
-    // The ring's own measures; the building has its walkway and lane as rectangles instead.
-    ring: 0,
-    path: 0,
     entrance: [frontDoor.x, frontDoor.z - 1],
     spots,
     queue,
@@ -446,7 +445,7 @@ function loopFrom(r: Rect, p: Vec2): Vec2[] {
 }
 
 /**
- * The i-th lead who came to you: on the clearing, where your desk's callers stood, to your left
+ * The i-th lead who came to you: on the clearing, to your left
  * and facing you, side by side; more rows behind them and then in front. They come straight in
  * off the walkway.
  */
@@ -468,7 +467,7 @@ export function waitingSpot(garden: Garden, loop: Rect, i: number): Spot {
   const row = Math.floor(i / WAIT_ROW);
   const dz = row < 3 ? -0.95 * row : 0.95 * (row - 2);
   const pos: Vec2 = [1.6 + 1.0 * k + (row % 3) * 0.33 + (((i * 37) % 7) - 3) * 0.04, 1.4 + dz + (((i * 53) % 5) - 2) * 0.05];
-  return { pos, facing: yawTo(pos, YOUR_VIEW), zone: "queue", group: "queue", approach: [[pos[0], loop.maxZ], [pos[0], garden.clearing.maxZ]] };
+  return { pos, facing: yawTo(pos, CLEARING_VIEW), zone: "queue", group: "queue", approach: [[pos[0], loop.maxZ], [pos[0], garden.clearing.maxZ]] };
 }
 
 /**
@@ -585,17 +584,14 @@ function nearEdge(r: Rect, p: Vec2): boolean {
 
 export type RouteFn = (from: Vec2, fromSpot: Spot | null, to: Spot) => Vec2[];
 
-export const isBuilding = (plan: OfficePlan): plan is BuildingPlan => (plan as Partial<BuildingPlan>).layout === "building";
-
 /** How to walk in this plan's office. */
-export const routeIn = (plan: OfficePlan): RouteFn => (isBuilding(plan) ? (from, fromSpot, to) => buildingRoute(plan, from, fromSpot, to) : route);
+export const routeIn = (plan: BuildingPlan): RouteFn => (from, fromSpot, to) => buildingRoute(plan, from, fromSpot, to);
 
 /** Where the i-th lead who came to you stands in this plan's office. */
-export const callerIn = (plan: OfficePlan): ((i: number) => Spot) => (isBuilding(plan) ? (i) => gardenCaller(plan, i) : callerSpot);
+export const callerIn = (plan: BuildingPlan): ((i: number) => Spot) => (i) => gardenCaller(plan, i);
 
-/** Where to stand to look into a team's place: out in the hall in front of its glass, or in front of its corner. */
-export function viewIn(plan: OfficePlan, corner: Corner): { pos: Vec2; yaw: number } {
-  if (!isBuilding(plan)) return viewOf(corner);
+/** Where to stand to look into a team's bay: out in the hall. */
+export function viewIn(plan: BuildingPlan, corner: Corner): { pos: Vec2; yaw: number } {
   const room = plan.rooms.find((r) => r.teamId === corner.team.id)!;
   return { pos: place(room.center, room.facing, [0, room.half[1] + 7]), yaw: -room.facing };
 }
@@ -617,22 +613,3 @@ export function buildingPipelines(plan: BuildingPlan): Array<{ fromTeamId: strin
     return [{ fromTeamId: team.id, toTeamId: to.teamId!, path }];
   });
 }
-
-/** The layout this browser last chose; the ring when it has not chosen or cannot say. */
-export function savedLayout(): Layout {
-  try {
-    return globalThis.localStorage?.getItem(LAYOUT_KEY) === "building" ? "building" : "ring";
-  } catch {
-    return "ring";
-  }
-}
-
-export function saveLayout(layout: Layout): void {
-  try {
-    globalThis.localStorage?.setItem(LAYOUT_KEY, layout);
-  } catch {
-    // Private windows and blocked storage: the choice holds until the office closes.
-  }
-}
-
-const LAYOUT_KEY = "review-inbox.office-layout";

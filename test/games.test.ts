@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Team, WorldAgent } from "../src/shared/types.ts";
-import { planOffice, type OfficePlan, type Vec2 } from "../src/ui/world/layout.ts";
-import { isBuilding, planBuilding, place, readingNooks, routeIn } from "../src/ui/world/building.ts";
+import type { Vec2 } from "../src/ui/world/spatial.ts";
+import { planBuilding, place, readingNooks, routeIn, type BuildingPlan } from "../src/ui/world/building.ts";
 import { GamePlayback, bakePlays, chooseGames, gameSpots, PLAYS, playAt, type GameSeat } from "../src/ui/world/games.ts";
 import { allSeats } from "../src/ui/world/seats.ts";
 import { COFFEE, COUCHES, DARTS, POOL } from "../src/ui/world/lounge.ts";
@@ -24,10 +24,9 @@ test("plays are deterministic, bounded baked frames with pots, misses and three 
   assert.equal(playAt(s,1000).player,0);assert.equal(playAt(s,9000).player,1);assert.equal(playAt(s,17000).player,0);
   assert.deepEqual(playAt(s,4800),playAt(s,4800));
 });
-test("both layouts keep two pool players and one darts player; status/queue changes release them immediately",()=>{
-  for(const make of [planOffice,planBuilding]) {
+test("the lounge keeps two pool players and one darts player; status/queue changes release them immediately",()=>{
     const agents=Array.from({length:9},(_,i)=>agent(`idle${i}`,{teamId:"t"})), since=new Map(agents.map(a=>[a.id,0]));
-    const plan=make(agents,[team("t")],[]);
+    const plan=planBuilding(agents,[team("t")],[]);
     assert.equal(chooseGames(plan,agents,since,59_999).size,0);
     const first=chooseGames(plan,agents,since,60_000);
     assert.equal(first.size,3);assert.equal([...first.values()].filter(s=>s.game?.kind==="pool").length,2);
@@ -40,7 +39,6 @@ test("both layouts keep two pool players and one darts player; status/queue chan
     assert.ok(!chooseGames({...plan,queue:[ids[0]!]},agents,since,62_000,first).has(ids[0]!));
     assert.equal(chooseGames(plan,[],since,62_000,first).size,0);
     const one=chooseGames(plan,[agents[0]!],since,62_000);assert.equal([...one.values()][0]!.game!.kind,"darts");
-  }
 });
 test("playback waits for actual arrival, alternates the pair, and stops on departure",()=>{
   const seat:GameSeat={kind:"pool",seed:1,start:0,player:0};
@@ -55,7 +53,7 @@ test("playback waits for actual arrival, alternates the pair, and stops on depar
   solo.arrive("a",true);assert.equal(solo.frame(dart,1000)!.active,true);
 });
 interface Block {id:string; center:Vec2; half:Vec2; facing:number; seat?:boolean}
-function blocks(plan:OfficePlan):Block[]{
+function blocks(plan:BuildingPlan):Block[]{
   const out:Block[]=[];
   const add=(id:string,center:Vec2,half:Vec2,facing=0,seat=false)=>out.push({id,center,half,facing,seat});
   const lounge=plan.lounge, at=(p:Vec2)=>place(lounge.center,lounge.facing,p);
@@ -64,7 +62,6 @@ function blocks(plan:OfficePlan):Block[]{
   add("pool",at(POOL),[0.825,1.475],lounge.facing);
   add("dartboard",at([DARTS[0],DARTS[1]-0.12]),[0.675,0.08],lounge.facing);
   for(const c of plan.corners)for(const d of c.desks)add("desk",d.pos,[d.kind==="lead"?1:0.7*d.scale,0.35*d.scale],d.facing);
-  if(isBuilding(plan)) {
     for(const w of plan.walls){const dx=w.b[0]-w.a[0],dz=w.b[1]-w.a[1];add("wall",[(w.a[0]+w.b[0])/2,(w.a[1]+w.b[1])/2],[Math.hypot(dx,dz)/2,w.kind==="planter"?0.19:w.kind==="glass"?0.04:0.15],Math.atan2(-dz,dx));}
     for(const b of plan.garden.beds)add("bed",[(b.minX+b.maxX)/2,(b.minZ+b.maxZ)/2],[(b.maxX-b.minX)/2,(b.maxZ-b.minZ)/2]);
     for(const n of readingNooks(plan)) {
@@ -84,17 +81,16 @@ function blocks(plan:OfficePlan):Block[]{
       }
     }
     add("reception",[plan.frontDoor.x+0.9,plan.frontDoor.z-3.2],[0.37,1.15]);
-  }
   for(const s of allSeats(plan))if(s.spot.sit&&!s.id.startsWith("lounge")&&!s.id.startsWith("nook"))add(s.id,s.spot.pos,[s.id.startsWith("stool")?0.19:0.25,s.id.startsWith("stool")?0.19:0.24],s.spot.facing,true);
   return out;
 }
 function distance(b:Block,p:Vec2){const q=place([0,0],-b.facing,[p[0]-b.center[0],p[1]-b.center[1]]);return Math.hypot(Math.max(0,Math.abs(q[0])-b.half[0]),Math.max(0,Math.abs(q[1])-b.half[1]));}
-test("every seat and game position in both layouts has a clear entrance path, including all four sealed-corner regressions",()=>{
-  for(const make of [planBuilding,planOffice])for(const count of [0,3,12]) {
+test("every seat and game position has a clear entrance path, including all four sealed-corner regressions",()=>{
+  for(const count of [0,3,12]) {
     const teams=Array.from({length:count},(_,i)=>team(`t${i}`));
     const agents=teams.flatMap(t=>Array.from({length:count===12?18:9},(_,i)=>agent(`${t.id}:${i}`,{teamId:t.id,role:i===0?"lead":"member"})));
-    const plan=make(agents,teams,[]), obstacles=blocks(plan), seats=allSeats(plan);
-    if(isBuilding(plan))assert.equal(seats.filter(s=>s.id.startsWith("nook")).length,8);
+    const plan=planBuilding(agents,teams,[]), obstacles=blocks(plan), seats=allSeats(plan);
+    assert.equal(seats.filter(s=>s.id.startsWith("nook")).length,8);
     for(const {id,spot} of [...seats,...gameSpots(plan).map((spot,i)=>({id:`game:${i}`,spot}))]) {
       const path=[plan.entrance,...routeIn(plan)(plan.entrance,null,spot)];
       for(let i=1;i<path.length;i++) {
@@ -105,7 +101,7 @@ test("every seat and game position in both layouts has a clear entrance path, in
           for(const ob of nearby) {
             // Only the destination seat can be entered, on the final sit-down step.
             if(ob.seat&&distance(ob,spot.pos)<0.01&&i===path.length-1)continue;
-            if(distance(ob,p)<0.215) assert.fail(`${isBuilding(plan)?"building":"ring"}/${count} ${id}: ${p} hits ${ob.id} at ${ob.center}`);
+            if(distance(ob,p)<0.215) assert.fail(`building/${count} ${id}: ${p} hits ${ob.id} at ${ob.center}`);
           }
         }
       }

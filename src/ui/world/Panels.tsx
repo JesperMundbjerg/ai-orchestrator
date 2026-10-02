@@ -11,8 +11,8 @@ import { ItemDetailView } from "../components/ItemDetail.tsx";
 import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
 import { usageLine } from "../usageLine.ts";
-import { isBuilding } from "./building.ts";
-import type { OfficePlan, Vec2 } from "./layout.ts";
+import type { BuildingPlan } from "./building.ts";
+import type { Vec2 } from "./spatial.ts";
 import { agentMessages, Conversation, conversation, BetweenAgents, HiddenLine, MessageRow, teamMessages, teamWork, TellAgent, TellTeam, ThreadToggle, useThreadView, withMe, WorkRow } from "./Talk.tsx";
 import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "./status.ts";
 import type { Waiting } from "./WorldView.tsx";
@@ -20,7 +20,7 @@ import type { Waiting } from "./WorldView.tsx";
 /** The project list: where each stands, open one, start a project, change or finish one. */
 export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
   world: WorldState;
-  plan: OfficePlan;
+  plan: BuildingPlan;
   agents: Map<string, WorldAgent>;
   onOpen: (teamId: string, pos: Vec2, yaw: number) => void;
   onCrewGuide: () => void;
@@ -107,7 +107,7 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
         })}
         {!plan.corners.length ? <li className="muted">No projects yet. Start one, or start an agent in a worktree.</li> : null}
       </ul>
-      <div className="muted small-note">{lounge} in the {isBuilding(plan) ? "garden" : "lounge"}, not working in a project's worktree{onBreak ? `; ${onBreak} from projects on a break there` : ""}. Click someone to move them.</div>
+      <div className="muted small-note">{lounge} in the garden, not working in a project's worktree{onBreak ? `; ${onBreak} from projects on a break there` : ""}. Click someone to move them.</div>
       {error ? <div className="warn warn-dismiss">{error}<button className="ghost small" onClick={() => setError(null)}>OK</button></div> : null}
     </aside>
   );
@@ -340,7 +340,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
   );
 }
 
-/** Answering at your desk: the same review view as the inbox, over the office. */
+/** Answering in the office: the same review view as the inbox, over the office. */
 export function AnswerModal({ detail, agent, agents, onNext, onClose }: {
   detail: ItemDetail;
   agent: string | null;

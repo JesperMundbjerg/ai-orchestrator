@@ -3,7 +3,7 @@
 import type { UsageShare, UsageView } from "../../shared/types.ts";
 import { compactTokens, sharePercent } from "../usageLine.ts";
 import { onFloor } from "./crafts.ts";
-import type { Corner, Vec2 } from "./layout.ts";
+import type { Corner, Vec2 } from "./spatial.ts";
 
 export const JAR = { radius: 0.13, height: 0.38, base: 0.89, spacing: 0.36 };
 export interface JarLook {

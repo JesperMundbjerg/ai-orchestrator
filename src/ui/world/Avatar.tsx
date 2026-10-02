@@ -6,7 +6,7 @@ import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import { textTexture } from "./label.ts";
 import { LAMP } from "./status.ts";
 import { lookFor, type Look } from "./look.ts";
-import { route, type Spot, type Vec2 } from "./layout.ts";
+import type { Spot, Vec2 } from "./spatial.ts";
 import type { Craft } from "./crafts.ts";
 import { craftPose, HandTool } from "./Crafts.tsx";
 import { usePace } from "./Pace.tsx";
@@ -44,13 +44,13 @@ interface Props {
   carrying: boolean;
   /** Their team, named on their tag in its colour while they are out in the garden, so it stays clear whose they are. */
   team?: { name: string; color: string } | null;
-  /** How to walk in this office: round the ring, or along the building's walkway. */
-  walk?: (from: Vec2, fromSpot: Spot | null, to: Spot) => Vec2[];
+  /** How to walk along the building's walkway. */
+  walk: (from: Vec2, fromSpot: Spot | null, to: Spot) => Vec2[];
   /** What they make at their station in their team's room, while they work there. */
   craft?: Craft | null;
 }
 
-export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bubble, carrying, team = null, walk = route, craft = null }: Props) {
+export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bubble, carrying, team = null, walk, craft = null }: Props) {
   const look = useMemo(() => lookFor(agent.id), [agent.id]);
   const root = useRef<Group>(null);
   const legs = useRef<[Group | null, Group | null]>([null, null]);
@@ -90,7 +90,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     return () => void (document.body.style.cursor = "");
   }, [hovered]);
 
-  // Up close at your desk the full board would fill the view, and the card there names them already.
+  // Up close at the clearing the full board would fill the view, and the card there names them already.
   const close = spot.zone === "caller";
   const tag = useMemo(() => {
     if (close) return textTexture([{ text: agent.name, size: 46, color: "#ffffff", weight: 700 }], { width: 320, height: 80, background: "rgba(16,20,28,0.72)", radius: 40 });

@@ -4,15 +4,15 @@
 //   an agent's message, handoff or review → the sender walks to the (first) recipient, says it
 //                                           when there, carrying a folder for a handoff, and walks back
 //   your instruction                      → a bubble over each agent it goes to
-//   a blocked team                        → its lead comes to your desk and stays until it is
+//   a blocked team                        → its lead comes to the clearing and stays until it is
 //                                           unblocked or you send them back
 //
-// Unlike the rest, a lead at your desk is standing state, not an event: it follows from how
+// Unlike the rest, a lead at the clearing is standing state, not an event: it follows from how
 // the teams stand right now, so it is there when the office opens too.
 
 import type { Message, MessageKind, WorldAgent, WorldTeam } from "../../shared/types.ts";
-import { routeIn, type RouteFn } from "./building.ts";
-import { callerSpot, route, yawTo, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
+import { routeIn, type BuildingPlan, type RouteFn } from "./building.ts";
+import { yawTo, type Spot, type Vec2 } from "./spatial.ts";
 
 export interface Visit {
   messageId: string;
@@ -56,7 +56,7 @@ export function visitSpot(target: Spot): Spot {
   return { pos, facing: yawTo(pos, target.pos), zone: target.zone, group: target.group, approach: target.approach };
 }
 
-/** A lead at your desk because their team cannot go on without you. */
+/** A lead at the clearing because their team cannot go on without you. */
 export interface Call {
   teamId: string;
   leadId: string;
@@ -75,7 +75,7 @@ export interface Call {
 export const GRACE_MS = 6 * 60 * 1000;
 
 /**
- * The leads who come to your desk: one per blocked team whose lead is running, in the order the
+ * The leads who come to the clearing: one per blocked team whose lead is running, in the order the
  * teams are listed, except those you sent back about the very same thing.
  *
  * A lead who is blocked, and anyone waiting on your answer, bring the lead at once. A crew member
@@ -87,8 +87,8 @@ export function calls(
   teams: WorldTeam[],
   agents: Map<string, WorldAgent>,
   sentBack: ReadonlySet<string>,
+  spotAt: (i: number) => Spot,
   grace?: { blockedSince: ReadonlyMap<string, number>; now: number },
-  spotAt: (i: number) => Spot = callerSpot,
 ): Call[] {
   const out: Call[] = [];
   for (const team of teams) {
@@ -108,14 +108,14 @@ export function calls(
   return out;
 }
 
-/** How long it takes to walk from one spot to another, in milliseconds, round the ring unless `walk` says otherwise. */
-export function walkMs(from: Spot, to: Spot, walk: RouteFn = route): number {
+/** How long it takes to walk from one spot to another along the building's paths, in milliseconds. */
+export function walkMs(from: Spot, to: Spot, walk: RouteFn): number {
   return (length(from.pos, walk(from.pos, from, to)) / WALK_SPEED) * 1000;
 }
 
 const length = (from: Vec2, path: Vec2[]) => path.reduce((sum, p, i) => sum + Math.hypot(p[0] - (path[i - 1] ?? from)[0], p[1] - (path[i - 1] ?? from)[1]), 0);
 
-export function plan(messages: Message[], office: OfficePlan, now: number): { visits: Visit[]; bubbles: Bubble[] } {
+export function plan(messages: Message[], office: BuildingPlan, now: number): { visits: Visit[]; bubbles: Bubble[] } {
   const visits: Visit[] = [];
   const bubbles: Bubble[] = [];
   const walk = routeIn(office);

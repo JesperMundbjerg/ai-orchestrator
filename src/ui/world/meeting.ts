@@ -3,7 +3,7 @@
 import type { Work, WorldAgent } from "../../shared/types.ts";
 import { isReviewHelper } from "../../shared/review.ts";
 import { doorway, place, type BuildingPlan, type Room } from "./building.ts";
-import type { Spot } from "./layout.ts";
+import type { Spot } from "./spatial.ts";
 
 export type Meetings = Map<string, number>;
 export const meetingLength = (room: Room) => Math.max(2, Math.min(4.2, 2 * room.half[1] - 3.4));

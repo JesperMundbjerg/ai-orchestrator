@@ -12,6 +12,8 @@ const output = process.env.JARS_SCREENSHOTS || join(homedir(), '.review-inbox/ha
 const home = mkdtempSync(join(tmpdir(), 'office-jars-'));
 process.env.HOME = home;
 process.env.INBOX_DATA_DIR = join(home, 'data');
+process.env.HERDR_SOCKET_PATH = '/nonexistent';
+process.env.HERDR_BIN_PATH = '/usr/bin/false';
 const { openDatabase } = await import('../src/server/db.ts');
 const { Inbox } = await import('../src/server/inbox.ts');
 const { createInboxServer } = await import('../src/server/http.ts');
@@ -71,8 +73,8 @@ try {
     store.scene.traverse((o) => { if (o.name.startsWith('usage-jar:')) { const p = o.position.clone(); o.getWorldPosition(p); found.push({ name: o.name, facing: o.parent.rotation.y, pos: p.toArray(), visible: o.children[0].children[0].visible, shown: o.children[0].children[0].scale.y / 0.38, detail: !!o.getObjectByName('jar-detail'), ...o.userData }); } });
     return found;
   });
-  for (const layout of ['ring', 'building']) {
-    await page.getByRole('button', { name: layout === 'ring' ? 'Ring' : 'Building', exact: true }).click();
+  {
+    const layout = 'building';
     await page.waitForTimeout(800);
     const list = await jars();
     assert.equal(list.length, 6);
@@ -117,7 +119,7 @@ try {
   await page.waitForTimeout(2600);
   assert.ok((await jars()).every((j) => j.targetFill === 0 && j.shown === 0 && !j.visible));
   assert.deepEqual(errors, []);
-  console.log(`Checked both layouts, six jars each; screenshots: ${output}/jars-*.png (scratch port ${port})`);
+  console.log(`Checked Building, six jars; screenshots: ${output}/jars-*.png (scratch port ${port})`);
 } finally {
   await browser?.close();
   server.closeAllConnections();

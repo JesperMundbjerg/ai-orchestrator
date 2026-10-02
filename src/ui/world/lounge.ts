@@ -1,5 +1,5 @@
 // Shared lounge furniture and seats, in room-local metres. Drawing and routing use the same plan.
-import type { Spot, Vec2 } from "./layout.ts";
+import type { Spot, Vec2 } from "./spatial.ts";
 export const COUCHES = [-1.65, 1.65].map((z) => ({ pos: [-3.3, z] as Vec2, facing: Math.PI / 2, width: 2.4 }));
 export const COFFEE: Vec2 = [-1.8, 0];
 export const POOL: Vec2 = [0.2, -1];

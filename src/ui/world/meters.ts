@@ -19,7 +19,7 @@
 
 import type { UsageMeter } from "../../shared/types.ts";
 import type { Garden, Rect } from "./building.ts";
-import type { Vec2 } from "./layout.ts";
+import type { Vec2 } from "./spatial.ts";
 
 /** The band on the post turns amber at this share used, and red at this. */
 export const AMBER = 70;

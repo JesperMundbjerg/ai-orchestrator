@@ -18,7 +18,7 @@
 // reach out over a path, but only above head height.
 
 import { BAY_WIDTH, GARDEN_INSET, place, type Bench, type Garden, type Rect } from "./building.ts";
-import type { Vec2 } from "./layout.ts";
+import type { Vec2 } from "./spatial.ts";
 import { meterGround } from "./meters.ts";
 
 export type TreeKind = "broadleaf" | "shade" | "birch" | "palm" | "conifer";

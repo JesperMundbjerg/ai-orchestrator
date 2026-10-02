@@ -8,8 +8,8 @@ import { needsYou } from "../queue.ts";
 import { Avatar } from "./Avatar.tsx";
 import { crafters } from "./crafts.ts";
 import { lookFor } from "./look.ts";
-import { CALLER, planOffice, queueOrder, SPAWN, YOUR_VIEW, type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
-import { callerIn, isBuilding, planBuilding, routeIn, savedLayout, saveLayout, viewIn, type BuildingPlan, type Layout } from "./building.ts";
+import { CALLER, queueOrder, SPAWN, CLEARING_VIEW, type Spot, type Vec2 } from "./spatial.ts";
+import { callerIn, planBuilding, routeIn, viewIn, type BuildingPlan } from "./building.ts";
 import { IDLE_MS, inPark, nextPastime, outForABreak, parkPlan, type Park } from "./park.ts";
 import { BuildingOffice } from "./BuildingOffice.tsx";
 import { GamePlayback, chooseGames, seatsInLounge, type Games } from "./games.ts";
@@ -17,7 +17,6 @@ import { GameContext, GamesScene } from "./Games.tsx";
 import { readingNooks } from "./building.ts";
 import { meetingPlan, reviewing, type Meetings } from "./meeting.ts";
 import { CallerCard, CallerNote } from "./Caller.tsx";
-import { Office } from "./Office.tsx";
 import { Jars } from "./Jars.tsx";
 import { AgentPanel, AnswerModal, Legend, TeamPanel, TeamsPanel } from "./Panels.tsx";
 import { Helpers } from "./Helpers.tsx";
@@ -36,17 +35,16 @@ export interface Waiting {
 
 const NO_METERS: UsageMeter[] = [];
 /**
- * Just behind your chair and a little above it, facing the first team straight ahead: from
- * here the desk, the line and the corners either side of the first are all in view.
+ * At the clearing, facing north across the garden towards the first team's bay.
  */
-const START: FlyTarget = { pos: YOUR_VIEW, yaw: 0, lift: 0.15, seq: 0 };
-/** From your desk, turned so a lead who came over stands left of the card they bring. */
+const OPENING_VIEW: FlyTarget = { pos: CLEARING_VIEW, yaw: 0, lift: 0.15, seq: 0 };
+/** From the clearing, turned so a lead who came over stands left of the card they bring. */
 const FACE_CALLER: Vec2 = [SPAWN[0] + 0.3, SPAWN[1] + 0.4];
 const FACE_CALLER_YAW = Math.atan2(CALLER[0] - FACE_CALLER[0], FACE_CALLER[1] - CALLER[1]) + 0.05;
 
 /**
- * The office: every agent as a person you can walk up to. Each project (and standing team) has its own corner, the
- * rest wait in the lounge (in the building, the garden), and anyone with something for you queues at your desk.
+ * The office: every agent as a person you can walk up to. Each project (and standing team) has
+ * its own bay; idle agents relax in the garden or lounge, and anyone waiting for you gathers at the clearing.
  */
 export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxState; tick: number; onLeave: () => void; onCrewGuide: () => void }) {
   const [world, setWorld] = useState<WorldState | null>(null);
@@ -55,7 +53,6 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
   const [openTeam, setOpenTeam] = useState<string | null>(null);
   const [answering, setAnswering] = useState<string | null>(null);
   const [fly, setFly] = useState<FlyTarget | null>(null);
-  const [layout, setLayout] = useState<Layout>(savedLayout);
   const pacer = useMemo(() => new Pacer(), []);
   const detail = useItemDetail(answering, tick);
 
@@ -67,8 +64,8 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
 
   const entries = useMemo(() => needsYou(state, "all", null), [state]);
   const queue = useMemo(() => (world ? queueOrder(world.agents, entries.map((e) => e.task.id)) : []), [world, entries]);
-  // The office as drawn, and where everyone is in it: in the building, whoever is idle is out in the garden.
-  const office = useMemo(() => (world ? (layout === "building" ? planBuilding : planOffice)(world.agents, world.teams, queue) : null), [world, queue, layout]);
+  // The office as drawn; the park and meetings place everyone at what they are doing.
+  const office = useMemo(() => (world ? planBuilding(world.agents, world.teams, queue) : null), [world, queue]);
   const plan = useMeetings(world, usePark(world, office));
   const waiting = useMemo(() => {
     const out = new Map<string, Waiting>();
@@ -150,19 +147,11 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
       <header className="world-top">
         <button className="ghost small" onClick={onLeave}>← Inbox</button>
         <strong>Office</strong>
-        <span className="layout-toggle" role="group" aria-label="Office layout" style={{ display: "inline-flex", gap: 4 }}>
-          {(["ring", "building"] as const).map((l) => (
-            <button key={l} className={`${layout === l ? "primary" : "ghost"} small`} aria-pressed={layout === l} onClick={() => (saveLayout(l), setLayout(l))}>
-              {l === "ring" ? "Ring" : "Building"}
-            </button>
-          ))}
-        </span>
         <span className="muted">
           {world.agents.length} {world.agents.length === 1 ? "agent" : "agents"} · {world.herdr === "connected" ? "live from herdr" : "herdr not running: no live status"}
         </span>
         <span className="spacer" />
-        <button className="ghost small" onClick={() => flyTo([0, (isBuilding(office) ? office.frontDoor.z : office.bounds.maxZ) - 2.5], Math.PI)} title="Face the open door, then walk into the wilds">Front door ↗</button>
-        <button className="ghost small" onClick={() => setFly((f) => ({ ...START, seq: (f?.seq ?? 0) + 1 }))}>Your desk</button>
+        <button className="ghost small" onClick={() => flyTo([0, office.frontDoor.z - 2.5], Math.PI)} title="Face the open door, then walk into the wilds">Front door ↗</button>
         {entries.length ? (
           <button className="primary small" onClick={() => setAnswering(entries[0]!.item.id)}>
             {queue.length} in line · answer the first
@@ -178,7 +167,7 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
         onOpen={(id, pos, yaw) => {
           setSelected(null);
           setOpenTeam(id);
-          // Corners and bays face your desk from all round, so the plan knows where to stand to see one.
+          // The plan knows where in the hall to stand to see each bay.
           const corner = plan.corners.find((c) => c.team.id === id);
           const view = corner ? viewIn(plan, corner) : { pos, yaw };
           flyTo(view.pos, view.yaw);
@@ -250,10 +239,10 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
 }
 
 /**
- * The leads coming to your desk, and those already there. Leads calling when the office opens
+ * The leads coming to the clearing, and those already there. Leads calling when the office opens
  * are there already; later ones count as there once they have walked over.
  */
-function useCalls(world: WorldState | null, agents: Map<string, WorldAgent>, office: OfficePlan | null) {
+function useCalls(world: WorldState | null, agents: Map<string, WorldAgent>, office: BuildingPlan | null) {
   const [sentBack, setSentBack] = useState<ReadonlySet<string>>(new Set());
   // When each agent became blocked, as this office has seen it; one already blocked when it opens counts from then.
   const since = useRef<Map<string, number>>(new Map());
@@ -273,8 +262,8 @@ function useCalls(world: WorldState | null, agents: Map<string, WorldAgent>, off
     const timer = setTimeout(() => setNow(Date.now()), due - t + 50);
     return () => clearTimeout(timer);
   }, [blockedSince, now]);
-  const calling = useMemo(() => (world ? calls(world.teams, agents, sentBack, { blockedSince, now }, office ? callerIn(office) : undefined) : []), [world, agents, sentBack, blockedSince, now, office]);
-  // When each lead is at your desk. Kept per lead, so a call that changes while they stand there does not walk them again.
+  const calling = useMemo(() => (world && office ? calls(world.teams, agents, sentBack, callerIn(office), { blockedSince, now }) : []), [world, agents, sentBack, blockedSince, now, office]);
+  // When each lead is at the clearing. Kept per lead, so a call that changes while they stand there does not walk them again.
   const at = useRef<Map<string, number> | null>(null);
   const [seen, setSeen] = useState(0);
   useEffect(() => {
@@ -304,7 +293,7 @@ function useCalls(world: WorldState | null, agents: Map<string, WorldAgent>, off
  * idle when the office opens is out there already; one who goes idle later goes out once idle
  * for IDLE_MS. It changes as they take up something new, a few at a time.
  */
-function usePark(world: WorldState | null, office: OfficePlan | null): OfficePlan | null {
+function usePark(world: WorldState | null, office: BuildingPlan | null): BuildingPlan | null {
   const since = useRef<Map<string, number> | null>(null);
   const [now, setNow] = useState(Date.now);
   const idleSince = useMemo(() => {
@@ -315,39 +304,38 @@ function usePark(world: WorldState | null, office: OfficePlan | null): OfficePla
     if (world) since.current = next;
     return next;
   }, [world]);
-  const building = office && isBuilding(office) ? office : null;
   const out = useMemo(() => (world && office ? outForABreak(world.agents.filter((a) => !reviewing(world.agents, world.work).has(a.id)), idleSince, now, office.queue) : new Set<string>()), [world, office, idleSince, now]);
   // Look again when the next member has been idle long enough, or the next one in the garden takes up something new.
   useEffect(() => {
     if (!office) return;
     const t = Date.now();
-    const due = Math.min(...[...idleSince.values()].map((s) => s + IDLE_MS).filter((d) => d > t), building ? nextPastime(inPark(building, out), t) : Infinity);
+    const due = Math.min(...[...idleSince.values()].map((s) => s + IDLE_MS).filter((d) => d > t), nextPastime(inPark(office, out), t));
     if (!Number.isFinite(due)) return;
     const timer = setTimeout(() => setNow(Date.now()), due - t + 50);
     return () => clearTimeout(timer);
-  }, [office, building, idleSince, out, now]);
+  }, [office, idleSince, out, now]);
   // Who was where, so those not changing stay put.
   const park = useRef<Park>(new Map());
   const games = useRef<Games>(new Map());
   return useMemo(() => {
     if (!office || !world) return office;
-    const next = building ? parkPlan(building as BuildingPlan, out, now, idleSince, park.current) : { plan: office, park: new Map() };
+    const next = parkPlan(office, out, now, idleSince, park.current);
     park.current = next.park;
     const available = world.agents.filter(a => !reviewing(world.agents, world.work).has(a.id));
     games.current = chooseGames(office, available, idleSince, Date.now(), games.current);
     const spots = new Map(next.plan.spots);
     for (const [id, spot] of games.current) spots.set(id, spot);
-    const seats = [...seatsInLounge(office), ...(building ? readingNooks(building).flatMap(n => n.seats) : [])];
+    const seats = [...seatsInLounge(office), ...readingNooks(office).flatMap(n => n.seats)];
     const spectators = available.filter(a => !games.current.has(a.id) && a.status === "idle" && !a.waitingOnYou && !office.queue.includes(a.id) && (!a.teamId || out.has(a.id)));
     spectators.slice(0, seats.length).forEach((a, i) => spots.set(a.id, seats[i]!));
     return { ...next.plan, spots };
-  }, [building, office, world, out, now, idleSince]);
+  }, [office, world, out, now, idleSince]);
 }
 
-function useMeetings(world: WorldState | null, office: OfficePlan | null): OfficePlan | null {
+function useMeetings(world: WorldState | null, office: BuildingPlan | null): BuildingPlan | null {
   const previous = useRef<Meetings>(new Map());
   return useMemo(() => {
-    if (!world || !office || !isBuilding(office)) { previous.current = new Map(); return office; }
+    if (!world || !office) { previous.current = new Map(); return office; }
     const next = meetingPlan(office, world.agents, world.work, previous.current);
     previous.current = next.meetings;
     return next.plan;
@@ -358,7 +346,7 @@ function useMeetings(world: WorldState | null, office: OfficePlan | null): Offic
  * Who is walking over to whom and what is being said, from the messages that arrive while the
  * office is open. Messages already there when it opens are history, not a scene.
  */
-function useTalk(world: WorldState | null, office: OfficePlan | null): { visits: Visit[]; bubbles: Bubble[] } {
+function useTalk(world: WorldState | null, office: BuildingPlan | null): { visits: Visit[]; bubbles: Bubble[] } {
   const seen = useRef<Set<string> | null>(null);
   const [talk, setTalk] = useState<{ visits: Visit[]; bubbles: Bubble[] }>({ visits: [], bubbles: [] });
   useEffect(() => {
@@ -395,8 +383,8 @@ function tagColor(teamId: string): string {
 
 function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, calling, selected, onSelect, fly }: {
   /** The office as drawn; `plan` has where everyone is in it. */
-  office: OfficePlan;
-  plan: OfficePlan;
+  office: BuildingPlan;
+  plan: BuildingPlan;
   world: WorldState;
   agents: Map<string, WorldState["agents"][number]>;
   teams: Map<string, WorldTeam>;
@@ -415,15 +403,13 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
   const walk = useMemo(() => routeIn(plan), [plan]);
   // What each member makes at their station in their team's room.
   const makes = useMemo(() => crafters(office.corners), [office]);
-  // Changing the layout puts everyone straight at their new places rather than walking them there through the walls.
-  const layout = isBuilding(plan) ? "building" : "ring";
   // The light aims at the origin and its shadow frustum is in the light's own frame, so it is
   // sized to reach the farthest corner of the floor.
   const reach = Math.max(...[minX, maxX].flatMap((x) => [minZ, maxZ].map((z) => Math.hypot(x, z)))) + 2;
   return (
     <GameContext value={games}>
       <color attach="background" args={["#dde5ee"]} />
-      {/* Far enough that the far side of the ring stays clear, from your desk or from above. */}
+      {/* Far enough that the far side of the building stays clear, from the clearing or from above. */}
       <fog attach="fog" args={["#dde5ee", reach + 10, reach * 2 + 60]} />
       <hemisphereLight args={["#ffffff", "#aeb8c2", 1.1]} />
       <directionalLight
@@ -439,11 +425,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
         shadow-bias={-0.0005}
       />
       <OfficeEdge bounds={office.bounds}>
-      {isBuilding(office) ? (
-        <BuildingOffice plan={isBuilding(plan) ? plan : office} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} meters={world.usage?.meters ?? NO_METERS} />
-      ) : (
-        <Office plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
-      )}
+      <BuildingOffice plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} meters={world.usage?.meters ?? NO_METERS} />
       <GamesScene plan={gamePlan} />
       <Jars corners={office.corners} usage={world.usage} />
       {world.agents.map((a) => {
@@ -451,10 +433,10 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
         // The latest visit wins: someone asked twice walks to the second person.
         const visit = talk.visits.findLast((v) => v.fromId === a.id);
         const home = plan.spots.get(a.id)!;
-        // A lead at your desk stays there; a message they are sent meanwhile waits in their terminal.
+        // A lead at the clearing stays there; a message they are sent meanwhile waits in their terminal.
         const call: Spot | undefined = calling.find((c) => c.leadId === a.id)?.spot;
         return (
-          <group key={`${layout}:${a.id}`}>
+          <group key={a.id}>
             <Avatar
               agent={a}
               spot={call ?? (home.zone === "meeting" ? home : visit?.spot ?? home)}
@@ -473,7 +455,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
         );
       })}
       </OfficeEdge>
-      <Player bounds={plan.bounds} start={START} fly={fly} />
+      <Player bounds={plan.bounds} start={OPENING_VIEW} fly={fly} />
       <Wilds office={plan.bounds} />
     </GameContext>
   );

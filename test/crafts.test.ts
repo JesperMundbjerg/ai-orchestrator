@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Team, WorldAgent } from "../src/shared/types.ts";
-import { DESK_SIZE, planOffice, type OfficePlan } from "../src/ui/world/layout.ts";
+import { DESK_SIZE } from "../src/ui/world/spatial.ts";
 import { planBuilding } from "../src/ui/world/building.ts";
 import { CRAFTS, crafters, LEAD_CRAFTS, pieceParts, STAGE_S, stageAt, STAGES, stationParts, studio, type Craft, type Part } from "../src/ui/world/crafts.ts";
 
@@ -10,10 +10,10 @@ const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
 });
 const team = (id: string): Team => ({ id, name: id, purpose: "", handsTo: null, path: `/repo-${id}`, branch: `worktree-${id}`, standing: false, worktrees: [], createdAt: "" });
 
-function plans(crew: number): OfficePlan[] {
+function building(crew: number) {
   const teams = [team("a"), team("b"), team("c")];
   const agents = teams.flatMap((t, i) => [agent(`${t.id}-lead`, { teamId: t.id, role: "lead" }), ...Array.from({ length: i ? 3 : crew }, (_, k) => agent(`${t.id}-${k}`, { teamId: t.id }))]);
-  return [planOffice(agents, teams, []), planBuilding(agents, teams, [])];
+  return planBuilding(agents, teams, []);
 }
 
 /** A part's eight corners in the station's frame, turned as the renderer turns it (y, then x, then z). */
@@ -67,8 +67,9 @@ test("a piece grows a stage every STAGE_S of work, stands finished a while, and 
   }
 });
 
-test("in both layouts and any size of team, every desk is a craft station, neighbours make different things and the lead has a larger one", () => {
-  for (const crew of [0, 1, 2, 3, 5, 8, 12, 30, 80, 200]) for (const plan of plans(crew)) {
+test("in any size of team, every desk is a craft station, neighbours make different things and the lead has a larger one", () => {
+  for (const crew of [0, 1, 2, 3, 5, 8, 12, 30, 80, 200]) {
+    const plan = building(crew);
     const stations = studio(plan.corners);
     assert.equal(stations.length, plan.corners.reduce((n, c) => n + c.desks.length, 0), `${crew} crew: a station on every desk`);
     const makes = crafters(plan.corners);
@@ -92,7 +93,7 @@ test("the crafts a room starts from differ between teams, so rooms look differen
   const first = new Set<Craft>();
   for (let i = 0; i < 12; i++) {
     const teams = [team(`team-${i}`)];
-    const office = planOffice([agent("l", { teamId: teams[0]!.id, role: "lead" }), agent("c", { teamId: teams[0]!.id })], teams, []);
+    const office = planBuilding([agent("l", { teamId: teams[0]!.id, role: "lead" }), agent("c", { teamId: teams[0]!.id })], teams, []);
     first.add(studio(office.corners)[0]!.craft);
   }
   assert.ok(first.size >= 3);

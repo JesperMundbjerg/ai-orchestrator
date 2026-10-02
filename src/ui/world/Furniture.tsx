@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef } from "react";
 import { BoxGeometry, Color, IcosahedronGeometry, Object3D, type InstancedMesh } from "three";
 import { place, type Room } from "./building.ts";
-import type { Vec2 } from "./layout.ts";
+import type { Vec2 } from "./spatial.ts";
 
 // The building's furniture as a few instanced meshes: every box of one finish, however many chairs,
 // sofas and planters there are, is one draw call. A piece is built from boxes in its own frame

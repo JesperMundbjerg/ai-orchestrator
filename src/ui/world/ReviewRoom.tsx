@@ -2,7 +2,7 @@ import { CanvasTexture, SRGBColorSpace } from "three";
 import type { ReviewExcerpt, WorldAgent } from "../../shared/types.ts";
 import { isReviewHelper } from "../../shared/review.ts";
 import type { Room } from "./building.ts";
-import { useTexture } from "./Office.tsx";
+import { useTexture } from "./useTexture.ts";
 
 // Read-only sources: FysikLab docs/ARCHITECTURE.md, docs/DEV_FLOW.md and
 // space-app/lib/db/index.md (2026-07). These are maps, not proposed architecture.

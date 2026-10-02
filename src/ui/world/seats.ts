@@ -1,14 +1,13 @@
 // Every physical seat has an approach, including unoccupied/decorative chairs. This inventory
 // lets the reachability check cover seats that currently have no agent assigned to them.
-import { benchSeats, doorway, isBuilding, place, readingNooks, seatSpot } from "./building.ts";
+import { benchSeats, doorway, place, readingNooks, seatSpot, type BuildingPlan } from "./building.ts";
 import { seatsInLounge } from "./games.ts";
-import { type OfficePlan, type Spot, type Vec2 } from "./layout.ts";
+import type { Spot, Vec2 } from "./spatial.ts";
 export interface Seat { id: string; spot: Spot }
-export function allSeats(plan: OfficePlan): Seat[] {
+export function allSeats(plan: BuildingPlan): Seat[] {
   const seats: Seat[] = seatsInLounge(plan).map((spot,i)=>({id:`lounge:${i}`,spot}));
   // Craft stations replaced desk chairs; occupied station places still get checked.
   for(const [id,spot] of plan.spots) if(spot.zone==="team") seats.push({id:`station:${id}`,spot});
-  if(!isBuilding(plan))return seats;
   readingNooks(plan).forEach((n,i)=>n.seats.forEach((spot,k)=>seats.push({id:`nook:${i}:${k}`,spot})));
   benchSeats(plan.garden).forEach((s,i)=>seats.push({id:`bench:${i}`,spot:seatSpot(plan.garden,plan.loop,s)}));
   plan.rooms.filter(r=>r.kind==="meeting").forEach((room,i)=>{

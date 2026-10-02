@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Team, UsageMeter, WorldAgent } from "../src/shared/types.ts";
 import { callerIn, planBuilding, type BuildingPlan, type Rect } from "../src/ui/world/building.ts";
-import { YOUR_VIEW, type Vec2 } from "../src/ui/world/layout.ts";
+import { CLEARING_VIEW, type Vec2 } from "../src/ui/world/spatial.ts";
 import { birdsAt, fallenSeeds, meterGround, meterLook, meterSpots, perches, RING_OUT, toneOf, when } from "../src/ui/world/meters.ts";
 import { parkPlaces } from "../src/ui/world/park.ts";
 import { benchNook, groundOf, plantGarden } from "../src/ui/world/planting.ts";
@@ -67,7 +67,7 @@ test("nothing grows where the feeders stand, and they hide nobody who comes to y
     // A crown over a feeder hangs above its roof.
     for (const t of planting.trees) if (away(ground, t.pos) < t.crown) assert.ok(t.base > 2, `${n} teams: the ${t.kind} at ${t.pos} hangs into the feeders`);
     const seen = [...Array.from({ length: 12 }, (_, i) => callerIn(plan)(i).pos), ...plan.queue.map((id) => plan.spots.get(id)!.pos)];
-    for (const s of meterSpots(g, three)) for (const p of seen) assert.ok(gap(YOUR_VIEW, p, s.pos) > s.radius * RING_OUT, `${n} teams: the feeder at ${s.pos} hides ${p}`);
+    for (const s of meterSpots(g, three)) for (const p of seen) assert.ok(gap(CLEARING_VIEW, p, s.pos) > s.radius * RING_OUT, `${n} teams: the feeder at ${s.pos} hides ${p}`);
   }
 });
 
