@@ -19,7 +19,7 @@ import { readingNooks } from "./building.ts";
 import { meetingPlan, reviewing, type Meetings } from "./meeting.ts";
 import { CallerCard, CallerNote } from "./Caller.tsx";
 import { Jars } from "./Jars.tsx";
-import { AgentPanel, AnswerModal, Legend, TeamPanel, TeamsPanel } from "./Panels.tsx";
+import { AgentPanel, AnswerModal, TeamPanel, TeamsPanel } from "./Panels.tsx";
 import { Helpers } from "./Helpers.tsx";
 import { Pace, PaceContext } from "./Pace.tsx";
 import { Pacer } from "./pace.ts";
@@ -54,6 +54,8 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
   const [openTeam, setOpenTeam] = useState<string | null>(null);
   const [answering, setAnswering] = useState<string | null>(null);
   const [fly, setFly] = useState<FlyTarget | null>(null);
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const controls = useRef<HTMLDivElement>(null);
   const pacer = useMemo(() => new Pacer(), []);
   const detail = useItemDetail(answering, tick);
 
@@ -122,14 +124,24 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || (e.target as HTMLElement).closest("input, textarea, select")) return;
-      if (answering) setAnswering(null);
+      if (controlsOpen) setControlsOpen(false);
+      else if (answering) setAnswering(null);
       else if (selected) setSelected(null);
       else if (openTeam) setOpenTeam(null);
       else if (caller) sendBack(caller.key);
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [answering, selected, openTeam, caller, sendBack]);
+  }, [controlsOpen, answering, selected, openTeam, caller, sendBack]);
+
+  useEffect(() => {
+    if (!controlsOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!controls.current?.contains(e.target as Node)) setControlsOpen(false);
+    };
+    addEventListener("pointerdown", onPointerDown);
+    return () => removeEventListener("pointerdown", onPointerDown);
+  }, [controlsOpen]);
 
   if (!world || !plan || !office) {
     return <div className="empty-page">{error ? `The office did not open (${error}).` : "Opening the office…"}</div>;
@@ -153,6 +165,14 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
         </span>
         <span className="spacer" />
         <AutoApproveToggle tick={tick} />
+        <div className="world-controls" ref={controls}>
+          <button className="ghost small" type="button" aria-expanded={controlsOpen} aria-controls="world-controls-popover" onClick={() => setControlsOpen((open) => !open)}>Controls</button>
+          {controlsOpen ? (
+            <div className="world-controls-popover" id="world-controls-popover" role="dialog" aria-label="Office controls">
+              <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · <kbd>Shift</kbd> run · drag to turn · scroll or <kbd>+</kbd><kbd>−</kbd> to zoom · click someone
+            </div>
+          ) : null}
+        </div>
         <button className="ghost small" onClick={() => flyTo([0, office.frontDoor.z - 2.5], Math.PI)} title="Face the open door, then walk into the wilds">Front door ↗</button>
         {entries.length ? (
           <button className="primary small" onClick={() => setAnswering(entries[0]!.item.id)}>
@@ -223,10 +243,6 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
         />
       ) : null}
       {!caller && walking[0] ? <CallerNote call={walking[0]} agents={agents} /> : null}
-      <Legend />
-      <p className="world-hint">
-        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> walk · <kbd>Shift</kbd> run · drag to turn · scroll or <kbd>+</kbd><kbd>−</kbd> to zoom · click someone
-      </p>
       {detail ? (
         <AnswerModal
           detail={detail}

@@ -393,7 +393,7 @@ h1, h2, h3 { margin: 0; }
 
 .world { position: fixed; inset: 0; background: #dde5ee; }
 .world canvas { touch-action: none; }
-.world-panel, .world-top, .world-legend, .world-hint {
+.world-panel, .world-top, .world-controls-popover {
   position: absolute; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line);
   border-radius: var(--radius); box-shadow: 0 6px 24px rgba(16, 24, 40, 0.14); backdrop-filter: blur(8px);
 }
@@ -451,10 +451,8 @@ h1, h2, h3 { margin: 0; }
 .agent-seat { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .agent-seat label:first-child { display: flex; gap: 6px; align-items: center; }
 .agent-seat select { padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; }
-.world-legend { left: 12px; bottom: 12px; display: flex; gap: 14px; padding: 7px 12px; font-size: 12.5px; flex-wrap: wrap; }
-.world-legend > span { display: flex; align-items: center; gap: 6px; }
-.world-hint { left: 50%; bottom: 12px; transform: translateX(-50%); margin: 0; padding: 7px 12px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
-.world-hint kbd { margin-right: 2px; }
+.world-controls { position: relative; }
+.world-controls-popover { position: absolute; z-index: 6; top: calc(100% + 8px); right: 0; width: max-content; max-width: min(440px, calc(100vw - 24px)); padding: 10px 14px; color: var(--muted); font-size: 12.5px; line-height: 1.7; white-space: normal; }
 .world-modal { position: absolute; inset: 0; background: rgba(10, 14, 20, 0.45); display: grid; place-items: center; padding: 24px; z-index: 5; }
 .world-modal-card {
   width: min(880px, 100%); max-height: 100%; overflow: auto; background: var(--panel); border-radius: 14px;
@@ -464,7 +462,6 @@ h1, h2, h3 { margin: 0; }
 @media (max-width: 900px) {
   .world-panel.teams { display: none; }
   .world-panel.agent { left: 12px; width: auto; }
-  .world-hint { display: none; }
 }
 .order-head { font-size: 12.5px; }
 .order.instruction { border-left: 3px solid var(--accent); }
@@ -608,7 +605,7 @@ button.link { background: none; border: 0; padding: 0; font: inherit; color: var
 /* ── Garden surfaces ──────────────────────────────────────────────────────────────
    Decoration belongs to the office and project board. Review sheets share the
    palette only: no vines or texture competing with a decision or live preview. */
-.world-panel, .world-top, .world-legend, .world-hint,
+.world-panel, .world-top, .world-controls-popover,
 .world-modal-card, .world-caller, .team-column, .team-activity > section,
 dialog.all-leads-dialog {
   background-color: var(--panel);
@@ -622,7 +619,7 @@ dialog.all-leads-dialog {
   backdrop-filter: none;
 }
 .world-panel { padding: 18px; }
-.world-top, .world-legend, .world-hint { padding: 10px 20px; background-size: 48px 76px; }
+.world-top { padding: 10px 20px; background-size: 48px 76px; }
 .world-modal-card, .world-caller { padding: 18px 20px; }
 .team-column, .team-activity > section { padding: 18px; }
 .team-activity > section { border: 1px solid var(--line); min-width: 0; }
@@ -709,7 +706,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
   .agent-seat select { max-width: 100%; }
 }
 @media (forced-colors: active) {
-  .world-panel, .world-top, .world-legend, .world-hint, .world-modal-card,
+  .world-panel, .world-top, .world-controls-popover, .world-modal-card,
   .world-caller, .team-column, .team-activity > section, dialog.all-leads-dialog,
   .all-leads-list label, .member, .team-go,
   .say.you, .say.them, .order, .work { background-image: none; box-shadow: none; }
