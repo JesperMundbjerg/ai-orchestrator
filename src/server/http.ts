@@ -6,7 +6,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { frameAllowed, inlineProblem, ownAppPage } from "../shared/pages.ts";
-import type { ActivityEvent, ActivityInput, AgentModel, PageCheck, SessionInput, SubmitInput } from "../shared/types.ts";
+import type { AgentModel, PageCheck, SubmitInput } from "../shared/types.ts";
+import {
+  agentOperations as protocol, emptySchema, ValidationError, type Schema, type ApiErrorBody,
+} from "../shared/agent-protocol.ts";
+import * as validation from "./request-validation.ts";
 import { claudeHookEvents, claudeModel } from "./activity.ts";
 import { Inbox, InboxError } from "./inbox.ts";
 import { sendEvidence } from "./evidence.ts";
@@ -15,7 +19,7 @@ import { UPLOAD_BODY_LIMIT } from "./uploads.ts";
 import type { Herdr } from "./herdr.ts";
 import type { Machine } from "./machine.ts";
 import type { Switches } from "./switch.ts";
-import type { LimitReading, Usage } from "./usage.ts";
+import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
 
 const TYPES: Record<string, string> = {
@@ -25,7 +29,11 @@ const TYPES: Record<string, string> = {
   ".pdf": "application/pdf", ".md": "text/plain; charset=utf-8", ".txt": "text/plain; charset=utf-8", ".json": "application/json",
 };
 
-type Handler = (req: IncomingMessage, body: any, params: string[]) => unknown | Promise<unknown>;
+type Handler = (req: IncomingMessage, body: unknown, params: string[]) => unknown | Promise<unknown>;
+type Route = [method: string, pattern: RegExp, handler: Handler];
+function route<T>(method: string, pattern: RegExp, schema: Schema<T>, handler: (req: IncomingMessage, body: T, params: string[]) => unknown | Promise<unknown>): Route {
+  return [method, pattern, (req, body, params) => handler(req, schema.parse(body), params)];
+}
 
 export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage }): Server {
   const clients = new Set<ServerResponse>();
@@ -64,77 +72,74 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     return warnings.length ? { ...result, warnings } : result;
   };
 
-  const routes: Array<[string, RegExp, Handler]> = [
+  const routes: Route[] = [
     // UI
-    ["GET", /^\/api\/state$/, () => inbox.state()],
-    ["GET", /^\/api\/items\/([\w-]+)$/, (_r, _b, [id]) => inbox.detail(id!)],
-    ["POST", /^\/api\/items\/([\w-]+)\/replies$/, (_r, b, [id]) => inbox.answer(id!, b)],
-    ["POST", /^\/api\/items\/([\w-]+)\/snooze$/, (_r, b, [id]) => inbox.snooze(id!, b.until)],
-    ["POST", /^\/api\/items\/([\w-]+)\/resolve$/, (_r, _b, [id]) => inbox.resolve(id!)],
-    ["GET", /^\/api\/items\/([\w-]+)\/preview-check$/, (_r, _b, [id]) => checkPreview(inbox.item(id!).preview?.url)],
-    ["GET", /^\/api\/items\/([\w-]+)\/pages\/(\d+)\/check$/, (r, _b, [id, n]) => checkPreview(inbox.item(id!).pages[Number(n)]?.url, `http://${r.headers.host ?? "localhost"}`)],
-    ["POST", /^\/api\/replies\/([\w-]+)\/retry$/, (_r, _b, [id]) => inbox.retry(id!)],
-    ["PATCH", /^\/api\/tasks\/([\w-]+)$/, (_r, b, [id]) => inbox.updateTask(id!, pickTaskPatch(b))],
-    ["POST", /^\/api\/tasks\/([\w-]+)\/open$/, async (_r, _b, [id]) => {
+    route("GET", /^\/api\/state$/, emptySchema, () => inbox.state()),
+    route("GET", /^\/api\/items\/([\w-]+)$/, emptySchema, (_r, _b, [id]) => inbox.detail(id!)),
+    route("POST", /^\/api\/items\/([\w-]+)\/replies$/, validation.answerSchema, (_r, b, [id]) => inbox.answer(id!, b)),
+    route("POST", /^\/api\/items\/([\w-]+)\/snooze$/, validation.snoozeSchema, (_r, b, [id]) => inbox.snooze(id!, b.until)),
+    route("POST", /^\/api\/items\/([\w-]+)\/resolve$/, emptySchema, (_r, _b, [id]) => inbox.resolve(id!)),
+    route("GET", /^\/api\/items\/([\w-]+)\/preview-check$/, emptySchema, (_r, _b, [id]) => checkPreview(inbox.item(id!).preview?.url)),
+    route("GET", /^\/api\/items\/([\w-]+)\/pages\/(\d+)\/check$/, emptySchema, (r, _b, [id, n]) => checkPreview(inbox.item(id!).pages[Number(n)]?.url, `http://${r.headers.host ?? "localhost"}`)),
+    route("POST", /^\/api\/replies\/([\w-]+)\/retry$/, emptySchema, (_r, _b, [id]) => inbox.retry(id!)),
+    route("PATCH", /^\/api\/tasks\/([\w-]+)$/, validation.taskPatchSchema, (_r, b, [id]) => inbox.updateTask(id!, pickTaskPatch(b))),
+    route("POST", /^\/api\/tasks\/([\w-]+)\/open$/, emptySchema, async (_r, _b, [id]) => {
       const task = inbox.task(id!);
       if (!herdr || !task.presence) throw new InboxError(409, "this session is not open in herdr, so it cannot be brought to the front");
       await herdr.focus(task.presence.paneId);
       return { ok: true };
-    }],
-    ["POST", /^\/api\/projects\/([\w-]+)\/pin$/, (_r, b, [id]) => inbox.setPinned(id!, Boolean(b.pinned))],
+    }),
+    route("POST", /^\/api\/projects\/([\w-]+)\/pin$/, validation.pinSchema, (_r, b, [id]) => inbox.setPinned(id!, b.pinned)),
     // An image you paste or drop, as base64 JSON (so the same-origin JSON guard holds); answers and messages name it by id.
-    ["POST", /^\/api\/uploads$/, (_r, b) => inbox.uploads.save(b)],
+    route("POST", /^\/api\/uploads$/, validation.uploadSchema, (_r, b) => inbox.uploads.save(b)),
     // The office world
-    ["GET", /^\/api\/world$/, () => needWorld().state()],
-    ["POST", /^\/api\/agent\/story$/, (_r, b) => needWorld().setStory(b.session, b.text)],
-    ["GET", /^\/api\/p\/([a-z][a-z0-9-]*)\/queue$/, (_r, _b, [project]) => projectQueue(needWorld().state(), project!)],
-    ["POST", /^\/api\/world\/teams$/, (_r, b) => needWorld().createTeam(b)],
-    ["PATCH", /^\/api\/world\/teams\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateTeam(id!, b)],
-    ["DELETE", /^\/api\/world\/teams\/([\w-]+)$/, (_r, _b, [id]) => needWorld().deleteTeam(id!)],
+    route("GET", /^\/api\/world$/, emptySchema, () => needWorld().state()),
+    route("POST", /^\/api\/agent\/story$/, protocol.story.request, (_r, b) => needWorld().setStory(b.session, b.text)),
+    route("GET", /^\/api\/p\/([a-z][a-z0-9-]*)\/queue$/, emptySchema, (_r, _b, [project]) => projectQueue(needWorld().state(), project!)),
+    route("POST", /^\/api\/world\/teams$/, validation.teamCreateSchema, (_r, b) => needWorld().createTeam(b)),
+    route("PATCH", /^\/api\/world\/teams\/([\w-]+)$/, validation.teamPatchSchema, (_r, b, [id]) => needWorld().updateTeam(id!, b)),
+    route("DELETE", /^\/api\/world\/teams\/([\w-]+)$/, emptySchema, (_r, _b, [id]) => needWorld().deleteTeam(id!)),
     // A team's other worktrees (lanes), and folding a project into another; neither touches anything on disk.
-    ["GET", /^\/api\/world\/teams\/([\w-]+)\/worktrees$/, (_r, _b, [id]) => needWorld().worktrees(id!)],
-    ["POST", /^\/api\/world\/teams\/([\w-]+)\/worktrees$/, (_r, b, [id]) => needWorld().addWorktree(id!, b.path)],
-    ["POST", /^\/api\/world\/teams\/([\w-]+)\/worktrees\/remove$/, (_r, b, [id]) => needWorld().removeWorktree(id!, b.path)],
-    ["POST", /^\/api\/world\/teams\/([\w-]+)\/merge$/, (_r, b, [id]) => needWorld().mergeTeam(id!, b.into)],
-    ["POST", /^\/api\/world\/all-leads\/messages$/, (_r, b) => needWorld().messages.tellAllLeads(b)],
-    ["POST", /^\/api\/world\/teams\/([\w-]+)\/messages$/, (_r, b, [id]) => needWorld().messages.instruct(id!, b)],
-    ["POST", /^\/api\/world\/messages\/([\w-]+)\/deliveries\/([\w-]+)\/retry$/, (_r, _b, [message, agent]) => needWorld().messages.retry(message!, agent!)],
-    ["POST", /^\/api\/world\/agents\/([\w-]+)\/effort$/, (_r, b, [id]) => needWorld().setEffort(id!, b.level)],
-    ["PATCH", /^\/api\/world\/agents\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateAgent(id!, b)],
-    ["DELETE", /^\/api\/world\/agents\/([\w-]+)$/, (_r, _b, [id]) => (needWorld().removeAgent(id!), { removed: id })],
-    ["POST", /^\/api\/world\/agents\/([\w-]+)\/messages$/, (_r, b, [id]) => needWorld().messages.tell(id!, b)],
+    route("GET", /^\/api\/world\/teams\/([\w-]+)\/worktrees$/, emptySchema, (_r, _b, [id]) => needWorld().worktrees(id!)),
+    route("POST", /^\/api\/world\/teams\/([\w-]+)\/worktrees$/, validation.worktreeSchema, (_r, b, [id]) => needWorld().addWorktree(id!, b.path)),
+    route("POST", /^\/api\/world\/teams\/([\w-]+)\/worktrees\/remove$/, validation.worktreeSchema, (_r, b, [id]) => needWorld().removeWorktree(id!, b.path)),
+    route("POST", /^\/api\/world\/teams\/([\w-]+)\/merge$/, validation.mergeSchema, (_r, b, [id]) => needWorld().mergeTeam(id!, b.into)),
+    route("POST", /^\/api\/world\/all-leads\/messages$/, validation.allLeadsSchema, (_r, b) => needWorld().messages.tellAllLeads(b)),
+    route("POST", /^\/api\/world\/teams\/([\w-]+)\/messages$/, validation.messageSchema, (_r, b, [id]) => needWorld().messages.instruct(id!, b)),
+    route("POST", /^\/api\/world\/messages\/([\w-]+)\/deliveries\/([\w-]+)\/retry$/, emptySchema, (_r, _b, [message, agent]) => needWorld().messages.retry(message!, agent!)),
+    route("POST", /^\/api\/world\/agents\/([\w-]+)\/effort$/, validation.setEffortSchema, (_r, b, [id]) => needWorld().setEffort(id!, b.level)),
+    route("PATCH", /^\/api\/world\/agents\/([\w-]+)$/, validation.agentPatchSchema, (_r, b, [id]) => needWorld().updateAgent(id!, b)),
+    route("DELETE", /^\/api\/world\/agents\/([\w-]+)$/, emptySchema, (_r, _b, [id]) => (needWorld().removeAgent(id!), { removed: id })),
+    route("POST", /^\/api\/world\/agents\/([\w-]+)\/messages$/, validation.messageSchema, (_r, b, [id]) => needWorld().messages.tell(id!, b)),
     // The founder's crew tree: which harness and model a lead picks for each crew member.
-    ["GET", /^\/api\/world\/crew-tree$/, () => needWorld().crewTree().state()],
-    ["PUT", /^\/api\/world\/crew-tree$/, (_r, b) => needWorld().crewTree().save(b)],
+    route("GET", /^\/api\/world\/crew-tree$/, emptySchema, () => needWorld().crewTree().state()),
+    route("PUT", /^\/api\/world\/crew-tree$/, validation.crewTreeSchema, (_r, b) => needWorld().crewTree().save(b)),
     // Moving agents to another harness: one, or everyone on a harness one by one; each reports its progress.
-    ["GET", /^\/api\/world\/switches$/, () => needSwitches().list()],
-    ["POST", /^\/api\/world\/switches$/, (_r, b) => needSwitches().start(b.agent, b)],
-    ["POST", /^\/api\/world\/switches\/all-from$/, (_r, b) => needSwitches().allFrom(b.from, b)],
-    ["GET", /^\/api\/world\/switches\/([\w-]+)$/, (_r, _b, [id]) => needSwitches().get(id!)],
+    route("GET", /^\/api\/world\/switches$/, emptySchema, () => needSwitches().list()),
+    route("POST", /^\/api\/world\/switches$/, protocol.switchAgent.request, (_r, b) => needSwitches().start(b.agent, b)),
+    route("POST", /^\/api\/world\/switches\/all-from$/, protocol.switchAll.request, (_r, b) => needSwitches().allFrom(b.from, b)),
+    route("GET", /^\/api\/world\/switches\/((?!all-from$)[\w-]+)$/, emptySchema, (_r, _b, [id]) => needSwitches().get(id!)),
     // What agents left running on the machine; Close is refused for anything but a listed headless browser.
-    ["GET", /^\/api\/machine$/, () => needMachine().state()],
-    ["POST", /^\/api\/machine\/browsers\/(\d+)\/close$/, (_r, _b, [pid]) => needMachine().close(Number(pid))],
+    route("GET", /^\/api\/machine$/, emptySchema, () => needMachine().state()),
+    route("POST", /^\/api\/machine\/browsers\/(\d+)\/close$/, emptySchema, (_r, _b, [pid]) => needMachine().close(Number(pid))),
     // Agent protocol
-    ["POST", /^\/api\/agent\/items$/, (r, b: SubmitInput) => submitWithWarnings(r, b)],
-    ["POST", /^\/api\/agent\/activity$/, (_r, b: ActivityInput) => inbox.activity(b)],
-    ["POST", /^\/api\/agent\/replies$/, (_r, b: { session: SessionInput; mode?: "live" | "boundary" | "pull" }) => inbox.pendingReplies(b.session, b.mode ?? "pull")],
+    route("POST", /^\/api\/agent\/items$/, protocol.submit.request, (r, b) => submitWithWarnings(r, b)),
+    route("POST", /^\/api\/agent\/activity$/, protocol.activity.request, (_r, b) => inbox.activity(b)),
+    route("POST", /^\/api\/agent\/replies$/, protocol.replies.request, (_r, b) => inbox.pendingReplies(b.session, b.mode ?? "pull")),
     // Agent protocol: the office
-    ["POST", /^\/api\/agent\/team$/, (_r, b: { session: SessionInput }) => needWorld().brief(b.session)],
-    ["POST", /^\/api\/agent\/pane$/, (_r, b) => needWorld().paneOpened(b.session, b.paneId)],
-    ["POST", /^\/api\/agent\/crew$/, () => ({ text: needWorld().crewTree().text() })],
-    ["POST", /^\/api\/agent\/say$/, (_r, b) => needWorld().messages.say(needWorld().resolve(b.session), b)],
-    ["POST", /^\/api\/agent\/events$/, (_r, b: { session: SessionInput; events?: ActivityEvent[] }) => needWorld().report(b.session, Array.isArray(b.events) ? b.events : [])],
+    route("POST", /^\/api\/agent\/team$/, protocol.team.request, (_r, b) => needWorld().brief(b.session)),
+    route("POST", /^\/api\/agent\/pane$/, protocol.pane.request, (_r, b) => needWorld().paneOpened(b.session, b.paneId)),
+    route("POST", /^\/api\/agent\/crew$/, protocol.crew.request, () => ({ text: needWorld().crewTree().text() })),
+    route("POST", /^\/api\/agent\/say$/, protocol.say.request, (_r, b) => needWorld().messages.say(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/events$/, protocol.events.request, (_r, b) => needWorld().report(b.session, b.events ?? [])),
     // A plan's limits as a harness was told them in a reply's headers (Claude Code's statusline, Pi's Codex replies).
-    ["POST", /^\/api\/agent\/usage$/, (_r, b: { provider?: unknown; limits?: unknown }) => {
+    route("POST", /^\/api\/agent\/usage$/, protocol.usage.request, (_r, b) => {
       if (!opts.usage) throw new InboxError(404, "this service does not keep usage");
-      if (b.provider !== "claude" && b.provider !== "codex") throw new InboxError(400, "provider must be claude or codex");
-      if (!Array.isArray(b.limits)) throw new InboxError(400, "limits must be a list");
-      const limits = (b.limits as unknown[]).filter((l): l is LimitReading => !!l && typeof l === "object" && typeof (l as LimitReading).usedPercent === "number");
-      return { changed: opts.usage.record(b.provider, limits, b.provider === "claude" ? "statusline" : "pi-headers") };
-    }],
-    ["POST", /^\/api\/agent\/effort$/, (_r, b) => needWorld().pollEffort(b.session, b.report)],
-    // Claude Code's HTTP hook posts its hook input as is. Always answers {}: no decision, never in the way.
-    ["POST", /^\/api\/hooks\/claude$/, (_r, b: Record<string, unknown>) => {
+      return { changed: opts.usage.record(b.provider, b.limits, b.provider === "claude" ? "statusline" : "pi-headers") };
+    }),
+    route("POST", /^\/api\/agent\/effort$/, protocol.effort.request, (_r, b) => needWorld().pollEffort(b.session, b.report)),
+    // Claude Code's HTTP hook posts its hook input as is. Valid input answers {}: no decision.
+    route("POST", /^\/api\/hooks\/claude$/, validation.claudeHookSchema, (_r, b) => {
       if (world && typeof b.session_id === "string") {
         const { events, helperId } = claudeHookEvents(b);
         // A turn's end, or a session the office has no model for yet, is when the transcript is read.
@@ -142,12 +147,12 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
         world.report({ harness: "claude", sessionId: b.session_id, cwd: typeof b.cwd === "string" ? b.cwd : undefined }, events, helperId, modelFor);
       }
       return {};
-    }],
-    ["POST", /^\/api\/agent\/handoff$/, (_r, b) => needWorld().messages.handoff(needWorld().resolve(b.session), b)],
-    ["POST", /^\/api\/agent\/review$/, (_r, b) => needWorld().messages.review(needWorld().resolve(b.session), b)],
-    ["POST", /^\/api\/agent\/ack$/, (_r, b: { session: SessionInput; deliveryId: string; error?: string }) => inbox.acknowledge(b.session, b.deliveryId, b.error)],
-    ["POST", /^\/api\/agent\/withdraw$/, (_r, b: { session: SessionInput; item: string }) => inbox.closeItem(b.session, b.item, "withdrawn")],
-    ["POST", /^\/api\/agent\/resolve$/, (_r, b: { session: SessionInput; item: string }) => inbox.closeItem(b.session, b.item, "resolved")],
+    }),
+    route("POST", /^\/api\/agent\/handoff$/, protocol.handoff.request, (_r, b) => needWorld().messages.handoff(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/review$/, protocol.review.request, (_r, b) => needWorld().messages.review(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/ack$/, protocol.acknowledge.request, (_r, b) => inbox.acknowledge(b.session, b.deliveryId, b.error)),
+    route("POST", /^\/api\/agent\/withdraw$/, protocol.withdraw.request, (_r, b) => inbox.closeItem(b.session, b.item, "withdrawn")),
+    route("POST", /^\/api\/agent\/resolve$/, protocol.resolve.request, (_r, b) => inbox.closeItem(b.session, b.item, "resolved")),
   ];
 
   function needWorld(): World {
@@ -168,14 +173,25 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   const allowedHosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);
 
   return createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", "http://localhost");
     try {
       if (!allowedHosts.has(req.headers.host ?? "")) throw new InboxError(403, "unexpected Host header");
+      let url: URL;
+      try { url = new URL(req.url ?? "/", "http://localhost"); }
+      catch { throw new ValidationError("url", "invalid request URL"); }
       const method = req.method ?? "GET";
+      const allowed = new Set(routes.filter(([, pattern]) => pattern.test(url.pathname)).map(([m]) => m));
+      if (url.pathname === "/api/events") allowed.add("GET");
+      if (/^\/files\/([\w-]+)$/.test(url.pathname)) { allowed.add("GET"); allowed.add("HEAD"); }
+      if (/^\/uploads\/([\w.-]+)$/.test(url.pathname)) allowed.add("GET");
+      if (!allowed.size && opts.staticDir && !url.pathname.startsWith("/api/")) allowed.add("GET");
+      if (allowed.size && !allowed.has(method)) {
+        res.setHeader("allow", [...allowed].join(", "));
+        throw new InboxError(405, `method ${method} is not allowed; use ${[...allowed].join(" or ")}`);
+      }
       if (method !== "GET" && method !== "HEAD") {
         const origin = req.headers.origin;
         if (origin && !allowedHosts.has(origin.replace(/^https?:\/\//, ""))) throw new InboxError(403, "cross-origin request refused");
-        if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) throw new InboxError(415, "send application/json");
+        if (!/^application\/json(?:\s*;|\s*$)/i.test(String(req.headers["content-type"] ?? ""))) throw new InboxError(415, "send application/json");
       }
 
       if (url.pathname === "/api/events") {
@@ -217,9 +233,9 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
       throw new InboxError(404, "not found");
     } catch (err) {
       req.resume(); // drain an unread body so a refusal reaches the client instead of a reset
-      const status = err instanceof InboxError ? err.status : 500;
+      const status = err instanceof ValidationError ? 400 : err instanceof InboxError ? err.status : 500;
       if (status === 500) console.error(err);
-      sendJson(res, status, { error: err instanceof Error ? err.message : String(err) });
+      sendJson(res, status, errorBody(err, status));
     }
   });
 }
@@ -253,7 +269,7 @@ async function checkPreview(url: string | undefined, officeOrigin?: string): Pro
   }
 }
 
-async function readJson(req: IncomingMessage, limit = 1_000_000): Promise<any> {
+async function readJson(req: IncomingMessage, limit = 1_000_000): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -265,8 +281,23 @@ async function readJson(req: IncomingMessage, limit = 1_000_000): Promise<any> {
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
-    throw new InboxError(400, "invalid JSON");
+    const err = new InboxError(400, "invalid JSON");
+    Object.assign(err, { code: "invalid_json" });
+    throw err;
   }
+}
+
+const ERROR_CODES: Record<number, string> = {
+  400: "invalid_request", 403: "forbidden", 404: "not_found", 405: "method_not_allowed",
+  409: "conflict", 413: "payload_too_large", 415: "unsupported_media_type", 422: "invalid_request",
+  500: "internal_error", 502: "upstream_error", 503: "unavailable",
+};
+function errorBody(err: unknown, status: number): ApiErrorBody {
+  if (status === 500) return { error: "internal server error", code: "internal_error" };
+  if (err instanceof ValidationError) return { error: err.message, code: "invalid_request", details: err.details };
+  // Domain modules can add a more specific code/details without changing the old error string.
+  const domain = err as InboxError & { code?: string; details?: ApiErrorBody["details"] };
+  return { error: domain.message, code: domain.code ?? ERROR_CODES[status] ?? "request_failed", ...(domain.details ? { details: domain.details } : {}) };
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -280,7 +311,10 @@ function sendFile(res: ServerResponse, path: string, headers: Record<string, str
 }
 
 function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
-  const target = normalize(join(dir, decodeURIComponent(pathname)));
+  let decoded: string;
+  try { decoded = decodeURIComponent(pathname); }
+  catch { throw new ValidationError("url", "invalid URL encoding"); }
+  const target = normalize(join(dir, decoded));
   const inside = target.startsWith(normalize(dir));
   const path = inside && existsSync(target) && statSync(target).isFile() ? target : join(dir, "index.html");
   if (!existsSync(path)) throw new InboxError(404, "UI not built: run npm run build, or use npm run dev");
