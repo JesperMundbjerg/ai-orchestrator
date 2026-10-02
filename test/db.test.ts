@@ -113,7 +113,7 @@ test("a COPY of pre-checkpoint switches adopts uncertain operations conservative
   copyFileSync(original, copy);
   const db = openDatabase(copy);
   try {
-    for (const [step, effect] of [["waiting", "legacy_handoff"], ["opening", "opening"], ["starting", "starting"], ["briefing", "briefing"], ["queued", null], ["done", null]]) {
+    for (const [step, effect] of [["waiting", "legacy_handoff"], ["opening", "opening"], ["starting", "starting"], ["briefing", "briefing"], ["queued", null], ["done", null]] as const) {
       assert.equal(db.prepare("SELECT effect FROM agent_switches WHERE id = ?").get(step)!.effect, effect);
     }
     assert.equal(db.prepare("SELECT brief_state FROM agent_switches WHERE id = 'briefing'").get()!.brief_state, "uncertain");
