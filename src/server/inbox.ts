@@ -71,8 +71,7 @@ export class Inbox {
   private filesDir: string;
   private presence: PresenceSource;
   private now: () => Date;
-  /** Replies being typed into a pane right now (kept in memory: a restart mid-typing leaves the reply claimed, shown as uncertain). */
-  private typing = new Set<string>();
+  private claimOwner = randomUUID();
   /** Images you paste into an answer or a message, kept beside the attachments in the data directory. */
   readonly uploads: Uploads;
   /** The office's assigned project, if known; otherwise the submitting session's worktree. */
@@ -86,6 +85,18 @@ export class Inbox {
     this.now = now;
     mkdirSync(filesDir, { recursive: true });
     this.uploads = new Uploads(join(filesDir, "..", "uploads"));
+    // A pane attempt belongs to the stopped process, not to a polling integration. Its
+    // outcome is unknown: expose failure and require explicit Retry rather than reroute it.
+    const interrupted = this.db.prepare(`SELECT r.*, i.task_id FROM replies r JOIN items i ON i.id = r.item_id
+      WHERE r.state = 'queued' AND r.claim_transport IN ('pane', 'legacy')`).all() as Row[];
+    if (interrupted.length) this.tx(() => {
+      const error = "The office restarted: pane delivery was not confirmed; it may have arrived. Retry may send it twice.";
+      for (const row of interrupted) {
+        this.db.prepare("UPDATE replies SET state = 'failed', error = ? WHERE id = ?").run(error, str(row.id));
+        this.db.prepare("UPDATE items SET state = 'needs_attention', updated_at = ? WHERE id = ?").run(this.iso(), str(row.item_id));
+        this.log("system", "reply.interrupted", { taskId: str(row.task_id), itemId: str(row.item_id) }, { deliveryId: str(row.id), error });
+      }
+    });
   }
 
   private iso(): string {
@@ -300,14 +311,13 @@ export class Inbox {
     const rows = this.db
       .prepare(`SELECT r.*, i.key, i.title AS item_title, i.type AS item_type, i.options
                 FROM replies r JOIN items i ON i.id = r.item_id
-                WHERE i.task_id = ? AND r.state = 'queued' ORDER BY r.created_at`)
+                WHERE i.task_id = ? AND r.state = 'queued' AND (r.claim_transport IS NULL OR r.claim_transport = 'integration') ORDER BY r.created_at`)
       .all(str(task.id)) as Row[];
-    // A reply the office is typing into the session's pane is on its way; handing it over too would say it twice.
-    const out = rows.filter((r) => !this.typing.has(str(r.id)));
-    if (out.length) {
-      this.db.prepare(`UPDATE replies SET claimed_at = coalesce(claimed_at, ?) WHERE id IN (${out.map(() => "?").join(",")})`).run(now, ...out.map((r) => str(r.id)));
-    }
-    return out.map((r) => toPending(r, this.uploads));
+    // Integration re-polls retain their dedupe contract. Pane/unknown claims are excluded
+    // by durable ownership, including after a process restart.
+    const claim = this.db.prepare(`UPDATE replies SET claimed_at = coalesce(claimed_at, ?), claim_transport = 'integration'
+      WHERE id = ? AND state = 'queued' AND (claim_transport IS NULL OR claim_transport = 'integration')`);
+    return rows.filter((r) => claim.run(now, str(r.id)).changes > 0).map((r) => toPending(r, this.uploads));
   }
 
   /**
@@ -319,7 +329,7 @@ export class Inbox {
     const rows = this.db
       .prepare(`SELECT r.*, i.key, i.title AS item_title, i.type AS item_type, i.options, t.harness, t.session_id, t.listener_seen_at
                 FROM replies r JOIN items i ON i.id = r.item_id JOIN tasks t ON t.id = i.task_id
-                WHERE r.state = 'queued' AND r.claimed_at IS NULL ORDER BY r.created_at`)
+                WHERE r.state = 'queued' AND r.claimed_at IS NULL AND r.claim_transport IS NULL ORDER BY r.created_at`)
       .all() as Row[];
     return rows.flatMap((r) => {
       if (isFresh(nullable(r.listener_seen_at), this.now())) return [];
@@ -330,10 +340,8 @@ export class Inbox {
 
   /** Claims a reply for typing, so it is typed once and no hook or pull hands it over meanwhile. */
   claimTyping(deliveryId: string): boolean {
-    const claimed = this.db.prepare("UPDATE replies SET claimed_at = ? WHERE id = ? AND state = 'queued' AND claimed_at IS NULL").run(this.iso(), deliveryId);
-    if (!claimed.changes) return false;
-    this.typing.add(deliveryId);
-    return true;
+    return this.db.prepare("UPDATE replies SET claimed_at = ?, claim_transport = 'pane', claim_owner = ? WHERE id = ? AND state = 'queued' AND claimed_at IS NULL AND claim_transport IS NULL")
+      .run(this.iso(), this.claimOwner, deliveryId).changes > 0;
   }
 
   /**
@@ -342,9 +350,8 @@ export class Inbox {
    * new revision) is left as it is.
    */
   typed(deliveryId: string, error?: string): void {
-    this.typing.delete(deliveryId);
     const row = this.db.prepare("SELECT r.*, i.task_id FROM replies r JOIN items i ON i.id = r.item_id WHERE r.id = ?").get(deliveryId) as Row | undefined;
-    if (!row || str(row.state) !== "queued") return;
+    if (!row || str(row.state) !== "queued" || row.claim_transport !== "pane" || row.claim_owner !== this.claimOwner) return;
     this.settle(row, error, "system", { via: "pane" });
     this.onChange("reply");
   }
@@ -359,6 +366,7 @@ export class Inbox {
     if (!row) throw new InboxError(404, `no reply ${deliveryId} for this session`);
     if (str(row.state) === "delivered") return this.reply(deliveryId);
     if (str(row.state) !== "queued") throw new InboxError(409, `reply ${deliveryId} is ${str(row.state)}, not queued`);
+    if (row.claim_transport === "pane" || row.claim_transport === "legacy") throw new InboxError(409, "this reply belongs to a pane attempt, not an integration");
     this.settle(row, error, "agent");
     this.onChange("reply");
     return this.reply(deliveryId);
@@ -451,7 +459,7 @@ export class Inbox {
     const item = this.item(reply.itemId);
     if (reply.revision !== item.revision) throw new InboxError(409, "stale: the item changed since this answer");
     this.tx(() => {
-      this.db.prepare("UPDATE replies SET state = 'queued', error = NULL, claimed_at = NULL WHERE id = ?").run(deliveryId);
+      this.db.prepare("UPDATE replies SET state = 'queued', error = NULL, claimed_at = NULL, claim_transport = NULL, claim_owner = NULL WHERE id = ?").run(deliveryId);
       this.db.prepare("UPDATE items SET state = 'answer_queued', updated_at = ? WHERE id = ?").run(this.iso(), item.id);
       this.log("user", "reply.retried", { taskId: item.taskId, itemId: item.id }, { deliveryId });
     });
@@ -617,7 +625,7 @@ export class Inbox {
       text: str(r.text),
       images: imageIds(r.images),
       state: str(r.state) as Reply["state"],
-      error: uncertain ? "picked up by the session but not confirmed" : nullable(r.error),
+      error: uncertain ? r.claim_transport === "pane" ? "pane delivery was not confirmed; it may have arrived" : "picked up by the session but not confirmed" : nullable(r.error),
       createdAt: str(r.created_at),
       deliveredAt: nullable(r.delivered_at),
     };

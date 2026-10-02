@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/server/db.ts";
@@ -187,6 +187,56 @@ test("one thing at a time per agent: the founder's answer goes before a waiting 
   assert.equal(typed.length, 2);
   assert.match(typed[1]!.text, /How is the fit going\?/);
 });
+
+for (const transport of ["pane", "integration", "legacy"] as const) {
+  test(`a ${transport} claim retains durable ownership across SQLite close/reopen`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "reply-restart-"));
+    const file = join(dir, "inbox.db");
+    const files = join(dir, "files");
+    const presence: PresenceSource = { available: () => true, resolvePane: () => null, forSession: () => ({ source: "herdr", paneId: "p1", status: "idle", name: null, title: null, seenAt: "" }) };
+    const now = () => new Date("2026-10-01T10:00:00Z");
+    let db = openDatabase(file);
+    try {
+      const first = new Inbox(db, files, presence, now);
+      const submitted = first.submit({ session: emil, item: { type: "milestone", title: "Done" } });
+      const reply = first.answer(submitted.itemId, { id: "delivery", revision: 1, action: "accept" });
+      if (transport === "integration") {
+        assert.equal(first.pendingReplies(emil, "boundary").length, 1);
+      } else {
+        assert.equal(first.claimTyping(reply.id), true);
+        assert.deepEqual(first.pendingReplies(emil, "boundary"), []);
+        assert.throws(() => first.acknowledge(emil, reply.id), /pane attempt/);
+      }
+      if (transport === "legacy") db.exec("ALTER TABLE replies DROP COLUMN claim_transport; PRAGMA user_version = 2;");
+      db.close();
+      db = openDatabase(file);
+      const previousInstance = new Inbox(db, files, presence, now);
+      const second = new Inbox(db, files, presence, now);
+      assert.deepEqual(second.typeable(), [], "a restart never authorizes another pane attempt");
+      if (transport === "integration") {
+        assert.deepEqual(second.pendingReplies(emil, "boundary").map((r) => r.deliveryId), [reply.id]);
+        assert.deepEqual(second.pendingReplies({ ...emil, sessionId: "someone-else" }, "pull"), []);
+        second.acknowledge(emil, reply.id);
+        assert.equal(second.reply(reply.id).state, "delivered");
+      } else {
+        for (const mode of ["live", "boundary", "pull"] as const) assert.deepEqual(second.pendingReplies(emil, mode), []);
+        assert.equal(second.reply(reply.id).state, "failed");
+        assert.match(second.reply(reply.id).error!, /may have arrived.*Retry may send it twice/);
+        assert.equal(second.item(submitted.itemId).state, "needs_attention");
+        second.typed(reply.id); // A late result from the stopped process cannot acknowledge a new attempt.
+        assert.equal(second.reply(reply.id).state, "failed");
+        second.retry(reply.id);
+        assert.equal(second.claimTyping(reply.id), true, "only explicit Retry authorizes another attempt");
+        assert.deepEqual(second.pendingReplies(emil, "pull"), []);
+        previousInstance.typed(reply.id); // An older Inbox instance owns no new claim.
+        assert.equal(second.reply(reply.id).state, "queued");
+        second.typed(reply.id);
+        assert.equal(second.reply(reply.id).state, "delivered");
+      }
+      assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+    } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
+  });
+}
 
 test("a lead the office starts runs the inbox hook and statusline through --settings, unless its settings already do", () => {
   const config = mkdtempSync(join(tmpdir(), "claude-config-"));

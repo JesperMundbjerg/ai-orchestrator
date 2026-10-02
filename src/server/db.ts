@@ -315,6 +315,11 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
   addColumn(db, "messages", "replay_fingerprint", "TEXT");
   addColumn(db, "messages", "replay_work", "TEXT");
   addColumn(db, "replies", "replay_fingerprint", "TEXT");
+}, (db) => {
+  addColumn(db, "replies", "claim_transport", "TEXT CHECK (claim_transport IN ('pane', 'integration', 'legacy'))");
+  addColumn(db, "replies", "claim_owner", "TEXT");
+  // Old claims did not record their transport. Never guess that they are safe to reroute.
+  db.exec("UPDATE replies SET claim_transport = 'legacy' WHERE claimed_at IS NOT NULL AND claim_transport IS NULL");
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
