@@ -3,7 +3,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, chmodSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
+import { createServer as reservePort } from "node:net";
+import { openDatabase } from "../src/server/db.ts";
+import { Inbox } from "../src/server/inbox.ts";
+import { World, type LiveAgent } from "../src/server/world.ts";
+import { createInboxServer } from "../src/server/http.ts";
 import { commandBoundaries, guardPrePush, guardTool, installHooks, type HookConfig } from "../src/cli/pipeline-hooks.ts";
 
 function scratch(t: { after: (fn: () => void) => void }) {
@@ -179,6 +185,83 @@ test("Git itself refuses protected publication while ordinary feature pushes con
   const r = spawnSync("git", ["-C", s.repo, "push", "origin", "HEAD:dev"], { encoding: "utf8" });
   assert.notEqual(r.status, 0); assert.match(r.stderr, /Restart the office and retry/);
   assert.equal(spawnSync("git", ["--git-dir", remote, "rev-parse", "--verify", "refs/heads/dev"]).status, 128);
+});
+
+test("installed guards call the real office CLI gate end to end in a scratch repo", { timeout: 60000 }, async (t) => {
+  const s = scratch(t); const home = join(s.root, "office-home"); mkdirSync(home);
+  const keys = ["HOME", "INBOX_DATA_DIR", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "INBOX_CODEX_ACCOUNT_POLLING", "INBOX_PRESENCE_DISCOVERY", "INBOX_BROWSER_CLEANUP"];
+  const saved = keys.map(k => process.env[k]);
+  const values = [home, join(s.root, "office-data"), "/nonexistent", "/usr/bin/false", "0", "0", "0"];
+  keys.forEach((k, i) => process.env[k] = values[i]);
+  t.after(() => keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; }));
+  const graph = { version: 1, id: "scratch", label: "Scratch wave", entry: "checks", fields: [], nodes: [
+    { id: "checks", label: "Check pinned bytes", kind: "step", source: "builtin:check", evidence: ["check"] },
+    { id: "deliver", label: "Publish dev", kind: "delivery", delivery: "dev" }], edges: [{ id: "checked", from: "checks", to: "deliver" }] };
+  writeFileSync(join(s.repo, "orchestrator.json"), JSON.stringify({ project: "scratch", integrationBranch: "dev", pipeline: graph, land: { mode: "pinned" } }));
+  installHooks(s.repo); // Real inbox executable, not the fake unit-test gate.
+  s.git("add", "."); s.git("commit", "-m", "Install guards before pinning the wave");
+  const sha = s.git("rev-parse", "HEAD");
+  const remote = join(s.root, "remote.git"); assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+  s.git("remote", "add", "origin", remote);
+  const db = openDatabase(join(s.root, "office.sqlite")); t.after(() => db.close());
+  const inbox = new Inbox(db, join(s.root, "files"), { available: () => false, forSession: () => null, resolvePane: () => null });
+  const live: LiveAgent[] = ["lead", "crew"].map((id, i) => ({ harness: "claude", sessionId: `scratch-${id}`, paneId: `scratch-pane-${i}`, cwd: s.repo, status: "idle", title: null, name: id }));
+  const none = async (): Promise<never> => { throw new Error("No real herdr in scratch office"); };
+  const world = new World(db, { available: () => true, live: () => live, prompt: async () => {}, notify: async () => {}, createWorktree: none, startAgent: none, closePane: none, removeWorktree: none }, () => inbox.state());
+  const agents = world.state().agents;
+  const team = await world.createTeam({ name: "Scratch first mate", standing: true });
+  for (const a of agents) world.updateAgent(a.id, { teamId: team.id, role: a.paneId === "scratch-pane-0" ? "lead" : "member" });
+  const probe = reservePort(); probe.listen(0, "127.0.0.1"); await once(probe, "listening");
+  const port = (probe.address() as { port: number }).port; assert.notEqual(port, 4870); await new Promise<void>(r => probe.close(() => r()));
+  const server = createInboxServer(inbox, null, { port, staticDir: null, world }); server.listen(port, "127.0.0.1"); await once(server, "listening");
+  let closed = false;
+  const close = async () => { if (!closed) { closed = true; server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); } };
+  t.after(close);
+  const env = { PATH: process.env.PATH, HOME: home, SHELL: "/bin/sh", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", INBOX_DATA_DIR: join(s.root, "office-data"), INBOX_URL: `http://127.0.0.1:${port}`, HERDR_SOCKET_PATH: "/nonexistent", HERDR_BIN_PATH: "/usr/bin/false", INBOX_CODEX_ACCOUNT_POLLING: "0", INBOX_PRESENCE_DISCOVERY: "0", INBOX_BROWSER_CLEANUP: "0", CLAUDE_CODE_SESSION_ID: "scratch-lead" };
+  const exec = async (command: string, args: string[], input?: string, extra: Record<string, string> = {}) => {
+    const child = spawn(command, args, { cwd: s.repo, env: { ...env, ...extra } });
+    let stdout = "", stderr = ""; child.stdout.on("data", b => stdout += b); child.stderr.on("data", b => stderr += b); child.stdin.end(input);
+    const [code] = await once(child, "close"); return { code, stdout, stderr };
+  };
+  const cli = async (args: string[]) => exec(process.execPath, [resolve("bin/inbox"), "pipeline", ...args]);
+  const noRunPush = await exec("git", ["push", "origin", "HEAD:dev"]); assert.notEqual(noRunPush.code, 0); assert.match(noRunPush.stderr, /name the pipeline run/);
+  const start = await cli(["start", "--candidate", sha, "--base", sha]); assert.equal(start.code, 0, start.stderr);
+  const run = JSON.parse(start.stdout);
+  const hook = async (command: string, options: { session?: string; run?: string; round?: string; cwd?: string } = {}) => {
+    const result = await exec(process.execPath, [join(s.repo, ".review-inbox-pipeline/pipeline-hooks.ts"), "claude", join(s.repo, ".review-inbox-pipeline/config.json")], JSON.stringify({ session_id: options.session ?? "scratch-lead", cwd: options.cwd ?? s.repo, tool_name: "Bash", tool_input: { command } }), { INBOX_PIPELINE_RUN: options.run ?? run.id, ...(options.round ? { INBOX_PIPELINE_ROUND: options.round } : {}) });
+    assert.equal(result.code, 0, result.stderr); return JSON.parse(result.stdout);
+  };
+  const denial = (response: any, reason: RegExp) => { assert.equal(response.hookSpecificOutput?.permissionDecision, "deny"); assert.match(response.hookSpecificOutput.permissionDecisionReason, reason); };
+  denial(await hook("git push origin HEAD:dev"), /checks: ready/);
+  const done = await cli(["done", run.id, "checks", "--check", "git rev-parse HEAD", "--exit-code", "0", "--notes", "Scratch checks pass at the exact candidate"]); assert.equal(done.code, 0, done.stderr);
+  const cliGate = await cli(["gate", "--operation", "push", "--repo", s.repo, "--ref", "refs/heads/dev", "--candidate", sha, "--run", run.id]); assert.equal(cliGate.code, 0, cliGate.stderr); assert.equal(JSON.parse(cliGate.stdout).allowed, true);
+  assert.deepEqual(await hook("git push origin HEAD:dev"), {});
+  denial(await hook("git push origin HEAD:dev", { run: "" }), /name the pipeline run/);
+  denial(await hook("git push origin HEAD:dev", { session: "scratch-crew" }), /first mate/);
+  denial(await hook("git push origin HEAD:main"), /ref is not/);
+  denial(await hook("gh pr create --base main"), /release\/PR\/merge/);
+  denial(await hook("git push origin HEAD:dev", { round: "2" }), /stale run round/);
+  const other = join(s.root, "other-repository"); assert.equal(spawnSync("git", ["clone", s.repo, other]).status, 0);
+  denial(await hook("git push origin HEAD:dev", { cwd: other }), /repository does not match/);
+  denial(await hook(`git push origin ${s.candidate}:dev`), /stale candidate/);
+  assert.deepEqual(await hook(`node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${sha}`), {});
+  denial(await hook(`node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${sha}`, { run: "" }), /name the pipeline run/);
+  const push = await exec("git", ["push", "origin", "HEAD:dev"], undefined, { INBOX_PIPELINE_RUN: run.id }); assert.equal(push.code, 0, push.stderr);
+  assert.equal(spawnSync("git", ["--git-dir", remote, "rev-parse", "refs/heads/dev"], { encoding: "utf8" }).stdout.trim(), sha);
+  assert.equal(world.pipelines.get(run.id).state, "open", "an allowed Git push is not a pipeline delivery receipt");
+  s.git("branch", "-f", "dev", sha);
+  assert.deepEqual(await hook("node .claude/hooks/worktree-sync.mjs publish"), {});
+  const stalePush = await exec("git", ["push", "--force", "origin", `${s.candidate}:dev`], undefined, { INBOX_PIPELINE_RUN: run.id }); assert.notEqual(stalePush.code, 0); assert.match(stalePush.stderr, /stale candidate/);
+  writeFileSync(join(s.repo, "file"), "Changed bytes invalidate the gate");
+  denial(await hook("git push origin HEAD:dev"), /stale candidate|commit intended bytes/);
+  s.git("checkout", "--", "file");
+  assert.deepEqual(await hook("git push origin HEAD:dev"), {});
+  await close();
+  denial(await hook("git push origin HEAD:dev"), /Restart the office and retry/);
+  assert.deepEqual(await hook("npm test && git push origin HEAD:offline-feature"), {});
+  const feature = await exec("git", ["push", "origin", "HEAD:offline-feature"]); assert.equal(feature.code, 0, feature.stderr);
+  const protectedPush = await exec("git", ["push", "origin", "HEAD:main"], undefined, { INBOX_PIPELINE_RUN: run.id }); assert.notEqual(protectedPush.code, 0); assert.match(protectedPush.stderr, /Restart the office and retry/);
+  assert.equal(spawnSync("git", ["--git-dir", remote, "rev-parse", "refs/heads/dev"], { encoding: "utf8" }).stdout.trim(), sha);
 });
 
 test("installed Pi project extension returns a block, never auto-allows ordinary tools", async (t) => {
