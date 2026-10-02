@@ -212,7 +212,9 @@ export class World {
     this.seatLeads(agents, rows, seen);
     // A standing team keeps its members' desks, and a project its lead's, while they are neither running nor holding a task,
     // unless someone else runs in the same checkout: that one replaced them, so they leave (the record stays, unplaced).
-    // A project's offline lead stays while one of that project's own members runs beside it, as that one may take its place and name.
+    // A lead is stricter, as a standing team's lead often works in a main checkout other projects' agents run in: it leaves
+    // only for a replacement on its own team. A project's offline lead is the other way round and stays while one of that
+    // project's own members runs beside it, as that one may take its place and name.
     const running = new Map<string, Set<string>>();
     for (const a of agents) {
       if (!a.paneId || a.status === "offline" || !a.cwd) continue;
@@ -224,7 +226,7 @@ export class World {
       if (!team || row.removed || seen.has(str(row.identity)) || (!team.standing && row.role !== "lead")) continue;
       const [harness, cwd] = splitIdentity(str(row.identity));
       const beside = cwd ? running.get(this.top(cwd)) : undefined;
-      if (beside && !(!team.standing && beside.has(team.id))) {
+      if (beside && (row.role !== "lead" || team.standing === beside.has(team.id))) {
         this.db.prepare("UPDATE world_agents SET team_id = NULL, role = 'member' WHERE id = ?").run(str(row.id));
         Object.assign(row, { team_id: null, role: "member" });
         continue;

@@ -115,27 +115,32 @@ test("a standing team keeps its members' desks; someone in the lounge just leave
   assert.deepEqual(agents.map((a) => [a.cwd, a.status, a.teamId, a.role]), [["/lead", "offline", team.id, "lead"]]);
 });
 
-test("an offline standing-team member leaves when another agent runs in the same checkout, on the team or not", async () => {
+test("an offline standing-team member leaves when another agent runs in its checkout; its lead only for one on its own team", async () => {
   const { root } = repository();
   const src = join(root, "src");
   mkdirSync(src);
   const { world, setLive } = setup();
   setLive([lane("p1", root, "s1"), lane("p2", "/elsewhere", "s2"), lane("p3", "/other", "s3")]);
   const { team, agents } = await seat(world, [root, "/elsewhere", "/other"]);
-  const [lead, same, kept] = agents as [(typeof agents)[0], (typeof agents)[0], (typeof agents)[0]];
-  // The lead is replaced by a session in a subfolder of its checkout, which is placed nowhere; another by one on the team.
+  const [lead, member, kept] = agents as [(typeof agents)[0], (typeof agents)[0], (typeof agents)[0]];
   const claude = (paneId: string, cwd: string): LiveAgent => ({ ...lane(paneId, cwd, `c-${paneId}`), harness: "claude" });
-  setLive([claude("p4", src), claude("p5", "/elsewhere"), lane("p6", "/other", "s6")]);
-  const replacement = world.state().agents.find((a) => a.cwd === "/elsewhere" && a.harness === "claude");
-  world.updateAgent(replacement!.id, { teamId: team.id });
+  const teamOf = (id: string) => world.state().agents.find((a) => a.id === id)?.teamId ?? null;
+
+  // Another team's agent runs in the lead's checkout (a subfolder of it), and one placed nowhere replaces a member.
+  const qa = await world.createTeam({ name: "QA", standing: true });
   setLive([claude("p4", src), claude("p5", "/elsewhere")]);
-  const state = world.state();
-  assert.deepEqual(state.agents.find((a) => a.id === lead.id)?.teamId ?? null, null, "replaced by one placed nowhere, the lead leaves");
-  assert.equal(state.agents.find((a) => a.id === same.id)?.teamId ?? null, null, "replaced by one on the team, the member leaves");
-  assert.equal(state.agents.find((a) => a.id === kept.id)?.teamId, team.id, "nobody else in its checkout: the desk stays");
-  const onTeam = state.agents.filter((a) => a.teamId === team.id);
-  assert.deepEqual(onTeam.map((a) => a.id).sort(), [kept.id, replacement!.id].sort());
-  assert.deepEqual(onTeam.filter((a) => a.role === "lead").length, 1, "the next lead is appointed");
+  const neighbour = world.state().agents.find((a) => a.paneId === "p4")!;
+  world.updateAgent(neighbour.id, { teamId: qa.id });
+  assert.equal(teamOf(lead.id), team.id, "the lead stays beside another team's agent");
+  assert.equal(teamOf(member.id), null, "a member replaced by one placed nowhere leaves");
+  assert.equal(teamOf(kept.id), team.id, "nobody else in its checkout: the desk stays");
+
+  // Its replacement on its own team makes the lead leave, and the next lead is appointed.
+  world.updateAgent(neighbour.id, { teamId: team.id });
+  assert.equal(teamOf(lead.id), null);
+  const onTeam = world.state().agents.filter((a) => a.teamId === team.id);
+  assert.deepEqual(onTeam.map((a) => a.id).sort(), [kept.id, neighbour.id].sort());
+  assert.equal(onTeam.filter((a) => a.role === "lead").length, 1, "the next lead is appointed");
   // The record is kept: what it said keeps its sender.
   const said = world.messages.say(lead, { to: "Mission Control", text: "old news" });
   assert.equal(world.state().messages.find((m) => m.id === said.id)?.fromAgentId, lead.id);
