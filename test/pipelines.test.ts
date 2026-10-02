@@ -4,7 +4,7 @@ import { execFileSync, spawnSync, spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDatabase } from "../src/server/db.ts";
+import { openDatabase, requestFingerprint } from "../src/server/db.ts";
 import { Messages } from "../src/server/messages.ts";
 import { Inbox } from "../src/server/inbox.ts";
 import { createInboxServer } from "../src/server/http.ts";
@@ -226,6 +226,21 @@ test("approval binds the submitted run candidate and rejects automatic/stale acc
   run = done({ itemId: item.itemId, revision: item.revision }, "explicit"); assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, true);
   const revised = await h.request("POST", "/api/agent/items", { session: h.session(), pipeline: { runId: run.id }, item: { type: "milestone", key: h.inbox.item(item.itemId).key, title: "Founder explicitly accepts", context: "Changed presented context" } });
   assert.equal(revised.body.revision, item.revision + 1); assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, false);
+});
+
+test("legacy delivery retry identities survive adoption, and startup briefing addresses the first mate", t => {
+  const f = fixture(t); writeFileSync(join(f.root, "orchestrator.json"), JSON.stringify({ project: "test", pipeline: null }));
+  const input = { title: "Legacy", summary: "same delivery", clientId: "pre-pipeline-handoff" };
+  const handed = f.m.handoff(f.lead, input);
+  assert.equal(f.db.prepare("SELECT replay_fingerprint FROM messages WHERE id = ?").get(handed.message.id)!.replay_fingerprint,
+    requestFingerprint({ title: input.title, summary: input.summary, to: null, work: null }), "absent pipeline must preserve the old replay fingerprint");
+  const review = { work: handed.work.id, verdict: "accept", notes: "legacy accept", round: 1, clientId: "pre-pipeline-review" };
+  const accepted = f.m.review(f.reviewer, review);
+  assert.equal(f.db.prepare("SELECT replay_fingerprint FROM messages WHERE id = ?").get(accepted.message.id)!.replay_fingerprint,
+    requestFingerprint({ verdict: review.verdict, notes: review.notes, round: 1 }));
+  writeFileSync(join(f.root, "orchestrator.json"), JSON.stringify({ project: "test", pipeline: graph() }));
+  assert.deepEqual(f.m.handoff(f.lead, input), handed); assert.deepEqual(f.m.review(f.reviewer, review), accepted);
+  assert.match(f.p.brief("authors"), /You own this pipeline/); assert.match(f.p.brief("authors", f.crew.id), /Do your assigned step/);
 });
 
 test("final review refuses crew and stale work rounds atomically; lead acceptance and replay succeed", t => {

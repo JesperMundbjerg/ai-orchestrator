@@ -226,7 +226,7 @@ export class Messages {
    */
   handoff(from: WorldAgent, input: { title?: string; summary?: string; to?: string; work?: string; clientId?: string; pipeline?: PipelineGateInput }): { work: Work; message: Message } {
     const replay = replayRequest("handoff", from.id, input.work ?? input.to?.trim().toLowerCase() ?? "@handsTo", {
-      title: input.title?.trim() ?? "", summary: input.summary?.trim() ?? "", to: input.to?.trim().toLowerCase() ?? null, work: input.work ?? null, pipeline: input.pipeline ?? null,
+      title: input.title?.trim() ?? "", summary: input.summary?.trim() ?? "", to: input.to?.trim().toLowerCase() ?? null, work: input.work ?? null, ...(input.pipeline ? { pipeline: input.pipeline } : {}),
     }, input.clientId);
     const repeat = this.byClientId(replay);
     if (repeat) return { work: this.replayWork(repeat), message: repeat };
@@ -270,7 +270,7 @@ export class Messages {
     const work = this.workById(input.work ?? "");
     const round = input.round ?? work.round;
     if (!Number.isSafeInteger(round) || round < 1) throw new InboxError(400, "review round must be a positive integer");
-    const replay = replayRequest("review", by.id, work.id, { verdict: input.verdict ?? null, notes: input.notes?.trim() ?? "", round, pipeline: input.pipeline ?? null }, input.clientId);
+    const replay = replayRequest("review", by.id, work.id, { verdict: input.verdict ?? null, notes: input.notes?.trim() ?? "", round, ...(input.pipeline ? { pipeline: input.pipeline } : {}) }, input.clientId);
     const repeat = this.byClientId(replay);
     if (repeat) return { work: this.replayWork(repeat), message: repeat };
     if (by.teamId !== work.toTeamId) throw new InboxError(403, "only the team the work was handed to can review it");

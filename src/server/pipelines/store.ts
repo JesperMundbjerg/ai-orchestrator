@@ -349,7 +349,7 @@ export class Pipelines {
     const view = this.teamView(teamId);
     if (!view.protected) return "Pipeline: no default or team override yet.";
     const run = given === undefined ? view.runs.find(r => r.state === "open") ?? null : given;
-    const role = this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : "Do your assigned step and use inbox pipeline report; only your first mate may complete steps or deliver.";
+    const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : "Do your assigned step and use inbox pipeline report; only your first mate may complete steps or deliver.";
     return [`Pipeline: ${view.graph?.label ?? "unavailable"} (${view.source}, policy ${view.policyHash?.slice(0, 12) ?? "missing"}). ${role}`,
       ...view.problems, ...(run ? [`Run ${run.id}, revision ${run.revision}, round ${run.round}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state}${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
       "Commands: inbox pipeline start|branch|assign|done|report|status|gate. No model is called; a gate allow is preflight, never a publication receipt."].join("\n");
