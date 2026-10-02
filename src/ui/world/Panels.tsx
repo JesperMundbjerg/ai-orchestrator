@@ -23,6 +23,12 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
   onOpen: (teamId: string, pos: Vec2, yaw: number) => void;
   onCrewGuide: () => void;
 }) {
+  const [hidden, setHidden] = useState(() => {
+    try { return localStorage.getItem("review-inbox.projects-panel-hidden") === "true"; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("review-inbox.projects-panel-hidden", String(hidden)); } catch { /* Storage can be unavailable. */ }
+  }, [hidden]);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,10 +38,13 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
   const onBreak = world.agents.filter((a) => a.teamId && plan.spots.get(a.id)?.zone === "garden").length;
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
 
-  return (
+  return hidden ? (
+    <button className="projects-panel-pill" onClick={() => setHidden(false)} aria-label="Show Projects panel">Projects</button>
+  ) : (
     <aside className="world-panel teams">
       <div className="panel-head">
         <strong>Projects</strong>
+        <button className="ghost small projects-panel-hide" onClick={() => setHidden(true)} aria-label="Hide Projects panel" title="Hide Projects">−</button>
         <span className="spacer" />
         <button className="ghost small" onClick={onCrewGuide} title="Which model each crew member runs on">Crew guide</button>
         <button className="ghost small" onClick={() => (setError(null), setAdding(!adding))}>{adding ? "Cancel" : "+ New project"}</button>
