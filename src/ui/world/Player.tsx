@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import type { Fog, PerspectiveCamera } from "three";
 import { away, walkingHeight } from "./wilds/land.ts";
-import type { Vec2 } from "./layout.ts";
+import type { Vec2 } from "./spatial.ts";
 import { usePace } from "./Pace.tsx";
 
 const EYE = 1.62;
@@ -11,7 +11,7 @@ const RUN = 9;
 const FOV = 62;
 const FOV_MIN = 18;
 const FOV_MAX = 80;
-/** Looking down on the whole ring from above, at full lift. */
+/** Looking down on the whole building from above, at full lift. */
 const OVERVIEW_PITCH = -1.35;
 const LEVEL_PITCH = -0.12;
 
@@ -30,7 +30,7 @@ const pitchAt = (lift: number) => LEVEL_PITCH + lift * (OVERVIEW_PITCH - LEVEL_P
 /**
  * You, in first person: WASD or the arrow keys walk, Shift runs, dragging turns the view
  * and scrolling (or pinching, or + and -) zooms. Zooming out past the widest view lifts you
- * up and tilts the view down, for an overview of every corner round your desk; zooming in
+ * up and tilts the view down, for an overview of the building; zooming in
  * brings you back down first. The pointer stays free, so a click still reaches the person
  * under it.
  */
