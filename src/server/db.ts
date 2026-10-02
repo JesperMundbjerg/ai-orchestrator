@@ -331,6 +331,9 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
   db.exec(`CREATE TABLE IF NOT EXISTS auto_approve (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1), enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1))
   ); INSERT OR IGNORE INTO auto_approve (singleton, enabled) VALUES (1, 0);`);
+}, (db) => {
+  // Snapshot counts and first-image lookup must search one item's revision, not scan all evidence.
+  db.exec("CREATE INDEX IF NOT EXISTS evidence_item_revision_kind ON evidence (item_id, revision, kind)");
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
