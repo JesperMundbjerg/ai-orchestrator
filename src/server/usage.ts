@@ -1,5 +1,5 @@
 // The founder's subscription use: the limits' meters, and each agent's and team's tokens this week.
-// Nothing here calls a model or an account endpoint. A meter is what the provider said in the
+// Nothing here calls a model, and the only account call is Codex's usage read (codexaccount.ts). A meter is what the provider said in the
 // headers of a reply an agent was already getting: Claude Code hands it to its statusline command
 // (`inbox statusline`), Pi's extension forwards Codex's `x-codex-*` headers, and the codex CLI writes
 // it into its rollout. Claude Code's own cache of its last `/usage` read (~/.claude.json) is the
@@ -14,6 +14,7 @@ import type { Harness, Team, UsageMeter, UsageShare, UsageView } from "../shared
 import type { CrewPause } from "./crewtree.ts";
 import type { OfficeNotices } from "./notices.ts";
 import type { LimitReading } from "../shared/usage.ts";
+import { CODEX_AUTH_PATH, fetchAccount, readCodexAccount, type AccountFetcher } from "./codexaccount.ts";
 
 export type { LimitReading };
 
@@ -52,6 +53,9 @@ export const STALE_MS = 30 * 60_000;
 const REWRITE_MS = 60_000;
 /** The founder's rule: Claude crew stop starting at this much of the 5-hour window. */
 export const PAUSE_AT = 90;
+
+/** Codex's account is asked for its limits this often (and once at start). */
+export const ACCOUNT_EVERY_MS = 5 * 60_000;
 
 /** The local sources (Claude Code's cache, the newest Codex rollout) are looked at again no sooner than this. */
 const RECHECK_MS = 10_000;
@@ -129,6 +133,9 @@ export class Usage {
   private listedAt = 0;
   private checked = { claudeJson: 0, claudeJsonMtime: -1, codex: 0, codexPath: "", codexSize: -1 };
   private timer: NodeJS.Timeout | null = null;
+  /** Where the Codex login is read from, and how the account is asked; tests replace both. */
+  codexAccount: { authPath: string; fetcher: AccountFetcher } = { authPath: CODEX_AUTH_PATH, fetcher: fetchAccount };
+  private accountTimer: NodeJS.Timeout | null = null;
   /** Said when a meter's reading changes. */
   onChange: () => void = () => {};
 
@@ -159,11 +166,23 @@ export class Usage {
       this.timer.unref();
     };
     step();
+    void this.readAccount();
+    this.accountTimer = setInterval(() => void this.readAccount(), ACCOUNT_EVERY_MS);
+    this.accountTimer.unref();
   }
 
   stop(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    if (this.accountTimer) clearInterval(this.accountTimer);
+    this.accountTimer = null;
+  }
+
+  /** Asks the Codex account for its limits, as a reading made now (so it wins over an older one). Quiet when it cannot. */
+  async readAccount(): Promise<boolean> {
+    const at = this.now();
+    const readings = await readCodexAccount(this.codexAccount.authPath, this.codexAccount.fetcher, at.getTime());
+    return readings.length > 0 && this.record("codex", readings, "codex-account", at);
   }
 
   /**

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -376,4 +376,64 @@ test("near Codex's limit the crew guide gives the Claude backups under Mix, and 
   assert.ok(!/--kind claude/.test(crew.text()), "Pi only never moves to Claude Code");
   assert.doesNotMatch(crew.text(), /paused/);
   assert.equal(crew.lead().harness, "pi");
+});
+
+/** An auth.json as the codex CLI keeps it, with an access token that expires at `exp`. */
+function codexLogin(exp: number, accountId: string | null = "acct-1"): string {
+  const jwt = ["h", Buffer.from(JSON.stringify({ exp })).toString("base64url"), "s"].join(".");
+  const path = join(mkdtempSync(join(tmpdir(), "codex-auth-")), "auth.json");
+  const before = JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: jwt, refresh_token: "r", account_id: accountId } });
+  writeFileSync(path, before);
+  return path;
+}
+const nowSeconds = Math.floor(NOW.getTime() / 1000);
+const accountBody = {
+  plan_type: "plus",
+  rate_limit: {
+    primary_window: { used_percent: 12.5, limit_window_seconds: 18000, reset_after_seconds: 3600, reset_at: nowSeconds + 3600 },
+    secondary_window: { used_percent: 61, limit_window_seconds: 604800, reset_after_seconds: 86400, reset_at: nowSeconds + 86400 },
+  },
+};
+const replying = (status: number, body: unknown, seen: { url: string; headers: Record<string, string> }[] = []) => async (url: string, headers: Record<string, string>) => {
+  seen.push({ url, headers });
+  return { status, json: async () => body };
+};
+
+test("the Codex account's windows are told by their length and kept as Codex readings, a newer one winning over a rollout's", async () => {
+  const u = usage(roots());
+  const seen: { url: string; headers: Record<string, string> }[] = [];
+  const path = codexLogin(nowSeconds + 3600);
+  const before = readFileSync(path, "utf8");
+  u.codexAccount = { authPath: path, fetcher: replying(200, accountBody, seen) };
+  assert.equal(u.record("codex", [{ windowMinutes: 10080, usedPercent: 40, resetsAt: nowSeconds + 86400 }], "codex-rollout", ago(20)), true);
+
+  assert.equal(await u.readAccount(), true);
+  assert.deepEqual(seen.map((s) => s.url), ["https://chatgpt.com/backend-api/wham/usage"], "one call, to the one host");
+  assert.match(seen[0]!.headers.Authorization!, /^Bearer /);
+  assert.equal(seen[0]!.headers["ChatGPT-Account-Id"], "acct-1");
+  assert.deepEqual(meter(u, "codex.week"), { id: "codex.week", label: "Codex week", window: "week", usedPercent: 61, resetsAt: iso(new Date((nowSeconds + 86400) * 1000)), asOf: iso(NOW), stale: false });
+  assert.equal(meter(u, "codex.five_hour").usedPercent, 12.5);
+  assert.equal(readFileSync(path, "utf8"), before, "auth.json is only read");
+
+  assert.equal(u.record("codex", [{ windowMinutes: 10080, usedPercent: 40 }], "codex-rollout", ago(1)), false, "a reading older than the account's is ignored");
+  assert.equal(meter(u, "codex.week").usedPercent, 61);
+});
+
+test("the Codex account is skipped quietly with no login, an expired or refused token, a failed call or an odd reply", async () => {
+  const u = usage(roots());
+  const calls: unknown[] = [];
+  const count = (status: number, body: unknown = accountBody) => async () => { calls.push(1); return { status, json: async () => body }; };
+
+  u.codexAccount = { authPath: join(tmpdir(), "no-such-dir", "auth.json"), fetcher: count(200) };
+  assert.equal(await u.readAccount(), false, "no auth.json");
+  u.codexAccount = { authPath: codexLogin(nowSeconds - 60), fetcher: count(200) };
+  assert.equal(await u.readAccount(), false, "an expired token is not sent anywhere");
+  assert.equal(calls.length, 0);
+
+  const live = codexLogin(nowSeconds + 3600);
+  for (const fetcher of [count(401), count(403), count(500), count(200, { rate_limit: null }), count(200, "nonsense"), async () => { throw new Error("offline"); }]) {
+    u.codexAccount = { authPath: live, fetcher };
+    assert.equal(await u.readAccount(), false);
+  }
+  assert.equal(meter(u, "codex.week").usedPercent, null, "nothing was recorded; the meter simply goes stale");
 });
