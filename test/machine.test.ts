@@ -89,7 +89,7 @@ test("a browser belongs to the project where whatever started it works", () => {
 
 test("a warning needs a sustained load or too many browsers; a browser nobody uses for 10 minutes is for closing, not for the warning", () => {
   const trees = browserTrees(parsePs(PS));
-  const owner: Place = { path: "/p", teamId: "t1", agentId: null, label: "Cosmology lesson" };
+  const owner: Place = { path: "/p", teamId: "t1", agentId: null, label: "Note search" };
   const owners = new Map(trees.map((t) => [t.pid, t.pid === 76099 ? owner : null]));
   const seen = new Map();
   const hot = { since: null as number | null };
@@ -101,7 +101,7 @@ test("a warning needs a sustained load or too many browsers; a browser nobody us
   const hotNow = at(HOT_MS).state;
   assert.deepEqual(hotNow.warning, { why: ["hot"] });
   const probe = hotNow.browsers[0]!;
-  assert.equal(probe.label, "Cosmology lesson browser");
+  assert.equal(probe.label, "Note search browser");
   assert.deepEqual(probe.reasons, ["hot"]);
   // The script's browser uses little of it; the unknown ones are told apart by number.
   assert.deepEqual(hotNow.browsers.find((b) => b.pid === 901)!.reasons, []);
@@ -169,7 +169,7 @@ const WORLD = {
   agents: [],
 } as unknown as Pick<WorldState, "teams" | "agents">;
 
-/** Someone on the Cosmology lesson project is working. */
+/** Someone on the Note search project is working. */
 const WORLD_BUSY = { ...WORLD, agents: [{ id: "a1", teamId: "t1", status: "working", cwd: null, name: "rowan" }] } as unknown as Pick<WorldState, "teams" | "agents">;
 const MIN = 60_000;
 
@@ -193,7 +193,7 @@ test("a flagged browser's lead is told once, a project at most every 15 minutes,
   const { m, lookedUp, told, advance } = machine(() => ps, WORLD_BUSY);
   await m.read();
   assert.equal(lookedUp.length, 1);
-  assert.equal(m.state().browsers[0]!.label, "Cosmology lesson browser");
+  assert.equal(m.state().browsers[0]!.label, "Note search browser");
   // Hot from the second reading on; flagged a minute later, told three minutes after that.
   for (let t = 0; t < (HOT_MS + TELL_AFTER_MS) / 15_000; t++) {
     advance(15_000);
@@ -240,7 +240,7 @@ test("a browser whose starter is gone closes after a minute, keeping its project
   assert.equal(m.state().closedToday, 1);
   assert.equal(told.length, 1);
   assert.equal(told[0]![0], "t1");
-  assert.match(told[0]![1], /^Closed a headless browser left running by Cosmology lesson: 3 pages, the process that started it had exited; close browsers in a finally/);
+  assert.match(told[0]![1], /^Closed a headless browser left running by Note search: 3 pages, the process that started it had exited; close browsers in a finally/);
   await m.settled();
   // Nothing but that one browser's main process was signalled, and no more on later readings.
   advance(15_000);
