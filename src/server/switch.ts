@@ -51,33 +51,6 @@ const label = (h: Harness) => HARNESS_INFO[h].label;
 const other = (h: Harness): Harness => (h === "claude" ? "pi" : "claude");
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,80}$/;
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS agent_switches (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL,
-  agent_name TEXT NOT NULL,
-  cwd TEXT NOT NULL,
-  from_harness TEXT NOT NULL,
-  to_harness TEXT NOT NULL,
-  model TEXT NOT NULL,
-  effort TEXT NOT NULL,
-  step TEXT NOT NULL,
-  says TEXT NOT NULL,
-  old_pane TEXT,
-  -- The name herdr knew the old session by; the new one takes it once the old pane is closed.
-  old_name TEXT,
-  new_pane TEXT,
-  new_name TEXT,
-  handoff TEXT,
-  asked_at TEXT,
-  error TEXT,
-  batch_id TEXT,
-  seq INTEGER NOT NULL DEFAULT 0,
-  started_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-`;
-
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? "" : String(v));
 const opt = (v: unknown): string | null => (v == null ? null : String(v));
@@ -154,7 +127,6 @@ export class Switches {
     this.dir = dir;
     this.now = opts.now ?? (() => new Date());
     this.timing = { ...SWITCH_TIMING, ...opts.timing };
-    db.exec(SCHEMA);
     world.hiddenPanes = () => this.hidden;
     world.messages.held = () => this.held;
     world.switches = this;

@@ -2,7 +2,6 @@
 // directory, never in a project worktree, so switching or deleting a worktree keeps history.
 
 import { DatabaseSync } from "node:sqlite";
-import { migrateUnpresented } from "./unpresented.ts";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -218,33 +217,44 @@ CREATE INDEX IF NOT EXISTS events_item ON events (item_id);
 export function openDatabase(file: string): DatabaseSync {
   if (file !== ":memory:") mkdirSync(join(file, ".."), { recursive: true });
   const db = new DatabaseSync(file);
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;");
-  db.exec(SCHEMA);
-  migrate(db);
-  migrateUnpresented(db);
-  return db;
+  try {
+    // Refuse a newer schema before even changing journal mode.
+    const version = Number(db.prepare("PRAGMA user_version").get()!.user_version);
+    if (version > MIGRATIONS.length) throw new Error(`database schema ${version} is newer than supported schema ${MIGRATIONS.length}`);
+    db.exec("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 3000;");
+    for (let next = version + 1; next <= MIGRATIONS.length; next++) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        MIGRATIONS[next - 1]!(db);
+        db.exec(`PRAGMA user_version = ${next}; COMMIT;`);
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+    }
+    db.exec("PRAGMA journal_mode = WAL;");
+    return db;
+  } catch (err) {
+    db.close();
+    throw err;
+  }
 }
 
-/** Brings a database made by an earlier version up to the schema above. Each step is idempotent. */
-function migrate(db: DatabaseSync): void {
+/** Storage alone owns schema adoption. Unversioned databases can contain any of the old
+ * constructor-created tables, or a partially completed legacy upgrade. Adopt them atomically. */
+function adoptLegacy(db: DatabaseSync): void {
+  db.exec(SCHEMA);
   // SQLite cannot widen a CHECK constraint in place. Keep ids and rowids (evidence order)
   // when rebuilding, so old attachment URLs and revisions remain exactly the same.
   const evidenceSchema = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'evidence'").get() as { sql: string };
   if (!evidenceSchema.sql.includes("'video'")) {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(`
+    db.exec(`
         ALTER TABLE evidence RENAME TO evidence_before_video;
         ${EVIDENCE_SCHEMA}
         INSERT INTO evidence (rowid, id, item_id, revision, kind, file, url, sha256, caption, source_revision, captured_at)
           SELECT rowid, id, item_id, revision, kind, file, url, sha256, caption, source_revision, captured_at FROM evidence_before_video;
         DROP TABLE evidence_before_video;
       `);
-      db.exec("COMMIT");
-    } catch (err) {
-      db.exec("ROLLBACK");
-      throw err;
-    }
   }
   const columns = (table: string) => new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name));
   const teams = columns("teams");
@@ -254,15 +264,13 @@ function migrate(db: DatabaseSync): void {
   // Teams were formed by hand, as a lead with crew or as peers, before a team was a project's
   // worktree. Those teams had no worktree, so they carry on as standing teams, all with a lead.
   if (teams.has("structure")) {
-    db.exec(`
-      ALTER TABLE teams ADD COLUMN path TEXT;
-      ALTER TABLE teams ADD COLUMN branch TEXT;
-      ALTER TABLE teams ADD COLUMN standing INTEGER NOT NULL DEFAULT 0;
-      UPDATE teams SET standing = 1;
-      ALTER TABLE teams DROP COLUMN structure;
-      CREATE UNIQUE INDEX IF NOT EXISTS teams_path ON teams (path);
-    `);
+    if (!teams.has("path")) db.exec("ALTER TABLE teams ADD COLUMN path TEXT");
+    if (!teams.has("branch")) db.exec("ALTER TABLE teams ADD COLUMN branch TEXT");
+    if (!teams.has("standing")) db.exec("ALTER TABLE teams ADD COLUMN standing INTEGER NOT NULL DEFAULT 0");
+    db.exec("UPDATE teams SET standing = 1; ALTER TABLE teams DROP COLUMN structure;");
   }
+
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS teams_path ON teams (path)");
 
   const messages = columns("messages");
   if (!messages.has("to_founder")) db.exec("ALTER TABLE messages ADD COLUMN to_founder INTEGER NOT NULL DEFAULT 0");
@@ -284,9 +292,7 @@ function migrate(db: DatabaseSync): void {
 
   // Team instructions were their own tables before agents could talk to each other.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'team_orders'").get()) {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(`
+    db.exec(`
         INSERT OR IGNORE INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at)
           SELECT id, 'instruction', NULL, team_id, text, NULL, client_id, created_at FROM team_orders ORDER BY rowid;
         INSERT OR IGNORE INTO message_deliveries (message_id, agent_id, state, error, updated_at)
@@ -294,10 +300,50 @@ function migrate(db: DatabaseSync): void {
         DROP TABLE order_deliveries;
         DROP TABLE team_orders;
       `);
-      db.exec("COMMIT");
-    } catch (err) {
-      db.exec("ROLLBACK");
-      throw err;
-    }
   }
+  if (!columns("items").has("presented_head")) db.exec("ALTER TABLE items ADD COLUMN presented_head TEXT");
+  if (!columns("items").has("presented_path")) db.exec("ALTER TABLE items ADD COLUMN presented_path TEXT");
+  db.exec(AUXILIARY_SCHEMA);
+  if (!columns("whole_team_idle").has("head")) db.exec("ALTER TABLE whole_team_idle ADD COLUMN head TEXT");
 }
+
+// Keep migration numbers append-only. Runtime interrupted-send recovery belongs to the
+// owning service, not to schema migration. Redundant legacy constructor DDL is harmless.
+const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy];
+
+const AUXILIARY_SCHEMA = `
+CREATE INDEX IF NOT EXISTS items_presented ON items (presented_path, presented_head, state);
+CREATE TABLE IF NOT EXISTS unpresented_work (
+  path TEXT PRIMARY KEY, presented_head TEXT,
+  reminded_head TEXT, reminded_at INTEGER, reminded_lead TEXT, reminded_message INTEGER
+);
+CREATE TABLE IF NOT EXISTS whole_team_idle (
+  path TEXT PRIMARY KEY, members TEXT, message_after INTEGER,
+  notified INTEGER NOT NULL DEFAULT 0, reminded_at INTEGER, head TEXT
+);
+CREATE TABLE IF NOT EXISTS usage_readings (
+  meter TEXT PRIMARY KEY, used_percent REAL NOT NULL, resets_at TEXT,
+  as_of TEXT NOT NULL, source TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage_told (key TEXT PRIMARY KEY, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS message_loops (
+  pair TEXT PRIMARY KEY, sender_id TEXT NOT NULL, last_at INTEGER NOT NULL,
+  recent TEXT NOT NULL, warned INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS message_loop_trips (
+  pair TEXT PRIMARY KEY, last_at INTEGER NOT NULL, escalated INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS office_notices (
+  message_id TEXT PRIMARY KEY REFERENCES messages(id), title TEXT NOT NULL,
+  agent_ids TEXT NOT NULL, notified INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS undelivered_episodes (agent_id TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS agent_switches (
+  id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, agent_name TEXT NOT NULL, cwd TEXT NOT NULL,
+  from_harness TEXT NOT NULL, to_harness TEXT NOT NULL, model TEXT NOT NULL,
+  effort TEXT NOT NULL, step TEXT NOT NULL, says TEXT NOT NULL,
+  old_pane TEXT, old_name TEXT, new_pane TEXT, new_name TEXT, handoff TEXT,
+  asked_at TEXT, error TEXT, batch_id TEXT, seq INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+`;

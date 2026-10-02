@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,7 @@ test("team instructions from before agents could talk are kept as messages", () 
   assert.deepEqual({ ...db.prepare("SELECT message_id, agent_id, state FROM message_deliveries").get() }, { message_id: "o1", agent_id: "a1", state: "delivered" });
   // A hand-formed team from before projects carries on as a standing team.
   assert.deepEqual({ ...db.prepare("SELECT * FROM teams").get() }, { id: "t1", name: "Mission Control", created_at: "2026-09-27T10:00:00Z", purpose: "", hands_to: null, path: null, branch: null, standing: 1, lead_pane: null });
+  assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
   assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'team_orders'").get(), undefined);
   db.close();
   openDatabase(file).close();
@@ -45,4 +46,64 @@ test("items from before walkthroughs gain a pages column and keep their preview"
   const db = openDatabase(file);
   assert.deepEqual({ ...db.prepare("SELECT preview IS NOT NULL AS preview, pages FROM items").get() }, { preview: 1, pages: null });
   db.close();
+});
+
+for (const added of [[], ["path"], ["path", "branch"], ["path", "branch", "standing"]]) {
+  test(`a COPY of an interrupted legacy structure upgrade recovers after ${added.join(",") || "no ALTER"}`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "legacy-copy-"));
+    const source = join(dir, "old.db");
+    const copy = join(dir, "migration.db");
+    const old = new DatabaseSync(source);
+    old.exec(`CREATE TABLE teams (id TEXT PRIMARY KEY, name TEXT NOT NULL, structure TEXT NOT NULL, created_at TEXT NOT NULL);
+      INSERT INTO teams VALUES ('t1', 'Mission Control', 'dispatch', 'x');`);
+    for (const col of added) old.exec(`ALTER TABLE teams ADD COLUMN ${col} ${col === "standing" ? "INTEGER NOT NULL DEFAULT 0" : "TEXT"}`);
+    old.close();
+    const original = readFileSync(source);
+    copyFileSync(source, copy);
+    for (let reopen = 0; reopen < 2; reopen++) {
+      const db = openDatabase(copy);
+      assert.equal(db.prepare("SELECT standing FROM teams WHERE id = 't1'").get()!.standing, 1);
+      assert.ok(!db.prepare("PRAGMA table_info(teams)").all().some((c) => c.name === "structure"));
+      assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+      assert.ok(Number(db.prepare("PRAGMA user_version").get()!.user_version) > 0);
+      db.close();
+    }
+    assert.deepEqual(readFileSync(source), original, "only the copy was migrated");
+  });
+}
+
+test("opening storage creates the full schema without constructing any service", () => {
+  const db = openDatabase(":memory:");
+  for (const table of ["agent_switches", "usage_readings", "usage_told", "message_loops", "message_loop_trips", "office_notices", "undelivered_episodes", "unpresented_work", "whole_team_idle"]) {
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table), table);
+  }
+  assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), []);
+  db.close();
+});
+
+test("an adoption failure rolls back every ALTER and its version and can be retried", () => {
+  const file = join(mkdtempSync(join(tmpdir(), "legacy-rollback-")), "inbox.db");
+  const old = new DatabaseSync(file);
+  old.exec(`CREATE TABLE teams (id TEXT PRIMARY KEY, name TEXT NOT NULL, structure TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE team_orders (id TEXT PRIMARY KEY, team_id TEXT, text TEXT, client_id TEXT, created_at TEXT);
+    INSERT INTO team_orders VALUES ('o1', 'missing', 'body', 'c1', 'x');
+    CREATE TABLE order_deliveries (order_id TEXT, agent_id TEXT, state TEXT, error TEXT, updated_at TEXT);`);
+  old.close();
+  assert.throws(() => openDatabase(file), /FOREIGN KEY/);
+  const repair = new DatabaseSync(file);
+  assert.equal(repair.prepare("PRAGMA user_version").get()!.user_version, 0);
+  assert.deepEqual(repair.prepare("PRAGMA table_info(teams)").all().map((c) => c.name), ["id", "name", "structure", "created_at"]);
+  repair.exec("INSERT INTO teams VALUES ('missing', 'Review', 'dispatch', 'x')");
+  repair.close();
+  openDatabase(file).close();
+});
+
+test("a future schema is refused without modifying the file", () => {
+  const file = join(mkdtempSync(join(tmpdir(), "future-db-")), "inbox.db");
+  const future = new DatabaseSync(file);
+  future.exec("CREATE TABLE future_data (value TEXT); INSERT INTO future_data VALUES ('keep'); PRAGMA user_version = 999;");
+  future.close();
+  const before = readFileSync(file);
+  assert.throws(() => openDatabase(file), /newer than supported/);
+  assert.deepEqual(readFileSync(file), before);
 });
