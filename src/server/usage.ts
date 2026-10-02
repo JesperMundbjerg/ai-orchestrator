@@ -566,12 +566,13 @@ export class Usage {
       return best?.id ?? null;
     };
     const totals = new Map<Provider, number>();
-    type Sum = { tokens: number; weight: Map<Provider, number> };
+    type Sum = { tokens: number; weight: Map<Provider, number>; counts: Map<Provider, number> };
     const agentSums = new Map<string, Sum>();
     const teamSums = new Map<string, Sum>();
     const addTo = (sums: Map<string, Sum>, id: string, p: Provider, b: Tally) => {
-      const s = sums.get(id) ?? { tokens: 0, weight: new Map() };
+      const s = sums.get(id) ?? { tokens: 0, weight: new Map(), counts: new Map() };
       s.tokens += b.tokens;
+      s.counts.set(p, (s.counts.get(p) ?? 0) + b.tokens);
       s.weight.set(p, (s.weight.get(p) ?? 0) + b.weight);
       sums.set(id, s);
     };
@@ -593,10 +594,9 @@ export class Usage {
       for (const [p, w] of s.weight) {
         const { percent } = week.get(p)!;
         const total = totals.get(p) ?? 0;
-        if (percent === null || !total) continue;
-        const part = (w / total) * percent;
-        points = (points ?? 0) + part;
-        parts.push({ meter: `${p}.week`, share: Math.round(part * 10) / 10 });
+        const part = percent === null || !total ? null : (w / total) * percent;
+        if (part !== null) points = (points ?? 0) + part;
+        parts.push({ meter: `${p}.week`, tokens: s.counts.get(p) ?? 0, share: part === null ? null : Math.round(part * 10) / 10 });
       }
       return { tokens: s.tokens, share: points === null ? null : Math.round(points * 10) / 10, parts };
     };

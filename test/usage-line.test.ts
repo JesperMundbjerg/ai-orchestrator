@@ -22,6 +22,12 @@ test("a team that used both harnesses shows both parts", () => {
   assert.equal(usageLine(both, meters), "≈3% of Claude week + <1% of Codex week · 2M tokens");
 });
 
+test("tokens with an unknown per-meter share never acquire a percentage in the panel", () => {
+  const mixed = use(1000, 3, [{ meter: "claude.week", share: 3, tokens: 600 }, { meter: "codex.week", share: null, tokens: 400 }]);
+  assert.equal(usageLine(mixed, meters), "≈3% of Claude week · 1k tokens");
+  assert.equal(usageLine(use(400, null, [mixed.parts[1]!]), meters), "400 tokens");
+});
+
 test("no tokens leaves the line out; no share shows tokens only", () => {
   assert.equal(usageLine(undefined, meters), null);
   assert.equal(usageLine(use(0, null), meters), null);

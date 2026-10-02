@@ -24,7 +24,7 @@ export function usageLine(use: UsageShare | undefined, meters: UsageMeter[]): st
   if (!use || !(use.tokens > 0)) return null;
   const tokens = `${compactTokens(use.tokens)} ${Math.round(use.tokens) === 1 ? "token" : "tokens"}`;
   const labelOf = (id: string) => meters.find((m) => m.id === id)?.label;
-  const parts = use.share === null ? [] : use.parts.filter((p) => labelOf(p.meter));
+  const parts = use.share === null ? [] : use.parts.filter((p) => p.share !== null && labelOf(p.meter));
   if (!parts.length) return tokens;
-  return `${parts.map((p) => `${sharePercent(p.share)} of ${labelOf(p.meter)}`).join(" + ")} · ${tokens}`;
+  return `${parts.map((p) => `${sharePercent(p.share!)} of ${labelOf(p.meter)}`).join(" + ")} · ${tokens}`;
 }

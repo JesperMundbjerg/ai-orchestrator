@@ -587,8 +587,9 @@ export interface UsageShare {
    * weekly reading to scale by.
    */
   share: number | null;
-  /** `share` split by the weekly meter it was scaled by (`meter` is a UsageMeter id); empty when share is null. */
-  parts: Array<{ meter: string; share: number }>;
+  /** Weekly use split by meter id. Tokens remain known even without a limit reading (share null).
+   * Older services may omit tokens; percentages cannot be used to reconstruct them. */
+  parts: Array<{ meter: string; share: number | null; tokens?: number }>;
 }
 
 export interface UsageView {

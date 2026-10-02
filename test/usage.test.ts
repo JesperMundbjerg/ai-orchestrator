@@ -159,8 +159,9 @@ test("tokens per agent and team come from the three kinds of session file, count
   assert.equal(piper!.share, 22.2, "570 / 1570 of Codex's 40, plus 220 / 1425 of Claude's 50");
   assert.equal(cody!.share, 25.5, "1000 / 1570 of Codex's 40");
   // The share is split by the weekly meter that scaled it, so the UI can name each week.
-  assert.deepEqual(lead!.parts, [{ meter: "claude.week", share: 42.3 }]);
-  assert.deepEqual(piper!.parts, [{ meter: "codex.week", share: 14.5 }, { meter: "claude.week", share: 7.7 }]);
+  assert.deepEqual(lead!.parts, [{ meter: "claude.week", share: 42.3, tokens: 430 }]);
+  assert.deepEqual(piper!.parts, [{ meter: "codex.week", share: 14.5, tokens: 120 }, { meter: "claude.week", share: 7.7, tokens: 50 }]);
+  assert.deepEqual(view.teams.b!.parts, piper!.parts, "the project's jars get the real token split, not weighted percentages");
 });
 
 test("with no weekly reading for its window there is nothing to scale by, so the share is unknown", () => {
@@ -172,6 +173,7 @@ test("with no weekly reading for its window there is nothing to scale by, so the
   const view = u.view([{ id: "lead", harness: "claude", cwd: "/w/a", sessionId: "s1", teamId: "a" }], [team("a", "/w/a")]);
   assert.equal(view.agents.lead!.tokens, 430);
   assert.equal(view.agents.lead!.share, null, "last week's reading says nothing about this week");
+  assert.deepEqual(view.teams.a!.parts, [{ meter: "claude.week", tokens: 430, share: null }], "tokens remain available without a current meter reading");
 });
 
 test("a file read part-way is picked up where it stopped, and a line still being written waits", () => {

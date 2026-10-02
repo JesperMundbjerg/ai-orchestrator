@@ -14,6 +14,7 @@ import { IDLE_MS, inPark, nextPastime, outForABreak, parkPlan, type Park } from 
 import { BuildingOffice } from "./BuildingOffice.tsx";
 import { CallerCard, CallerNote } from "./Caller.tsx";
 import { Office } from "./Office.tsx";
+import { Jars } from "./Jars.tsx";
 import { AgentPanel, AnswerModal, Legend, TeamPanel, TeamsPanel } from "./Panels.tsx";
 import { Helpers } from "./Helpers.tsx";
 import { Pace, PaceContext } from "./Pace.tsx";
@@ -414,6 +415,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
       ) : (
         <Office plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
       )}
+      <Jars corners={office.corners} usage={world.usage} />
       {world.agents.map((a) => {
         const w = waiting.get(a.id);
         // The latest visit wins: someone asked twice walks to the second person.

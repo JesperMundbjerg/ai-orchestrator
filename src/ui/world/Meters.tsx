@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
-import { CanvasTexture, Color, ConeGeometry, CylinderGeometry, IcosahedronGeometry, InstancedBufferAttribute, Object3D, RepeatWrapping, RingGeometry, SRGBColorSpace, type InstancedMesh, type Mesh } from "three";
+import { Color, ConeGeometry, CylinderGeometry, IcosahedronGeometry, InstancedBufferAttribute, Object3D, RingGeometry, type InstancedMesh, type Mesh } from "three";
 import type { UsageMeter } from "../../shared/types.ts";
 import type { Garden } from "./building.ts";
 import { textTexture } from "./label.ts";
 import { fallenSeeds, meterLook, meterSpots, perches, RING_OUT, TONES, TRAY, TRAY_THICK, type MeterLook, type MeterSpot, type Perch } from "./meters.ts";
 import { usePace } from "./Pace.tsx";
+import { SEED, SEEDS, seedGrain } from "./Seed.tsx";
 
 // The usage meters as bird feeders on the east lawn (meters.ts says where and what each shows):
 // a glass of seed on a wooden post under a little roof, the seed at what is left of the limit, a
@@ -21,34 +22,6 @@ const BEAK = new ConeGeometry(1, 1, 4).rotateX(Math.PI / 2);
 const TRACK = new RingGeometry(1.22, RING_OUT, 40);
 const FADED = new Color("#b9bdb6");
 const WOOD = "#7a5a3c";
-/** The seed, as it is: a mix of millet, sunflower and wheat. */
-const SEED = "#c9a66b";
-const SEEDS = ["#d9bd84", "#b48a52", "#3b3430", "#e2cf9e", "#9c7444"];
-
-/** A speckle of seeds to lay over the glass's fill, so it reads as seed and not paint. Made once, when first needed. */
-let grain: CanvasTexture | null = null;
-function seedGrain(): CanvasTexture {
-  if (grain) return grain;
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = 64;
-  const g = canvas.getContext("2d")!;
-  g.fillStyle = SEED;
-  g.fillRect(0, 0, 64, 64);
-  let s = 7;
-  const rand = () => ((s = (s * 16807) % 2147483647) / 2147483647);
-  for (let i = 0; i < 260; i++) {
-    g.fillStyle = SEEDS[i % SEEDS.length]!;
-    g.beginPath();
-    g.ellipse(rand() * 64, rand() * 64, 1 + rand() * 1.6, 0.7 + rand() * 0.8, rand() * Math.PI, 0, Math.PI * 2);
-    g.fill();
-  }
-  grain = new CanvasTexture(canvas);
-  grain.wrapS = grain.wrapT = RepeatWrapping;
-  grain.repeat.set(2, 1);
-  grain.colorSpace = SRGBColorSpace;
-  return grain;
-}
-
 /** Colours an instanced mesh, into its colours already on the GPU when it has them: a new attribute on a mesh already drawn shows black. */
 function paint(mesh: InstancedMesh, colors: Float32Array) {
   if (mesh.instanceColor && mesh.instanceColor.array.length === colors.length) {
