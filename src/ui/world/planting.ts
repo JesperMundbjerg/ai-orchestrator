@@ -11,7 +11,7 @@
 //               pads, and stepping stones across its back; a big shade tree in the east one;
 //               conifers and birches in their corners and a loose planting that stays low by the
 //               clearing, with open grass between; the east lawn's strip by the clearing is kept
-//               for the usage meters' water towers (meters.ts)
+//               for the usage meters' bird feeders (meters.ts)
 //
 // Everything stands in a bed with its whole footprint, so nothing grows on a path, the clearing
 // or a bench, nor in the gravel nook round each bench where a visitor stands; only reeds, lily pads and the pond's stepping stones are in the water. A crown may
