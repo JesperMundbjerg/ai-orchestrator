@@ -11,6 +11,7 @@ import { acknowledge, call, fetchReplies, formatReply, get } from "../shared/age
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
 import { projectRoot } from "../shared/project.ts";
+import { STORY_INTRO } from "../shared/story.ts";
 import type { AgentSwitch, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
@@ -67,6 +68,8 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
 
   The office (a project per worktree, run by its first mate; standing teams like Mission Control):
   inbox team                      who you are, your project, your part in it, what waits for you
+  inbox story "…"                 save your own short office backstory (plain text, capped at 600 characters)
+  ${STORY_INTRO}
   inbox crew                      the founder's crew guide: which harness and model to start for which task, with the start command
   inbox say NAME "text"           message an agent, project, team or a project's lane by name; it arrives when they are free
   inbox say founder "text"        answer the founder in a sentence or two; shown beside you in the office
@@ -310,6 +313,11 @@ async function main(argv: string[]): Promise<void> {
       if (!arg) throw new Error(`inbox ${command} needs an item key or id`);
       const item = await call<Item>(`/api/agent/${command}`, { session: session(), item: arg });
       return console.log(`"${item.title}" is ${item.state}.`);
+    }
+    case "story": {
+      if (!arg) throw new Error('inbox story needs your story: inbox story "…"');
+      const saved = await call<{ story: string }>("/api/agent/story", { session: session(), text: arg });
+      return console.log(`Office story saved: ${saved.story}`);
     }
     case "team":
       return console.log((await call<TeamBrief>("/api/agent/team", { session: session() })).text);

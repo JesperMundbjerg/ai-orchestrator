@@ -16,6 +16,7 @@ import type {
   ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, SwitchesView, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
 import { serviceUrl } from "../shared/agent-client.ts";
+import { STORY_INTRO, STORY_MAX_CHARS } from "../shared/story.ts";
 import { Activity } from "./activity.ts";
 import { DEFAULT_LEAD, type CrewChoice } from "../shared/crewtree.ts";
 import { startFlags, type CrewTreeStore } from "./crewtree.ts";
@@ -251,6 +252,7 @@ export class World {
         ...a,
         id: str(row.id),
         name: str(row.name),
+        story: row.story ? str(row.story) : null,
         project: (a.cwd ? this.checkout(a.cwd)?.repoName : null) ?? projectOfTask.get(a.taskIds[0] ?? "") ?? null,
         branch: (a.cwd ? this.checkout(a.cwd)?.branch : null) ?? null,
         teamId: row.team_id ? str(row.team_id) : null,
@@ -510,6 +512,18 @@ export class World {
     return found;
   }
 
+  /** An agent writes only its own office note; never interpreted as HTML or Markdown. */
+  setStory(session: SessionInput, text: unknown): { story: string } {
+    if (typeof text !== "string") throw new InboxError(400, "story must be plain text");
+    const story = Array.from(text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim()).slice(0, STORY_MAX_CHARS).join("");
+    if (!story) throw new InboxError(400, "story must not be empty");
+    if (!session || typeof session !== "object") throw new InboxError(400, "story needs the agent's session");
+    const me = this.resolve(session);
+    this.db.prepare("UPDATE world_agents SET story = ? WHERE id = ?").run(story, me.id);
+    this.onChange("world");
+    return { story };
+  }
+
   /**
    * The office telling a project's lead something it saw, such as a headless browser left running.
    * False when the project has no lead to tell.
@@ -535,6 +549,7 @@ export class World {
     const team = me.teamId ? teams.get(me.teamId) ?? null : null;
     const status = (a: WorldAgent) => `${a.name}${a.role === "lead" ? " (lead)" : ""}: ${a.status}${a.doing ? `, ${a.doing}` : ""}`;
     const lines = [`You are ${me.name} (${me.harness}${me.cwd ? `, ${me.cwd}` : ""}).`];
+    if (!me.story) lines.push(STORY_INTRO);
     if (!team) {
       lines.push("You are not on a project: you work straight for the founder.");
     } else {
@@ -704,6 +719,7 @@ export class World {
       `You run the project "${name}", working in this worktree (branch ${place.branch}, from ${base ?? "the main checkout"}).`,
       purpose ? `The project: ${purpose}` : "",
       FIRST_MATE,
+      STORY_INTRO,
       '`inbox team` shows your office name, your crew and what waits for you; `inbox say NAME "text"` reaches anyone in the office.',
       next ? `When the work is done, hand it to ${next} for review: inbox handoff "title" --summary "what was done, where, how to check it".` : "",
     ].filter(Boolean).join(" ");

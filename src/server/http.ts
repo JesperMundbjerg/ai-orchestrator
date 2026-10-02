@@ -86,6 +86,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     ["POST", /^\/api\/uploads$/, (_r, b) => inbox.uploads.save(b)],
     // The office world
     ["GET", /^\/api\/world$/, () => needWorld().state()],
+    ["POST", /^\/api\/agent\/story$/, (_r, b) => needWorld().setStory(b.session, b.text)],
     ["GET", /^\/api\/p\/([a-z][a-z0-9-]*)\/queue$/, (_r, _b, [project]) => projectQueue(needWorld().state(), project!)],
     ["POST", /^\/api\/world\/teams$/, (_r, b) => needWorld().createTeam(b)],
     ["PATCH", /^\/api\/world\/teams\/([\w-]+)$/, (_r, b, [id]) => needWorld().updateTeam(id!, b)],

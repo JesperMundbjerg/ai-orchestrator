@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import type { InboxState, ItemDetail, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
+import { AgentStory } from "./AgentStory.tsx";
+import "./AgentStory.css";
 import { Effort } from "../components/Effort.tsx";
 import { SwitchHarness } from "../components/SwitchHarness.tsx";
 import { TellAllLeads } from "../components/TellAllLeads.tsx";
@@ -271,6 +273,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
         </span>
       </div>
       {agentUse ? <div className="muted small-note usage-line">{agentUse}</div> : null}
+      <AgentStory story={agent.story} />
       <Effort key={agent.id} agent={agent} />
       <SwitchHarness key={`switch-${agent.id}`} agent={agent} switches={world.switches} />
       <Conversation agent={agent} messages={thread} between={said.length} />

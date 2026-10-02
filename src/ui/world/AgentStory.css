@@ -1,0 +1,10 @@
+.agent-story {
+  margin: 0;
+  padding: 9px 12px;
+  border-left: 2px solid var(--line);
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}

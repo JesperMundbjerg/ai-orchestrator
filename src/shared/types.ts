@@ -313,6 +313,8 @@ export interface WorldAgent {
   id: string;
   identity: string;
   name: string;
+  /** The agent's own plain-text backstory; absent until it writes one. */
+  story?: string | null;
   harness: Harness;
   cwd: string | null;
   /** The repository the checkout belongs to. */

@@ -270,6 +270,7 @@ function migrate(db: DatabaseSync): void {
   if (!columns("replies").has("images")) db.exec("ALTER TABLE replies ADD COLUMN images TEXT");
   // An item's walkthrough of pages; before it, an item had one preview, which reads as a one-page walkthrough.
   const agents = columns("world_agents");
+  if (!agents.has("story")) db.exec("ALTER TABLE world_agents ADD COLUMN story TEXT");
   if (!agents.has("ran_at")) db.exec("ALTER TABLE world_agents ADD COLUMN ran_at TEXT");
   if (!agents.has("removed")) db.exec("ALTER TABLE world_agents ADD COLUMN removed INTEGER NOT NULL DEFAULT 0");
   if (!columns("items").has("pages")) db.exec("ALTER TABLE items ADD COLUMN pages TEXT");

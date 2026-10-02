@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AllLeadsResult, Delivery, DeliveryState, Message, MessageKind, PendingReply, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
 import { formatReply, imageLines } from "../shared/agent-client.ts";
+import { STORY_INTRO } from "../shared/story.ts";
 import { imageIds, InboxError, type Inbox } from "./inbox.ts";
 import type { Uploads } from "./uploads.ts";
 import { laneRecipient } from "./queue.ts";
@@ -44,6 +45,7 @@ const BATCH_FULL_CHARS = 6000;
 /** How much of an older message its one line keeps. */
 const BATCH_LINE_CHARS = 160;
 const FOOTER = "(From the office. `inbox team` shows your project and who else is here.)";
+const footer = (agent: WorldAgent) => agent.story ? FOOTER : `Your office name is ${agent.name}. ${STORY_INTRO}\n${FOOTER}`;
 
 export class Messages {
   private db: DatabaseSync;
@@ -395,7 +397,7 @@ export class Messages {
       parts.push([`${entry.label}: ${line}`, ...entry.images.map((path) => `Image: ${path}`)].join(" "));
     }
     const header = `${entries.length} messages arrived while you were busy; later ones may supersede earlier ones. Reply once to what still matters.`;
-    return `${header}\n\n${parts.reverse().join("\n\n")}\n${FOOTER}`;
+    return `${header}\n\n${parts.reverse().join("\n\n")}\n${footer(agent)}`;
   }
 
   private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false, images: string[] = [], fromOffice = false, allLeads = false): Message {
@@ -504,7 +506,7 @@ export function recipients(state: WorldState, team: Team, speaker: string | null
 
 /** What the agent reads: who it is from, the agent's part in it, the text (with the paths of any images), and how to answer. */
 export function prompt(message: Message, agent: WorldAgent, state: WorldState, work: Work | null, images: string[] = []): string {
-  return `${compose(message, agent, state, work, images)}\n${FOOTER}`;
+  return `${compose(message, agent, state, work, images)}\n${footer(agent)}`;
 }
 
 /** How long ago, in the words an agent reads: "just now", "42 min ago", "3 h ago", "2 days ago". */
