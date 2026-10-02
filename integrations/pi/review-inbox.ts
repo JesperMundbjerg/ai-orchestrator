@@ -4,7 +4,7 @@
 // and the session's name (Pi's /name, the one in its terminal title), which a project's lane can name it by.
 // Install: add this file's absolute path to `extensions` in ~/.pi/agent/settings.json.
 
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Deliveries, type ReceiptMessage } from "./delivery.ts";
 import { acknowledge, call, fetchReplies, formatReply } from "../../src/shared/agent-client.ts";
@@ -44,7 +44,7 @@ interface PiApi {
     name: string;
     label: string;
     description: string;
-    parameters: unknown;
+    parameters: TSchema;
     execute(id: string, params: any, signal: AbortSignal | undefined, onUpdate: unknown, ctx: PiContext): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown }>;
   }): void;
   sendUserMessage(text: string, options?: { deliverAs: "steer" | "followUp" }): void;
