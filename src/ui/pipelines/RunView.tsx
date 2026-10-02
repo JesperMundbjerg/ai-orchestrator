@@ -11,7 +11,7 @@ function Evidence({ evidence }: { evidence: PipelineEvidence }) {
     {evidence.review && <> · <a href="/#/teams" target="_blank" rel="noopener noreferrer">Review {evidence.review.workId} · round {evidence.review.round}</a></>}
     {evidence.path && <code>{evidence.path}</code>}
     {evidence.command && <code>{evidence.command} · exit {evidence.exitCode ?? "not recorded"}</code>}
-    <small className="muted">Recorded by {evidence.byAgentId} · round {evidence.round}</small>
+    {" "}<small className="pipeline-evidence-by muted">Recorded by {evidence.byAgentId} · round {evidence.round}</small>
   </li>;
 }
 
@@ -33,7 +33,7 @@ export function RunView({ runs, selectedId, onSelect, refresh, busy }: {
         const step = run.steps.find((s) => s.nodeId === node.id);
         const status = stepState(step);
         return <li className="pipeline-run-step" key={node.id}>
-          <header><strong>{node.label}</strong><span className={`pipeline-state ${status}`}>{status}</span></header>
+          <header><strong>{node.label}</strong><span className={`pipeline-state ${status}`}>{status === "skipped" ? "not on branch" : status}</span></header>
           <p className="pipeline-help">{step?.state === "inactive" ? "Not on the selected branch" : step?.state === "blocked" ? "Waiting for prerequisites" : step?.state === "reported" ? "Report received; waiting for the first mate" : step?.state === "ready" ? "Ready for evidence" : status === "stale" ? "Candidate or run changed; evidence must be revalidated" : status === "done" ? "Completion recorded by the first mate" : "Waiting for the first mate"}{step?.assignedTo ? ` · assigned to ${step.assignedTo}` : ""}</p>
           {step?.notes && <p>{step.notes}</p>}
           {step?.evidence.length ? <ul>{step.evidence.map((evidence) => <Evidence key={evidence.id} evidence={evidence} />)}</ul> : <span className="muted">No evidence recorded.</span>}

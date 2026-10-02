@@ -53,7 +53,8 @@ test("discovered sources retain provenance and built-ins map to authoritative te
 
 test("run display never treats a report or inactive branch as completed evidence", () => {
   assert.equal(stepState(undefined), "waiting");
-  for (const state of ["blocked", "ready", "reported", "inactive"] as const) assert.equal(stepState({ ...runFixture.steps[0]!, state }), "waiting");
+  for (const state of ["blocked", "ready", "reported"] as const) assert.equal(stepState({ ...runFixture.steps[0]!, state }), "waiting");
+  assert.equal(stepState({ ...runFixture.steps[0]!, state: "inactive" }), "skipped", "an inactive branch is not pending work");
   assert.equal(stepState({ ...runFixture.steps[0]!, state: "stale" }), "stale");
   assert.equal(stepState({ ...runFixture.steps[0]!, state: "done" }), "done");
   assert.equal(runSummary(runFixture), "1/4 done · 1 stale");

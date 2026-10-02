@@ -54,7 +54,8 @@ export function positionsFor(graph: PipelineGraph, layout: PipelineLayout): Pipe
   return Object.fromEntries(graph.nodes.map((n, i) => [n.id, layout[n.id] ?? graph.positions?.[n.id] ?? { x: (i % 3) * 280, y: Math.floor(i / 3) * 180 }]));
 }
 
-export function stepState(step?: PipelineStep): "waiting" | "done" | "stale" {
+export function stepState(step?: PipelineStep): "waiting" | "done" | "stale" | "skipped" {
+  if (step?.state === "inactive") return "skipped";
   return step?.state === "done" ? "done" : step?.state === "stale" ? "stale" : "waiting";
 }
 

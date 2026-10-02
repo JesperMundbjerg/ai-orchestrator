@@ -157,7 +157,17 @@ try {
   await dialog.locator(".pipeline-state.stale").waitFor();
   assert.ok(await dialog.locator(".pipeline-state.done").count());
   assert.ok(await dialog.locator(".pipeline-state.waiting").count());
-  assert.equal(await dialog.getByRole("link", { name: "Open evidence ↗" }).getAttribute("href"), "/files/scratch-report.txt");
+  const inactiveStep = dialog.locator(".pipeline-run-step").filter({ has: page.getByText("Focused checks", { exact: true }) });
+  assert.equal(await inactiveStep.locator(".pipeline-state").innerText(), "not on branch");
+  assert.equal(await inactiveStep.locator(".pipeline-state.waiting").count(), 0);
+  const evidenceLink = dialog.getByRole("link", { name: "Open evidence ↗" });
+  assert.equal(await evidenceLink.getAttribute("href"), "/files/scratch-report.txt");
+  const attribution = dialog.locator(".pipeline-evidence-by");
+  await attribution.scrollIntoViewIfNeeded();
+  const linkBox = await evidenceLink.boundingBox();
+  const byBox = await attribution.boundingBox();
+  assert.ok(byBox.y >= linkBox.y + linkBox.height, "evidence attribution is on a separate line");
+  assert.match(await evidenceLink.locator("..").textContent(), /Open evidence ↗ Recorded by reviewer/, "text content also has an explicit separator");
   await page.screenshot({ path: join(shots, "05-run-evidence.png") });
   await dialog.getByRole("button", { name: "Canvas", exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
