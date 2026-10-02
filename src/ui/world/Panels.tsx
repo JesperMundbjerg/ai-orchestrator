@@ -16,6 +16,7 @@ import type { Vec2 } from "./spatial.ts";
 import { agentMessages, Conversation, conversation, BetweenAgents, HiddenLine, MessageRow, teamMessages, teamWork, TellAgent, TellTeam, ThreadToggle, useThreadView, withMe, WorkRow } from "./Talk.tsx";
 import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "./status.ts";
 import type { Waiting } from "./WorldView.tsx";
+import { PipelineButton } from "../pipelines/PipelineButton.tsx";
 
 /** The project list: where each stands, open one, start a project, change or finish one. */
 export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
@@ -141,6 +142,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
     <aside className="world-panel agent">
       <div className="panel-head">
         <strong className="team-title">{team.name}</strong>
+        <PipelineButton teamId={team.id} teamName={team.name} />
         <button className="ghost small" onClick={onClose} aria-label="Close">✕</button>
       </div>
       <div className="agent-status">

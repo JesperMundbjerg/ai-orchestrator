@@ -10,6 +10,8 @@ import { MachineWarning } from "./MachineWarning.tsx";
 import { usageLine } from "../usageLine.ts";
 import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
 
+import { PipelineButton } from "../pipelines/PipelineButton.tsx";
+
 const LOUNGE = "lounge";
 
 /**
@@ -168,6 +170,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
             <span className="lamp" style={{ background: TEAM_LAMP[team.status].color }} />
             <strong>{team.name}</strong>
             <span className="spacer" />
+            <PipelineButton teamId={team.id} teamName={team.name} />
             <button className="ghost small" onClick={() => (clearError(), setEditing(true))}>Edit</button>
           </div>
           <span className={team.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
