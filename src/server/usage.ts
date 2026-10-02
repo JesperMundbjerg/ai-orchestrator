@@ -589,13 +589,16 @@ export class Usage {
     }
     const share = (s: Sum): UsageShare => {
       let points: number | null = null;
+      const parts: UsageShare["parts"] = [];
       for (const [p, w] of s.weight) {
         const { percent } = week.get(p)!;
         const total = totals.get(p) ?? 0;
         if (percent === null || !total) continue;
-        points = (points ?? 0) + (w / total) * percent;
+        const part = (w / total) * percent;
+        points = (points ?? 0) + part;
+        parts.push({ meter: `${p}.week`, share: Math.round(part * 10) / 10 });
       }
-      return { tokens: s.tokens, share: points === null ? null : Math.round(points * 10) / 10 };
+      return { tokens: s.tokens, share: points === null ? null : Math.round(points * 10) / 10, parts };
     };
     return {
       meters,

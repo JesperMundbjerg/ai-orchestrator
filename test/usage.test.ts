@@ -158,6 +158,9 @@ test("tokens per agent and team come from the three kinds of session file, count
   assert.equal(lead!.share, 42.3, "1205 / 1425 of Claude's 50");
   assert.equal(piper!.share, 22.2, "570 / 1570 of Codex's 40, plus 220 / 1425 of Claude's 50");
   assert.equal(cody!.share, 25.5, "1000 / 1570 of Codex's 40");
+  // The share is split by the weekly meter that scaled it, so the UI can name each week.
+  assert.deepEqual(lead!.parts, [{ meter: "claude.week", share: 42.3 }]);
+  assert.deepEqual(piper!.parts, [{ meter: "codex.week", share: 14.5 }, { meter: "claude.week", share: 7.7 }]);
 });
 
 test("with no weekly reading for its window there is nothing to scale by, so the share is unknown", () => {

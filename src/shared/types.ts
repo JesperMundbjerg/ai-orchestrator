@@ -587,6 +587,8 @@ export interface UsageShare {
    * weekly reading to scale by.
    */
   share: number | null;
+  /** `share` split by the weekly meter it was scaled by (`meter` is a UsageMeter id); empty when share is null. */
+  parts: Array<{ meter: string; share: number }>;
 }
 
 export interface UsageView {

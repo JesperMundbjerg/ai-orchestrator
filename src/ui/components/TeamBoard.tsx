@@ -7,6 +7,7 @@ import { HiddenLine, MessageRow, TellTeam, ThreadToggle, useThreadView, withMe, 
 import { TellAllLeads } from "./TellAllLeads.tsx";
 import { SwitchHarness } from "./SwitchHarness.tsx";
 import { MachineWarning } from "./MachineWarning.tsx";
+import { usageLine } from "../usageLine.ts";
 import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
 
 const LOUNGE = "lounge";
@@ -141,6 +142,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
   const [editing, setEditing] = useState(false);
   const members = world.agents.filter((a) => a.teamId === team.id).sort((a, b) => Number(b.role === "lead") - Number(a.role === "lead"));
   const line = teamLine(team, agents);
+  const use = usageLine(world.usage?.teams[team.id], world.usage?.meters ?? []);
   const handsTo = team.handsTo ? world.teams.find((t) => t.id === team.handsTo)?.name : null;
   const toReview = world.work.filter((w) => w.toTeamId === team.id && w.state === "in_review").length;
   return (
@@ -170,6 +172,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
           </div>
           <span className={team.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
           <span className="muted small-note" title={team.path ?? undefined}>{team.standing ? "Always on" : `Worktree on ${team.branch ?? "an unknown branch"}`}{team.worktrees.length ? ` · ${team.worktrees.length}${team.standing ? "" : " more"} ${team.worktrees.length === 1 ? "worktree" : "worktrees"}` : ""}</span>
+          {use ? <span className="muted small-note usage-line">{use}</span> : null}
           {!!team.unpresentedCommits && <span className="muted small-note">{team.unpresentedCommits} {team.unpresentedCommits === 1 ? "commit" : "commits"} not shown to you yet</span>}
           {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}
           {handsTo || toReview ? (

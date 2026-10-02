@@ -8,6 +8,7 @@ import { TellAllLeads } from "../components/TellAllLeads.tsx";
 import { ItemDetailView } from "../components/ItemDetail.tsx";
 import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
+import { usageLine } from "../usageLine.ts";
 import { isBuilding } from "./building.ts";
 import type { OfficePlan, Vec2 } from "./layout.ts";
 import { agentMessages, Conversation, conversation, BetweenAgents, HiddenLine, MessageRow, teamMessages, teamWork, TellAgent, TellTeam, ThreadToggle, useThreadView, withMe, WorkRow } from "./Talk.tsx";
@@ -55,6 +56,7 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
         {plan.corners.map(({ team, center }) => {
           const live = world.teams.find((t) => t.id === team.id)!;
           const line = teamLine(live, agents);
+          const teamUse = usageLine(world.usage?.teams[team.id], world.usage?.meters ?? []);
           return (
             <li key={team.id}>
               {editing === team.id ? (
@@ -84,6 +86,7 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
                     </span>
                     <span className={live.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
                     <span className="muted small-note">{team.standing ? "Always on" : team.branch}</span>
+                    {teamUse ? <span className="muted small-note usage-line">{teamUse}</span> : null}
                   </button>
                   <button className="ghost small" onClick={() => (setError(null), setEditing(team.id))} aria-label={`Edit ${team.name}`}>Edit</button>
                 </div>
@@ -115,6 +118,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
 }) {
   const members = [...agents.values()].filter((a) => a.teamId === team.id).sort((a, b) => Number(b.role === "lead") - Number(a.role === "lead"));
   const line = teamLine(team, agents);
+  const teamUse = usageLine(world.usage?.teams[team.id], world.usage?.meters ?? []);
   const doing = (a: WorldAgent) => a.doing ?? state.tasks.find((t) => a.taskIds.includes(t.id) && t.activity)?.activity ?? a.title ?? "";
   const work = teamWork(world, team.id);
   const [view] = useThreadView();
@@ -134,6 +138,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
         <span className="muted" title={team.path ?? undefined}> · {team.standing ? "always on" : `worktree on ${team.branch ?? "an unknown branch"}`}</span>
       </div>
 
+      {teamUse ? <p className="muted small-note usage-line">{teamUse}</p> : null}
       {!!team.unpresentedCommits && <p className="muted small-note">{team.unpresentedCommits} {team.unpresentedCommits === 1 ? "commit" : "commits"} not shown to you yet</p>}
       {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}
       {team.handsTo ? <div className="muted small-note">Hands its finished work to {world.teams.find((t) => t.id === team.handsTo)?.name ?? "another team"}.</div> : null}
@@ -223,6 +228,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
   // What you and the agent said is in the thread; the rest is the office talking.
   const said = agentMessages(world, agent.id).filter((m) => !withMe(m));
   const items = waiting ? waiting.itemIds.map((id) => state.items.find((i) => i.id === id)!).filter(Boolean) : [];
+  const agentUse = usageLine(world.usage?.agents[agent.id], world.usage?.meters ?? []);
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
   // A lead record nothing ever ran behind, whose place and name this running agent can take.
   const lead = team ? world.agents.find((a) => a.teamId === team.id && a.role === "lead") : undefined;
@@ -255,6 +261,7 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
           {agent.project ? ` · ${agent.project}` : ""}
         </span>
       </div>
+      {agentUse ? <div className="muted small-note usage-line">{agentUse}</div> : null}
       <Effort key={agent.id} agent={agent} />
       <SwitchHarness key={`switch-${agent.id}`} agent={agent} switches={world.switches} />
       <Conversation agent={agent} messages={thread} between={said.length} />
