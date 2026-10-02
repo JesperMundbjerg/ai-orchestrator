@@ -210,11 +210,25 @@ export class World {
 
     const seen = new Set(agents.map((a) => a.identity));
     this.seatLeads(agents, rows, seen);
-    // A standing team keeps its members' desks, and a project its lead's, while they are neither running nor holding a task.
+    // A standing team keeps its members' desks, and a project its lead's, while they are neither running nor holding a task,
+    // unless someone else runs in the same checkout: that one replaced them, so they leave (the record stays, unplaced).
+    // A project's offline lead stays while one of that project's own members runs beside it, as that one may take its place and name.
+    const running = new Map<string, Set<string>>();
+    for (const a of agents) {
+      if (!a.paneId || a.status === "offline" || !a.cwd) continue;
+      const top = this.top(a.cwd);
+      running.set(top, (running.get(top) ?? new Set()).add(str(rows.get(a.identity)?.team_id)));
+    }
     for (const row of rows.values()) {
       const team = row.team_id ? teams.find((t) => t.id === row.team_id) : undefined;
       if (!team || row.removed || seen.has(str(row.identity)) || (!team.standing && row.role !== "lead")) continue;
       const [harness, cwd] = splitIdentity(str(row.identity));
+      const beside = cwd ? running.get(this.top(cwd)) : undefined;
+      if (beside && !(!team.standing && beside.has(team.id))) {
+        this.db.prepare("UPDATE world_agents SET team_id = NULL, role = 'member' WHERE id = ?").run(str(row.id));
+        Object.assign(row, { team_id: null, role: "member" });
+        continue;
+      }
       agents.push({ identity: str(row.identity), harness, cwd, status: "offline", title: null, paneId: null, taskIds: [], sessionId: null });
     }
 
@@ -596,6 +610,11 @@ export class World {
       .prepare("INSERT OR IGNORE INTO world_agents (id, identity, name, role, first_seen_at) VALUES (?, ?, ?, ?, ?)")
       .run(row.id, identity, name, row.role, row.first_seen_at);
     return row;
+  }
+
+  /** The top of the checkout a folder is in, or the folder itself when git knows nothing of it. */
+  private top(cwd: string): string {
+    return this.checkout(cwd)?.top ?? cwd;
   }
 
   /** What git says about a folder, asked again once a worktree it was in is removed; its branch is read fresh, as a checkout can switch. */
