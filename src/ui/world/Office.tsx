@@ -8,7 +8,8 @@ import { studio } from "./crafts.ts";
 import { Crafts } from "./Crafts.tsx";
 import { teamBoard } from "./corkboard.ts";
 import { CorkBoard } from "./CorkBoard.tsx";
-import { CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, LOUNGE_SOFAS, LOUNGE_TABLE, pipelineLane, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, WALL_H, type Corner, type OfficePlan, type Vec2 } from "./layout.ts";
+import { COUCHES, COFFEE } from "./lounge.ts";
+import { CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, DESK, pipelineLane, pipelines, QUEUE_FRONT, QUEUE_ROW, QUEUE_SLANT, WALL_H, type Corner, type OfficePlan, type Vec2 } from "./layout.ts";
 
 /** The room and its furniture. Nothing here moves on its own; it follows the plan. */
 export function Office({ plan, agents, teams, work, queueLength }: { plan: OfficePlan; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; queueLength: number }) {
@@ -155,13 +156,13 @@ export function Lounge({ center, facing, halfDepth = CORNER_HALF_DEPTH }: { cent
         <circleGeometry args={[4.4, 48]} />
         <meshStandardMaterial color="#a7b99e" roughness={1} />
       </mesh>
-      <mesh position={[0, 0.22, 0]} castShadow>
-        <cylinderGeometry args={[LOUNGE_TABLE, LOUNGE_TABLE, 0.44, 32]} />
+      <mesh position={[COFFEE[0], 0.22, COFFEE[1]]} castShadow>
+        <cylinderGeometry args={[0.3, 0.3, 0.44, 12]} />
         <meshStandardMaterial color="#7a5c43" roughness={0.6} />
       </mesh>
       {/* No sofa on the side facing your desk, so the way in is open. */}
-      {LOUNGE_SOFAS.map((a) => (
-        <group key={a} position={[Math.sin(a) * 3.7, 0, Math.cos(a) * 3.7]} rotation-y={a + Math.PI}>
+      {COUCHES.map((c, i) => (
+        <group key={i} position={[c.pos[0], 0, c.pos[1]]} rotation-y={c.facing}>
           <mesh position={[0, 0.25, 0]} castShadow>
             <boxGeometry args={[2.2, 0.5, 0.8]} />
             <meshStandardMaterial color="#5a6f8c" roughness={0.9} />

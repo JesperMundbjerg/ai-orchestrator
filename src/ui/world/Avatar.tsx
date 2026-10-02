@@ -10,6 +10,7 @@ import { route, type Spot, type Vec2 } from "./layout.ts";
 import type { Craft } from "./crafts.ts";
 import { craftPose, HandTool } from "./Crafts.tsx";
 import { usePace } from "./Pace.tsx";
+import { useGames } from "./Games.tsx";
 
 const WALK_SPEED = 1.9;
 /** Strolling round the garden, taking it easy. */
@@ -73,11 +74,12 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   });
   const [hovered, setHovered] = useState(false);
   const pace = usePace();
+  const games = useGames();
 
   // A new spot sends the avatar walking there from wherever it is now.
   useEffect(() => {
     const m = motion.current;
-    if (m.spot.pos[0] === spot.pos[0] && m.spot.pos[1] === spot.pos[1] && m.spot.group === spot.group) return;
+    if (m.spot.pos[0] === spot.pos[0] && m.spot.pos[1] === spot.pos[1] && m.spot.group === spot.group) { m.spot = spot; return; }
     m.path = walk(m.pos, m.spot, spot);
     m.spot = spot;
     m.strolling = false;
@@ -156,6 +158,10 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     g.rotation.y = m.yaw;
     const sitting = !walking && !!m.spot.sit;
     const pose = walking ? undefined : m.spot.pose;
+    games?.arrive(agent.id, !walking && !m.path.length && !!spot.game && agent.status === "idle");
+    const play = spot.game ? games?.frame(spot.game, Date.now()) : null;
+    const gaming = play?.active && play.player === spot.game?.player ? play : null;
+    if (play?.active) pace?.moved(performance.now());
 
     const t = state.clock.elapsedTime + m.phase;
     // At their station while they work, they make something; otherwise they stand at it.
@@ -176,7 +182,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     }
     // Picking a flower: bend down to it for a few seconds, then stand up and hold it up to look at it.
     const holdingFlower = picking && (t % 8) > 3.5;
-    if (upper.current) upper.current.rotation.x = picking && !holdingFlower ? BEND : pose === "look" || pose === "stretch" ? -0.08 : crafting ? crafting.lean : 0;
+    if (upper.current) upper.current.rotation.x = picking && !holdingFlower ? BEND : pose === "look" || pose === "stretch" ? -0.08 : gaming ? gaming.lean : crafting ? crafting.lean : 0;
     if (flower.current) flower.current.visible = holdingFlower;
     if (head.current) {
       head.current.rotation.x = pose === "look" ? -0.5 + Math.sin(t * 0.5) * 0.06 : picking ? (holdingFlower ? 0.1 : -0.4) : pose === "watch" ? 0.3 : pose === "chat" ? Math.sin(t * 1.7) * 0.07 : 0;
@@ -185,7 +191,10 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     if (al && ar) {
       al.rotation.z = crafting ? crafting.left[1] : 0;
       ar.rotation.z = crafting ? crafting.right[1] : 0;
-      if (pose === "pick") {
+      if (gaming) {
+        al.rotation.x = spot.game?.kind === "pool" ? gaming.arm : 0;
+        ar.rotation.x = gaming.arm;
+      } else if (pose === "pick") {
         // Bent over, the arms hang to the ground and one reaches for the flower.
         al.rotation.x = holdingFlower ? 0 : -BEND + 0.1;
         ar.rotation.x = holdingFlower ? -1.9 : -BEND - 0.35 + Math.sin(t * 3) * 0.12;

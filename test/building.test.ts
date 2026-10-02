@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Team, WorldAgent } from "../src/shared/types.ts";
-import { LOUNGE_TABLE, YOUR_VIEW, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
+import { COFFEE } from "../src/ui/world/lounge.ts";
+import { YOUR_VIEW, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
 import { buildingPipelines, buildingRoute, callerIn, doorway, DOOR_WIDTH, MIN_CONSOLES, PATH_HALF, place, planBuilding, teamDesks, type BuildingPlan, type Garden, type Rect, type Room } from "../src/ui/world/building.ts";
 import { groundOf, HEADROOM, inWater, plantGarden, type Planting } from "../src/ui/world/planting.ts";
 import { visitSpot } from "../src/ui/world/visits.ts";
@@ -54,8 +55,8 @@ const edges = (r: Rect): Array<[Vec2, Vec2]> => {
 /** Every desk's top and the lounge's table, as rectangles the walkers must keep off. */
 function furniture(plan: BuildingPlan): Rect[] {
   const desks = plan.corners.flatMap((c) => c.desks.map((d) => footprint({ center: d.pos, facing: d.facing, half: d.kind === "lead" ? [1, 0.35] : [0.7, 0.35] })));
-  const [lx, lz] = plan.lounge.center;
-  return [...desks, { minX: lx - LOUNGE_TABLE, maxX: lx + LOUNGE_TABLE, minZ: lz - LOUNGE_TABLE, maxZ: lz + LOUNGE_TABLE }];
+  const [lx, lz] = place(plan.lounge.center, plan.lounge.facing, COFFEE);
+  return [...desks, { minX: lx - 0.3, maxX: lx + 0.3, minZ: lz - 0.3, maxZ: lz + 0.3 }];
 }
 
 /** Whether a point is in one of the garden's beds or its pond (a hand's breadth in from their edge). */

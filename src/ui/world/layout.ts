@@ -12,6 +12,8 @@
 //            enough for everyone to fit, so all corners stay about as close to you.
 
 import type { Team, WorldAgent } from "../../shared/types.ts";
+import { loungeSeats } from "./lounge.ts";
+import type { GameSeat } from "./games.ts";
 
 export type Vec2 = [number, number];
 
@@ -30,6 +32,8 @@ export interface Spot {
   approach: Vec2[];
   /** Sitting down once there, on a bench. */
   sit?: boolean;
+  /** A deterministic lounge play, only while idle and at this spot. */
+  game?: GameSeat;
   /** Once there, standing in the garden: looking up at a tree, picking a flower, watching the ducks, chatting or stretching. */
   pose?: Pose;
   /** A stroll: once there, round these waypoints and back to the spot, again and again. */
@@ -149,7 +153,7 @@ export function planOffice(agents: WorldAgent[], teams: Team[], queue: string[])
 
   const lounge = at(teams.length);
   const lounging = agents.filter((a) => !queued.has(a.id) && !spots.has(a.id));
-  lounging.forEach((a, i) => spots.set(a.id, loungeSpot(i, lounging.length, lounge.center, lounge.facing, lounge.door)));
+  lounging.forEach((a, i) => spots.set(a.id, loungeSpot(i, lounge.center, lounge.facing, lounge.door)));
 
   const edge = radius + CORNER_HALF_DEPTH + 2;
   return {
@@ -269,23 +273,14 @@ export function callerSpot(i: number): Spot {
   return { pos, facing: yawTo(pos, SPAWN), zone: "caller", group: "caller", approach: [[QUEUE_SIDE_X - 0.6, DESK[1]]] };
 }
 
-/** The lounge's table, and the sofas round it; the side facing your desk is open. */
-export const LOUNGE_TABLE = 0.8;
-export const LOUNGE_SOFAS = [Math.PI / 3, Math.PI, (5 * Math.PI) / 3];
-
-/** Around the lounge's table, facing it. In through the open side, and round the table inside the circle of chairs. */
-function loungeSpot(i: number, n: number, center: Vec2, facing: number, door: Vec2): Spot {
-  const ring = Math.max(1, Math.ceil(n / 8));
-  const r = 2.2 + 1.3 * Math.floor(i / 8);
-  const inRing = Math.min(8, n - Math.floor(i / 8) * 8);
-  const angle = ((i % 8) / inRing) * Math.PI * 2 + (ring > 1 ? Math.floor(i / 8) * 0.4 : 0);
-  const local = (a: number, d: number) => place(center, facing, [Math.sin(a) * d, Math.cos(a) * d]);
-  const pos = local(angle, r);
-  let turn = angle;
-  while (turn > Math.PI) turn -= Math.PI * 2;
-  const steps = Math.ceil(Math.abs(turn) / (Math.PI / 6));
-  const around = Array.from({ length: steps + 1 }, (_, k) => local((turn * k) / Math.max(1, steps), 1.5));
-  return { pos, facing: yawTo(pos, center), zone: "lounge", group: "lounge", approach: [door, local(0, 3), ...around] };
+/** Sit on an actual sofa, approached from its front; overflow stays clear of the furniture. */
+function loungeSpot(i: number, center: Vec2, facing: number, door: Vec2): Spot {
+  const seats = loungeSeats(center, facing, [door, place(center, facing, [0, 3.8])]);
+  if (i < seats.length) return seats[i]!;
+  // Overflow waits outside the lounge, never in expanding rings through its furniture.
+  const x = -3.5 + ((i - seats.length) % 8);
+  const pos = place(center, facing, [x, 5.2 + Math.floor((i - seats.length) / 8)]);
+  return { pos, facing: facing + Math.PI, zone: "lounge", group: "lounge", approach: [door, place(center, facing, [x, 5.2])] };
 }
 
 /** Points along the circle around the desk from one angle to another, the short way round. */

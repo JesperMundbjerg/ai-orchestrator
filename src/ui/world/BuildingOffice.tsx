@@ -3,7 +3,7 @@ import { Color } from "three";
 import type { UsageMeter, Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
 import { textTexture, type Line } from "./label.ts";
 import { lookFor } from "./look.ts";
-import { buildingPipelines, place, teamDesks, type BuildingPlan, type Garden, type Rect, type Room, type Wall } from "./building.ts";
+import { readingNooks, buildingPipelines, place, teamDesks, type BuildingPlan, type Garden, type Rect, type Room, type Wall } from "./building.ts";
 import { Furniture, Kit, officeChair, plant, sofa } from "./Furniture.tsx";
 import { stationsFor, studio } from "./crafts.ts";
 import { Crafts } from "./Crafts.tsx";
@@ -15,7 +15,8 @@ import { plantGarden, treesRound } from "./planting.ts";
 import { Pipeline, useTexture } from "./Office.tsx";
 import { freeBoard, teamBoard } from "./corkboard.ts";
 import { CorkBoard } from "./CorkBoard.tsx";
-import { LOUNGE_SOFAS, LOUNGE_TABLE, WALL_H, type Corner, type Vec2 } from "./layout.ts";
+import { COUCHES, COFFEE } from "./lounge.ts";
+import { WALL_H, type Corner, type Vec2 } from "./layout.ts";
 
 /** The windows run from the sill to the head, in panes this wide at most; the wall (`WALL_H`, open to the sky) goes on above them. */
 const SILL = 0.85;
@@ -137,9 +138,9 @@ function furnish(plan: BuildingPlan) {
   const la = kit.in(lounge);
   const [lw, ld] = lounge.half;
   la("fabric", [0, 0.005, 0], [7.4, 0.01, 7.4], 0, "#c9b79a");
-  la("wood", [0, 0.2, 0], [LOUNGE_TABLE * 2 - 0.2, 0.06, LOUNGE_TABLE * 2 - 0.2]);
-  la("metal", [0, 0.09, 0], [0.12, 0.18, 0.12]);
-  for (const a of LOUNGE_SOFAS) sofa(kit.at(place(lounge.center, lounge.facing, [Math.sin(a) * 3.7, Math.cos(a) * 3.7]), lounge.facing + a + Math.PI), 0, 0, 2.4, "#5f7f8f");
+  la("wood", [COFFEE[0], 0.2, COFFEE[1]], [0.6, 0.06, 0.6]);
+  la("metal", [COFFEE[0], 0.09, COFFEE[1]], [0.12, 0.18, 0.12]);
+  for (const c of COUCHES) sofa(kit.at(place(lounge.center, lounge.facing, c.pos), lounge.facing + c.facing), 0, 0, c.width, "#5f7f8f");
   const back = 0.33 - ld;
   const run = lw - 0.8 - 2.3;
   la("white", [2.3 + run / 2, 0.44, back], [run, 0.88, 0.62]);
@@ -156,7 +157,7 @@ function furnish(plan: BuildingPlan) {
   const tz = back + 1.65;
   la("wood", [tx, 1.05, tz], [1.6, 0.04, 0.7]);
   la("metal", [tx, 0.52, tz], [0.08, 1.04, 0.08]);
-  for (const dz of [-0.55, 0.55]) for (const dx of [-0.5, 0.5]) {
+  for (const dz of [-0.6, 0.6]) for (const dx of [-0.5, 0.5]) {
     la("fabric", [tx + dx, 0.72, tz + dz], [0.38, 0.06, 0.38], 0, "#d68a4c");
     la("metal", [tx + dx, 0.36, tz + dz], [0.05, 0.7, 0.05]);
   }
@@ -192,14 +193,12 @@ function furnish(plan: BuildingPlan) {
   fa("wall", [0, (HEAD + WALL_H) / 2, 0], [door.width + 0.3, WALL_H - HEAD, 0.3]);
 
   // The corners where the side rooms meet the north and south ones: a reading nook each.
-  for (const [x, z] of [[outline.minX, outline.minZ], [outline.maxX, outline.minZ], [outline.minX, outline.maxZ], [outline.maxX, outline.maxZ]] as Vec2[]) {
-    const cx = (x + (x < 0 ? hall.minX : hall.maxX)) / 2;
-    const cz = (z + (z < 0 ? hall.minZ : hall.maxZ)) / 2;
-    const add = kit.at([cx, cz], Math.atan2(-cx, -cz));
-    sofa(add, 0, 0.6, 2, "#8a6f8f");
+  for (const nook of readingNooks(plan)) {
+    const add = kit.at(nook.center, nook.facing);
+    sofa(add, 0, 0, 2, "#8a6f8f");
     add("wood", [0, 0.2, 1.6], [0.9, 0.05, 0.6]);
-    plant(add, 1.6, 0.4, 1.6);
-    plant(add, -1.6, 0.4, 1.2);
+    plant(add, 1.6, -0.8, 1.6);
+    plant(add, -1.6, -0.8, 1.2);
   }
 
   outerWalls(kit, plan);

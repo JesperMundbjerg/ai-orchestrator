@@ -47,6 +47,8 @@ export interface Room {
   half: Vec2;
   /** Doorways in the front, as their middle across the room's own frame. */
   doors: number[];
+  /** Side(s) opened at the front strip into a corner reading nook. */
+  nookDoors?: number[];
 }
 
 /** A wall from a to b: the outside walls have windows, the meeting rooms' walls are glass, the bays' and the lounge's low planters. */
@@ -218,6 +220,9 @@ export function planBuilding(agents: WorldAgent[], teams: Team[], queue: string[
     rooms.push({ kind: "meeting", teamId: null, center: [LOBBY / 2 + (k + 0.5) * (wing / 2), southZ], facing: NORTH, half: [wing / 4, depth / 2], doors: [0] });
   }
 
+  for (const nook of readingNooks({ rooms, outline, hall })) {
+    nook.room.nookDoors = [...(nook.room.nookDoors ?? []), nook.side];
+  }
   const garden = planGarden(hall);
   const queued = new Set(queue);
   queue.forEach((id, i) => spots.set(id, waitingSpot(garden, loop, i)));
@@ -246,6 +251,28 @@ export function planBuilding(agents: WorldAgent[], teams: Team[], queue: string[
     lane,
     frontDoor,
   };
+}
+
+/** The four formerly sealed corners: enter through the adjacent bay's front strip.
+ * The couch faces its opening; its table and plants stay outside the seat approaches. */
+export function readingNooks(plan: Pick<BuildingPlan, "rooms" | "outline" | "hall">) {
+  const { outline: o, hall: h } = plan;
+  return ([-1, 1] as const).flatMap((sx) => ([-1, 1] as const).map((sz) => {
+    const center: Vec2 = [(sx < 0 ? o.minX + h.minX : o.maxX + h.maxX) / 2, (sz < 0 ? o.minZ + h.minZ : o.maxZ + h.maxZ) / 2];
+    const room = plan.rooms.filter((r) => r.kind === "bay").reduce((a,b) => distance(a.center, center) <= distance(b.center, center) ? a : b);
+    const local = place([0,0], -room.facing, [center[0]-room.center[0], center[1]-room.center[1]]);
+    const side = Math.sign(local[0]);
+    const facing = room.facing - side * Math.PI / 2;
+    const door = doorway(room, side * DOOR_X);
+    const at = (p: Vec2) => place(room.center, room.facing, p);
+    const seats = [-0.5, 0.5].map((x): Spot => {
+      const pos = place(center, facing, [x, 0]);
+      const front = place(center, facing, [x, 0.75]);
+      return { pos, facing, zone: "lounge", group: `nook:${sx}:${sz}`, sit: true,
+        approach: [door.out, door.inside, at([local[0]-side*0.75, room.half[1]-0.6]), front] };
+    });
+    return { center, facing, room, side, seats };
+  }));
 }
 
 const inset = (r: Rect, d: number): Rect => ({ minX: r.minX + d, maxX: r.maxX - d, minZ: r.minZ + d, maxZ: r.maxZ - d });
@@ -464,8 +491,10 @@ function walls(rooms: Room[], outline: Rect, frontDoor: { x: number; width: numb
     const kind = room.kind === "meeting" ? "glass" : "planter";
     const at = (x: number, z: number) => place(room.center, room.facing, [x, z]);
     for (const [from, to] of gaps(-hw, hw, room.doors.map((d) => [d - DOOR_WIDTH / 2, d + DOOR_WIDTH / 2]))) add(at(from, hd), at(to, hd), kind);
-    add(at(-hw, -hd), at(-hw, hd), kind);
-    add(at(hw, -hd), at(hw, hd), kind);
+    for (const side of [-1, 1]) {
+      const openings: Array<[number, number]> = room.nookDoors?.includes(side) ? [[hd - 1.4, hd]] : [];
+      for (const [a, b] of gaps(-hd, hd, openings)) add(at(side * hw, a), at(side * hw, b), kind);
+    }
   }
   const { minX, maxX, minZ, maxZ } = outline;
   add([minX, minZ], [maxX, minZ], "outer");

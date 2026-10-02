@@ -12,6 +12,9 @@ import { CALLER, planOffice, queueOrder, SPAWN, YOUR_VIEW, type OfficePlan, type
 import { callerIn, isBuilding, planBuilding, routeIn, savedLayout, saveLayout, viewIn, type BuildingPlan, type Layout } from "./building.ts";
 import { IDLE_MS, inPark, nextPastime, outForABreak, parkPlan, type Park } from "./park.ts";
 import { BuildingOffice } from "./BuildingOffice.tsx";
+import { GamePlayback, chooseGames, seatsInLounge, type Games } from "./games.ts";
+import { GameContext, GamesScene } from "./Games.tsx";
+import { readingNooks } from "./building.ts";
 import { meetingPlan, reviewing, type Meetings } from "./meeting.ts";
 import { CallerCard, CallerNote } from "./Caller.tsx";
 import { Office } from "./Office.tsx";
@@ -313,24 +316,32 @@ function usePark(world: WorldState | null, office: OfficePlan | null): OfficePla
     return next;
   }, [world]);
   const building = office && isBuilding(office) ? office : null;
-  const out = useMemo(() => (world && building ? outForABreak(world.agents.filter((a) => !reviewing(world.agents, world.work).has(a.id)), idleSince, now, building.queue) : new Set<string>()), [world, building, idleSince, now]);
+  const out = useMemo(() => (world && office ? outForABreak(world.agents.filter((a) => !reviewing(world.agents, world.work).has(a.id)), idleSince, now, office.queue) : new Set<string>()), [world, office, idleSince, now]);
   // Look again when the next member has been idle long enough, or the next one in the garden takes up something new.
   useEffect(() => {
-    if (!building) return;
+    if (!office) return;
     const t = Date.now();
-    const due = Math.min(...[...idleSince.values()].map((s) => s + IDLE_MS).filter((d) => d > t), nextPastime(inPark(building, out), t));
+    const due = Math.min(...[...idleSince.values()].map((s) => s + IDLE_MS).filter((d) => d > t), building ? nextPastime(inPark(building, out), t) : Infinity);
     if (!Number.isFinite(due)) return;
     const timer = setTimeout(() => setNow(Date.now()), due - t + 50);
     return () => clearTimeout(timer);
-  }, [building, idleSince, out, now]);
+  }, [office, building, idleSince, out, now]);
   // Who was where, so those not changing stay put.
   const park = useRef<Park>(new Map());
+  const games = useRef<Games>(new Map());
   return useMemo(() => {
-    if (!building) return office;
-    const next = parkPlan(building as BuildingPlan, out, now, idleSince, park.current);
+    if (!office || !world) return office;
+    const next = building ? parkPlan(building as BuildingPlan, out, now, idleSince, park.current) : { plan: office, park: new Map() };
     park.current = next.park;
-    return next.plan;
-  }, [building, office, out, now, idleSince]);
+    const available = world.agents.filter(a => !reviewing(world.agents, world.work).has(a.id));
+    games.current = chooseGames(office, available, idleSince, Date.now(), games.current);
+    const spots = new Map(next.plan.spots);
+    for (const [id, spot] of games.current) spots.set(id, spot);
+    const seats = [...seatsInLounge(office), ...(building ? readingNooks(building).flatMap(n => n.seats) : [])];
+    const spectators = available.filter(a => !games.current.has(a.id) && a.status === "idle" && !a.waitingOnYou && !office.queue.includes(a.id) && (!a.teamId || out.has(a.id)));
+    spectators.slice(0, seats.length).forEach((a, i) => spots.set(a.id, seats[i]!));
+    return { ...next.plan, spots };
+  }, [building, office, world, out, now, idleSince]);
 }
 
 function useMeetings(world: WorldState | null, office: OfficePlan | null): OfficePlan | null {
@@ -398,6 +409,9 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
   fly: FlyTarget | null;
 }) {
   const { minX, maxX, minZ, maxZ } = plan.bounds;
+  const gamePlan = { ...plan, spots: new Map([...plan.spots].filter(([id]) => !calling.some(c => c.leadId === id) && !talk.visits.some(v => v.fromId === id))) };
+  const players = new Map([...gamePlan.spots].flatMap(([id, s]) => s.game ? [[id, s.game] as const] : []));
+  const games = useMemo(() => new GamePlayback(players), [JSON.stringify([...players])]);
   const walk = useMemo(() => routeIn(plan), [plan]);
   // What each member makes at their station in their team's room.
   const makes = useMemo(() => crafters(office.corners), [office]);
@@ -407,7 +421,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
   // sized to reach the farthest corner of the floor.
   const reach = Math.max(...[minX, maxX].flatMap((x) => [minZ, maxZ].map((z) => Math.hypot(x, z)))) + 2;
   return (
-    <>
+    <GameContext value={games}>
       <color attach="background" args={["#dde5ee"]} />
       {/* Far enough that the far side of the ring stays clear, from your desk or from above. */}
       <fog attach="fog" args={["#dde5ee", reach + 10, reach * 2 + 60]} />
@@ -430,6 +444,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
       ) : (
         <Office plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
       )}
+      <GamesScene plan={gamePlan} />
       <Jars corners={office.corners} usage={world.usage} />
       {world.agents.map((a) => {
         const w = waiting.get(a.id);
@@ -460,6 +475,6 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
       </OfficeEdge>
       <Player bounds={plan.bounds} start={START} fly={fly} />
       <Wilds office={plan.bounds} />
-    </>
+    </GameContext>
   );
 }

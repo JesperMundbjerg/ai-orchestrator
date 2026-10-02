@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Message, Team, WorldAgent } from "../src/shared/types.ts";
-import { callerSpot, CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, crewGrid, DESK, DESK_SIZE, LOUNGE_TABLE, pipelineLane, pipelines, planOffice, QUEUE_SIDE_X, queueOrder, queueSpot, route, type Corner, type Desk, type OfficePlan, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
+import { callerSpot, CORNER_HALF_DEPTH, CORNER_HALF_WIDTH, crewGrid, DESK, DESK_SIZE, pipelineLane, pipelines, planOffice, QUEUE_SIDE_X, queueOrder, queueSpot, route, type Corner, type Desk, type OfficePlan, type Spot, type Vec2 } from "../src/ui/world/layout.ts";
+import { COFFEE, localPlace } from "../src/ui/world/lounge.ts";
 import { plan as planTalk } from "../src/ui/world/visits.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({
@@ -107,7 +108,7 @@ function furniture(plan: OfficePlan): Array<{ name: string; hit: (p: Vec2) => bo
   const desk = (name: string, shape: Vec2[]) => ({ name, hit: (p: Vec2) => inside(shape, p) });
   return [
     desk("your desk", deskShape(DESK, 0, 2.6, 0.9)),
-    { name: "the lounge table", hit: (p: Vec2) => dist(p, plan.lounge.center) < LOUNGE_TABLE + 0.2 },
+    { name: "the lounge table", hit: (p: Vec2) => dist(p, localPlace(plan.lounge.center, plan.lounge.facing, COFFEE)) < 0.3 + 0.2 },
     ...plan.corners.flatMap((c) => c.desks.map((d) => desk(`a desk of ${c.team.id}`, deskShape(d.pos, d.facing, DESK_SIZE[d.kind][0] * d.scale, DESK_SIZE[d.kind][1] * d.scale)))),
   ];
 }
