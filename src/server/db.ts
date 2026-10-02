@@ -2,6 +2,7 @@
 // directory, never in a project worktree, so switching or deleting a worktree keeps history.
 
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -309,7 +310,19 @@ function adoptLegacy(db: DatabaseSync): void {
 
 // Keep migration numbers append-only. Runtime interrupted-send recovery belongs to the
 // owning service, not to schema migration. Redundant legacy constructor DDL is harmless.
-const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy];
+const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
+  db.exec(`ALTER TABLE messages ADD COLUMN replay_scope TEXT;
+    ALTER TABLE messages ADD COLUMN replay_fingerprint TEXT;
+    ALTER TABLE messages ADD COLUMN replay_work TEXT;
+    ALTER TABLE replies ADD COLUMN replay_fingerprint TEXT;`);
+}];
+
+/** Canonical request identity: object key order is irrelevant, array order is significant. */
+export function requestFingerprint(value: unknown): string {
+  const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical)
+    : v !== null && typeof v === "object" ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b)).map(([k, x]) => [k, canonical(x)])) : v;
+  return createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+}
 
 const AUXILIARY_SCHEMA = `
 CREATE INDEX IF NOT EXISTS items_presented ON items (presented_path, presented_head, state);

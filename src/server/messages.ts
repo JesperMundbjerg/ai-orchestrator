@@ -22,6 +22,12 @@ import { Undelivered } from "./undelivered.ts";
 import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { AgentSource } from "./world.ts";
 import { AgentStartingError } from "./agent-starting.ts";
+import { requestFingerprint } from "./db.ts";
+
+type Replay = { clientId?: string; scope: string; fingerprint: string };
+const replayRequest = (operation: string, caller: string | null, target: string | null, input: unknown, clientId?: string): Replay =>
+  ({ clientId, scope: JSON.stringify([operation, caller ?? "founder", target]), fingerprint: requestFingerprint(input) });
+const normalizedImages = (images?: string[]) => [...new Set(images ?? [])].sort();
 
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? "" : String(v));
@@ -65,6 +71,7 @@ export class Messages {
   private loops: MessageLoops;
   readonly founderNotices: OfficeNotices;
   private undelivered: Undelivered;
+  private inTransaction = false;
 
   /** The regular reaction observes waits and publishes committed office-to-founder notices. */
   watch(state: WorldState): boolean {
@@ -122,20 +129,21 @@ export class Messages {
 
   /** Your instruction to a team, heard by its lead. Retrying with the same client id returns the first message. */
   instruct(teamId: string, input: { text?: string; images?: string[]; clientId?: string }): Message {
-    const repeat = this.byClientId(input.clientId);
+    const replay = replayRequest("instruct", null, teamId, { text: input.text?.trim() ?? "", images: normalizedImages(input.images) }, input.clientId);
+    const repeat = this.byClientId(replay);
     if (repeat) return repeat;
     const state = this.world();
     const team = teamOf(state, teamId);
     const images = this.images(input.images);
-    return this.store("instruction", null, team.id, text(input.text, images.length > 0), null, recipients(state, team, null), input.clientId, false, images);
+    return this.store("instruction", null, team.id, text(input.text, images.length > 0), null, recipients(state, team, null), replay, false, images);
   }
 
   /** One founder instruction, atomically queued for the selected leads through the usual delivery path. */
   tellAllLeads(input: { text?: string; images?: string[]; clientId?: string; leadIds?: string[] }): AllLeadsResult {
     if (typeof input.clientId !== "string" || !input.clientId.trim()) throw new InboxError(400, "a broadcast needs a client id");
+    const replay = replayRequest("tellAllLeads", null, null, { text: input.text?.trim() ?? "", images: normalizedImages(input.images), leadIds: input.leadIds === undefined ? null : [...new Set(input.leadIds)].sort() }, input.clientId);
+    const repeat = this.byClientId(replay);
     const state = this.world();
-    const repeat = this.byClientId(input.clientId);
-    if (repeat && !repeat.allLeads) throw new InboxError(409, "that client id belongs to another message");
     const leads = state.agents.filter((a) => a.role === "lead" && state.teams.some((t) => t.id === a.teamId));
     let message = repeat;
     if (!message) {
@@ -151,7 +159,7 @@ export class Messages {
         return recipients(state, teamOf(state, lead.teamId!), null);
       }))];
       const images = this.images(input.images);
-      message = this.store("instruction", null, null, text(input.text, images.length > 0), null, to, input.clientId, false, images, false, true);
+      message = this.store("instruction", null, null, text(input.text, images.length > 0), null, to, replay, false, images, false, true);
     }
     return {
       message,
@@ -162,12 +170,13 @@ export class Messages {
 
   /** Your message to one agent, typed into its terminal once it is free. */
   tell(agentId: string, input: { text?: string; images?: string[]; clientId?: string }): Message {
-    const repeat = this.byClientId(input.clientId);
+    const replay = replayRequest("tell", null, agentId, { text: input.text?.trim() ?? "", images: normalizedImages(input.images) }, input.clientId);
+    const repeat = this.byClientId(replay);
     if (repeat) return repeat;
     const agent = this.world().agents.find((a) => a.id === agentId);
     if (!agent) throw new InboxError(404, `no agent ${agentId}`);
     const images = this.images(input.images);
-    return this.store("message", null, null, text(input.text, images.length > 0), null, [agent.id], input.clientId, false, images);
+    return this.store("message", null, null, text(input.text, images.length > 0), null, [agent.id], replay, false, images);
   }
 
   /** The office itself telling an agent what it saw, such as a browser left running: typed like any message, never shown as yours. */
@@ -184,26 +193,27 @@ export class Messages {
 
   /** One agent to another agent or a team, named as the office shows it, or its answer to you. */
   say(from: WorldAgent, input: { to?: string; text?: string; clientId?: string }): Message {
-    const repeat = this.byClientId(input.clientId);
+    const name = input.to?.trim().toLowerCase();
+    const replay = replayRequest("say", from.id, name ?? null, { text: input.text?.trim() ?? "" }, input.clientId);
+    const repeat = this.byClientId(replay);
     if (repeat) return repeat;
     const body = text(input.text);
-    const name = input.to?.trim().toLowerCase();
     if (!name) throw new InboxError(400, "say who the message is for: an agent's name or a team's");
     // Shown to you in the office; it is not a question for the inbox and nobody's terminal gets it.
-    if (name === FOUNDER) return this.store("message", from.id, null, body, null, [], input.clientId, true);
+    if (name === FOUNDER) return this.store("message", from.id, null, body, null, [], replay, true);
     const state = this.world();
     const agent = state.agents.find((a) => a.name.toLowerCase() === name);
     if (agent) {
       if (agent.id === from.id) throw new InboxError(400, "that is you");
-      return this.store("message", from.id, null, body, null, [agent.id], input.clientId);
+      return this.store("message", from.id, null, body, null, [agent.id], replay);
     }
     const team = state.teams.find((t) => t.name.toLowerCase() === name);
-    if (team) return this.store("message", from.id, team.id, body, null, recipients(state, team, from.id), input.clientId);
+    if (team) return this.store("message", from.id, team.id, body, null, recipients(state, team, from.id), replay);
     // A project's lane by the name its own tools use: `inbox say einstein`.
     const lane = laneRecipient(state, from, name);
     if (!lane) throw new InboxError(404, `nobody called ${input.to} in the office: see who is there with \`inbox team\``);
     if (lane.id === from.id) throw new InboxError(400, "that is you");
-    return this.store("message", from.id, null, body, null, [lane.id], input.clientId);
+    return this.store("message", from.id, null, body, null, [lane.id], replay);
   }
 
   /**
@@ -211,51 +221,74 @@ export class Messages {
    * its work to. Handing over the same work again after changes starts its next round.
    */
   handoff(from: WorldAgent, input: { title?: string; summary?: string; to?: string; work?: string; clientId?: string }): { work: Work; message: Message } {
-    const repeat = this.byClientId(input.clientId);
-    if (repeat) return { work: this.workById(repeat.workId!), message: repeat };
+    const replay = replayRequest("handoff", from.id, input.work ?? input.to?.trim().toLowerCase() ?? "@handsTo", {
+      title: input.title?.trim() ?? "", summary: input.summary?.trim() ?? "", to: input.to?.trim().toLowerCase() ?? null, work: input.work ?? null,
+    }, input.clientId);
+    const repeat = this.byClientId(replay);
+    if (repeat) return { work: this.replayWork(repeat), message: repeat };
     const state = this.world();
     const summary = text(input.summary);
-    const at = this.now().toISOString();
-    let work: Work;
-    if (input.work) {
-      const earlier = this.workById(input.work);
+    const earlier = input.work ? this.workById(input.work) : null;
+    let team: Team;
+    if (earlier) {
       if (earlier.fromAgentId !== from.id && (!from.teamId || earlier.fromTeamId !== from.teamId)) throw new InboxError(403, "only the agent or team that handed this work over can hand it over again");
       if (earlier.state === "in_review") throw new InboxError(409, "this work is still under review");
-      this.db.prepare("UPDATE work SET state = 'in_review', round = round + 1, summary = ?, reviewer_id = NULL, notes = '', updated_at = ? WHERE id = ?").run(summary, at, earlier.id);
-      work = this.workById(earlier.id);
+      team = teamOf(state, earlier.toTeamId);
     } else {
-      const title = input.title?.trim();
-      if (!title) throw new InboxError(400, "a handoff needs a title");
+      if (!input.title?.trim()) throw new InboxError(400, "a handoff needs a title");
       const own = state.teams.find((t) => t.id === from.teamId) ?? null;
       const target = input.to ? state.teams.find((t) => t.name.toLowerCase() === input.to!.trim().toLowerCase()) : own?.handsTo ? state.teams.find((t) => t.id === own.handsTo) : undefined;
-      if (!target) {
-        throw new InboxError(input.to ? 404 : 409, input.to ? `no team called ${input.to}` : "your team does not hand its work to anyone yet: name the team with --to");
-      }
+      if (!target) throw new InboxError(input.to ? 404 : 409, input.to ? `no team called ${input.to}` : "your team does not hand its work to anyone yet: name the team with --to");
       if (target.id === from.teamId) throw new InboxError(400, "hand work to another team, not your own");
-      const id = randomUUID().slice(0, 8);
-      this.db
-        .prepare("INSERT INTO work (id, title, summary, from_agent_id, from_team_id, to_team_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'in_review', ?, ?)")
-        .run(id, title, summary, from.id, from.teamId, target.id, at, at);
-      work = this.workById(id);
+      team = target;
     }
-    const team = teamOf(state, work.toTeamId);
-    const message = this.store("handoff", from.id, team.id, summary, work.id, recipients(state, team, from.id), input.clientId);
-    return { work, message };
+    // Resolve every fixed recipient before writing any work, then commit the entire use case.
+    const to = recipients(state, team, from.id);
+    return this.atomic(() => {
+      const at = this.now().toISOString();
+      const id = earlier?.id ?? randomUUID().slice(0, 8);
+      if (earlier) {
+        this.db.prepare("UPDATE work SET state = 'in_review', round = round + 1, summary = ?, reviewer_id = NULL, notes = '', updated_at = ? WHERE id = ?").run(summary, at, id);
+      } else {
+        this.db.prepare("INSERT INTO work (id, title, summary, from_agent_id, from_team_id, to_team_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'in_review', ?, ?)")
+          .run(id, input.title!.trim(), summary, from.id, from.teamId, team.id, at, at);
+      }
+      const work = this.workById(id);
+      const message = this.store("handoff", from.id, team.id, summary, id, to, replay);
+      return { work, message };
+    });
   }
 
   /** The reviewing team's verdict, sent back to whoever handed the work over. */
-  review(by: WorldAgent, input: { work?: string; verdict?: string; notes?: string }): { work: Work; message: Message } {
+  review(by: WorldAgent, input: { work?: string; verdict?: string; notes?: string; clientId?: string; round?: number }): { work: Work; message: Message } {
     const work = this.workById(input.work ?? "");
+    const round = input.round ?? work.round;
+    if (!Number.isSafeInteger(round) || round < 1) throw new InboxError(400, "review round must be a positive integer");
+    const replay = replayRequest("review", by.id, work.id, { verdict: input.verdict ?? null, notes: input.notes?.trim() ?? "", round }, input.clientId);
+    const repeat = this.byClientId(replay);
+    if (repeat) return { work: this.replayWork(repeat), message: repeat };
     if (by.teamId !== work.toTeamId) throw new InboxError(403, "only the team the work was handed to can review it");
-    if (work.state !== "in_review") throw new InboxError(409, `this work is already ${work.state === "accepted" ? "accepted" : "sent back"}`);
+    if (round !== work.round) throw new InboxError(409, `stale review round: expected ${round}, current round is ${work.round}`);
     const verdict: WorkState | null = input.verdict === "accept" ? "accepted" : input.verdict === "changes" ? "changes_requested" : null;
     if (!verdict) throw new InboxError(400, "the verdict is accept or changes");
     const notes = input.notes?.trim() ?? "";
     if (verdict === "changes_requested" && !notes) throw new InboxError(400, "say what needs to change");
-    this.db.prepare("UPDATE work SET state = ?, reviewer_id = ?, notes = ?, updated_at = ? WHERE id = ?").run(verdict, by.id, notes, this.now().toISOString(), work.id);
-    const said = verdict === "accepted" ? "Accepted." : "Changes requested.";
-    const message = this.store("review", by.id, null, notes ? `${said}\n\n${notes}` : said, work.id, [work.fromAgentId]);
-    return { work: this.workById(work.id), message };
+    if (work.state !== "in_review") {
+      // Legacy callers without a key may retry the same verdict in this round. Never
+      // silently acknowledge another reviewer, verdict, or notes.
+      const prior = this.db.prepare("SELECT * FROM messages WHERE kind = 'review' AND work_id = ? ORDER BY rowid DESC LIMIT 1").get(work.id) as Row | undefined;
+      if (!input.clientId && prior?.replay_scope === replay.scope && prior.replay_fingerprint === replay.fingerprint) {
+        const message = this.message(str(prior.id));
+        return { work: this.replayWork(message), message };
+      }
+      throw new InboxError(409, `this work is already ${work.state === "accepted" ? "accepted" : "sent back"}`);
+    }
+    return this.atomic(() => {
+      this.db.prepare("UPDATE work SET state = ?, reviewer_id = ?, notes = ?, updated_at = ? WHERE id = ?").run(verdict, by.id, notes, this.now().toISOString(), work.id);
+      const said = verdict === "accepted" ? "Accepted." : "Changes requested.";
+      const message = this.store("review", by.id, null, notes ? `${said}\n\n${notes}` : said, work.id, [work.fromAgentId], replay);
+      return { work: this.workById(work.id), message };
+    });
   }
 
   /** Puts a failed delivery back in line. */
@@ -400,13 +433,12 @@ export class Messages {
     return `${header}\n\n${parts.reverse().join("\n\n")}\n${footer(agent)}`;
   }
 
-  private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], clientId?: string, toFounder = false, images: string[] = [], fromOffice = false, allLeads = false): Message {
+  private store(kind: MessageKind, fromAgentId: string | null, teamId: string | null, body: string, workId: string | null, to: string[], replay?: Replay, toFounder = false, images: string[] = [], fromOffice = false, allLeads = false): Message {
     const at = this.now().toISOString();
     const deliveries = (ids: string[]): Delivery[] => ids.map((agentId) => ({ agentId, state: "queued", error: null, updatedAt: at }));
     const message: Message = { id: randomUUID(), kind, fromAgentId, teamId, text: body, images, workId, createdAt: at, deliveries: deliveries(to), toFounder, fromOffice, allLeads };
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      this.insert(message, clientId);
+    return this.atomic(() => {
+      this.insert(message, replay);
       this.db.exec("SAVEPOINT loop_notice");
       try {
         const loop = this.loops.observe(message);
@@ -427,28 +459,52 @@ export class Messages {
         this.db.exec("ROLLBACK TO loop_notice; RELEASE loop_notice;");
         console.error(`office loop notice: ${err instanceof Error ? err.message : String(err)}`);
       }
+      return this.message(message.id);
+    });
+  }
+
+  /** One transaction per use case, with observers notified only after the outer commit. */
+  private atomic<T>(fn: () => T): T {
+    if (this.inTransaction) return fn();
+    this.db.exec("BEGIN IMMEDIATE");
+    this.inTransaction = true;
+    let out: T;
+    try {
+      out = fn();
       this.db.exec("COMMIT");
     } catch (err) {
       this.db.exec("ROLLBACK");
       throw err;
+    } finally {
+      this.inTransaction = false;
     }
     this.changed();
-    return this.message(message.id);
+    return out;
   }
 
-  /** Inserts inside store's transaction, so an advisory shares the same durable delivery path. */
-  private insert(m: Message, clientId?: string): void {
-    this.db.prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder, images, from_office, all_leads) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(m.id, m.kind, m.fromAgentId, m.teamId, m.text, m.workId, clientId ?? null, m.createdAt, m.toFounder ? 1 : 0, m.images.length ? JSON.stringify(m.images) : null, m.fromOffice ? 1 : 0, m.allLeads ? 1 : 0);
+  /** Inserts inside the use-case transaction, including replay identity and the work-round result. */
+  private insert(m: Message, replay?: Replay): void {
+    this.db.prepare("INSERT INTO messages (id, kind, from_agent_id, team_id, text, work_id, client_id, created_at, to_founder, images, from_office, all_leads, replay_scope, replay_fingerprint, replay_work) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(m.id, m.kind, m.fromAgentId, m.teamId, m.text, m.workId, replay?.clientId ?? null, m.createdAt, m.toFounder ? 1 : 0, m.images.length ? JSON.stringify(m.images) : null, m.fromOffice ? 1 : 0, m.allLeads ? 1 : 0,
+        replay?.scope ?? null, replay?.fingerprint ?? null, m.workId ? JSON.stringify(this.workById(m.workId)) : null);
     for (const d of m.deliveries) {
       this.db.prepare("INSERT INTO message_deliveries (message_id, agent_id, state, updated_at) VALUES (?, ?, 'queued', ?)").run(m.id, d.agentId, d.updatedAt);
     }
   }
 
-  private byClientId(clientId: string | undefined): Message | null {
-    if (!clientId) return null;
-    const row = this.db.prepare("SELECT id FROM messages WHERE client_id = ?").get(clientId) as Row | undefined;
-    return row ? this.message(str(row.id)) : null;
+  private byClientId(replay: Replay): Message | null {
+    if (!replay.clientId) return null;
+    const row = this.db.prepare("SELECT id, replay_scope, replay_fingerprint FROM messages WHERE client_id = ?").get(replay.clientId) as Row | undefined;
+    if (!row) return null;
+    if (row.replay_scope !== replay.scope || row.replay_fingerprint !== replay.fingerprint) {
+      throw new InboxError(409, row.replay_scope ? "client id was already used for a different operation or request" : "client id predates safe replay tracking; verify the original message before sending again", "replay_conflict");
+    }
+    return this.message(str(row.id));
+  }
+
+  private replayWork(message: Message): Work {
+    const row = this.db.prepare("SELECT replay_work FROM messages WHERE id = ?").get(message.id) as Row;
+    return row.replay_work ? JSON.parse(str(row.replay_work)) as Work : this.workById(message.workId!);
   }
 
   message(id: string): Message {

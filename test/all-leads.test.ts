@@ -69,7 +69,8 @@ test("one broadcast reaches project and standing leads once, queues offline lead
     const projectLead = leads.find((a) => !world.state().teams.find((t) => t.id === a.teamId)!.standing)!;
     assert.match(typed.find((p) => p.pane === projectLead.paneId)!.text, /first mate/);
     assert.match(typed.find((p) => p.pane === "standing-lead")!.text, /Divide this among your crew/);
-    assert.equal(world.messages.tellAllLeads({ text: "different", clientId: "broadcast-1", leadIds: [] }).message.id, sent.message.id);
+    assert.equal(world.messages.tellAllLeads({ text: "Report your priorities", clientId: "broadcast-1" }).message.id, sent.message.id);
+    assert.throws(() => world.messages.tellAllLeads({ text: "different", clientId: "broadcast-1", leadIds: [] }), { status: 409, code: "replay_conflict" });
     assert.equal(world.messages.list().filter((m) => m.allLeads).length, 1);
     f.returnOffline();
     await world.messages.deliver(world.state());

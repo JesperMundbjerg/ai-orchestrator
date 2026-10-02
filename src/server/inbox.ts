@@ -16,6 +16,7 @@ import {
 import { MAX_PAGES, pageUrlProblem, parsePage } from "../shared/pages.ts";
 import { Uploads } from "./uploads.ts";
 import { presentedPoint, recordPresented } from "./unpresented.ts";
+import { requestFingerprint } from "./db.ts";
 
 /** Live session facts from a terminal multiplexer (herdr); absent sessions simply have none. */
 export interface PresenceSource {
@@ -26,9 +27,11 @@ export interface PresenceSource {
 
 export class InboxError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -396,8 +399,14 @@ export class Inbox {
 
   answer(itemId: string, input: { id?: string; revision: number; action: ReplyAction; choice?: string | null; text?: string; images?: string[] }): Reply {
     const deliveryId = input.id ?? randomUUID();
-    const prior = this.db.prepare("SELECT id FROM replies WHERE id = ?").get(deliveryId) as Row | undefined;
-    if (prior) return this.reply(deliveryId); // a retried request, not a second answer
+    // The answer id belongs to the founder's answer operation, target and exact revision.
+    const fingerprint = requestFingerprint(["answer", "founder", itemId, input.revision, input.action, input.choice ?? null, input.text?.trim() ?? "", [...new Set(input.images ?? [])].sort()]);
+    const prior = this.db.prepare("SELECT * FROM replies WHERE id = ?").get(deliveryId) as Row | undefined;
+    if (prior) {
+      const stored = prior.replay_fingerprint ?? requestFingerprint(["answer", "founder", str(prior.item_id), Number(prior.revision), str(prior.action), nullable(prior.choice), str(prior.text), imageIds(prior.images).sort()]);
+      if (stored !== fingerprint) throw new InboxError(409, "answer id was already used for a different item, revision or answer", "replay_conflict");
+      return this.reply(deliveryId);
+    }
     const item = this.item(itemId);
     if (item.state === "withdrawn" || item.state === "resolved") throw new InboxError(409, `this item is ${item.state}`);
     if (input.revision !== item.revision) {
@@ -424,8 +433,8 @@ export class Inbox {
     this.tx(() => {
       const now = this.iso();
       this.db
-        .prepare("INSERT INTO replies (id, item_id, revision, action, choice, text, images, state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)")
-        .run(deliveryId, itemId, item.revision, input.action, choice, text, images.length ? JSON.stringify(images) : null, now);
+        .prepare("INSERT INTO replies (id, item_id, revision, action, choice, text, images, state, created_at, replay_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)")
+        .run(deliveryId, itemId, item.revision, input.action, choice, text, images.length ? JSON.stringify(images) : null, now, fingerprint);
       this.db.prepare("UPDATE items SET state = 'answer_queued', snoozed_until = NULL, updated_at = ? WHERE id = ?").run(now, itemId);
       if (option) this.db.prepare("UPDATE tasks SET last_decision = ? WHERE id = ?").run(`${option.label} (${item.title})`, task.id);
       if (input.action === "accept" && item.type === "milestone") this.db.prepare("UPDATE tasks SET last_accepted_milestone = ? WHERE id = ?").run(item.title, task.id);
