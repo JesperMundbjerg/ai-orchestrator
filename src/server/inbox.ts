@@ -410,11 +410,14 @@ export class Inbox {
 
   answer(itemId: string, input: { id?: string; revision: number; action: ReplyAction; choice?: string | null; text?: string; images?: string[] }, source?: "approve_all"): Reply {
     const deliveryId = input.id ?? randomUUID();
-    // The answer id belongs to the founder's answer operation, target and exact revision.
-    const fingerprint = requestFingerprint(["answer", "founder", itemId, input.revision, input.action, input.choice ?? null, input.text?.trim() ?? "", [...new Set(input.images ?? [])].sort()]);
+    // An answer id belongs to its caller/scope, operation, target and exact revision.
+    // Automation must not replay a founder answer (or vice versa), even with identical content.
+    const fingerprint = requestFingerprint(["answer", source ?? "founder", itemId, input.revision, input.action, input.choice ?? null, input.text?.trim() ?? "", [...new Set(input.images ?? [])].sort()]);
     const prior = this.db.prepare("SELECT * FROM replies WHERE id = ?").get(deliveryId) as Row | undefined;
     if (prior) {
-      const stored = prior.replay_fingerprint ?? requestFingerprint(["answer", "founder", str(prior.item_id), Number(prior.revision), str(prior.action), nullable(prior.choice), str(prior.text), imageIds(prior.images).sort()]);
+      // Before scoped fingerprints, only the reserved auto-answer id prefix distinguished automation.
+      const priorScope = str(prior.id).startsWith("approve-all:") ? "approve_all" : "founder";
+      const stored = prior.replay_fingerprint ?? requestFingerprint(["answer", priorScope, str(prior.item_id), Number(prior.revision), str(prior.action), nullable(prior.choice), str(prior.text), imageIds(prior.images).sort()]);
       if (stored !== fingerprint) throw new InboxError(409, "answer id was already used for a different item, revision or answer", "replay_conflict");
       return this.reply(deliveryId);
     }

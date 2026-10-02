@@ -50,6 +50,47 @@ for (const type of ["milestone", "try"] as const) {
   });
 }
 
+test("auto-answer replay scope never collides with a founder's identical answer", (t) => {
+  const { inbox, auto, submit } = setup(t);
+  auto.setEnabled(true);
+  const { itemId } = submit({ type: "milestone", title: "Automatically accepted" });
+  const reply = inbox.detail(itemId).replies[0]!;
+  const payload = { id: reply.id, revision: reply.revision, action: reply.action, text: reply.text };
+  assert.throws(() => inbox.answer(itemId, payload), { code: "replay_conflict" });
+  assert.equal(inbox.answer(itemId, payload, "approve_all").id, reply.id);
+  assert.equal(inbox.detail(itemId).replies.length, 1);
+  assert.equal(auto.state().count, 1);
+
+  auto.setEnabled(false);
+  const manual = submit({ type: "milestone", title: "Founder accepted" });
+  const founderPayload = { id: `approve-all:${manual.itemId}:1`, revision: 1, action: "accept" as const, text: "Auto-approved (approve all)." };
+  const founder = inbox.answer(manual.itemId, founderPayload);
+  assert.throws(() => inbox.answer(manual.itemId, founderPayload, "approve_all"), { code: "replay_conflict" });
+  assert.equal(inbox.answer(manual.itemId, founderPayload).id, founder.id);
+  assert.equal(inbox.detail(manual.itemId).replies.length, 1);
+  assert.equal(auto.state().count, 1);
+});
+
+for (const scope of ["founder", "approve_all"] as const) {
+  test(`legacy replay scopes without a stored fingerprint preserve ${scope} ownership`, (t) => {
+    const { db, inbox, auto, submit } = setup(t);
+    const { itemId } = submit({ type: "milestone", title: `Legacy ${scope} answer` });
+    const payload = {
+      id: scope === "approve_all" ? "approve-all:legacy-answer" : "legacy-founder-answer",
+      revision: 1, action: "accept" as const, text: "Accepted.",
+    };
+    const source = scope === "approve_all" ? scope : undefined;
+    const reply = inbox.answer(itemId, payload, source);
+    db.prepare("UPDATE replies SET replay_fingerprint = NULL WHERE id = ?").run(reply.id);
+    const changes = db.prepare("SELECT total_changes() AS n").get()!.n;
+    assert.throws(() => inbox.answer(itemId, payload, scope === "founder" ? "approve_all" : undefined), { code: "replay_conflict" });
+    assert.deepEqual(inbox.answer(itemId, payload, source), reply);
+    assert.equal(inbox.detail(itemId).replies.length, 1);
+    assert.equal(auto.state().count, scope === "approve_all" ? 1 : 0);
+    assert.equal(db.prepare("SELECT total_changes() AS n").get()!.n, changes, "replays/conflicts never write a second answer or provenance event");
+  });
+}
+
 test("decide chooses only the unambiguous recommendation the UI would mark", (t) => {
   const { inbox, auto, submit } = setup(t);
   auto.setEnabled(true);
