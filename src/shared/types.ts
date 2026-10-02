@@ -555,6 +555,46 @@ export interface WorldState {
   herdr: "connected" | "unavailable";
   /** Moving agents to another harness: what each can go to, and the switches under way. */
   switches?: SwitchesView;
+  /** The founder's subscription use: the limits' meters, and each agent's and team's tokens this week. */
+  usage?: UsageView;
+}
+
+/**
+ * One usage limit as its provider last reported it. The service names it ("Claude week"); the UI
+ * shows the label and never branches on which provider it is.
+ */
+export interface UsageMeter {
+  id: string;
+  label: string;
+  /** 0–100; null when no reading has been seen. */
+  usedPercent: number | null;
+  /** When the window starts again (ISO); null when not known. */
+  resetsAt: string | null;
+  /** When the reading was taken (ISO); null when there is none. */
+  asOf: string | null;
+  /** The reading is old enough that use may have moved since, or its window has reset since. */
+  stale: boolean;
+  window: "five_hour" | "week";
+}
+
+/** Use in the current weekly window, from the harnesses' own session files. */
+export interface UsageShare {
+  /** Input, output and cache-write tokens; cache reads are left out (cheap, and they would dwarf the rest). */
+  tokens: number;
+  /**
+   * Estimated points of the weekly limit it took (0–100): its part of its harness's tokens this week
+   * times that harness's weekly meter. A team that used both harnesses adds both parts. Null with no
+   * weekly reading to scale by.
+   */
+  share: number | null;
+}
+
+export interface UsageView {
+  meters: UsageMeter[];
+  /** Per agent id. */
+  agents: Record<string, UsageShare>;
+  /** Per team id. */
+  teams: Record<string, UsageShare>;
 }
 
 /** What an agent learns about itself and its team from `inbox team`. */
