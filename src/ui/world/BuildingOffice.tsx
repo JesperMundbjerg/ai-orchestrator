@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Color } from "three";
-import type { Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
+import type { UsageMeter, Work, WorldAgent, WorldTeam } from "../../shared/types.ts";
 import { textTexture, type Line } from "./label.ts";
 import { lookFor } from "./look.ts";
 import { buildingPipelines, place, teamDesks, type BuildingPlan, type Garden, type Rect, type Room, type Wall } from "./building.ts";
@@ -8,6 +8,7 @@ import { Furniture, Kit, officeChair, plant, sofa } from "./Furniture.tsx";
 import { stationsFor, studio } from "./crafts.ts";
 import { Crafts } from "./Crafts.tsx";
 import { GardenScene } from "./Garden.tsx";
+import { Meters } from "./Meters.tsx";
 import { plantGarden, treesRound } from "./planting.ts";
 import { Pipeline, useTexture } from "./Office.tsx";
 import { freeBoard, teamBoard } from "./corkboard.ts";
@@ -37,7 +38,7 @@ const SIGN_X = -1.2;
 const CHAIRS = ["#3c4a5c", "#5b6b7d", "#40576b"];
 
 /** The office as one building: an ordinary open-plan office, a team area per team round the hall with its garden, the lounge and kitchen, meeting rooms and reception. */
-export function BuildingOffice({ plan, agents, teams, work, queueLength }: { plan: BuildingPlan; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; queueLength: number }) {
+export function BuildingOffice({ plan, agents, teams, work, queueLength, meters }: { plan: BuildingPlan; agents: Map<string, WorldAgent>; teams: Map<string, WorldTeam>; work: Work[]; queueLength: number; meters: UsageMeter[] }) {
   const { outline, hall } = plan;
   const lounge = plan.rooms.find((r) => r.kind === "lounge")!;
   const meetings = plan.rooms.filter((r) => r.kind === "meeting");
@@ -61,6 +62,7 @@ export function BuildingOffice({ plan, agents, teams, work, queueLength }: { pla
       ))}
       {meetings.map((r, i) => <Carpet key={i} room={r} color="#8e959c" />)}
       <GardenScene garden={green.garden} planting={green.planting} outside={green.outside} />
+      <Meters garden={green.garden} meters={meters} />
       <Furniture pieces={pieces} />
       <Crafts stations={stations} agents={agents} />
       <Reception plan={plan} />

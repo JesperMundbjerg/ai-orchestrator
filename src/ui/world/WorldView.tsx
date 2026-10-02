@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { Color } from "three";
-import type { InboxState, ItemType, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
+import type { InboxState, ItemType, UsageMeter, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { useItemDetail } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
@@ -27,6 +27,7 @@ export interface Waiting {
   itemIds: string[];
 }
 
+const NO_METERS: UsageMeter[] = [];
 /**
  * Just behind your chair and a little above it, facing the first team straight ahead: from
  * here the desk, the line and the corners either side of the first are all in view.
@@ -411,7 +412,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
         shadow-bias={-0.0005}
       />
       {isBuilding(office) ? (
-        <BuildingOffice plan={office} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
+        <BuildingOffice plan={office} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} meters={world.usage?.meters ?? NO_METERS} />
       ) : (
         <Office plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} />
       )}

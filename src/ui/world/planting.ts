@@ -10,7 +10,8 @@
 //   lawns       the pond in the west one, with rocks round its edge, reeds on its far side, lily
 //               pads, and stepping stones across its back; a big shade tree in the east one;
 //               conifers and birches in their corners and a loose planting that stays low by the
-//               clearing, with open grass between
+//               clearing, with open grass between; the east lawn's strip by the clearing is kept
+//               for the usage meters' water towers (meters.ts)
 //
 // Everything stands in a bed with its whole footprint, so nothing grows on a path, the clearing
 // or a bench, nor in the gravel nook round each bench where a visitor stands; only reeds, lily pads and the pond's stepping stones are in the water. A crown may
@@ -18,6 +19,7 @@
 
 import { BAY_WIDTH, GARDEN_INSET, place, type Bench, type Garden, type Rect } from "./building.ts";
 import type { Vec2 } from "./layout.ts";
+import { meterGround } from "./meters.ts";
 
 export type TreeKind = "broadleaf" | "shade" | "birch" | "palm" | "conifer";
 
@@ -128,8 +130,8 @@ export function plantGarden(garden: Garden): Planting {
     widest = Math.max(widest, r);
   };
   const dry = (p: Vec2, r: number) => dist(p, pond.center) > pond.radius + 0.35 + r;
-  const nooks = garden.benches.map(benchNook);
-  const fits = (bed: Rect, p: Vec2, r: number) => inside(bed, p, r + EDGE) && dry(p, r) && nooks.every((n) => away(n, p) > r + EDGE);
+  const kept = [...garden.benches.map(benchNook), meterGround(garden)];
+  const fits = (bed: Rect, p: Vec2, r: number) => inside(bed, p, r + EDGE) && dry(p, r) && kept.every((n) => away(n, p) > r + EDGE);
 
   // The trail: stepping stones winding through the inner bed from the front of the walk to its back.
   const depth = inner.maxZ - inner.minZ;
