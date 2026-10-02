@@ -1,11 +1,13 @@
 import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import type { Fog, PerspectiveCamera } from "three";
+import type { Fog, Group, PerspectiveCamera } from "three";
 import { away, walkingHeight } from "./wilds/land.ts";
 import type { Vec2 } from "./spatial.ts";
 import { usePace } from "./Pace.tsx";
+import { Bird } from "./Bird.tsx";
+import { advanceFlap, birdFraming, FLIGHT_HEIGHT, flightMotion, flightPose } from "./flight.ts";
 
-const EYE = 1.62;
+const EYE = FLIGHT_HEIGHT + 0.55;
 const WALK = 4.2;
 const RUN = 9;
 const FOV = 62;
@@ -28,8 +30,10 @@ export interface FlyTarget {
 const pitchAt = (lift: number) => LEVEL_PITCH + lift * (OVERVIEW_PITCH - LEVEL_PITCH);
 
 /**
- * You, in first person: WASD or the arrow keys walk, Q/E or the left/right arrows turn, Shift runs,
- * dragging turns the view, and scrolling (or pinching, or + and -) zooms. Zooming out past the widest view lifts you
+ * You are the bird, just ahead of the viewpoint: WASD/arrows fly, Q/E or left/right turn,
+ * Shift flies faster. Dragging turns, and scrolling (or pinching, or + and -) zooms.
+ * The bird follows the camera, including overview lifts and panel jumps; no separate walker.
+ * Zooming out past the widest view lifts you
  * up and tilts the view down, for an overview of the building; zooming in
  * brings you back down first. The pointer stays free, so a click still reaches the person
  * under it.
@@ -51,6 +55,9 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
   const lifted = start.lift ?? 0;
   const view = useRef({ yaw: start.yaw, pitch: pitchAt(lifted), x: start.pos[0], z: start.pos[1], fov: FOV, lift: lifted, eye: EYE + lifted * (top - EYE) });
   const keys = useRef(new Set<string>());
+  const bird = useRef<Group>(null);
+  const beats = useRef({ phase: 0, motion: 0, time: 0 });
+  const pose = useRef(flightPose(0, 0, 0));
   const flight = useRef<{ from: { x: number; z: number; yaw: number; lift: number }; to: FlyTarget; t: number } | null>(null);
 
   useEffect(() => {
@@ -144,6 +151,7 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
   useFrame((_, dt) => {
     const v = view.current;
     const k = keys.current;
+    const beforeX = v.x, beforeZ = v.z;
     const step = Math.min(dt, 0.1);
     const forward = Number(k.has("KeyW") || k.has("ArrowUp")) - Number(k.has("KeyS") || k.has("ArrowDown"));
     const strafe = Number(k.has("KeyD")) - Number(k.has("KeyA"));
@@ -199,7 +207,24 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
       lens.fov += (v.fov - lens.fov) * Math.min(1, step * 12);
       lens.updateProjectionMatrix();
     }
+
+    const b = beats.current;
+    b.motion = flightMotion(b.motion, Math.hypot(v.x - beforeX, v.z - beforeZ) > 0.0001, step);
+    b.phase = advanceFlap(b.phase, step, b.motion, k.has("ShiftLeft") || k.has("ShiftRight"));
+    b.time += step;
+    pose.current = flightPose(b.time, b.phase, b.motion);
+    if (bird.current) {
+      const framing = birdFraming(lens.fov);
+      // Camera-local placement is deliberate: even at full overview or a desk jump the
+      // founder is here, not a second character left on the floor. Never bob the camera.
+      bird.current.position.set(0, -framing.drop, -framing.distance).applyQuaternion(camera.quaternion).add(camera.position);
+      bird.current.quaternion.copy(camera.quaternion);
+      bird.current.scale.setScalar(framing.scale);
+    }
+    // Hover beats need the existing 20 Hz motion tier, not the 5 Hz idle tier. Only
+    // actual outdoor travel above requests 60 Hz; hidden tabs still draw no frames.
+    pace?.moved(performance.now());
   }, -1);
 
-  return null;
+  return <group ref={bird} name="founder-bird"><Bird pose={pose} /></group>;
 }
