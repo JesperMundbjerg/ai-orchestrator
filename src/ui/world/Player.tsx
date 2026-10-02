@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import type { PerspectiveCamera } from "three";
+import type { Fog, PerspectiveCamera } from "three";
+import { away, walkingHeight } from "./wilds/land.ts";
 import type { Vec2 } from "./layout.ts";
 import { usePace } from "./Pace.tsx";
 
@@ -34,7 +35,7 @@ const pitchAt = (lift: number) => LEVEL_PITCH + lift * (OVERVIEW_PITCH - LEVEL_P
  * under it.
  */
 export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: number; minZ: number; maxZ: number }; start: FlyTarget; fly: FlyTarget | null }) {
-  const { camera, gl, invalidate } = useThree();
+  const { camera, gl, invalidate, scene } = useThree();
   const pace = usePace();
   // You moved the view: draw it now, and smoothly while it moves.
   const stir = useRef(() => {});
@@ -116,6 +117,20 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
     };
   }, [gl]);
 
+  // Reproducible screenshot poses, opt-in only; the long-walk benchmark uses real WASD.
+  useEffect(() => {
+    if (!new URLSearchParams(location.search).has("wildsMeasure")) return;
+    const pose = (event: Event) => {
+      const p = (event as CustomEvent<{ x: number; z: number; yaw: number; pitch?: number; lift?: number }>).detail;
+      const v = view.current;
+      v.x = p.x; v.z = p.z; v.yaw = p.yaw; v.pitch = p.pitch ?? LEVEL_PITCH; v.lift = p.lift ?? 0; v.fov = FOV;
+      flight.current = null;
+      stir.current();
+    };
+    addEventListener("wilds-measure-pose", pose);
+    return () => removeEventListener("wilds-measure-pose", pose);
+  }, []);
+
   useEffect(() => {
     if (!fly) return;
     const v = view.current;
@@ -154,19 +169,28 @@ export function Player({ bounds, start, fly }: { bounds: { minX: number; maxX: n
       v.x += ((Math.sin(v.yaw) * forward + Math.cos(v.yaw) * strafe) / len) * speed;
       v.z += ((-Math.cos(v.yaw) * forward + Math.sin(v.yaw) * strafe) / len) * speed;
     }
-    v.x = Math.max(bounds.minX + 0.6, Math.min(bounds.maxX - 0.6, v.x));
-    v.z = Math.max(bounds.minZ + 0.6, Math.min(bounds.maxZ - 0.6, v.z));
-    v.eye += (EYE + v.lift * (top - EYE) - v.eye) * Math.min(1, step * 8);
+    // No office-sized clamp: beyond the front door the same controls follow the land.
+    // Lakes are traversable at water level in this first version (no underwater camera).
+    const ground = walkingHeight(v.x, v.z, bounds);
+    const eye = ground + EYE + v.lift * (top - EYE);
+    v.eye += (eye - v.eye) * Math.min(1, step * 8);
+    const fog = scene.fog as Fog | null;
+    if (fog) {
+      const reach = Math.max(...[bounds.minX, bounds.maxX].flatMap((x) => [bounds.minZ, bounds.maxZ].map((z) => Math.hypot(x, z)))) + 2;
+      const blend = Math.min(1, away(bounds, v.x, v.z) / 20);
+      fog.near = (reach + 10) * (1 - blend) + 48 * blend;
+      fog.far = (reach * 2 + 60) * (1 - blend) + 112 * blend;
+    }
     camera.position.set(v.x, v.eye, v.z);
     camera.rotation.set(v.pitch, -v.yaw, 0, "YXZ");
     const lens = camera as PerspectiveCamera;
-    const settling = Math.abs(v.eye - (EYE + v.lift * (top - EYE))) > 0.01 || Math.abs(lens.fov - v.fov) > 0.01;
+    const settling = Math.abs(v.eye - eye) > 0.01 || Math.abs(lens.fov - v.fov) > 0.01;
     if (forward || strafe || turn || f || settling) pace?.moved(performance.now());
     if (Math.abs(lens.fov - v.fov) > 0.01) {
       lens.fov += (v.fov - lens.fov) * Math.min(1, step * 12);
       lens.updateProjectionMatrix();
     }
-  });
+  }, -1);
 
   return null;
 }

@@ -55,7 +55,9 @@ function Walls({ minX, maxX, minZ, maxZ }: { minX: number; maxX: number; minZ: n
   const wall = <meshStandardMaterial color="#e9ecef" roughness={0.9} />;
   const sides: Array<[number, number, number, number]> = [
     [(minX + maxX) / 2, minZ, maxX - minX, 0],
-    [(minX + maxX) / 2, maxZ, maxX - minX, 0],
+    // A south gate, centred on the route out into the wilds.
+    [(minX - 1.2) / 2, maxZ, -1.2 - minX, 0],
+    [(maxX + 1.2) / 2, maxZ, maxX - 1.2, 0],
     [minX, (minZ + maxZ) / 2, maxZ - minZ, Math.PI / 2],
     [maxX, (minZ + maxZ) / 2, maxZ - minZ, Math.PI / 2],
   ];
@@ -68,7 +70,7 @@ function Walls({ minX, maxX, minZ, maxZ }: { minX: number; maxX: number; minZ: n
             {wall}
           </mesh>
           {/* A band of windows, a third of the wall high */}
-          <mesh position={[0, h * 0.6, i % 2 ? -0.11 : 0.11]} rotation-y={i === 1 || i === 3 ? Math.PI : 0}>
+          <mesh position={[0, h * 0.6, z === maxZ || x === maxX ? -0.11 : 0.11]} rotation-y={z === maxZ || x === maxX ? Math.PI : 0}>
             <planeGeometry args={[len - 2, h / 3]} />
             <meshStandardMaterial color="#a9c8e8" emissive="#a9c8e8" emissiveIntensity={0.35} roughness={0.2} />
           </mesh>

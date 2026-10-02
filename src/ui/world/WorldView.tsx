@@ -20,6 +20,8 @@ import { Helpers } from "./Helpers.tsx";
 import { Pace, PaceContext } from "./Pace.tsx";
 import { Pacer } from "./pace.ts";
 import { Player, type FlyTarget } from "./Player.tsx";
+import { Wilds } from "./wilds/Wilds.tsx";
+import { OfficeEdge } from "./wilds/OfficeEdge.tsx";
 import { calls, GRACE_MS, plan as planTalk, walkMs, type Bubble, type Call, type Visit } from "./visits.ts";
 
 export interface Waiting {
@@ -155,6 +157,7 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
           {world.agents.length} {world.agents.length === 1 ? "agent" : "agents"} · {world.herdr === "connected" ? "live from herdr" : "herdr not running: no live status"}
         </span>
         <span className="spacer" />
+        <button className="ghost small" onClick={() => flyTo([0, (isBuilding(office) ? office.frontDoor.z : office.bounds.maxZ) - 2.5], Math.PI)} title="Face the open door, then walk into the wilds">Front door ↗</button>
         <button className="ghost small" onClick={() => setFly((f) => ({ ...START, seq: (f?.seq ?? 0) + 1 }))}>Your desk</button>
         {entries.length ? (
           <button className="primary small" onClick={() => setAnswering(entries[0]!.item.id)}>
@@ -410,6 +413,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
         shadow-camera-far={120}
         shadow-bias={-0.0005}
       />
+      <OfficeEdge bounds={office.bounds}>
       {isBuilding(office) ? (
         <BuildingOffice plan={office} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} meters={world.usage?.meters ?? NO_METERS} />
       ) : (
@@ -442,7 +446,9 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
           </group>
         );
       })}
+      </OfficeEdge>
       <Player bounds={plan.bounds} start={START} fly={fly} />
+      <Wilds office={plan.bounds} />
     </>
   );
 }
