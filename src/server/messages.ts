@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AllLeadsResult, Delivery, DeliveryState, Message, MessageKind, PendingReply, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
 import { formatReply, imageLines } from "../shared/agent-client.ts";
-import { STORY_INTRO } from "../shared/story.ts";
+import { STORY_INTRO, STORY_PROMPT } from "../shared/story.ts";
 import { imageIds, InboxError, type Inbox } from "./inbox.ts";
 import type { Uploads } from "./uploads.ts";
 import { laneRecipient } from "./queue.ts";
@@ -53,7 +53,7 @@ const BATCH_FULL_CHARS = 6000;
 /** How much of an older message its one line keeps. */
 const BATCH_LINE_CHARS = 160;
 const FOOTER = "(From the office. `inbox team` shows your project and who else is here.)";
-const footer = (agent: WorldAgent) => agent.story ? FOOTER : `Your office name is ${agent.name}. ${STORY_INTRO}\n${FOOTER}`;
+const footer = (agent: WorldAgent) => !agent.storyAsk ? FOOTER : `Your office name is ${agent.name}. ${STORY_INTRO}\n${FOOTER}`;
 
 export class Messages {
   private db: DatabaseSync;
@@ -405,6 +405,8 @@ export class Messages {
       done.run(requeue ? "queued" : error ? "failed" : "delivered", requeue ? null : error,
         requeue ? str(row.queued_at) : this.now().toISOString(), str(row.id), agent.id);
     }
+    // An agent with a story under an older prompt is asked to retell it once: in the prompt just typed.
+    if (!error && agent.story && agent.storyAsk) this.db.prepare("UPDATE world_agents SET story_asked = ? WHERE id = ?").run(STORY_PROMPT, agent.id);
     // A safe refusal waits for the next presence event or poll, not a recursive reaction
     // to its own requeue (which would hammer a pane that is still starting).
     this.changed(starting);

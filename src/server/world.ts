@@ -16,7 +16,7 @@ import type {
   ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, SwitchesView, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
 import { serviceUrl } from "../shared/agent-client.ts";
-import { STORY_INTRO, STORY_MAX_CHARS } from "../shared/story.ts";
+import { STORY_INTRO, STORY_MAX_CHARS, STORY_PROMPT, storyLine } from "../shared/story.ts";
 import { Activity } from "./activity.ts";
 import { ReviewFallback } from "./review-fallback.ts";
 import { DEFAULT_LEAD, type CrewChoice } from "../shared/crewtree.ts";
@@ -266,6 +266,7 @@ export class World {
         id: str(row.id),
         name: str(row.name),
         story: row.story ? str(row.story) : null,
+        storyAsk: !row.story || (Number(row.story_prompt ?? 1) < STORY_PROMPT && Number(row.story_asked ?? 1) < STORY_PROMPT),
         project: (a.cwd ? this.checkout(a.cwd)?.repoName : null) ?? projectOfTask.get(a.taskIds[0] ?? "") ?? null,
         branch: (a.cwd ? this.checkout(a.cwd)?.branch : null) ?? null,
         teamId: row.team_id ? str(row.team_id) : null,
@@ -551,7 +552,7 @@ export class World {
     if (!story) throw new InboxError(400, "story must not be empty");
     if (!session || typeof session !== "object") throw new InboxError(400, "story needs the agent's session");
     const me = this.resolve(session);
-    this.db.prepare("UPDATE world_agents SET story = ? WHERE id = ?").run(story, me.id);
+    this.db.prepare("UPDATE world_agents SET story = ?, story_prompt = ? WHERE id = ?").run(story, STORY_PROMPT, me.id);
     this.onChange("world");
     return { story };
   }
@@ -581,7 +582,8 @@ export class World {
     const team = me.teamId ? teams.get(me.teamId) ?? null : null;
     const status = (a: WorldAgent) => `${a.name}${a.role === "lead" ? " (lead)" : ""}: ${a.status}${a.doing ? `, ${a.doing}` : ""}`;
     const lines = [`You are ${me.name} (${me.harness}${me.cwd ? `, ${me.cwd}` : ""}).`];
-    if (!me.story) lines.push(STORY_INTRO);
+    if (me.story) lines.push(storyLine(me.story));
+    if (me.storyAsk) lines.push(STORY_INTRO);
     if (!team) {
       lines.push("You are not on a project: you work straight for the founder.");
     } else {

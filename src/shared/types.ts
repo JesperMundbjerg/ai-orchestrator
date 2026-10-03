@@ -315,6 +315,8 @@ export interface WorldAgent {
   name: string;
   /** The agent's own plain-text backstory; absent until it writes one. */
   story?: string | null;
+  /** The office still asks this agent for its story: it has none, or one under an older prompt it was not yet asked to retell. */
+  storyAsk?: boolean;
   harness: Harness;
   cwd: string | null;
   /** The repository the checkout belongs to. */

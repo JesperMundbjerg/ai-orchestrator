@@ -70,7 +70,7 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
 
   The office (a project per worktree, run by its first mate; standing teams like Mission Control):
   inbox team                      who you are, your project, your part in it, what waits for you
-  inbox story "…"                 save your own short office backstory (plain text, capped at 600 characters)
+  inbox story "…"                 save your own short personal story (plain text, capped at 800 characters)
   ${STORY_INTRO}
   inbox crew                      the active crew preset and guide: which harness and model to start, under the founder's switch
   inbox say NAME "text"           message an agent, project, team or a project's lane by name; it arrives when they are free
