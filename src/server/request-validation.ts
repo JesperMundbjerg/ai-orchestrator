@@ -22,7 +22,7 @@ export const taskPatchSchema = object({
 });
 export const pinSchema = object({ pinned: boolean });
 // The older {enabled} switch still works; {mode, agentId} picks Off, Approve all or QA answers (and which agent is QA).
-export const autoApproveSchema = refine(object({ enabled: optional(boolean), mode: optional(oneOf(AUTOMATION_MODES)), agentId: optional(nonempty) }), (b, p) => {
+export const autoApproveSchema = refine(object({ enabled: optional(boolean), mode: optional(oneOf(AUTOMATION_MODES)), agentId: optional(nullable(nonempty)) }), (b, p) => {
   if (b.enabled === undefined && b.mode === undefined) fail(p, "give mode (or enabled)");
   if (b.enabled !== undefined && b.mode !== undefined) fail(p, "give mode or enabled, not both");
 });

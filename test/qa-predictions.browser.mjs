@@ -49,9 +49,23 @@ try {
   const world = await get("/api/world");
   const qaAgent = world.agents.find((a) => a.identity.includes("Quinn")) ?? world.agents.at(0);
   assert.ok(qaAgent, "the QA agent is known to the office");
-  // Choose the QA agent, then go back to manual mode: it predicts from now on.
-  await post("/api/auto-approve", { mode: "qa", agentId: qaAgent.id });
-  await post("/api/auto-approve", { mode: "off" });
+  browser = await chromium.launch({ headless: true });
+  page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  // Choose who predicts in manual mode itself, never turning QA answers on.
+  await page.goto(url);
+  const predictWith = page.getByRole("combobox", { name: "Predict with" });
+  await predictWith.waitFor();
+  assert.equal(await predictWith.inputValue(), "");
+  await page.screenshot({ path: join(shots, "07-predict-with-none.png") });
+  await predictWith.selectOption(qaAgent.id);
+  for (let i = 0; !(await get("/api/auto-approve")).qa; i++) { if (i === 50) break; await delay(100); }
+  const setting = await get("/api/auto-approve");
+  assert.equal(setting.mode, "off");
+  assert.equal(setting.qa.agentId, qaAgent.id);
+  await page.getByRole("status").filter({ hasText: "QA predicted 0" }).waitFor();
+  await page.screenshot({ path: join(shots, "08-predict-with-agent.png") });
 
   // The QA agent predicts all three through the ordinary command path; nothing is sent.
   assert.equal((await post("/api/agent/qa/next", { session: qaSession })).predicting, true);
@@ -66,11 +80,7 @@ try {
     assert.equal(detail.qaPredictions, undefined, "hidden until the founder answers");
   }
 
-  browser = await chromium.launch({ headless: true });
-  page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
-  const errors = [];
-  page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto(url);
+  await page.reload();
   const status = page.getByRole("status").filter({ hasText: "QA predicted" });
   await status.waitFor();
   assert.equal(await status.innerText(), "QA predicted 3 · agreed 0 of 0");
@@ -83,17 +93,20 @@ try {
   await page.goto(`${url}/#/needs?item=${decision}`);
   await page.getByRole("button", { name: /Green/ }).first().click();
   for (let i = 0; (await get(`/api/items/${decision}`)).replies.length < 1; i++) { if (i === 50) break; await delay(100); }
+  // Answering moves on to the next item by itself; let it, so it does not override the navigation below.
+  await page.waitForURL((u) => !u.hash.includes(decision));
   await post(`/api/items/${milestone}/replies`, { revision: 1, action: "accept" });
   await post(`/api/items/${open}/replies`, { revision: 1, action: "answer", text: "A bold sans serif, white on navy." });
   const detail = await get(`/api/items/${decision}`);
   assert.deepEqual(detail.replies.map((r) => [r.answeredBy, r.choice]), [["founder", "b"]]);
   assert.deepEqual(detail.qaPredictions.map((p) => [p.choice, p.verdict]), [["a", "mismatch"]]);
   await page.goto(`${url}/#/needs?item=${decision}`);
-  await page.reload(); // the same hash does not navigate
-  await page.getByRole("button", { name: /Answered: Green/ }).click();
-  await page.locator(".decision-details summary").click();
-  await page.getByRole("tab", { name: "Conversation", exact: true }).click();
-  const prediction = page.locator("details.qa-prediction");
+  await page.reload(); // a fresh mount shows the answered decision collapsed
+  const card = page.locator(`[data-decision-id="${decision}"]`);
+  await card.getByRole("button", { name: /Answered: Green/ }).click();
+  await card.locator(".decision-details summary").click();
+  await card.getByRole("tab", { name: "Conversation", exact: true }).click();
+  const prediction = card.locator("details.qa-prediction");
   await prediction.waitFor();
   assert.equal(await prediction.evaluate((d) => d.open), false, "collapsed");
   assert.equal(await prediction.locator("summary").innerText(), "QA prediction (not sent) · differed from you");
@@ -122,8 +135,14 @@ try {
   const box = await status.boundingBox();
   assert.ok(box && box.x >= 0 && box.x + box.width <= 390, JSON.stringify(box));
   await page.screenshot({ path: join(shots, "06-phone.png") });
+  // Choosing none stops predictions.
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByRole("combobox", { name: "Predict with" }).selectOption("");
+  for (let i = 0; (await get("/api/auto-approve")).qa; i++) { if (i === 50) break; await delay(100); }
+  assert.equal((await get("/api/auto-approve")).qa, null);
+  assert.equal((await fetch(`${url}/api/agent/qa/next`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: qaSession }) })).status, 403);
   assert.deepEqual(errors, []);
-  console.log(`QA predictions browser passed: predictions never sent, hidden until answered, collapsed in history, header rate, judging, phone. Screenshots: ${shots}`);
+  console.log(`QA predictions browser passed: predict-with picker in Off, predictions never sent, hidden until answered, collapsed in history, header rate, judging, phone. Screenshots: ${shots}`);
 } catch (err) {
   await page?.screenshot({ path: join(shots, "failed.png") }).catch(() => {});
   throw err;

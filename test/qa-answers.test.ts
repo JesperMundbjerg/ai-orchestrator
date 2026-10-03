@@ -332,6 +332,25 @@ test("predictions compare with the founder's answer; words are judged by the QA 
   assert.deepEqual(pick(auto.state().qa!), { predicted: 5, judged: 5, agreed: 4, toJudge: 0 });
 });
 
+test("manual mode chooses the QA agent by itself: it prepares the learnings, and choosing none stops predictions", (t) => {
+  const { auto, submit, notices, learnings } = setup(t);
+  auto.setMode("off", "quinn");
+  assert.equal(auto.state().mode, "off", "choosing who predicts never turns QA answers on");
+  assert.equal(auto.state().qa?.agentId, "quinn");
+  assert.ok(existsSync(join(learnings, "index.md")), "the learnings bundle is ready in manual mode too");
+  const { itemId } = submit({ type: "milestone", title: "Ready" });
+  assert.match(notices().at(-1)!, /predict the founder's answer/);
+  assert.equal(auto.qa.next(qaSession).item?.id, itemId);
+
+  auto.setMode("off", null);
+  assert.equal(auto.state().qa, null);
+  assert.throws(() => auto.qa.next(qaSession), (e: InboxError) => e.status === 403 && /has not chosen a QA agent/.test(e.message));
+  assert.throws(() => auto.qa.answer({ session: qaSession, item: itemId, revision: 1, action: "accept", reason: "r" }), (e: InboxError) => e.status === 403);
+  assert.throws(() => auto.setMode("qa", null), /choose the agent/);
+  assert.throws(() => auto.setMode("qa"), /choose the agent/);
+  assert.equal(auto.state().mode, "off");
+});
+
 test("Approve all is unchanged by predictions: the QA agent gets no notice and neither decides nor predicts", (t) => {
   const { auto, submit, notices } = setup(t);
   auto.setMode("qa", "quinn");

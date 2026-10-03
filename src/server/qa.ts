@@ -67,8 +67,9 @@ export class QaDesk {
     return this.setting().agentId;
   }
 
-  choose(agentId: string): void {
-    if (this.office && !this.office.agent(agentId)) throw new InboxError(404, `no agent ${agentId} in the office`);
+  /** Null clears the QA agent: nothing is predicted in manual mode, and QA answers need one chosen again. */
+  choose(agentId: string | null): void {
+    if (agentId !== null && this.office && !this.office.agent(agentId)) throw new InboxError(404, `no agent ${agentId} in the office`);
     this.db.prepare("UPDATE auto_approve SET qa_agent_id = ? WHERE singleton = 1").run(agentId);
   }
 

@@ -50,11 +50,13 @@ export class AutoApprove {
     return this.setMode(enabled ? "approve_all" : "off");
   }
 
-  setMode(mode: AutomationMode, agentId?: string): AutoApproveState {
+  /** `agentId` chooses the QA agent (null clears it, which also stops predictions in manual mode). */
+  setMode(mode: AutomationMode, agentId?: string | null): AutoApproveState {
+    if (mode === "qa" && (agentId === null || (agentId === undefined && !this.qa.agentId()))) throw new InboxError(400, "choose the agent that answers as QA");
     if (agentId !== undefined) this.qa.choose(agentId);
-    if (mode === "qa" && !this.qa.agentId()) throw new InboxError(400, "choose the agent that answers as QA");
     this.db.prepare("UPDATE auto_approve SET mode = ?, enabled = ? WHERE singleton = 1").run(mode, mode === "approve_all" ? 1 : 0);
-    if (mode === "qa") this.qa.prepareLearnings();
+    // The QA agent learns in manual mode too, where it predicts.
+    if (mode === "qa" || (mode === "off" && this.qa.agentId())) this.qa.prepareLearnings();
     this.sweep();
     this.inbox.onChange("auto-approve");
     return this.state();

@@ -123,6 +123,7 @@ h1, h2, h3 { margin: 0; }
 .automation-modes .auto-approve-toggle:last-child { border-radius: 0 6px 6px 0; }
 .automation-modes .is-chosen:not(.is-on) { background: var(--accent-soft); }
 .qa-agent { max-width: 160px; }
+.qa-predict { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
 .qa-status.offline { color: var(--warn); }
 .with-qa { color: var(--accent); font-weight: 600; }
 .qa-prediction { margin-top: 4px; border-top: 1px dashed var(--muted); padding-top: 4px; }

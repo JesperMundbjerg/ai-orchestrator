@@ -20,7 +20,8 @@ export function AutoApproveToggle({ tick }: { tick: number }) {
     api.autoApprove().then((s) => { if (live) { setState(s); setError(null); } }, (e: Error) => { if (live) setError(e.message); });
     return () => { live = false; };
   }, [tick]);
-  const choosing = picking || state?.mode === "qa";
+  // Both QA answers and manual mode (which predicts with it) choose the QA agent.
+  const choosing = picking || state?.mode === "qa" || state?.mode === "off";
   useEffect(() => {
     if (!choosing) return;
     let live = true;
@@ -28,7 +29,7 @@ export function AutoApproveToggle({ tick }: { tick: number }) {
     return () => { live = false; };
   }, [choosing, tick]);
 
-  const set = async (mode: AutomationMode, agentId?: string) => {
+  const set = async (mode: AutomationMode, agentId?: string | null) => {
     if (!state || busy) return;
     // QA answers need an agent first; choosing one turns them on.
     if (mode === "qa" && !agentId && !state.qa) { setPicking(true); return; }
@@ -50,7 +51,17 @@ export function AutoApproveToggle({ tick }: { tick: number }) {
       ))}
     </div>
     {state?.mode === "approve_all" ? <span className="auto-approve-count">{state.count} auto-answered</span> : null}
-    {choosing ? (
+    {shown === "off" && state ? (
+      <label className="qa-predict small">Predict with
+        <select className="qa-agent small" aria-label="Predict with" disabled={busy} value={qa?.agentId ?? ""}
+          title="An office agent that predicts your answers without sending them, so you can see how often it agrees with you."
+          onChange={(e) => void set("off", e.target.value || null)}>
+          <option value="">none</option>
+          {qa && !agents.some((a) => a.id === qa.agentId) ? <option value={qa.agentId}>{qa.agentName ?? "an agent no longer in the office"}</option> : null}
+          {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.status === "offline" ? " (offline)" : ""}</option>)}
+        </select>
+      </label>
+    ) : choosing ? (
       <select className="qa-agent small" aria-label="QA agent" disabled={!state || busy} value={qa?.agentId ?? ""}
         onChange={(e) => { if (e.target.value) void set("qa", e.target.value); }}>
         {!qa ? <option value="">Choose the QA agent…</option> : null}
