@@ -341,11 +341,16 @@ export function AgentPanel({ agent, world, state, waiting, onAnswer, onGo, onClo
 }
 
 /** Answering in the office: the same review view as the inbox, over the office. */
-export function AnswerModal({ detail, agent, agents, onNext, onClose }: {
-  detail: ItemDetail;
+export function AnswerModal({ detail, agent, agents, position, of, onNext, onDone, onClose }: {
+  detail: ItemDetail | null;
   agent: string | null;
   agents: Map<string, WorldAgent>;
+  /** Which question this is of how many, for a chat that goes on through several. */
+  position: number;
+  of: number;
   onNext: (() => void) | null;
+  /** Once a question has been answered or put aside: on to the next, or close when none are left. */
+  onDone: () => void;
   onClose: () => void;
 }) {
   const who = agent ? agents.get(agent) : null;
@@ -353,10 +358,13 @@ export function AnswerModal({ detail, agent, agents, onNext, onClose }: {
     <div className="world-modal" role="dialog" aria-label="Answer" onClick={onClose}>
       <div className="world-modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="panel-head">
-          <strong>{who ? `${who.name} is asking` : "Waiting for you"}</strong>
+          <span>
+            <strong>{who ? `${who.name} is asking` : "Waiting for you"}</strong>
+            {of > 1 ? <span className="muted"> · {position} of {of}</span> : null}
+          </span>
           <button className="ghost small" onClick={onClose} aria-label="Close">✕ <kbd>Esc</kbd></button>
         </div>
-        <ItemDetailView key={detail.item.id} detail={detail} onNext={onNext} />
+        {detail ? <ItemDetailView key={detail.item.id} detail={detail} onNext={onNext} onDone={onDone} onAnswered={onDone} /> : <p className="muted">Loading question…</p>}
       </div>
     </div>
   );

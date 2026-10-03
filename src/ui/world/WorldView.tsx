@@ -7,6 +7,7 @@ import { AutoApproveToggle } from "../components/AutoApproveToggle.tsx";
 import { useItemDetail } from "../hooks.ts";
 import { needsYou } from "../queue.ts";
 import { Avatar } from "./Avatar.tsx";
+import { followingQuestions } from "./chat.ts";
 import { crafters } from "./crafts.ts";
 import { lookFor } from "./look.ts";
 import { CALLER, queueOrder, SPAWN, CLEARING_VIEW, type Spot, type Vec2 } from "./spatial.ts";
@@ -53,6 +54,8 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
   const [selected, setSelected] = useState<string | null>(null);
   const [openTeam, setOpenTeam] = useState<string | null>(null);
   const [answering, setAnswering] = useState<string | null>(null);
+  // What this chat has already dealt with; the next question never comes back round within it.
+  const [handled, setHandled] = useState<string[]>([]);
   const [fly, setFly] = useState<FlyTarget | null>(null);
   const [controlsOpen, setControlsOpen] = useState(false);
   const controls = useRef<HTMLDivElement>(null);
@@ -104,7 +107,17 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
   const walking = calling.filter((c) => !arrived.includes(c));
   // One at a time, once they are here, and not over what you opened yourself.
   const caller = !answering && !selectedAgent && !shownTeam ? arrived[0] ?? null : null;
-  const nextItem = entries.find((e) => e.item.id !== answering)?.item.id ?? null;
+  // After a question the chat opens the next one waiting: the same agent's first, then the rest of the line.
+  const taskAgent = useMemo(() => new Map((world?.agents ?? []).flatMap((a) => a.taskIds.map((t) => [t, a.id] as const))), [world]);
+  const asker = detail ? taskAgent.get(detail.task.id) : undefined;
+  const following = followingQuestions(entries, answering, handled, asker, taskAgent);
+  const closeChat = useCallback(() => (setHandled([]), setAnswering(null)), []);
+  const advance = () => {
+    const next = following[0]?.item.id ?? null;
+    if (!next || !answering) return closeChat();
+    setHandled([...handled, answering]);
+    setAnswering(next);
+  };
 
   const select = (id: string) => {
     setSelected(id);
@@ -125,14 +138,14 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || (e.target as HTMLElement).closest("input, textarea, select")) return;
       if (controlsOpen) setControlsOpen(false);
-      else if (answering) setAnswering(null);
+      else if (answering) closeChat();
       else if (selected) setSelected(null);
       else if (openTeam) setOpenTeam(null);
       else if (caller) sendBack(caller.key);
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [controlsOpen, answering, selected, openTeam, caller, sendBack]);
+  }, [controlsOpen, answering, selected, openTeam, caller, sendBack, closeChat]);
 
   useEffect(() => {
     if (!controlsOpen) return;
@@ -243,13 +256,16 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
         />
       ) : null}
       {!caller && walking[0] ? <CallerNote call={walking[0]} agents={agents} /> : null}
-      {detail ? (
+      {answering ? (
         <AnswerModal
           detail={detail}
-          agent={[...waiting.entries()].find(([, w]) => w.itemIds.includes(detail.item.id))?.[0] ?? null}
+          agent={[...waiting.entries()].find(([, w]) => w.itemIds.includes(answering))?.[0] ?? null}
           agents={agents}
-          onNext={nextItem ? () => setAnswering(nextItem) : null}
-          onClose={() => setAnswering(null)}
+          position={handled.length + 1}
+          of={handled.length + 1 + following.length}
+          onNext={following.length ? advance : null}
+          onDone={advance}
+          onClose={closeChat}
         />
       ) : null}
     </div>
