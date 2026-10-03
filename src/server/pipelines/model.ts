@@ -106,7 +106,27 @@ export function policyHash(g: PipelineGraph): string { const { positions: _posit
 export function selected(g: PipelineGraph, values: Record<string, PipelineValue>): string[] {
   const problems: string[] = [];
   for (const key of Object.keys(values)) if (!g.fields.some(f => f.id === key)) problems.push(`unknown selection ${key}`);
-  for (const f of g.fields) if (f.type === "boolean" ? typeof values[f.id] !== "boolean" : !f.options!.includes(values[f.id] as string)) problems.push(`select ${f.label}`);
+  const required = new Set<string>(); const active = new Set([g.entry]);
+  for (const key of topological(g)) {
+    if (!active.has(key)) continue;
+    const node = g.nodes.find(n => n.id === key)!;
+    if (node.kind === "condition") required.add(node.field!);
+    for (const edge of g.edges.filter(e => e.from === key)) {
+      // An unresolved condition stops here; inactive ports do not read their guards.
+      if (node.kind === "condition" && String(values[node.field!]) !== edge.port) continue;
+      if (edge.when) {
+        required.add(edge.when.field);
+        if (values[edge.when.field] !== edge.when.equals) continue;
+      }
+      active.add(edge.to);
+    }
+  }
+  // Path rules are graph-wide readers, not tied to an inactive node.
+  for (const rule of g.pathRules ?? []) {
+    if (rule.when) { required.add(rule.when.field); if (values[rule.when.field] !== rule.when.equals) continue; }
+    if (rule.require) required.add(rule.require.field);
+  }
+  for (const f of g.fields) if ((required.has(f.id) || Object.hasOwn(values, f.id)) && (f.type === "boolean" ? typeof values[f.id] !== "boolean" : !f.options!.includes(values[f.id] as string))) problems.push(`select ${f.label}`);
   return problems;
 }
 export function activation(g: PipelineGraph, values: Record<string, PipelineValue>): { active: Set<string>; edges: Set<string> } {
