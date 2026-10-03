@@ -11,6 +11,8 @@ import type { Craft } from "./crafts.ts";
 import { craftPose, HandTool } from "./Crafts.tsx";
 import { usePace } from "./Pace.tsx";
 import { useGames } from "./Games.tsx";
+import { useGym } from "./Gym.tsx";
+import { armReach, handTarget, newPose, newReach, stationPose } from "./gym.ts";
 
 const WALK_SPEED = 1.9;
 /** Strolling round the garden, taking it easy. */
@@ -64,6 +66,10 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const tool = useRef<Group>(null);
   const saw = useRef<Group>(null);
   const hammer = useRef<Group>(null);
+  const body = useRef<Group>(null);
+  const knees = useRef<[Group | null, Group | null]>([null, null]);
+  const ankles = useRef<[Group | null, Group | null]>([null, null]);
+  const elbows = useRef<[Group | null, Group | null]>([null, null]);
   const motion = useRef({
     pos: [...(enterFrom ?? spot.pos)] as Vec2,
     yaw: spot.facing,
@@ -75,6 +81,9 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const [hovered, setHovered] = useState(false);
   const pace = usePace();
   const games = useGames();
+  const gym = useGym();
+  // Scratch for the gym's lifts, so a frame allocates nothing.
+  const lifting = useMemo(() => ({ pose: newPose(), reach: newReach(), hand: [0, 0, 0] as [number, number, number] }), []);
 
   // A new spot sends the avatar walking there from wherever it is now.
   useEffect(() => {
@@ -162,6 +171,11 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     const play = spot.game ? games?.frame(spot.game, Date.now()) : null;
     const gaming = play?.active && play.player === spot.game?.player ? play : null;
     if (play?.active) pace?.moved(performance.now());
+    // At a gym station, once there and while idle: the lift's pose, the hands on the bar.
+    gym?.arrive(agent.id, !walking && !m.path.length && !!spot.gym && agent.status === "idle", Date.now());
+    const seconds = spot.gym ? gym?.seconds(agent.id, Date.now()) ?? null : null;
+    const lift = spot.gym && seconds !== null ? stationPose(spot.gym, seconds, look.height, lifting.pose) : null;
+    if (lift?.moving) pace?.moved(performance.now());
 
     const t = state.clock.elapsedTime + m.phase;
     // At their station while they work, they make something; otherwise they stand at it.
@@ -222,6 +236,33 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     }
     // Walking bob, and a gentle breath at rest.
     g.position.y = sitting ? SEAT_H - HIP * look.height : picking ? -STEP_DROP * look.height : walking ? Math.abs(Math.sin(t * 9)) * 0.035 : Math.sin(t * 1.6) * 0.006;
+    const [kl, kr] = knees.current;
+    const [nl, nr] = ankles.current;
+    const [el, er] = elbows.current;
+    if (lift && ll && lr && al && ar && kl && kr && nl && nr && el && er && body.current) {
+      const h = look.height;
+      g.position.set(m.pos[0] + Math.sin(m.yaw) * lift.rootZ * h, lift.rootY * h, m.pos[1] + Math.cos(m.yaw) * lift.rootZ * h);
+      body.current.rotation.x = lift.lie ? -Math.PI / 2 : 0;
+      body.current.position.set(0, lift.lie ? lift.lieY * h : 0, lift.lie ? lift.lieZ * h : 0);
+      ll.rotation.x = lr.rotation.x = lift.thigh;
+      kl.rotation.x = kr.rotation.x = lift.knee;
+      nl.rotation.x = nr.rotation.x = lift.ankle;
+      if (upper.current) upper.current.rotation.x = lift.bend;
+      if (head.current) head.current.rotation.set(lift.lift === "pullup" ? -0.25 : 0, 0, 0);
+      for (let i = 0; i < 2; i++) {
+        const side = i ? 1 : -1;
+        const hand = handTarget(lift, look.build, side, lifting.hand);
+        const r = armReach(hand[0], hand[1], hand[2], side * lift.poleX, lift.poleY, lift.poleZ, lifting.reach);
+        (i ? ar : al).rotation.set(r.x, r.y, r.z);
+        (i ? er : el).rotation.x = r.elbow;
+      }
+    } else if (body.current) {
+      body.current.rotation.x = 0;
+      body.current.position.set(0, 0, 0);
+      if (kl && kr && nl && nr) kl.rotation.x = kr.rotation.x = nl.rotation.x = nr.rotation.x = 0;
+      if (el && er) el.rotation.x = er.rotation.x = 0;
+      if (al && ar) al.rotation.y = ar.rotation.y = 0;
+    }
 
     const status = LAMP[agent.status];
     const pulse = agent.status === "working" ? 0.75 + 0.25 * Math.sin(t * 4) : agent.status === "blocked" ? (Math.sin(t * 6) > 0 ? 1 : 0.35) : 1;
@@ -245,12 +286,13 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   return (
     <group
       ref={root}
+      name={`avatar:${agent.id}`}
       onClick={click}
       onPointerOver={(e) => (e.stopPropagation(), setHovered(true))}
       onPointerOut={() => setHovered(false)}
     >
-      <group scale={look.height}>
-        <Body look={look} legs={legs} arms={arms} card={card} folder={carrying} head={head} upper={upper} flower={flower} tool={craft ? <HandTool craft={craft} tool={tool} saw={saw} hammer={hammer} /> : null} />
+      <group ref={body} scale={look.height}>
+        <Body look={look} legs={legs} knees={knees} ankles={ankles} elbows={elbows} arms={arms} card={card} folder={carrying} head={head} upper={upper} flower={flower} tool={craft ? <HandTool craft={craft} tool={tool} saw={saw} hammer={hammer} /> : null} />
       </group>
       <mesh ref={lamp} position={[0, 2.18, 0]}>
         <sphereGeometry args={[0.08, 20, 16]} />
@@ -287,9 +329,13 @@ function turn(from: number, to: number, max: number): number {
   return from + Math.max(-max, Math.min(max, d));
 }
 
-export function Body({ look, legs, arms, card, folder = false, head, upper, flower, tool = null }: {
+export function Body({ look, legs, knees, ankles, elbows, arms, card, folder = false, head, upper, flower, tool = null }: {
   look: Look;
   legs: RefObject<[Group | null, Group | null]>;
+  /** The legs' and arms' lower joints, for the gym's lifts; straight unless turned. */
+  knees?: RefObject<[Group | null, Group | null]>;
+  ankles?: RefObject<[Group | null, Group | null]>;
+  elbows?: RefObject<[Group | null, Group | null]>;
   arms: RefObject<[Group | null, Group | null]>;
   card: Texture | null;
   folder?: boolean;
@@ -309,14 +355,23 @@ export function Body({ look, legs, arms, card, folder = false, head, upper, flow
     <group>
       {([-1, 1] as const).map((side, i) => (
         <group key={side} ref={(g) => void (legs.current[i] = g)} position={[side * 0.1, 0.86, 0]}>
-          <mesh position={[0, -0.4, 0]} castShadow>
-            <capsuleGeometry args={[0.085, 0.62, 4, 12]} />
+          {/* The thigh, then the shin and foot from the knee: one straight leg until a knee bends. */}
+          <mesh position={[0, -0.215, 0]} castShadow>
+            <capsuleGeometry args={[0.085, 0.25, 4, 12]} />
             {pants}
           </mesh>
-          <mesh position={[0, -0.82, 0.05]} castShadow>
-            <boxGeometry args={[0.15, 0.08, 0.28]} />
-            <meshStandardMaterial color={look.shoes} roughness={0.6} />
-          </mesh>
+          <group ref={(g) => void (knees && (knees.current[i] = g))} position={[0, -0.43, 0]}>
+            <mesh position={[0, -0.18, 0]} castShadow>
+              <capsuleGeometry args={[0.085, 0.19, 4, 12]} />
+              {pants}
+            </mesh>
+            <group ref={(g) => void (ankles && (ankles.current[i] = g))} position={[0, -0.36, 0]}>
+              <mesh position={[0, -0.03, 0.05]} castShadow>
+                <boxGeometry args={[0.15, 0.08, 0.28]} />
+                <meshStandardMaterial color={look.shoes} roughness={0.6} />
+              </mesh>
+            </group>
+          </group>
         </group>
       ))}
       <group ref={upper} position={[0, HIP, 0]}>
@@ -332,14 +387,21 @@ export function Body({ look, legs, arms, card, folder = false, head, upper, flow
           </mesh>
           {([-1, 1] as const).map((side, i) => (
             <group key={side} ref={(g) => void (arms.current[i] = g)} position={[side * 0.27 * look.build, 1.42, 0]}>
-              <mesh position={[0, -0.27, 0]} castShadow>
-                <capsuleGeometry args={[0.058, 0.42, 4, 10]} />
+              {/* The upper arm, then the forearm and hand from the elbow. */}
+              <mesh position={[0, -0.135, 0]} castShadow>
+                <capsuleGeometry args={[0.058, 0.155, 4, 10]} />
                 {shirt}
               </mesh>
-              <mesh position={[0, -0.54, 0]}>
-                <sphereGeometry args={[0.066, 12, 10]} />
-                {skin}
-              </mesh>
+              <group ref={(g) => void (elbows && (elbows.current[i] = g))} position={[0, -0.27, 0]}>
+                <mesh position={[0, -0.135, 0]} castShadow>
+                  <capsuleGeometry args={[0.058, 0.155, 4, 10]} />
+                  {shirt}
+                </mesh>
+                <mesh name="hand" position={[0, -0.27, 0]}>
+                  <sphereGeometry args={[0.066, 12, 10]} />
+                  {skin}
+                </mesh>
+              </group>
               {side === 1 && folder ? (
                 <mesh position={[0, -0.6, 0.14]} rotation={[Math.PI / 2 - 0.9, 0, 0]} castShadow>
                   <boxGeometry args={[0.3, 0.38, 0.04]} />

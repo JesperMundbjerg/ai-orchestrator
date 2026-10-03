@@ -17,3 +17,15 @@ PLAYWRIGHT_MODULE='/absolute/path/to/playwright/index.mjs' node scripts/check-ga
 ```
 
 The check targets the building, the only office, without a layout selector. It creates a disposable database and HOME, explicitly sets `HERDR_SOCKET_PATH=/nonexistent` and `HERDR_BIN_PATH=/usr/bin/false`, runs a scratch HTTP office on a free port other than 4870, and supplies twenty-three idle agents without herdr or account reads. It uses headless Chromium only, checks default and legacy-storage opening without a selector or founder desk, garden occupancy, front-door walking, moving balls / three landed darts / score visibility / immediate working-state departure, and closes the browser, HTTP server and database in `finally`. Screenshots default to `~/.review-inbox/handoffs/agent-office/games/` (override with `GAMES_SCREENSHOTS`). No live inbox state is read or changed.
+
+## Gym
+
+The south-east corner's square holds a gym along its outer wall, behind the reading nook's sofa, so it stays out of the opening views. It has a rubber floor, a lifting platform, a squat stand, a flat bench with uprights, a pull-up rig and a plate tree. `furnishGym` adds the boxes to the building's instanced furniture. `Gym.tsx` draws the bars and plates on shared geometry and materials.
+
+`gym.ts` chooses lifters after the games. Eligibility follows the same rules, and nobody plays and trains at once. At most a third of the eligible agents train, and only one agent uses each station. Lifters stay at their station while they are eligible. The others are ordered by a hash of their id, and each takes the first free station starting from a hashed preference. The lifts are keyframed in body units and eased:
+- the platform runs three snatches, then two clean and jerks, each followed by a rest;
+- the squat stand, bench and pull-up rig each run a set of five, then a six-second rest.
+
+`GymPlayback` starts a lifter's clock once they are at their station and stops it when they leave, the same way games do. The avatar's rig has knees, ankles and elbows. A two-bone reach keeps the hands on the bar, and the bar follows the pose. Only a moving lift promotes the pacer.
+
+`test/gym.test.ts` covers station choice, lift timing and continuity, hands on the bar across heights and builds, and clear walking routes. The browser check (`npm run build`, then `PLAYWRIGHT_MODULE=… node test/gym.browser.mjs`) runs `test/gym-office.fixture.ts` through the scratch launcher on a free port, with herdr and the integrations off. It holds the clock at each lift's phases and measures hand-to-bar distance in the scene. It takes desktop and phone screenshots and records a video, then gives everyone work and checks that the lifters leave. Output goes to `~/.review-inbox/handoffs/agent-office/gym/` (override with `SHOTS`).

@@ -2,6 +2,7 @@
 // Metres as [x, z], with the clearing at the origin and north (-z) ahead.
 import type { Team, WorldAgent } from "../../shared/types.ts";
 import type { GameSeat } from "./games.ts";
+import type { Station } from "./gym.ts";
 
 export type Vec2 = [number, number];
 export type Zone = "team" | "queue" | "lounge" | "caller" | "garden" | "meeting";
@@ -20,6 +21,8 @@ export interface Spot {
   sit?: boolean;
   /** A deterministic lounge play, only while idle and at this spot. */
   game?: GameSeat;
+  /** Training at this station of the gym, only while idle and at this spot. */
+  gym?: Station;
   /** Standing in the garden: looking up, picking a flower, watching ducks, chatting or stretching. */
   pose?: Pose;
   /** Once there, stroll round these waypoints and back, again and again. */
