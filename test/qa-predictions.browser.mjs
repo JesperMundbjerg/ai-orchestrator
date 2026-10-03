@@ -58,17 +58,16 @@ try {
   assert.equal(await predictWith.inputValue(), "");
   await page.screenshot({ path: join(shots, "07-predict-with-none.png") });
   await predictWith.selectOption({ label: "Opus 5.5 · medium (Claude Code)" });
-  const agentStatus = page.getByRole("status", { name: "QA agent" });
-  await agentStatus.filter({ hasText: "starting" }).waitFor();
-  await agentStatus.filter({ hasText: "online" }).waitFor({ timeout: 10_000 });
-  assert.equal(await agentStatus.innerText(), "QA agent: Opus 5.5 · medium (Claude Code) · online");
+  await page.waitForFunction(() => document.querySelector('[aria-label="QA model"]')?.title.includes("starting"));
+  await page.waitForFunction(() => document.querySelector('[aria-label="QA model"]')?.title.includes("online"), undefined, { timeout: 10_000 });
+  assert.equal(await page.getByRole("status", { name: "QA agent" }).count(), 0, "agent status is not rendered in the header");
   const setting = await get("/api/auto-approve");
   assert.equal(setting.mode, "off");
   assert.equal(setting.qa.agentId, setting.qaAgent.agentId);
   const qaAgent = (await get("/api/world")).agents.find((a) => a.id === setting.qa.agentId);
   assert.ok(qaAgent?.paneId, "the started QA agent is in the office");
   const qaSession = { harness: "claude", sessionId: "qa-fixture", paneId: qaAgent.paneId };
-  await page.getByRole("status").filter({ hasText: "QA predicted 0" }).waitFor();
+  assert.match(await predictWith.getAttribute("title"), /online · predicted 0 · agreed 0 of 0/);
   await page.screenshot({ path: join(shots, "08-predict-with-agent.png") });
 
   // The QA agent predicts all three through the ordinary command path; nothing is sent.
@@ -85,9 +84,8 @@ try {
   }
 
   await page.reload();
-  const status = page.getByRole("status").filter({ hasText: "QA predicted" });
-  await status.waitFor();
-  assert.equal(await status.innerText(), "QA predicted 3 · agreed 0 of 0");
+  assert.equal(await page.getByRole("status").filter({ hasText: "QA predicted" }).count(), 0, "predictions are not rendered in the header");
+  assert.match(await predictWith.getAttribute("title"), /predicted 3 · agreed 0 of 0/);
   assert.equal(await page.getByRole("radio", { name: "Off" }).getAttribute("aria-checked"), "true");
   await page.getByText("Which colour for the door?").first().waitFor();
   assert.equal(await page.getByText(/QA prediction/).count(), 0, "nothing of the prediction shows before the founder answers");
@@ -121,36 +119,38 @@ try {
 
   // The header: one match, one mismatch, one in words still to judge; then the QA agent judges it.
   await page.goto(url);
-  await status.filter({ hasText: "to judge" }).waitFor();
-  assert.equal(await status.innerText(), "QA predicted 3 · agreed 1 of 2 (50%) · 1 to judge");
+  await page.waitForFunction(() => document.querySelector('[aria-label="QA model"]')?.title.includes("1 to judge"));
+  assert.match(await predictWith.getAttribute("title"), /predicted 3 · agreed 1 of 2 \(50%\) · 1 to judge/);
   await page.screenshot({ path: join(shots, "04-header-to-judge.png") });
   const feed = await post("/api/agent/qa/answers", { session: qaSession });
   assert.deepEqual(feed.answers.map((a) => a.predicted?.verdict ?? null), ["mismatch", "match", "needs_judging"]);
   await post("/api/agent/qa/judge", { session: qaSession, item: open, revision: 1, agrees: true });
   await page.reload();
-  await status.filter({ hasText: "(67%)" }).waitFor();
-  assert.equal(await status.innerText(), "QA predicted 3 · agreed 2 of 3 (67%)");
+  await page.waitForFunction(() => document.querySelector('[aria-label="QA model"]')?.title.includes("(67%)"));
+  assert.match(await predictWith.getAttribute("title"), /predicted 3 · agreed 2 of 3 \(67%\)/);
+  assert.equal(await page.getByRole("status", { name: "QA agent" }).count(), 0);
   await page.screenshot({ path: join(shots, "05-header-judged.png") });
+  await page.screenshot({ path: join(shots, "header-desktop.png") });
 
   // At phone width the agreement stays on screen.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  await status.waitFor();
-  const box = await status.boundingBox();
-  assert.ok(box && box.x >= 0 && box.x + box.width <= 390, JSON.stringify(box));
+  const pickerBox = await predictWith.boundingBox();
+  assert.ok(pickerBox && pickerBox.x >= 0 && pickerBox.x + pickerBox.width <= 390, JSON.stringify(pickerBox));
   await page.screenshot({ path: join(shots, "06-phone.png") });
+  await page.screenshot({ path: join(shots, "header-phone.png") });
   // Another model replaces the QA agent: the new one is designated, then the one the office started is closed.
   await page.setViewportSize({ width: 1440, height: 1000 });
   await predictWith.selectOption({ label: "Sonnet 5.5 · high (Claude Code)" });
-  await agentStatus.filter({ hasText: "Sonnet 5.5 · high (Claude Code) · starting" }).waitFor();
+  await page.waitForFunction(() => document.querySelector('[aria-label="QA model"]')?.title.includes("starting"));
   await page.screenshot({ path: join(shots, "09-replacing.png") });
-  await agentStatus.filter({ hasText: "Sonnet 5.5 · high (Claude Code) · online" }).waitFor({ timeout: 10_000 });
+  await page.waitForFunction(() => document.querySelector('[aria-label="QA model"]')?.title.includes("online"), undefined, { timeout: 10_000 });
   for (let i = 0; (await get("/api/world")).agents.some((a) => a.id === qaAgent.id); i++) { if (i === 50) break; await delay(100); }
   const replaced = await get("/api/auto-approve");
   assert.notEqual(replaced.qa.agentId, qaAgent.id);
   assert.ok(!(await get("/api/world")).agents.some((a) => a.id === qaAgent.id), "the replaced QA agent was closed");
   assert.match(await readFile(fixtureLog, "utf8"), new RegExp(`close ${qaAgent.paneId}\n`));
-  assert.equal(await page.getByRole("status").filter({ hasText: "QA predicted" }).innerText(), "QA predicted 3 · agreed 2 of 3 (67%)", "the record stays");
+  assert.match(await predictWith.getAttribute("title"), /predicted 3 · agreed 2 of 3 \(67%\)/, "the prediction record stays in the tooltip");
   await page.screenshot({ path: join(shots, "10-replaced.png") });
 
   // A start that fails says why and changes nothing: Sonnet stays the QA agent.
@@ -159,7 +159,7 @@ try {
   await failed.waitFor({ timeout: 10_000 });
   assert.match(await failed.innerText(), /Haiku 4\.5 · low \(Claude Code\) did not start \(herdr: agent did not become ready within 30s\)/);
   assert.equal((await get("/api/auto-approve")).qa.agentId, replaced.qa.agentId);
-  assert.equal(await agentStatus.innerText(), "QA agent: Sonnet 5.5 · high (Claude Code) · online");
+  assert.equal(await page.getByRole("status", { name: "QA agent" }).count(), 0);
   assert.equal(await predictWith.inputValue(), "claude|sonnet|high");
   await page.screenshot({ path: join(shots, "11-start-failed.png") });
 

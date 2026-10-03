@@ -126,7 +126,6 @@ h1, h2, h3 { margin: 0; }
 .qa-agent-status.starting { color: var(--muted); }
 .qa-agent-status.offline { color: var(--warn); }
 .qa-predict { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
-.qa-status.offline { color: var(--warn); }
 .with-qa { color: var(--accent); font-weight: 600; }
 .qa-prediction { margin-top: 4px; border-top: 1px dashed var(--muted); padding-top: 4px; }
 .qa-prediction > summary { cursor: pointer; font-size: 12px; color: var(--muted); }

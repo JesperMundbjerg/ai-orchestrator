@@ -60,15 +60,15 @@ try {
   assert.equal((await get("/api/auto-approve")).mode, "off", "nothing is on until a model is picked");
   await page.screenshot({ path: join(shots, "02-choose-model.png") });
   await picker.selectOption({ label: "Opus 5.5 · medium (Claude Code)" });
-  const agentStatus = page.getByRole("status", { name: "QA agent" });
-  await agentStatus.filter({ hasText: "starting" }).waitFor();
-  assert.equal(await agentStatus.innerText(), "QA agent: Opus 5.5 · medium (Claude Code) · starting");
+  await page.waitForFunction(() => document.querySelector('[aria-label="QA model"]')?.title.includes("starting"));
+  assert.equal(await page.getByRole("status", { name: "QA agent" }).count(), 0, "agent status is not rendered in the header");
   assert.equal((await get("/api/auto-approve")).mode, "off", "QA answers wait for their agent");
   assert.equal(await page.getByRole("radio", { name: "QA answers" }).getAttribute("aria-checked"), "true");
   await page.screenshot({ path: join(shots, "03-starting.png") });
-  await agentStatus.filter({ hasText: "online" }).waitFor({ timeout: 10_000 });
-  const status = page.getByRole("status").filter({ hasText: "with QA agent" });
-  await status.waitFor();
+  await page.waitForFunction(() => document.querySelector('[aria-label="QA model"]')?.title.includes("online"), undefined, { timeout: 10_000 });
+  const pickerTitle = await picker.getAttribute("title");
+  assert.match(pickerTitle, /1 with QA agent · 0 answered · 0 overridden/);
+  assert.equal(await page.getByRole("status").filter({ hasText: "with QA agent" }).count(), 0, "QA counts are not rendered in the header");
   const setting = await get("/api/auto-approve");
   assert.equal(setting.mode, "qa");
   assert.equal(setting.qa.agentId, setting.qaAgent.agentId);
@@ -76,7 +76,6 @@ try {
   assert.ok(qaAgent?.paneId, "the started QA agent is in the office");
   const qaSession = { harness: "claude", sessionId: "qa-fixture", paneId: qaAgent.paneId };
   // It runs, so the decision is with it and out of Needs you; nothing was answered.
-  assert.match(await status.innerText(), /^1 with QA agent · 0 answered · 0 overridden$/);
   assert.equal((await get(`/api/items/${decision}`)).replies.length, 0);
   assert.deepEqual((await get("/api/state")).items.filter((i) => i.withQa).map((i) => i.id), [decision]);
   await page.screenshot({ path: join(shots, "04-qa-on-online.png") });
@@ -112,7 +111,8 @@ try {
   // The office header shows the same setting; at phone width the control stays on screen.
   await page.goto(`${url}/#/world`);
   await page.locator(".world-top").waitFor();
-  await page.getByRole("status").filter({ hasText: "with QA agent" }).waitFor();
+  await page.getByRole("combobox", { name: "QA model" }).waitFor();
+  assert.match(await page.getByRole("combobox", { name: "QA model" }).getAttribute("title"), /0 with QA agent · 1 answered · 1 overridden/);
   await page.screenshot({ path: join(shots, "09-office.png") });
   await page.goto(url);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -120,7 +120,7 @@ try {
   await group.waitFor();
   const bounds = await group.boundingBox();
   assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390, JSON.stringify(bounds));
-  for (const part of [page.getByRole("combobox", { name: "QA model" }), page.getByRole("status").filter({ hasText: "with QA agent" })]) {
+  for (const part of [page.getByRole("combobox", { name: "QA model" })]) {
     const box = await part.boundingBox();
     assert.ok(box && box.x >= 0 && box.x + box.width <= 390, JSON.stringify(box));
   }
