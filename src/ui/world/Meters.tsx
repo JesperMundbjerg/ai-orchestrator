@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import { Color, ConeGeometry, CylinderGeometry, IcosahedronGeometry, InstancedBufferAttribute, Object3D, RingGeometry, type InstancedMesh, type Mesh } from "three";
-import type { UsageMeter } from "../../shared/types.ts";
+import type { UsageCredits, UsageMeter } from "../../shared/types.ts";
 import type { Garden } from "./building.ts";
 import { textTexture } from "./label.ts";
-import { fallenSeeds, meterLook, meterSpots, perches, RING_OUT, TONES, TRAY, TRAY_THICK, type MeterLook, type MeterSpot, type Perch } from "./meters.ts";
+import { creditLook, fallenSeeds, meterLook, meterSpots, perches, RING_OUT, seedlingSpot, SEEDLING_HEIGHT, TONES, TRAY, TRAY_THICK, type MeterLook, type MeterSpot, type Perch } from "./meters.ts";
 import { usePace } from "./Pace.tsx";
 import { SEED, SEEDS, seedGrain } from "./Seed.tsx";
 
@@ -12,7 +12,8 @@ import { SEED, SEEDS, seedGrain } from "./Seed.tsx";
 // a glass of seed on a wooden post under a little roof, the seed at what is left of the limit, a
 // band and a ground ring in its tone, the ring showing the same share left as the seed. A handful of
 // shared shapes; the birds are two instanced draws for every feeder together, and they only hop
-// and peck at whatever rate the office is drawn, so they never keep it busy.
+// and peck at whatever rate the office is drawn, so they never keep it busy. A meter with credits
+// has a seedling at its feeder's foot, grown as far as the credits left.
 
 const UNIT = new CylinderGeometry(1, 1, 1, 14);
 const POST = new CylinderGeometry(1, 1, 1, 6);
@@ -56,6 +57,10 @@ export function Meters({ garden, meters }: { garden: Garden; meters: UsageMeter[
       <Rods key={spots.length} spots={spots} faded={looks.map((l) => l.faded).join(",")} />
       {birds.length ? <Birds key={birds.length} perches={birds} /> : null}
       {fallen.length ? <Fallen key={fallen.length} seeds={fallen} /> : null}
+      {spots.map((s) => {
+        const credits = meters.find((m) => m.id === s.id)?.credits;
+        return credits ? <Seedling key={`credits:${s.id}`} spot={s} credits={credits} now={now} /> : null;
+      })}
     </group>
   );
 }
@@ -169,6 +174,92 @@ function Feeder({ spot, look }: { spot: MeterSpot; look: MeterLook }) {
       </mesh>
       {hovered || pinned ? (
         <sprite position={[0, base + h + r * 0.84 + 0.3, 0]} scale={[(tagWidth / 68) * 0.2, 0.2, 1]}>
+          <spriteMaterial map={tag} transparent depthWrite={false} depthTest={false} fog={false} />
+        </sprite>
+      ) : null}
+    </group>
+  );
+}
+
+const LEAF = "#5fa84f";
+const STEM = "#4f8a3c";
+const DRY = "#9c7a4a";
+
+/**
+ * The credits' seedling: a mound of soil, a stem and pairs of leaves up it, a flower on top when
+ * the credits are unlimited. It grows to its new height when the credits change; hovering says how
+ * many are left and a click pins that.
+ */
+function Seedling({ spot, credits, now }: { spot: MeterSpot; credits: UsageCredits; now: number }) {
+  const pace = usePace();
+  const look = creditLook(credits, now);
+  const [x, z] = seedlingSpot(spot);
+  const [hovered, setHovered] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const plant = useRef<Object3D>(null);
+  const shown = useRef(look.growth);
+  useFrame((_, delta) => {
+    if (!plant.current) return;
+    if (Math.abs(shown.current - look.growth) > 0.002) {
+      shown.current += (look.growth - shown.current) * Math.min(1, delta * 2.5);
+      pace?.moved(performance.now());
+    } else shown.current = look.growth;
+    plant.current.scale.setScalar(shown.current);
+  });
+  const leaf = fade(look.dry ? DRY : LEAF, look.faded);
+  const stem = fade(look.dry ? DRY : STEM, look.faded);
+  const tagWidth = Math.min(1100, 70 + look.label.length * 18);
+  const tag = useMemo(
+    () => textTexture([{ text: look.label, size: 36, color: "#ffffff", weight: 600 }], { width: tagWidth, height: 68, background: "rgba(16,20,28,0.72)", radius: 32 }),
+    [look.label, tagWidth],
+  );
+  useEffect(() => () => tag.dispose(), [tag]);
+  const h = SEEDLING_HEIGHT;
+  const top = h * (look.dry ? 0.6 : 1);
+  // In pairs up the stem, each pair turned a little from the one below.
+  const pairs = Math.ceil(look.leaves / 2);
+  const leaves = Array.from({ length: look.leaves }, (_, i) => {
+    const k = Math.floor(i / 2);
+    return { y: h * (pairs > 1 ? 0.35 + (0.55 * k) / (pairs - 1) : 0.6), a: (i % 2) * Math.PI + k * 1.1 };
+  });
+  return (
+    <group position={[x, 0, z]}>
+      <group
+        onPointerOver={(e) => (e.stopPropagation(), setHovered(true), pace?.moved(performance.now()))}
+        onPointerOut={() => (setHovered(false), pace?.moved(performance.now()))}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (e.delta < 6) setPinned((p) => !p), pace?.moved(performance.now());
+        }}
+      >
+        <mesh geometry={PEBBLE} position={[0, 0.01, 0]} scale={[0.09, 0.03, 0.09]} receiveShadow>
+          <meshStandardMaterial color={fade("#6b4f36", look.faded, 0.4)} roughness={1} flatShading />
+        </mesh>
+        <object3D ref={plant}>
+          <mesh geometry={POST} position={[0, top / 2, 0]} scale={[0.012, top, 0.012]} castShadow>
+            <meshStandardMaterial color={stem} roughness={0.9} flatShading />
+          </mesh>
+          {leaves.map((l, i) => (
+            <group key={i} position={[0, l.y, 0]} rotation-y={l.a}>
+              <mesh geometry={PEBBLE} position={[0.055, 0.02, 0]} rotation-z={0.45} scale={[0.07, 0.012, 0.035]} castShadow>
+                <meshStandardMaterial color={leaf} roughness={0.85} flatShading />
+              </mesh>
+            </group>
+          ))}
+          {look.bloom ? (
+            <mesh geometry={PEBBLE} position={[0, h + 0.03, 0]} scale={0.045}>
+              <meshStandardMaterial color={fade("#f2c94c", look.faded)} roughness={0.6} flatShading />
+            </mesh>
+          ) : null}
+          <mesh geometry={PEBBLE} position={[0, top, 0]} scale={0.022}>
+            <meshStandardMaterial color={leaf} roughness={0.85} flatShading />
+          </mesh>
+        </object3D>
+        {/* An invisible stalk the height of a full seedling, so a small one is as easy to point at. */}
+        <mesh geometry={UNIT} position={[0, h / 2, 0]} scale={[0.09, h, 0.09]} visible={false} />
+      </group>
+      {hovered || pinned ? (
+        <sprite position={[0, h + 0.15, 0]} scale={[(tagWidth / 68) * 0.2, 0.2, 1]}>
           <spriteMaterial map={tag} transparent depthWrite={false} depthTest={false} fog={false} />
         </sprite>
       ) : null}

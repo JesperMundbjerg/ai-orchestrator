@@ -112,6 +112,8 @@ export interface CrewPause {
   harness: string;
   /** "the founder's 5-hour Claude use is 92%, until 17:40" */
   why: string;
+  /** The harness's limit is reached but it runs on the founder's credits: nothing is paused, the guide only says why. */
+  onCredits?: boolean;
 }
 
 /**
@@ -120,7 +122,7 @@ export interface CrewPause {
  * on a one-harness setting the pause changes nothing.
  */
 export function pausedMode(tree: CrewTree, catalog: CrewCatalog, pause: CrewPause | null): string {
-  if (tree.mode !== MIXED || !pause) return tree.mode;
+  if (tree.mode !== MIXED || !pause || pause.onCredits) return tree.mode;
   return catalog.harnesses.find((h) => h.id !== pause.harness)?.id ?? tree.mode;
 }
 
@@ -268,7 +270,9 @@ export function crewText(tree: CrewTree, catalog: CrewCatalog, problem: string |
       ? `The founder's switch: ${label(tree.mode)} only. ${off.join(" and ")} ${off.length === 1 ? "is" : "are"} switched off by the founder: every choice below already runs on ${label(tree.mode)}, so never start ${off.join(" or ")}, whatever the rule or a crew member suggests.`
       : mode !== MIXED
         ? `The founder's switch: mixed, but the office has paused ${label(pause!.harness)} for now: ${pause!.why}. Every choice below already runs on ${label(mode)} (the rule's backup), so never start ${label(pause!.harness)} until this line is gone, whatever the rule or a crew member suggests. Crew already running carry on.`
-        : "The founder's switch: mixed. Each rule's own choice applies.",
+        : pause?.onCredits
+          ? `The founder's switch: mixed. Each rule's own choice applies: ${label(pause.harness)} stays available although its limit is near or reached, since ${pause.why}.`
+          : "The founder's switch: mixed. Each rule's own choice applies.",
     "Crew guide (the founder's decision tree; they edit it, so read it again before each crew member): take the first rule whose \"when\" fits the task. A rule with sub-rules is a question that narrows further; its own choice applies when none of its sub-rules fits. Start the member with the command shown, with `P=$(inbox pane)` and a unique lowercase <name>. Never any other harness or model.",
   ];
   if (problem) lines.push(`Note: ${problem}`);

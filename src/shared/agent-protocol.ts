@@ -144,8 +144,10 @@ const resetsAt = schema<string | number | null>((v, p) => {
   const s = text.parse(v, p);
   return s.trim() && Number.isFinite(Number(s)) ? s : timestamp.parse(s, p);
 });
+const creditsSchema = object({ hasCredits: nullable(boolean), unlimited: nullable(boolean), balance: nullable(number) });
 export const limitReadingSchema: Schema<LimitReading> = object({
   window: optional(oneOf(["five_hour", "week"])), windowMinutes: optional(number), usedPercent: number, resetsAt: optional(resetsAt),
+  credits: optional(creditsSchema),
 });
 export const usageSchema = object({ provider: oneOf(["claude", "codex"]), limits: list(limitReadingSchema) });
 export const switchOptions = { to: optional(oneOf(["claude", "pi"])), model: optional(nonempty), effort: optional(nonempty) };

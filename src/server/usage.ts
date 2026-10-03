@@ -2,7 +2,7 @@
 // Nothing here calls a model, and the only account call is Codex's usage read (codexaccount.ts). A meter is what the provider said in the
 // headers of a reply an agent was already getting: Claude Code hands it to its statusline command
 // (`inbox statusline`), Pi's extension forwards Codex's `x-codex-*` headers, and the codex CLI writes
-// it into its rollout. Claude Code's own cache of its last `/usage` read (~/.claude.json) is the
+// it into its rollout, with the account's credits beside the limits. Claude Code's own cache of its last `/usage` read (~/.claude.json) is the
 // fallback, with its age. Tokens come from the session files each harness keeps, read a slice at a
 // time in the background, so drawing the office never waits for a 2 GB folder.
 
@@ -10,13 +10,13 @@ import type { DatabaseSync } from "node:sqlite";
 import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Harness, Team, UsageMeter, UsageShare, UsageView } from "../shared/types.ts";
+import type { Harness, Team, UsageCredits, UsageMeter, UsageShare, UsageView } from "../shared/types.ts";
 import type { CrewPause } from "./crewtree.ts";
 import type { OfficeNotices } from "./notices.ts";
-import type { LimitReading } from "../shared/usage.ts";
+import { codexCredits, creditsLeft, type CodexCredits, type LimitReading } from "../shared/usage.ts";
 import { CODEX_AUTH_PATH, fetchAccount, readCodexAccount, type AccountFetcher } from "./codexaccount.ts";
 
-export type { LimitReading };
+export type { CodexCredits, LimitReading };
 
 /** Whose limit a reply counted against: Claude Max, or ChatGPT through Codex. */
 export type Provider = "claude" | "codex";
@@ -44,6 +44,8 @@ const LABELS: Record<string, string> = {
   "codex.five_hour": "Codex 5-hour",
   "codex.week": "Codex week",
 };
+/** Codex's credits ride on its week meter, which is always shown. */
+const CREDITS_ON = "codex.week";
 /** Always shown, with no reading yet if need be; Codex's 5-hour meter only once a plan reports one. */
 const ALWAYS = ["claude.five_hour", "claude.week", "codex.week"];
 
@@ -136,6 +138,8 @@ export class Usage {
   /** Where the Codex login is read from, and how the account is asked; tests replace both. */
   codexAccount: { authPath: string; fetcher: AccountFetcher } = { authPath: CODEX_AUTH_PATH, fetcher: fetchAccount };
   private accountTimer: NodeJS.Timeout | null = null;
+  /** Codex's credits as last said, in memory: every Codex reply and the newest rollout say them again. */
+  private credits: { value: CodexCredits; asOf: number } | null = null;
   /** Said when a meter's reading changes. */
   onChange: () => void = () => {};
 
@@ -204,8 +208,18 @@ export class Usage {
         .run(meter, percent, resetsAt, asOf.toISOString(), source);
       if (!same) changed = true;
     }
+    const credits = provider === "codex" ? readings.find((r) => r.credits)?.credits : undefined;
+    if (credits && this.noteCredits(credits, asOf)) changed = true;
     if (changed) this.onChange();
     return changed;
+  }
+
+  /** Keeps Codex's credits when the reading is no older than the one kept. True when what they show has changed. */
+  private noteCredits(value: CodexCredits, asOf: Date): boolean {
+    const kept = this.credits;
+    if (kept && kept.asOf > asOf.getTime()) return false;
+    this.credits = { value: { hasCredits: value.hasCredits ?? null, unlimited: value.unlimited ?? null, balance: value.balance ?? null }, asOf: asOf.getTime() };
+    return !kept || JSON.stringify(kept.value) !== JSON.stringify(this.credits.value);
   }
 
   /** Every meter as it stands now. A window that has reset since its reading shows empty, as not yet confirmed. */
@@ -213,7 +227,24 @@ export class Usage {
     this.readLocal();
     const rows = new Map((this.db.prepare("SELECT * FROM usage_readings").all() as Entry[]).map((r) => [String(r.meter), r]));
     const ids = [...ALWAYS, ...[...rows.keys()].filter((id) => !ALWAYS.includes(id) && LABELS[id])];
-    return ids.map((id) => this.meter(id, rows.get(id)));
+    const meters = ids.map((id) => this.meter(id, rows.get(id)));
+    const codexFull = meters.some((m) => m.id.startsWith("codex.") && m.usedPercent !== null && m.usedPercent >= 100);
+    return meters.map((m) => (m.id === CREDITS_ON ? { ...m, credits: this.creditsView(codexFull) } : m));
+  }
+
+  /** Codex's credits as the office shows them; unknown until a reply or rollout has said. */
+  private creditsView(limitReached: boolean): UsageCredits {
+    const c = this.credits;
+    const left = creditsLeft(c?.value);
+    return {
+      label: "Codex credits",
+      left,
+      balance: c?.value.balance ?? null,
+      unlimited: c?.value.unlimited === true,
+      asOf: c ? new Date(c.asOf).toISOString() : null,
+      stale: !!c && this.now().getTime() - c.asOf > STALE_MS,
+      inUse: limitReached && left === true,
+    };
   }
 
   private meter(id: string, row: Entry | undefined): UsageMeter {
@@ -269,13 +300,16 @@ export class Usage {
   crewPause(): CrewPause | null {
     const time = (at: string | null, opts: Intl.DateTimeFormatOptions, tail: string) => (at ? `, until ${new Date(at).toLocaleString("en-GB", opts)}${tail}` : "");
     const x = this.codexPause();
-    if (x) {
+    const credits = x ? this.creditsView(x.percent >= 100) : null;
+    if (x && credits!.left !== true) {
       const week = x.meter.window === "week";
-      return { harness: "pi", why: `the founder's ${week ? "weekly" : "5-hour"} Codex use is ${Math.round(x.percent)}%${time(x.resetsAt, { ...(week ? { weekday: "short" as const } : {}), hour: "2-digit", minute: "2-digit" }, " when its window starts again")}` };
+      return { harness: "pi", why: `the founder's ${week ? "weekly" : "5-hour"} Codex use is ${Math.round(x.percent)}%${credits!.left === false ? " and no Codex credits are left" : ""}${time(x.resetsAt, { ...(week ? { weekday: "short" as const } : {}), hour: "2-digit", minute: "2-digit" }, " when its window starts again")}` };
     }
+    // Codex at its limit with credits left keeps Pi: Codex spends the credits, so only Claude's own limit can pause anyone.
+    const onCredits = x ? `the founder's ${x.meter.window === "week" ? "weekly" : "5-hour"} Codex use is ${Math.round(x.percent)}%, so Codex ${credits!.inUse ? "runs" : "will run"} on the founder's Codex credits (${creditsLeftText(credits!)})` : null;
     const p = this.claudePause();
-    if (!p) return null;
-    return { harness: "claude", why: `the founder's 5-hour Claude use is ${Math.round(p.percent)}%${time(p.resetsAt, { hour: "2-digit", minute: "2-digit" }, " when its window starts again")}` };
+    if (p) return { harness: "claude", why: `the founder's 5-hour Claude use is ${Math.round(p.percent)}%${time(p.resetsAt, { hour: "2-digit", minute: "2-digit" }, " when its window starts again")}${onCredits ? `; ${onCredits}` : ""}` };
+    return onCredits ? { harness: "pi", onCredits: true, why: onCredits } : null;
   }
 
   /**
@@ -288,17 +322,29 @@ export class Usage {
     if (!mixed) return false;
     const pause = this.claudePause();
     const codex = this.codexPause();
-    if (!pause || !codex) return false;
-    const key = `claude-paused-codex-near:${pause.resetsAt ?? codex.resetsAt ?? "unknown"}`;
+    if (!codex) return false;
     const time = (at: string | null, opts: Intl.DateTimeFormatOptions) => (at ? new Date(at).toLocaleString("en-GB", opts) : null);
-    const claudeUntil = time(pause.resetsAt, { hour: "2-digit", minute: "2-digit" });
+    const claudeUntil = pause ? time(pause.resetsAt, { hour: "2-digit", minute: "2-digit" }) : null;
     const codexUntil = time(codex.resetsAt, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    const window = codex.meter.window === "week" ? "week" : "5-hour window";
+    const credits = this.creditsView(codex.percent >= 100);
+    // With credits left Codex goes on past its limit, so Pi is kept: said once per Codex window.
+    if (credits.left === true) {
+      return this.tellOnce(notices, `codex-on-credits:${codex.resetsAt ?? "unknown"}`, credits.inUse ? "Codex is running on your credits" : "Codex near its limit, with credits to run on",
+        `Codex's ${window} is at ${Math.round(codex.percent)}%${codexUntil ? ` (it resets ${codexUntil})` : ""}, and you have Codex credits (${creditsLeftText(credits)}), so the crew guide keeps starting Pi crew${credits.inUse ? " on credits" : "; Codex spends the credits once the limit is reached"}.${pause ? ` Claude Code is paused instead: your 5-hour Claude use is ${Math.round(pause.percent)}%${claudeUntil ? ` (until ${claudeUntil})` : ""}.` : ""} Pi is paused when no credits are left.`);
+    }
+    if (!pause) return false;
+    return this.tellOnce(notices, `claude-paused-codex-near:${pause.resetsAt ?? codex.resetsAt ?? "unknown"}`, "Claude and Codex both near their limits",
+      `Your 5-hour Claude use is ${Math.round(pause.percent)}%${claudeUntil ? ` (until ${claudeUntil})` : ""} and Codex's ${window} is at ${Math.round(codex.percent)}%${codexUntil ? ` (it resets ${codexUntil})` : ""}. The crew guide keeps Claude Code, which starts again sooner, so new crew may stop at its limit soon.`);
+  }
+
+  /** Records a notice unless one with this key was already told (latched in `usage_told`). True when it was recorded. */
+  private tellOnce(notices: OfficeNotices, key: string, title: string, body: string): boolean {
     const at = this.now().getTime();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       const told = this.db.prepare("INSERT OR IGNORE INTO usage_told (key, at) VALUES (?, ?)").run(key, new Date(at).toISOString()).changes > 0;
-      if (told) notices.record("Claude and Codex both near their limits",
-        `Your 5-hour Claude use is ${Math.round(pause.percent)}%${claudeUntil ? ` (until ${claudeUntil})` : ""} and Codex's ${codex.meter.window === "week" ? "week" : "5-hour window"} is at ${Math.round(codex.percent)}%${codexUntil ? ` (it resets ${codexUntil})` : ""}. The crew guide keeps Claude Code, which starts again sooner, so new crew may stop at its limit soon.`, [], at);
+      if (told) notices.record(title, body, [], at);
       this.db.exec("COMMIT");
       return told;
     } catch (err) {
@@ -624,8 +670,9 @@ export function lastRolloutLimits(path: string): { readings: LimitReading[]; asO
       const limits = e?.payload?.rate_limits as Entry | undefined;
       if (e?.payload?.type !== "token_count" || !limits) continue;
       const readings: LimitReading[] = [];
+      const credits = codexCredits(limits.credits);
       for (const w of [limits.primary, limits.secondary] as Entry[]) {
-        if (w && typeof w.used_percent === "number") readings.push({ usedPercent: w.used_percent, windowMinutes: w.window_minutes, resetsAt: w.resets_at ?? null });
+        if (w && typeof w.used_percent === "number") readings.push({ usedPercent: w.used_percent, windowMinutes: w.window_minutes, resetsAt: w.resets_at ?? null, ...(credits ? { credits } : {}) });
       }
       const asOf = new Date(String(e.timestamp));
       if (readings.length && Number.isFinite(asOf.getTime())) return { readings, asOf };
@@ -634,6 +681,14 @@ export function lastRolloutLimits(path: string): { readings: LimitReading[]; asO
   } finally {
     closeSync(fd);
   }
+}
+
+/** "61,461 left", "unlimited", "some left" or "none left". */
+export function creditsLeftText(c: Pick<UsageCredits, "left" | "balance" | "unlimited">): string {
+  if (c.unlimited) return "unlimited";
+  if (c.left === null) return "unknown";
+  if (c.balance !== null) return c.balance > 0 ? `${Math.floor(c.balance).toLocaleString("en-GB")} left` : "none left";
+  return c.left ? "some left" : "none left";
 }
 
 function parse(line: string): Entry | null {

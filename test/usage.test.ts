@@ -415,7 +415,8 @@ test("the Codex account's windows are told by their length and kept as Codex rea
   assert.deepEqual(seen.map((s) => s.url), ["https://chatgpt.com/backend-api/wham/usage"], "one call, to the one host");
   assert.match(seen[0]!.headers.Authorization!, /^Bearer /);
   assert.equal(seen[0]!.headers["ChatGPT-Account-Id"], "acct-1");
-  assert.deepEqual(meter(u, "codex.week"), { id: "codex.week", label: "Codex week", window: "week", usedPercent: 61, resetsAt: iso(new Date((nowSeconds + 86400) * 1000)), asOf: iso(NOW), stale: false });
+  const { credits: _credits, ...week } = meter(u, "codex.week");
+  assert.deepEqual(week, { id: "codex.week", label: "Codex week", window: "week", usedPercent: 61, resetsAt: iso(new Date((nowSeconds + 86400) * 1000)), asOf: iso(NOW), stale: false });
   assert.equal(meter(u, "codex.five_hour").usedPercent, 12.5);
   assert.equal(readFileSync(path, "utf8"), before, "auth.json is only read");
 

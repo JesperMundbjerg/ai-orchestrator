@@ -805,6 +805,24 @@ export interface UsageMeter {
   /** The reading is old enough that use may have moved since, or its window has reset since. */
   stale: boolean;
   window: "five_hour" | "week";
+  /** What the account can spend once this limit is reached; on the one meter of a provider that has credits. */
+  credits?: UsageCredits;
+}
+
+/** Credits as the provider last reported them. Unknown is null, never 0. */
+export interface UsageCredits {
+  /** "Codex credits". */
+  label: string;
+  /** True while some remain (or they are unlimited), false when the provider says none; null when not known. */
+  left: boolean | null;
+  /** The balance; null when not known (or unlimited). */
+  balance: number | null;
+  unlimited: boolean;
+  /** When the reading was taken (ISO); null when there is none. */
+  asOf: string | null;
+  stale: boolean;
+  /** A limit is reached and work runs on the credits now. */
+  inUse: boolean;
 }
 
 /** Use in the current weekly window, from the harnesses' own session files. */

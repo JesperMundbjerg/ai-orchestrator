@@ -17,8 +17,12 @@
 //            one shows an empty glass and no birds, but no fallen seed either
 //   ring     on the ground round the post, the share of the limit left (100 − used%), in the
 //            feeder's tone; it animates with the seed. The hover/pin label says when it resets
+//   seedling a meter that carries credits (what the account spends past its limit) has a seedling
+//            at its feeder's foot, growing with the credits left: taller and leafier with more,
+//            flowering when they are unlimited, a dry stub when none are left, and grey and
+//            faded when nobody has said (unknown is never shown as none). Its label says how many
 
-import type { UsageMeter } from "../../shared/types.ts";
+import type { UsageCredits, UsageMeter } from "../../shared/types.ts";
 import type { Garden, Rect } from "./building.ts";
 import type { Vec2 } from "./spatial.ts";
 
@@ -202,4 +206,40 @@ export function fallenSeeds(spot: MeterSpot, count = 14): Vec2[] {
     out.push([spot.pos[0] + Math.sin(a) * r, spot.pos[1] + Math.cos(a) * r]);
   }
   return out;
+}
+
+/** A seedling's height when its credits are at their fullest, and the balance that grows it full. */
+export const SEEDLING_HEIGHT = 0.6;
+const FULL_BALANCE = 100_000;
+
+export interface CreditLook {
+  /** How grown the seedling is, 0 to 1: by the balance on a log scale, so a few credits still show. */
+  growth: number;
+  /** How many leaves, two to six. */
+  leaves: number;
+  bloom: boolean;
+  /** None left: a dry stub. */
+  dry: boolean;
+  /** Unknown or stale. */
+  faded: boolean;
+  /** "Codex credits: 1,240 left", "… unlimited", "… none left", "… unknown". */
+  label: string;
+}
+
+/** What a meter's credits show at `now`. */
+export function creditLook(c: UsageCredits, now: number, timeZone?: string): CreditLook {
+  const asOf = c.stale && c.asOf ? ` as of ${when(new Date(c.asOf), timeZone)}` : "";
+  const spending = c.inUse ? " · in use now" : "";
+  if (c.left === null) return { growth: 0.45, leaves: 2, bloom: false, dry: false, faded: true, label: `${c.label}: unknown` };
+  if (!c.left) return { growth: 0.3, leaves: 0, bloom: false, dry: true, faded: c.stale, label: `${c.label}: none left${asOf}` };
+  const growth = c.unlimited ? 1 : c.balance === null ? 0.5 : Math.max(0.25, Math.min(1, Math.log10(1 + Math.max(0, c.balance)) / Math.log10(1 + FULL_BALANCE)));
+  const amount = c.unlimited ? "unlimited" : c.balance === null ? "some left" : `${Math.floor(c.balance).toLocaleString("en-GB")} left`;
+  return { growth, leaves: 2 + Math.round(growth * 4), bloom: c.unlimited, dry: false, faded: c.stale, label: `${c.label}: ${amount}${asOf}${spending}` };
+}
+
+/** Where a feeder's seedling grows: on its ground, in front of the post on the lawn side, clear of where its ground bird pecks and hops. */
+export function seedlingSpot(spot: MeterSpot): Vec2 {
+  const a = 1.2;
+  const r = spot.radius * 0.72;
+  return [spot.pos[0] + Math.sin(a) * r, spot.pos[1] + Math.cos(a) * r];
 }
