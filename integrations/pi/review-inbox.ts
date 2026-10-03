@@ -258,11 +258,12 @@ export default function reviewInbox(pi: PiApi): void {
   pi.on("thinking_level_select", (_e, ctx) => report(ctx, { kind: "effort", effort: effortReport(ctx) }));
   pi.on("session_info_changed", (e, ctx) => report(ctx, ...nameEvent(e.name)));
 
-  // Codex says the plan's limits in each reply's headers; the office keeps the latest for its meters.
+  // Codex says the plan's limits, and the account's credits, in each reply's headers; the office keeps
+  // the latest. A change in credits alone is sent too: at a limit's 100% only the balance moves.
   let lastLimits = "";
   pi.on("after_provider_response", (e) => {
     const limits = codexHeaderReadings(e.headers ?? {});
-    const key = JSON.stringify(limits.map((l) => [l.usedPercent, l.windowMinutes, l.resetsAt]));
+    const key = JSON.stringify(limits.map((l) => [l.usedPercent, l.windowMinutes, l.resetsAt, l.credits ?? null]));
     if (!limits.length || key === lastLimits) return;
     lastLimits = key;
     call("/api/agent/usage", { provider: "codex", limits }, 1500).catch(() => { lastLimits = ""; });
