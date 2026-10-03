@@ -31,7 +31,10 @@ export function RunView({ runs, selectedId, onSelect, refresh, busy }: {
       <section className={run.state === "abandoned" ? "pipeline-abandoned" : undefined} aria-label="Selected run">
       <p><strong>{run.graph.label}</strong> · {runSummary(run)} · {run.state}</p>
       {run.abandonment && <p>Abandoned: {run.abandonment.notes} · recorded by {run.abandonment.byAgentId}</p>}
-      <code>Candidate {run.candidate.head}<br />Round {run.round} · ledger revision {run.revision}<br />First mate {run.leadId ?? "not assigned"}</code>
+      <code>Base {run.candidate.base}<br />Candidate {run.candidate.head}<br />Round {run.round} · ledger revision {run.revision}<br />First mate {run.leadId ?? "not assigned"}</code>
+      {!!run.rebases?.length && <details><summary>Re-base history ({run.rebases.length})</summary><ul>{run.rebases.map((r, i) => <li key={i}>
+        <code>{r.oldBase} → {r.newBase}</code> · {r.notes}<br /><small>Recorded by {r.byAgentId} · {r.at}</small>
+      </li>)}</ul></details>}
       <p>{run.rationale || "No branch rationale recorded."}</p>
       <p className="pipeline-help">{Object.entries(run.selections).map(([field, value]) => `${run.graph.fields.find((f) => f.id === field)?.label ?? field}: ${String(value)}`).join(" · ")}</p>
       {run.state === "open" && <p className="pipeline-notice">Not delivered. All active required steps need current evidence; a green ledger is not proof of publication.</p>}

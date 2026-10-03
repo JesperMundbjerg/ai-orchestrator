@@ -81,7 +81,8 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
       protected handoff/review: --run RUN [--round N --candidate SHA --node INTERNAL_REVIEW]
       milestone/try --run RUN binds the exact run candidate, not the lead's checkout
   inbox pipeline start [--base BASE --candidate SHA --checkout DIR --work ID --work-round N]
-  inbox pipeline branch RUN --select field=value (repeat) --notes "why" [--candidate SHA]
+  inbox pipeline branch RUN [--select field=value (repeat)] --notes "why" [--candidate SHA]
+  inbox pipeline branch RUN --base SHA [--candidate SHA] --notes "why" [--client-id ID]
   inbox pipeline abandon RUN --notes "why" [--client-id ID]
   inbox pipeline assign RUN NODE AGENT
   inbox pipeline report RUN NODE --report FILE --notes "result"

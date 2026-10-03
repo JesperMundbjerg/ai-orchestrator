@@ -9,7 +9,7 @@ import { dataDir, requestFingerprint } from "../db.ts";
 import { Adapters } from "../adapter.ts";
 import { activation, pathProblems, policyHash, selected, topological, validateGraph, validateLayout } from "./model.ts";
 import { BUILTINS, discover, within } from "./discovery.ts";
-import { capture, repository, sameCandidate } from "./candidate.ts";
+import { capture, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
 
 type Config = { team_id: string; repo_root: string | null; graph: string | null; layout: string; revision: number; layout_revision: number; protected: number; observed_hash: string | null };
 export class Pipelines {
@@ -164,22 +164,31 @@ export class Pipelines {
       return this.persist(run);
     });
   }
-  private editable(actor: WorldAgent, runId: string, expectedRevision: number, lead = true): PipelineRun {
+  private editable(actor: WorldAgent, runId: string, expectedRevision: number | undefined, lead = true): PipelineRun {
     const run = this.raw(runId);
     if (lead) this.lead(actor, run.teamId);
     else if (actor.teamId !== run.teamId) throw new InboxError(403, "only this team's crew may report pipeline evidence");
     if (run.state !== "open") throw new InboxError(409, `pipeline run is already ${run.state}`);
-    if (run.revision !== expectedRevision) throw new InboxError(409, "run changed; refresh status before editing", "pipeline_revision_conflict");
+    if (expectedRevision !== undefined && run.revision !== expectedRevision) throw new InboxError(409, "run changed; refresh status before editing", "pipeline_revision_conflict");
     return run;
   }
   branch(actor: WorldAgent, input: PipelineBranchInput): PipelineRun {
+    // A former first mate may not retrieve an earlier re-base receipt.
+    this.lead(actor, this.raw(input.runId).teamId);
     return this.replay(actor, "branch", input, () => {
+      if (!input.base && input.expectedRevision === undefined) throw new InboxError(400, "branch edit needs expectedRevision");
       const run = this.editable(actor, input.runId, input.expectedRevision);
       if (!input.rationale.trim()) throw new InboxError(400, "record why these branches apply");
       const choices = { ...run.selections, ...input.selections }; const problems = selected(run.graph, choices);
       if (problems.length) throw new InboxError(422, problems.join("; "));
-      if (input.candidate) {
-        const next = capture(run.candidate.checkout, run.candidate.base, input.candidate);
+      if (input.candidate || input.base) {
+        const next = capture(run.candidate.checkout, input.base ?? run.candidate.base, input.candidate ?? "HEAD", input.base ? 2 : run.candidate.fingerprintVersion ?? 1);
+        if (input.base) {
+          const adapter = this.adapters.read(run.candidate.repoRoot, basename(run.candidate.repoRoot));
+          if (adapter.problems.length) throw new InboxError(422, adapter.problems.join("; "));
+          requirePublishedBase(next, adapter.adapter?.integrationBranch ?? "dev");
+          (run.rebases ??= []).push({ oldBase: run.candidate.base, newBase: next.base, notes: input.rationale.trim(), byAgentId: actor.id, at: this.now().toISOString() });
+        }
         if (next.fingerprint !== run.candidate.fingerprint) { run.round++; run.steps.forEach(s => { s.completedBy = null; }); }
         run.candidate = next;
       }
@@ -345,7 +354,7 @@ export class Pipelines {
   presentation(actor: WorldAgent, runId: string): string {
     const run = this.get(runId); this.lead(actor, run.teamId);
     if (run.state !== "open" || !sameCandidate(run.candidate)) throw new InboxError(409, "cannot present a stale or closed candidate");
-    return `Pipeline snapshot: run ${run.id}, round ${run.round}, candidate ${run.candidate.head}, intended bytes ${run.candidate.fingerprint}.`;
+    return `Pipeline snapshot: run ${run.id}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}, intended bytes ${run.candidate.fingerprint}.`;
   }
   evidenceFile(id: string): string {
     const row = this.db.prepare("SELECT file, sha256 FROM pipeline_files WHERE id = ?").get(id);
@@ -371,7 +380,7 @@ export class Pipelines {
     const run = given === undefined ? view.runs.find(r => r.state === "open") ?? null : given;
     const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : "Do your assigned step and use inbox pipeline report; only your first mate may complete steps or deliver.";
     return [`Pipeline: ${view.graph?.label ?? "unavailable"} (${view.source}, policy ${view.policyHash?.slice(0, 12) ?? "missing"}). ${role}`,
-      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}), revision ${run.revision}, round ${run.round}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state}${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
+      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state}${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
       "Commands: inbox pipeline start|branch|abandon|assign|done|report|status|gate. No model is called; a gate allow is preflight, never a publication receipt."].join("\n");
   }
   private atomic<T>(fn: () => T): T {

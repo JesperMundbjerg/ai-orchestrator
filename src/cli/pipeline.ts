@@ -51,7 +51,8 @@ export async function pipelineCommand(args: string[], flags: Flags, session: Ses
     // after closure, including when the original response was lost.
     body.notes = flags.notes ?? payload.notes;
   } else {
-    body.expectedRevision = integer(flags.revision ?? payload.expectedRevision, "revision") ?? run!.revision;
+    // A base-only retry must not silently acquire the ledger's newer revision.
+    body.expectedRevision = integer(flags.revision ?? payload.expectedRevision, "revision") ?? (operation === "branch" && (flags.base ?? payload.base) ? undefined : run!.revision);
     body.nodeId = flags.node ?? node ?? payload.nodeId;
     body.notes = flags.notes ?? payload.notes;
     if (operation === "branch") {
@@ -61,6 +62,7 @@ export async function pipelineCommand(args: string[], flags: Flags, session: Ses
         const value = pair.slice(split + 1); selections[pair.slice(0, split)] = value === "true" ? true : value === "false" ? false : value;
       }
       body.selections = selections; body.rationale = flags.notes ?? payload.rationale;
+      body.base = flags.base ?? payload.base;
       body.candidate = flags.candidate ?? payload.candidate;
     }
     if (operation === "assign") {

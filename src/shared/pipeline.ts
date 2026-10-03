@@ -135,8 +135,10 @@ export interface PipelineCandidate {
   base: string;
   head: string;
   tree: string;
-  /** Intended bytes (including dirty/untracked work), independent of commit metadata. */
+  /** Intended changed paths, final blob ids/modes and deletions; independent of commit metadata. */
   fingerprint: string;
+  /** Missing on legacy whole-tree snapshots; those are kept valid until an explicit re-base. */
+  fingerprintVersion?: 2;
   changedPaths: string[];
 }
 export interface PipelineEvidenceInput {
@@ -190,6 +192,8 @@ export interface PipelineRun {
   state: "open" | "delivered" | "abandoned";
   /** Terminal closure, without deleting the candidate, graph or evidence. */
   abandonment?: { notes: string; byAgentId: string; at: string };
+  /** Append-only re-base history, retained with evidence even after closure. */
+  rebases?: { oldBase: string; newBase: string; notes: string; byAgentId: string; at: string }[];
   workId: string | null;
   workRound: number | null;
   createdAt: string;
@@ -229,7 +233,10 @@ export interface PipelineStartInput {
 export interface PipelineBranchInput {
   runId: string;
   clientId: string;
-  expectedRevision: number;
+  /** Required for ordinary branch edits; optional for replay-safe re-base commands. */
+  expectedRevision?: number;
+  /** Already published integration commit, ancestral to the checked-out candidate. */
+  base?: string;
   selections: Record<string, PipelineValue>;
   rationale: string;
   /** Explicitly refresh intended bytes after implementation; old completions become stale. */

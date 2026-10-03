@@ -16,7 +16,9 @@ const deliveryOptions = { operation: optional(oneOf(["push", "pr", "merge", "lan
 const edit = { session: sessionSchema, runId: nonempty, clientId: nonempty, expectedRevision: positiveInteger };
 export const pipelineSchemas = {
   start: object({ session: sessionSchema, clientId: nonempty, checkout: optional(nonempty), base: optional(nonempty), candidate: optional(nonempty), workId: optional(nonempty), workRound: optional(positiveInteger) }) as Schema<PipelineAgentRequest<PipelineStartInput>>,
-  branch: object({ ...edit, selections: values, rationale: nonempty, candidate: optional(nonempty) }) as Schema<PipelineAgentRequest<PipelineBranchInput>>,
+  branch: refine(object({ ...edit, expectedRevision: optional(positiveInteger), selections: values, rationale: nonempty, base: optional(nonempty), candidate: optional(nonempty) }), (v, p) => {
+    if (!v.base && v.expectedRevision === undefined) fail(`${p}.expectedRevision`, "required unless re-basing with base");
+  }) as Schema<PipelineAgentRequest<PipelineBranchInput>>,
   abandon: object({ session: sessionSchema, runId: nonempty, clientId: nonempty, notes: nonempty }) as Schema<PipelineAgentRequest<PipelineAbandonInput>>,
   assign: object({ ...edit, nodeId: nonempty, agentId: nonempty }) as Schema<PipelineAgentRequest<PipelineAssignInput>>,
   report: object({ ...edit, nodeId: nonempty, evidence: list(evidence), notes: nonempty }) as Schema<PipelineAgentRequest<PipelineReportInput>>,

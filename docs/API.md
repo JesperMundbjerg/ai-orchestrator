@@ -174,8 +174,13 @@ Pipeline routes use domain decoders in `src/server/pipelines/protocol.ts` and DT
 |---|---|
 | `GET /api/world/teams/:id/pipeline` | `PipelineTeamView`, including retained runs |
 | `POST /api/agent/pipeline/status` | `{session, runId?}` → `{team, run, text}`; omitted runId selects an open run only, or null |
+| `POST /api/agent/pipeline/branch` | `{session, runId, clientId, selections, rationale, expectedRevision?, base?, candidate?}` → `PipelineRun` |
 | `POST /api/agent/pipeline/abandon` | `{session, runId, clientId, notes}` → `PipelineRun` |
 | `POST /api/agent/pipeline/gate` | `{session, runId, delivery, round, candidate, ...}` → `{allowed, runId, round, candidate, reasons}` |
+
+`branch` requires the run team's current first mate, including on replay retrieval. Ordinary selection/re-pin edits require `expectedRevision`; a re-base with `base` may omit it so CLI retries do not acquire a newer revision. `selections` is an object (use `{}` to retain current choices), and non-empty `rationale` is required. `candidate` defaults to the owned checkout's HEAD when re-basing. The new base must be reachable from a remote-tracking `dev` (or adapter `integrationBranch`) ref and ancestral to the candidate; a local branch is insufficient. Failure returns 409 `pipeline_base_unpublished` or `pipeline_base_not_ancestor`. No network fetch or Git writes occur.
+
+Re-base recomputes `candidate.base`, `changedPaths` and the scoped intended-bytes `fingerprint` (`fingerprintVersion: 2`) before path guards. Unchanged own bytes preserve evidence/round; changed scope makes old evidence stale and increments the round. Legacy whole-tree candidates retain their old semantics until re-base, which conservatively invalidates their evidence. `rebases?: [{oldBase, newBase, notes, byAgentId, at}]` records the history, also shown in Runs and briefings. Closed runs reject new edits. History, run update, audit event and replay receipt are atomic; exact same caller/payload/clientId returns the original result after restart, mismatches return 409 `replay_conflict`.
 
 `abandon` requires non-empty notes and a replay id, and only the run team's **current first mate** may call it (403 `pipeline_lead_required` otherwise). An open run becomes terminal `abandoned`; delivered or already-abandoned runs reject new closure requests with 409. The returned run adds `abandonment: {notes, byAgentId, at}` alongside `state: "abandoned"`. Existing graph, candidate, selections, step dispositions, evidence and bindings are retained; this does not delete files, deliver work or turn off protection. The gate returns `allowed: false` for abandoned runs, and editing/presentation is refused. Automatic briefings no longer offer the run; explicit status retains its reason and evidence.
 

@@ -21,7 +21,7 @@ function ref(value: string): string {
   if (!value || value.startsWith("-") || !/^[\w/.-]+$/.test(value)) throw new InboxError(400, "pipeline references must be commit ids or simple Git refs");
   return value;
 }
-export function capture(checkout: string, base = "HEAD", candidate = "HEAD"): PipelineCandidate {
+export function capture(checkout: string, base = "HEAD", candidate = "HEAD", fingerprintVersion: 1 | 2 = 2): PipelineCandidate {
   const repo = repository(checkout);
   const head = git(repo.top, ["rev-parse", "--verify", `${ref(candidate)}^{commit}`]);
   if (head !== git(repo.top, ["rev-parse", "HEAD"])) throw new InboxError(409, "candidate must be checked out; use an owned checkout at the pinned candidate", "pipeline_stale_candidate");
@@ -52,10 +52,24 @@ export function capture(checkout: string, base = "HEAD", candidate = "HEAD"): Pi
   }
   // Git blob ids, modes and paths are identical before/after staging or a metadata-only
   // commit. No temporary Git index, object write, textconv, hooks or project code execution.
-  const fingerprint = createHash("sha256").update(JSON.stringify([...tree].sort(([a], [b]) => a.localeCompare(b)))).digest("hex");
-  return { checkout: repo.top, repoRoot: repo.root, base: baseSha, head, tree: git(repo.top, ["rev-parse", `${head}^{tree}`]), fingerprint, changedPaths };
+  // Hash only this wave's scope. Unchanged upstream paths must not invalidate its
+  // receipts after a protected re-base; additions, deletions and modes still count.
+  const intended = fingerprintVersion === 1 ? [...tree].sort(([a], [b]) => a.localeCompare(b)) : changedPaths.map(path => [path, tree.get(path) ?? null]);
+  const fingerprint = createHash("sha256").update(JSON.stringify(intended)).digest("hex");
+  return { checkout: repo.top, repoRoot: repo.root, base: baseSha, head, tree: git(repo.top, ["rev-parse", `${head}^{tree}`]), fingerprint, changedPaths,
+    ...(fingerprintVersion === 2 ? { fingerprintVersion: 2 as const } : {}) };
+}
+/** No fetch or local-branch shortcut: publication is witnessed by remote-tracking refs. */
+export function requirePublishedBase(candidate: PipelineCandidate, integrationBranch: string): void {
+  const refs = git(candidate.checkout, ["for-each-ref", "--format=%(refname)", "refs/remotes/"]).split("\n")
+    .filter(name => name.replace(/^refs\/remotes\/[^/]+\//, "") === integrationBranch);
+  const ancestor = (base: string, tip: string): boolean => {
+    try { git(candidate.checkout, ["merge-base", "--is-ancestor", base, tip]); return true; } catch { return false; }
+  };
+  if (!refs.some(ref => ancestor(candidate.base, ref))) throw new InboxError(409, `new base is not published on a remote-tracking ${integrationBranch} branch; fetch the integration branch first`, "pipeline_base_unpublished");
+  if (!ancestor(candidate.base, candidate.head)) throw new InboxError(409, "new base must be an ancestor of the candidate", "pipeline_base_not_ancestor");
 }
 export function sameCandidate(saved: PipelineCandidate): boolean {
-  try { const current = capture(saved.checkout, saved.base); return current.head === saved.head && current.fingerprint === saved.fingerprint; }
+  try { const current = capture(saved.checkout, saved.base, "HEAD", saved.fingerprintVersion ?? 1); return current.head === saved.head && current.fingerprint === saved.fingerprint; }
   catch { return false; }
 }

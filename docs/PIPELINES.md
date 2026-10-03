@@ -67,6 +67,18 @@ Operations distinguish `push`, `pr`, `merge`, `land` and `publish`; the office m
 
 The pre-push hook checks **every protected remote ref in Git's actual stdin**, using that update's included candidate SHA (not merely `HEAD`). Protected deletion is refused. If canonical landing produces a different commit SHA, the nested push is deliberately refused until the run's owned candidate checkout is pinned to that actual landed SHA and refreshed with `inbox pipeline branch RUN --candidate SHA --notes "…"`. Unchanged intended bytes preserve existing receipts; expanded/changed bytes require revalidation. Retry publication-pending with `worktree-sync publish`, never by re-landing the wave. There is no blanket mapped-SHA exception. Feature-only pushes do not contact the office. Tool hooks are read-only preflight; the Git hook rechecks at publication. An allow response is **not delivery evidence** and does not record landing/publication success: canonical delivery tooling must check before modifying the integration branch and record successful publication afterward. This installer does not rewrite repository delivery scripts.
 
+## Re-base a wave after merging published integration work
+
+```sh
+inbox pipeline branch RUN --base SHA [--candidate SHA] --notes "Merged published dev; only our wave remains" --client-id rebase-wave-1
+```
+
+Only the team's **current first mate** may re-base an open run. The new base must already be reachable from a remote-tracking `dev` ref (or the adapter's `integrationBranch`) in the run repository, and must be an ancestor of the checked-out candidate. Fetch that branch and merge it into the team's checkout first. A local integration branch alone is not proof of publication; unpublished own work cannot be hidden as the base. The office does not fetch, merge or change Git refs. Omitted `--candidate` captures the checkout's current HEAD, including intended dirty/untracked bytes.
+
+Changed paths and the intended-bytes fingerprint are recomputed against the new base **before** judging path guards. The fingerprint covers the wave's changed paths, final bytes/modes and deletions, not unrelated upstream bytes or commit metadata. Unchanged own bytes retain evidence and completions; changed/expanded scope starts a new round and leaves old evidence stale, exactly like a re-pin. Changed selections still clear completions. Legacy whole-tree snapshots stay readable; their first explicit re-base conservatively requires fresh evidence because their historical scoped bytes were not recorded separately.
+
+Runs and the team briefing retain an append-only history with old/new base, reason, actor and time. Delivered or abandoned runs cannot be re-based. Keep `--client-id` before sending: exact retries return the original receipt after restart; changing caller/content conflicts. Base edits do not infer a revision from status, so retrying the same command/id is safe; an explicit `--revision` remains an optional optimistic lock. Re-base, history and replay receipt commit together, and an exact old receipt never authorizes delivery of a newer candidate.
+
 ## Closing an undeliverable run
 
 The team's **current first mate** can close an open wave that will not be delivered:

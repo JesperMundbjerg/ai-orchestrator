@@ -69,6 +69,86 @@ function fixture(t: TestContext, g = graph()) {
   return { dir, root, state, lead, crew, reviewer, start, done, gate, counts, get db() { return db; }, get p() { return p; }, get m() { return m; }, reopen() { db.close(); db = openDatabase(file); p = new Pipelines(db, () => state, { evidenceDir: join(dir, "copies") }); m = new Messages(db, null, () => state, () => new Date(), () => {}); m.pipelines = p; } };
 }
 
+function mergedWave(t: TestContext, g = graph("dev"), integrationBranch = "dev") {
+  const f = fixture(t, g);
+  if (integrationBranch !== "dev") {
+    git(f.root, "branch", "-m", integrationBranch);
+    writeFileSync(join(f.root, "orchestrator.json"), JSON.stringify({ project: "test", integrationBranch, pipeline: g }));
+    git(f.root, "add", "."); git(f.root, "commit", "-qm", "adapter integration branch");
+  }
+  const remote = join(f.dir, "remote.git"); git(f.dir, "init", "--bare", "-q", remote); git(f.root, "remote", "add", "origin", remote);
+  git(f.root, "push", "-q", "origin", integrationBranch);
+  const base = git(f.root, "rev-parse", "HEAD"); git(f.root, "checkout", "-qb", "wave");
+  writeFileSync(join(f.root, "src.ts"), "export const value = 2;\n"); git(f.root, "add", "."); git(f.root, "commit", "-qm", "own bytes");
+  const run = f.done(f.p.start(f.lead, { clientId: "scoped-start", base }));
+  git(f.root, "checkout", "-q", integrationBranch); writeFileSync(join(f.root, "upstream.ts"), "export const upstream = true;\n");
+  git(f.root, "add", "."); git(f.root, "commit", "-qm", "other owner's published bytes"); git(f.root, "push", "-q", "origin", integrationBranch);
+  const upstream = git(f.root, "rev-parse", "HEAD"); git(f.root, "checkout", "-q", "wave");
+  const merge = () => git(f.root, "merge", "-q", "--no-edit", integrationBranch);
+  const input = { runId: run.id, clientId: "rebase", base: upstream, selections: {}, rationale: "Merged published upstream, keep only own scope" };
+  return Object.assign(f, { run, upstream, merge, input });
+}
+
+test("re-base preserves unchanged own bytes after upstream merge, history and exact replay", t => {
+  const f = mergedWave(t); f.merge();
+  assert.deepEqual(capture(f.root, f.run.candidate.base).changedPaths, ["src.ts", "upstream.ts"]);
+  const run = f.p.branch(f.lead, f.input);
+  assert.equal(run.candidate.base, f.upstream); assert.deepEqual(run.candidate.changedPaths, ["src.ts"]);
+  assert.equal(run.candidate.fingerprint, f.run.candidate.fingerprint); assert.equal(run.round, f.run.round);
+  assert.equal(run.steps[0]!.state, "done"); assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, true);
+  assert.deepEqual(run.rebases![0], { oldBase: f.run.candidate.base, newBase: f.upstream, notes: f.input.rationale, byAgentId: f.lead.id, at: run.rebases![0]!.at });
+  assert.match(f.p.brief("authors"), /Re-base .*Merged published upstream.*captain/);
+  const audit = f.db.prepare("SELECT detail FROM events WHERE kind = 'pipeline.branch'").all(); assert.equal(audit.length, 1);
+  f.reopen(); assert.deepEqual(f.p.branch(f.lead, f.input), run);
+  assert.throws(() => f.p.branch(f.lead, { ...f.input, rationale: "different reason" }), { code: "replay_conflict" });
+  f.lead.role = "member"; f.crew.role = "lead";
+  assert.throws(() => f.p.branch(f.lead, f.input), { status: 403 });
+});
+
+test("re-base refuses crew, unpublished local base, non-ancestor and closed runs atomically", t => {
+  const f = mergedWave(t); const before = f.p.get(f.run.id);
+  assert.throws(() => f.p.branch(f.crew, f.input), { status: 403 });
+  assert.throws(() => f.p.branch(f.reviewer, f.input), { status: 403 });
+  assert.throws(() => f.p.branch(f.lead, { ...f.input, base: before.candidate.head }), { code: "pipeline_base_unpublished" });
+  assert.throws(() => f.p.branch(f.lead, f.input), { code: "pipeline_base_not_ancestor" });
+  assert.equal(f.p.get(f.run.id).revision, before.revision); assert.equal(f.p.get(f.run.id).rebases, undefined);
+  f.merge(); const run = f.p.branch(f.lead, f.input);
+  f.p.abandon(f.lead, { runId: run.id, clientId: "close", notes: "No delivery" });
+  assert.throws(() => f.p.branch(f.lead, { ...f.input, clientId: "closed-rebase" }), /already abandoned/);
+  const delivered = f.start(); f.db.prepare("UPDATE pipeline_runs SET snapshot = ? WHERE id = ?").run(JSON.stringify({ ...delivered, state: "delivered" }), delivered.id);
+  assert.throws(() => f.p.branch(f.lead, { ...f.input, runId: delivered.id, clientId: "delivered-rebase" }), /already delivered/);
+});
+
+test("changed own bytes stale evidence on re-base; adapter integration branch is respected", t => {
+  const f = mergedWave(t, graph("dev"), "integration"); f.merge();
+  writeFileSync(join(f.root, "src.ts"), "export const value = 3;\n");
+  const run = f.p.branch(f.lead, f.input);
+  assert.equal(run.round, f.run.round + 1); assert.equal(run.steps[0]!.state, "stale");
+  assert.notEqual(run.candidate.fingerprint, f.run.candidate.fingerprint); assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, false);
+});
+
+test("path guards judge only the new scope and still reject changed own out-of-scope paths", t => {
+  const g = graph("dev"); g.fields = [{ id: "scope", label: "Scope", type: "boolean" }];
+  g.pathRules = [{ when: { field: "scope", equals: true }, prefixes: ["src.ts"], only: true, message: "Own scope only" }];
+  const f = mergedWave(t, g); f.merge();
+  assert.throws(() => f.p.branch(f.lead, { ...f.input, base: undefined, expectedRevision: f.run.revision, candidate: "HEAD", selections: { scope: true } }), { code: "pipeline_branch_conflict" });
+  const run = f.p.branch(f.lead, { ...f.input, selections: { scope: true } });
+  assert.deepEqual(run.candidate.changedPaths, ["src.ts"]);
+  writeFileSync(join(f.root, "upstream.ts"), "own unapproved change\n");
+  assert.throws(() => f.p.branch(f.lead, { ...f.input, clientId: "bad-scope", selections: { scope: true } }), { code: "pipeline_branch_conflict" });
+  assert.equal(f.p.get(run.id).revision, run.revision);
+});
+
+test("CLI and HTTP re-base validate base, refresh candidate and replay with client-id alone", async t => {
+  const f = mergedWave(t); const h = await httpFixture(t, f); f.merge();
+  const payload = { session: h.session(), ...f.input };
+  assert.equal((await h.request("POST", "/api/agent/pipeline/branch", { ...payload, base: 12 })).status, 400);
+  const args = ["pipeline", "branch", f.run.id, "--base", f.upstream, "--notes", f.input.rationale, "--client-id", "cli-base", "--harness", "manual", "--session", f.lead.id];
+  const first = await h.cli(args); assert.equal(first.status, 0, first.stderr); const run = JSON.parse(first.stdout);
+  assert.equal(run.candidate.head, git(f.root, "rev-parse", "HEAD"));
+  const second = await h.cli(args); assert.equal(second.status, 0, second.stderr); assert.deepEqual(JSON.parse(second.stdout), run);
+});
+
 test("validation rejects cycles, missing delivery, missing condition ports and unchecked steps", () => {
   assert.equal(validateGraph(graph()).nodes.length, 2);
   assert.throws(() => validateGraph({ ...graph(), nodes: [graph().nodes[0]] }), /endpoints/);
