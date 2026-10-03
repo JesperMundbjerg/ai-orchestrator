@@ -12,7 +12,7 @@ import { craftPose, HandTool } from "./Crafts.tsx";
 import { usePace } from "./Pace.tsx";
 import { useGames } from "./Games.tsx";
 import { useGym } from "./Gym.tsx";
-import { armReach, gestureAt, handTarget, newPose, newReach, type LiftPose, type Reach, type Visit } from "./gym.ts";
+import { armReach, cornerWalk, gestureAt, handTarget, newPose, newReach, VISIT, visitAt, type LiftPose, type Reach, type Visit } from "./gym.ts";
 import { Paddle, usePing } from "./PingPong.tsx";
 import { newPlayer, playerPose, type Player as PingPlayer } from "./pingpong.ts";
 
@@ -87,16 +87,21 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const ping = usePing();
   // Scratch for the gym's lifts and ping pong, so a frame allocates nothing.
   const lifting = useMemo(() => ({ pose: newPose(), reach: newReach(), hand: [0, 0, 0] as [number, number, number], player: newPlayer() }), []);
-  // At a gym station they do their own routine, round and round, for as long as they stay.
-  const visit: Visit | undefined = useMemo(() => (spot.gym ? { station: spot.gym, seed: agent.id, until: Infinity } : undefined), [spot.gym, agent.id]);
+  // At a gym station, a routine of their own for this visit: three sets with rests, then on to the next station.
+  const visit: Visit | undefined = useMemo(() => {
+    if (!spot.gym) return undefined;
+    const v = visitAt(Date.now());
+    return { station: spot.gym, seed: `${agent.id}:${v}`, until: (v + 1) * VISIT * 1000 };
+  }, [spot.gym, agent.id]);
   const bottle = useRef<Group>(null);
   const joints: Joints = useMemo(() => ({ body, upper, head, legs, knees, ankles, arms, elbows }), []);
 
   // A new spot sends the avatar walking there from wherever it is now.
   useEffect(() => {
     const m = motion.current;
-    if (m.spot.pos[0] === spot.pos[0] && m.spot.pos[1] === spot.pos[1] && m.spot.group === spot.group) { m.spot = spot; return; }
-    m.path = walk(m.pos, m.spot, spot);
+    if (samePlace(m.spot, spot)) { m.spot = spot; return; }
+    // Round a corner (station to station, or end to end), along its lane; anywhere else, the office's way.
+    m.path = cornerWalk(m.spot, spot) ?? walk(m.pos, m.spot, spot);
     m.spot = spot;
     m.strolling = false;
   }, [spot]);
@@ -179,12 +184,14 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     const gaming = play?.active && play.player === spot.game?.player ? play : null;
     if (play?.active) pace?.moved(performance.now());
     // At a gym station, once there and while idle: the lift's pose, the hands on the bar.
-    gym?.arrive(agent.id, !walking && !m.path.length && !!visit && agent.status === "idle", Date.now(), visit);
+    // Only once the walk to a new spot has been set off, so nobody trains at a station they are still on their way to.
+    const there = !walking && !m.path.length && samePlace(m.spot, spot);
+    gym?.arrive(agent.id, there && !!visit && agent.status === "idle", Date.now(), visit);
     const lift = visit ? gym?.pose(agent.id, Date.now(), look.height, lifting.pose) ?? null : null;
     if (lift?.moving) pace?.moved(performance.now());
     // At their end of the ping pong table, once both players are there: the rally's stance and swing.
     const end = spot.pingpong;
-    ping?.playback.arrive(agent.id, !walking && !m.path.length && end !== undefined && agent.status === "idle", Date.now());
+    ping?.playback.arrive(agent.id, there && end !== undefined && agent.status === "idle", Date.now());
     const rally = end !== undefined ? ping?.playback.seconds(Date.now()) ?? null : null;
     const playing = ping && end !== undefined && rally !== null ? playerPose(ping.table, m.pos[0], m.pos[1], m.yaw, end, rally, look.height, look.build, lifting.player) : null;
 
@@ -372,6 +379,9 @@ export function playRig(j: Joints, g: Group, pos: Vec2, yaw: number, playing: Pi
 }
 
 /** Back to standing straight: the body upright, the knees, ankles and elbows unbent, the arms not turned. */
+/** The same place, though the plan may have made a new spot for it. */
+export const samePlace = (a: Spot, b: Spot) => a.pos[0] === b.pos[0] && a.pos[1] === b.pos[1] && a.group === b.group;
+
 export function restRig(j: Joints): void {
   if (!j.body.current) return;
   j.body.current.rotation.x = 0;

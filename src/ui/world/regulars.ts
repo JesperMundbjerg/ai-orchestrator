@@ -20,7 +20,8 @@
 //            the ball punches the air, and those watching cheer; the two at the cooler high five
 
 import type { BuildingPlan } from "./building.ts";
-import { gymCorner, gymSpot, STATIONS, type Station, type Visit } from "./gym.ts";
+import { gymCorner, gymSpot, shiftAt, STATIONS, VISIT, type Station, type Visit } from "./gym.ts";
+export { cornerWalk, shiftAt, VISIT, visitAt } from "./gym.ts";
 import { hash } from "./park.ts";
 import { lookFor, type Look } from "./look.ts";
 import { pingCorner, pingEligible, pingSpot, RALLY, rallyTime, TABLE_X, type End, type PingPong } from "./pingpong.ts";
@@ -111,18 +112,6 @@ export function asideSpot(plan: Plan, r: Regular): Spot {
   return placeSpot(plan, ASIDE[r.id.slice(REGULAR_PREFIX.length)]!);
 }
 
-/**
- * The way from one place to another in the same corner (the gym's, or the table's): up to the
- * corner's lane, along it and down to the new place, each leg the last of an approach the corner's
- * own ways in already take. Null between corners, where the office's routes go.
- */
-export function cornerWalk(from: Spot, to: Spot): Vec2[] | null {
-  if (from.group !== to.group || (from.group !== "gym" && from.group !== "pingpong")) return null;
-  const a = from.approach.at(-1), b = to.approach.at(-1);
-  if (!a || !b) return null;
-  return [a, b, to.pos];
-}
-
 /** Where the water cooler stands, facing the two who meet there. */
 export function coolerAt(plan: Plan): { pos: Vec2; facing: number } {
   const { at, half } = gymCorner(plan);
@@ -190,8 +179,6 @@ if (STATIONS.some((s) => !HOMES.has(s))) throw new Error("A gym station has no r
 
 // ---------------------------------------------------------------- moving round
 
-/** How long a visit lasts, in seconds: everyone in the gym moves on to their next role together. */
-export const VISIT = 60;
 /** Visits in a shift at the table: one of its two players hands over to someone from the gym after each. */
 export const SHIFT = 5;
 /** A role in the gym: a station or a break. */
@@ -202,16 +189,7 @@ export const GYM_ROLES: readonly GymRole[] = ["platform", "rack", "bench", "pull
 const TABLE_ORDER = ["brigitta", "ignatius", "ottilie", "marisol", "kwabena", "thandiwe"].map((n) => `${REGULAR_PREFIX}${n}`);
 if (TABLE_ORDER.length !== CAST.length || CAST.some((r) => !TABLE_ORDER.includes(r.id))) throw new Error("Every regular takes a turn at the table");
 
-/** The visit at this moment on the office's clock (ms), the same in every browser. */
-export const visitAt = (ms: number) => Math.floor(ms / (VISIT * 1000));
 const shiftOf = (visit: number) => Math.floor(visit / SHIFT);
-
-/**
- * How far round the gym's roles everyone has moved by a visit: one more each visit, and every other
- * visit (seeded) two more again, so the step is 1, 3 or -1 (of five) and never brings anyone back
- * to the role they just had.
- */
-export const shiftAt = (visit: number) => visit + 2 * (hash(`regulars:${visit}`) & 1);
 
 /** The two at the table in a visit, by end. */
 export function tableAt(visit: number): [string, string] {
@@ -261,9 +239,15 @@ export function scheduleRegulars(plan: Plan, agents: ReadonlyMap<string, Spot>, 
   const out: Regulars = new Map();
   const resting: Regular[] = [];
   const watching: Regular[] = [];
+  // The last visit of a shift, whoever takes over at the table comes over and watches by their end,
+  // so the changeover is a few steps rather than the walk across the office.
+  const next = shiftOf(visit + 1) !== shiftOf(visit) ? tableAt(visit + 1) : null;
+  const coming = next?.find((id) => !tableAt(visit).includes(id));
   for (const r of CAST) {
     const role = roles.get(r.id)!;
-    if (typeof role === "number") {
+    if (r.id === coming && !ends.has(next!.indexOf(r.id) as End)) {
+      out.set(r.id, { regular: r, spot: placeSpot(plan, `watch${next!.indexOf(r.id)}` as Place), act: "watch", partner: null });
+    } else if (typeof role === "number") {
       if (ends.has(role)) watching.push(r);
       else out.set(r.id, { regular: r, spot: pingSpot(plan, role), act: "play", partner: null });
     } else if (role === "break" || stations.has(role)) resting.push(r);
@@ -276,7 +260,9 @@ export function scheduleRegulars(plan: Plan, agents: ReadonlyMap<string, Spot>, 
     const act: Act = place.startsWith("mat") ? (hash(`mat:${visit}:${r.id}`) & 1 ? "sit" : "stretch") : "cooler";
     out.set(r.id, { regular: r, spot: placeSpot(plan, place), act, partner: null });
   });
-  watching.forEach((r, i) => out.set(r.id, { regular: r, spot: placeSpot(plan, (["watch0", "watch1"] as const)[i]!), act: "watch", partner: null }));
+  const taken = new Set([...out.values()].map((p) => p.spot));
+  const free = (["watch0", "watch1"] as const).filter((w) => ![...taken].some((s) => s.pos[0] === placeSpot(plan, w).pos[0] && s.pos[1] === placeSpot(plan, w).pos[1]));
+  watching.forEach((r, i) => out.set(r.id, { regular: r, spot: placeSpot(plan, free[i]!), act: "watch", partner: null }));
   pairAtCooler(out);
   // In the cast's order, like `placeRegulars`.
   return new Map(CAST.map((r) => [r.id, out.get(r.id)!] as const));

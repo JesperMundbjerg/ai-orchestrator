@@ -2,9 +2,10 @@
 // npm run build && PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs [SHOTS=/dir] node test/gym.browser.mjs
 // Starts its own isolated office through the scratch launcher (test/gym-office.fixture.ts: a fake world of idle agents,
 // herdr disabled, nothing read from sessions or accounts), on a free port that is never 4870, in headless Chromium,
-// and closes both in finally. Four idle agents train, one a station; the clock is held at each lift's phases to check
-// the hands are on the bar and to take pictures at desktop and phone width; a short video of each. Then everyone gets
-// work: the lifters leave and the bars go back where they rest.
+// and closes both in finally. Four idle agents train, one a station, and move round the stations together each visit;
+// the clock is held inside a visit at each lift's phases (stepping on a visit for those a lifter's routine there doesn't
+// reach) to check the hands are on the bar and everyone has moved on, with pictures at desktop and phone width, a short
+// video of each and one across a visit's end. Then everyone gets work: the lifters leave and the bars go back.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -12,7 +13,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { spawnScratchOffice } from "../scripts/lib/scratch-office.ts";
-import { gymCorner, gymSpot, PLATE_R, PLATFORM_H, PULL_Y, PULL_Z, routine, STATIONS } from "../src/ui/world/gym.ts";
+import { gymCorner, gymSpot, PLATE_R, PLATFORM_H, PULL_Y, PULL_Z, routine, STATIONS, VISIT, visitAt } from "../src/ui/world/gym.ts";
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "playwright");
 const home = await mkdtemp(join(tmpdir(), "inbox-gym-test-"));
@@ -65,6 +66,12 @@ const when = (p, t) => {
   const seg = routine(p.station, t.seed).find((g) => (p.rest ? !!g.rest : !g.rest && g.lift === p.lift));
   return t.start + (seg.at + p.at) * 1000;
 };
+/** Whether this lifter's routine gets to a phase before they move on (a set that wouldn't be over becomes a rest). */
+const reaches = (p, t) => {
+  const segs = routine(p.station, t.seed), seg = segs.find((g) => (p.rest ? !!g.rest : !g.rest && g.lift === p.lift));
+  const budget = (t.until - t.start) / 1000;
+  return !!seg && segs.every((g) => g.rest || g.at > seg.at || g.at + g.length <= budget) && seg.at + (p.rest ? p.at : seg.length) <= budget;
+};
 // Gripping the bar at these: the hands must be on it.
 const GRIPPED = new Set(PHASES.filter((p) => !p.rest && !/drop/.test(p.name)).map((p) => p.name));
 
@@ -107,6 +114,53 @@ try {
     await page.goto(`${url}/#/world`);
     await page.waitForFunction(() => !!window.__scene().store && !!window.__scene().view);
     return { context, page, errors };
+  };
+  /** Who trains at each station, and their clock, keyed by station. */
+  const trainingNow = (page) => page.evaluate(() => {
+    const s = window.__scene(), agents = new Set(s.avatars.filter((a) => a.spot.gym).map((a) => a.id));
+    return Object.fromEntries([...s.gym.training].filter(([id]) => agents.has(id)).map(([id, t]) => [t.station, { ...t, id }]));
+  });
+  /** All four agent lifters at their stations and training there since `from` (regulars don't count). */
+  const settledIn = (page, from, timeout) => page.waitForFunction((from) => {
+    const s = window.__scene(), lifters = s.avatars.filter((a) => a.spot.gym);
+    return lifters.length === 4 && lifters.every((a) => { const t = s.gym?.training.get(a.id); return t && t.station === a.spot.gym && t.start >= from; });
+  }, from, { timeout });
+  /**
+   * Let the clock run to a visit (held, it would never reach the office's next look round), and wait until all four have
+   * moved there and started; the clock is held within it from then on.
+   */
+  const holdVisit = async (page, v) => {
+    await page.evaluate(() => { delete window.__now; });
+    try { await settledIn(page, v * VISIT * 1000, 150_000); } catch (e) {
+      const debug = await page.evaluate(() => { const s = window.__scene(); return { avatars: s.avatars.filter((a) => a.spot.gym).map((a) => [a.id, a.spot.gym]), training: [...s.gym.training].map(([id, t]) => [id, t.station, t.start, t.seed]), now: Date.now() }; });
+      throw new Error(`visit ${v}: ${JSON.stringify(debug)}`, { cause: e });
+    }
+    return trainingNow(page);
+  };
+  /** Each phase once, a visit at a time; every lifter is at a new station each visit. */
+  const shoot = async (page, phases, each) => {
+    const left = [...phases];
+    let v = visitAt(Date.now()), before = null;
+    const rounds = [];
+    while (left.length) {
+      const at = await holdVisit(page, v);
+      // Whichever visit they started in (the clock runs while they move round).
+      v = visitAt(Math.min(...Object.values(at).map((t) => t.start)));
+      const station = Object.fromEntries(Object.values(at).map((t) => [t.id, t.station]));
+      assert.equal(Object.keys(station).length, 4, `four lifters at visit ${v}: ${JSON.stringify(at)}`);
+      if (before) for (const [id, s] of Object.entries(station)) if (before[id]) assert.notEqual(s, before[id], `${id} moved on from ${s}`);
+      rounds.push({ ...station, platform: at.platform && { seed: at.platform.seed, budget: (at.platform.until - at.platform.start) / 1000 } });
+      for (const p of left.filter((p) => reaches(p, at[p.station]))) {
+        await page.evaluate((t) => { window.__now = t; }, when(p, at[p.station]));
+        await each(p, at[p.station]);
+        left.splice(left.indexOf(p), 1);
+      }
+      before = station;
+      v++;
+      // Each phase needs its set to fit in what is left of a visit, so a few visits may pass before every one has come.
+      assert.ok(!left.length || rounds.length < 10, `phases never reached: ${left.map((p) => p.name)} in ${JSON.stringify(rounds)}`);
+    }
+    return rounds;
   };
   const lifters = async (page) => page.evaluate(() => Object.fromEntries(window.__scene().avatars.filter((a) => a.spot.gym).map((a) => [a.spot.gym, a.id])));
   const look = async (page, station, { distance = 3.8, side = 3.0, pitch = -0.5, fov = 58 } = {}) => {
@@ -152,60 +206,84 @@ try {
   const desk = await open({ width: 1600, height: 1000 });
   {
     const { page } = desk;
-    await page.waitForFunction(() => window.__scene().gym?.training.size === 4, null, { timeout: 30_000 });
+    await settledIn(page, 0, 60_000);
     const who = await lifters(page);
     assert.deepEqual(Object.keys(who).sort(), [...STATIONS].sort(), "one idle agent at each station");
     assert.equal(new Set(Object.values(who)).size, 4);
-    const training = await page.evaluate(() => Object.fromEntries([...window.__scene().gym.training].map(([id, t]) => [id, { ...t }])));
+    const training = await trainingNow(page);
     await page.evaluate((t) => { window.__now = t; }, Math.max(...Object.values(training).map((t) => t.start)) + 2000);
     await overview(page);
     await settle(page, 1600);
     await page.screenshot({ path: join(shots, "desktop-gym-overview.png") });
     const gaps = {};
-    for (const p of PHASES) {
-      const lifter = who[p.station];
-      await page.evaluate((t) => { window.__now = t; }, when(p, training[lifter]));
+    let dropped = false;
+    const rounds = await shoot(page, PHASES, async (p, t) => {
       await look(page, p.station, p.station === "bench" ? { side: 3.2, distance: 2.6, pitch: -0.42 } : {});
       await settle(page);
       await page.screenshot({ path: join(shots, `desktop-${p.name}.png`) });
-      gaps[p.name] = await gap(page, p.station, lifter);
-      if (GRIPPED.has(p.name)) assert.ok(gaps[p.name] < 0.06, `${p.name}: hands ${gaps[p.name].toFixed(3)} m from the bar`);
-    }
-    await writeFile(join(shots, "hand-gaps.json"), JSON.stringify(gaps, null, 2));
-    // A dropped snatch lands where it was picked up, on the platform.
-    const lifter = who.platform;
-    // Into a snatch set, past the drop.
-    await page.evaluate((t) => { window.__now = t; }, when({ station: "platform", lift: "snatch", at: 7 }, training[lifter]));
-    await settle(page, 400);
-    const rest = await page.evaluate(() => window.__scene().store.scene.getObjectByName("gym-bar:platform").position.y);
-    assert.ok(Math.abs(rest - (PLATE_R + PLATFORM_H)) < 0.002, `the platform bar rests on its plates (${rest})`);
+      gaps[p.name] = await gap(page, p.station, t.id);
+      if (GRIPPED.has(p.name)) assert.ok(gaps[p.name] < 0.06, `${p.name}: hands ${gaps[p.name].toFixed(3)} m from the bar (${JSON.stringify({ ...t, at: when(p, t) })})`);
+      if (p.name === "snatch-5-drop") {
+        // Just after the snatch set, its last single dropped: the bar lies where it was picked up, on the platform.
+        const set = routine("platform", t.seed).find((g) => !g.rest && g.lift === "snatch");
+        await page.evaluate((at) => { window.__now = at; }, t.start + (set.at + set.length + 1) * 1000);
+        await settle(page, 400);
+        const rest = await page.evaluate(() => window.__scene().store.scene.getObjectByName("gym-bar:platform").position.y);
+        assert.ok(Math.abs(rest - (PLATE_R + PLATFORM_H)) < 0.002, `the platform bar rests on its plates (${rest})`);
+        dropped = true;
+      }
+    });
+    assert.ok(dropped);
+    await writeFile(join(shots, "hand-gaps.json"), JSON.stringify({ gaps, rounds }, null, 2));
   }
   // At phone width: each lift once more, from further off.
   const phone = await open({ width: 390, height: 844 });
   {
     const { page } = phone;
-    await page.waitForFunction(() => window.__scene().gym?.training.size === 4, null, { timeout: 30_000 });
-    const who = await lifters(page);
-    const training = await page.evaluate(() => Object.fromEntries([...window.__scene().gym.training].map(([id, t]) => [id, { ...t }])));
+    await settledIn(page, 0, 60_000);
+    const training = await trainingNow(page);
     await page.evaluate((t) => { window.__now = t; }, Math.max(...Object.values(training).map((t) => t.start)) + 2000);
     await overview(page, { distance: 9, fov: 75, pitch: -0.55 });
     await settle(page, 1600);
     await page.screenshot({ path: join(shots, "phone-gym-overview.png") });
-    for (const p of PHASES.filter((p) => /catch|overhead|front-squat|jerk|bottom|chest|top|sit/.test(p.name))) {
-      await page.evaluate((t) => { window.__now = t; }, when(p, training[who[p.station]]));
+    await shoot(page, PHASES.filter((p) => /catch|overhead|front-squat|jerk|bottom|chest|top|sit/.test(p.name)), async (p) => {
       await look(page, p.station, p.station === "bench" ? { side: 3.4, distance: 3.4, pitch: -0.45, fov: 72 } : { distance: 5.4, side: 1.4, fov: 72 });
       await settle(page);
       await page.screenshot({ path: join(shots, `phone-${p.name}.png`) });
-    }
+    });
   }
   // Videos in real time: the whole gym training, at each width.
   for (const [name, viewport, options] of [["desktop", { width: 1280, height: 800 }, {}], ["phone", { width: 390, height: 844 }, { distance: 9, fov: 75, pitch: -0.55 }]]) {
     const v = await open(viewport, true);
-    await v.page.waitForFunction(() => window.__scene().gym?.training.size === 4, null, { timeout: 30_000 });
+    await settledIn(v.page, 0, 60_000);
     await overview(v.page, options);
     await v.page.waitForTimeout(26_000);
     await v.context.close();
     await v.page.video().saveAs(join(shots, `${name}-gym.webm`));
+    assert.deepEqual(v.errors, []);
+  }
+  // A video in real time across a visit's end: the four finish, walk along the lane to their next stations and start again.
+  {
+    const v = await open({ width: 1280, height: 800 }, true);
+    await settledIn(v.page, 0, 60_000);
+    // Closer than the overview, and without the founder's bird in front of the stations.
+    await overview(v.page, { distance: 5.2, fov: 66, pitch: -0.62 });
+    await v.page.evaluate(() => { const s = window.__scene(); s.store.scene.getObjectByName("founder-bird").visible = false; s.store.invalidate(); });
+    // Long enough before the end to see them train, then until all four have started again.
+    if ((visitAt(Date.now()) + 1) * VISIT * 1000 - Date.now() < 8000) {
+      await v.page.waitForTimeout(9000);
+      await settledIn(v.page, visitAt(Date.now()) * VISIT * 1000, 60_000);
+    }
+    const end = (visitAt(Date.now()) + 1) * VISIT * 1000;
+    const first = await trainingNow(v.page);
+    await v.page.waitForTimeout(Math.max(0, end - Date.now() - 8000));
+    await settledIn(v.page, end, 60_000);
+    await v.page.waitForTimeout(8000);
+    const after = await trainingNow(v.page);
+    await v.context.close();
+    await v.page.video().saveAs(join(shots, "desktop-gym-moving-round.webm"));
+    const was = Object.fromEntries(Object.values(first).map((t) => [t.id, t.station]));
+    for (const t of Object.values(after)) if (was[t.id]) assert.notEqual(t.station, was[t.id], `${t.id} moved on`);
     assert.deepEqual(v.errors, []);
   }
 
@@ -231,7 +309,7 @@ try {
   }
   assert.deepEqual(desk.errors, []);
   assert.deepEqual(phone.errors, []);
-  console.log(`Gym checked in a scratch office on port ${port}: four stations, hands on the bar at every gripped phase, lifters leave on work. Screenshots and videos in ${shots}`);
+  console.log(`Gym checked in a scratch office on port ${port}: four stations, hands on the bar at every gripped phase, lifters move round together each visit, lifters leave on work. Screenshots and videos in ${shots}`);
 } finally {
   await browser?.close();
   await office.stop();

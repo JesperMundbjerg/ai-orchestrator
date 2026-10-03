@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import { BoxGeometry, CylinderGeometry, MeshStandardMaterial, type Group } from "three";
 import type { BuildingPlan, RouteFn } from "./building.ts";
-import { blend, Body, Bottle, HIGH_FIVE, liftRig, playRig, restGesture, restRig, TO_MOUTH, turn, UP, type Joints } from "./Avatar.tsx";
+import { blend, Body, Bottle, HIGH_FIVE, liftRig, playRig, restGesture, restRig, samePlace, TO_MOUTH, turn, UP, type Joints } from "./Avatar.tsx";
 import { useGym } from "./Gym.tsx";
 import { gestureAt, HIP, newPose, newReach } from "./gym.ts";
 import { textTexture } from "./label.ts";
@@ -90,7 +90,7 @@ function Regular({ placement, keeper, walk, onSelect }: { placement: Placement; 
 
   useEffect(() => {
     const m = motion.current;
-    if (m.spot.pos[0] === spot.pos[0] && m.spot.pos[1] === spot.pos[1]) { m.spot = spot; return; }
+    if (samePlace(m.spot, spot)) { m.spot = spot; return; }
     // Round the corner they are in along its lane; from one corner to the other by the office's ways.
     m.path = (!m.path.length && cornerWalk(m.spot, spot)) || walk(m.pos, m.spot, spot);
     m.spot = spot;
@@ -132,7 +132,7 @@ function Regular({ placement, keeper, walk, onSelect }: { placement: Placement; 
     g.position.set(m.pos[0], 0, m.pos[1]);
     g.rotation.y = m.yaw;
     // Only once their walk to a new place has been set off, so nobody is at two stations at once.
-    const there = !walking && !m.path.length && m.spot === spot;
+    const there = !walking && !m.path.length && samePlace(m.spot, spot);
     const t = state.clock.elapsedTime + m.phase;
 
     // The same clocks the agents use: the gym's per lifter, the table's for the pair at it.

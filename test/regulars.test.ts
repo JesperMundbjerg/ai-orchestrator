@@ -138,7 +138,9 @@ test("in the gym they move round every visit: never the same role twice running,
     const placed = scheduleRegulars(plan, new Map(), v), after = scheduleRegulars(plan, new Map(), v + 1);
     assert.deepEqual(scheduleRegulars(plan, new Map(), v), placed, "the same visit, the same places");
     assert.equal([...placed.values()].filter((p) => p.act === "play").length, 2);
-    assert.ok([...placed.values()].filter((p) => p.act === "lift").length >= 3, "the gym is busy");
+    // The last visit of a shift, the next to play is over at the table already.
+    const last = Math.floor((v + 1) / SHIFT) !== Math.floor(v / SHIFT);
+    assert.ok([...placed.values()].filter((p) => p.act === "lift").length >= (last ? 2 : 3), "the gym is busy");
     for (const r of CAST) {
       const p = placed.get(r.id)!, q = after.get(r.id)!;
       if (p.act !== "play" && q.act !== "play") assert.notEqual(where(p), where(q), `${r.name} moves on (visit ${v})`);
@@ -169,6 +171,33 @@ test("the table changes over a player a shift, each keeping their end, and every
     players.add(a).add(b);
   }
   assert.equal(players.size, CAST.length);
+});
+
+test("the next to play comes over and watches by their end the visit before, so the table changes over in a few steps", () => {
+  const plan = office();
+  let changes = 0;
+  for (const v of visits) {
+    if (Math.floor((v + 1) / SHIFT) === Math.floor(v / SHIFT)) continue;
+    changes++;
+    const next = tableAt(v + 1), coming = next.find((id) => !tableAt(v).includes(id))!;
+    const now = scheduleRegulars(plan, new Map(), v).get(coming)!, then = scheduleRegulars(plan, new Map(), v + 1).get(coming)!;
+    assert.equal(now.act, "watch");
+    assert.equal(then.act, "play");
+    assert.equal(then.spot.pingpong, next.indexOf(coming));
+    const path = cornerWalk(now.spot, then.spot)!;
+    const metres = path.reduce((sum, p, i) => sum + Math.hypot(p[0] - (path[i - 1] ?? now.spot.pos)[0], p[1] - (path[i - 1] ?? now.spot.pos)[1]), 0);
+    // Regulars walk at 1.6 m/s, and the rally starts with the ball's pick-up.
+    assert.ok(metres / 1.6 < 4, `${metres.toFixed(1)} m to the end`);
+  }
+  assert.ok(changes >= 10);
+  // With an agent at the end they would take, they keep to the gym instead and watch nobody's place.
+  for (const v of visits) {
+    if (Math.floor((v + 1) / SHIFT) === Math.floor(v / SHIFT)) continue;
+    const next = tableAt(v + 1), coming = next.find((id) => !tableAt(v).includes(id))!;
+    const placed = scheduleRegulars(plan, new Map([["agent", pingSpot(plan, next.indexOf(coming) as 0 | 1)]]), v);
+    assert.notEqual(placed.get(coming)!.act, "play");
+    assert.equal(new Set([...placed.values()].map(where)).size, CAST.length, "never two at one place");
+  }
 });
 
 test("a visit's places: never two at one place, never where an agent is, a free end always played, and a set never cut short", () => {

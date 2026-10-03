@@ -5,7 +5,7 @@ import type { Vec2 } from "../src/ui/world/spatial.ts";
 import { place, planBuilding, routeIn, type BuildingPlan } from "../src/ui/world/building.ts";
 import { chooseGames } from "../src/ui/world/games.ts";
 import {
-  armReach, BENCH_FROM, BENCH_TO, chooseGym, EXERCISES, FOOT, gestureAt, GESTURES, gymCorner, gymSpot, GymPlayback, handFrom, handTarget, HIP, LAYOUT, LIFTS, liftPose,
+  armReach, VISIT, BENCH_FROM, BENCH_TO, chooseGym, EXERCISES, FOOT, gestureAt, GESTURES, gymCorner, gymSpot, GymPlayback, handFrom, handTarget, HIP, LAYOUT, LIFTS, liftPose,
   newPose, newReach, PLATE_R, PLATFORM_H, PULL_Y, PULL_Z, REST_MAX, REST_MIN, restingBar, routine, SEAT_Y, sessionAt, sessionPose, SETS, SHIN, SHOULDER_Y, sitPose,
   stationPose, STATIONS, THIGH, UPRIGHT_Z, type Lift, type Station,
 } from "../src/ui/world/gym.ts";
@@ -24,7 +24,29 @@ test("a third of the idle crew trains, one to a station, the same agents at the 
   assert.deepEqual(stations(gym).sort(), [...STATIONS].sort());
   assert.deepEqual(chooseGym(plan, [...agents].reverse(), since, 60_000), gym);
   for (const n of [0, 1, 2, 3, 5, 6, 9, 12]) assert.equal(chooseGym(plan, crew(n), since, 60_000).size, Math.min(4, Math.floor(n / 3)), `${n} idle`);
-  for (const [, spot] of gym) assert.deepEqual(spot, gymSpot(plan, spot.gym!));
+  for (const [, { slot, ...spot }] of gym) assert.deepEqual(spot, gymSpot(plan, spot.gym!));
+});
+
+test("idle lifters move round the stations together each visit, never the same one twice running", () => {
+  const agents = crew(12), since = new Map(agents.map((a) => [a.id, 0]));
+  const plan = planBuilding(agents, [team("t")], []);
+  let gym = chooseGym(plan, agents, since, 60_000);
+  const ids = [...gym.keys()];
+  const seen = new Map(ids.map((id) => [id, new Set<Station>()]));
+  for (let visit = 2; visit < 14; visit++) {
+    const next = chooseGym(plan, agents, since, visit * VISIT * 1000 + 50, gym);
+    assert.deepEqual([...next.keys()].sort(), [...ids].sort(), "the same lifters");
+    assert.equal(new Set(stations(next)).size, ids.length, "one to a station");
+    for (const id of ids) {
+      assert.notEqual(next.get(id)!.gym, gym.get(id)!.gym, `${id} moves on at visit ${visit}`);
+      seen.get(id)!.add(next.get(id)!.gym!);
+    }
+    // Within a visit, nobody moves, even when someone leaves.
+    const left = chooseGym(plan, agents.map((a) => (a.id === ids[0] ? { ...a, status: "working" as const } : a)), since, visit * VISIT * 1000 + 30_000, next);
+    for (const id of ids.slice(1)) assert.equal(left.get(id)?.gym, next.get(id)!.gym);
+    gym = next;
+  }
+  for (const [id, stations] of seen) assert.equal(stations.size, 4, `${id} has been round every station`);
 });
 
 test("lifters stay at their station while idle, and leave on work, a question for you or a place in line", () => {

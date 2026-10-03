@@ -16,7 +16,7 @@ import { IDLE_MS, inPark, nextPastime, outForABreak, parkPlan, type Park } from 
 import { BuildingOffice } from "./BuildingOffice.tsx";
 import { GamePlayback, chooseGames, seatsInLounge, type Games } from "./games.ts";
 import { GameContext, GamesScene } from "./Games.tsx";
-import { chooseGym, GymPlayback, type Gym } from "./gym.ts";
+import { chooseGym, GymPlayback, VISIT, visitAt, type Gym } from "./gym.ts";
 import { GymContext, GymScene } from "./Gym.tsx";
 import { choosePingPong, PingPlayback, pingTable, type PingPong } from "./pingpong.ts";
 import { PingContext, PingScene } from "./PingPong.tsx";
@@ -350,6 +350,11 @@ function usePark(world: WorldState | null, office: BuildingPlan | null): Buildin
     return next;
   }, [world]);
   const out = useMemo(() => (world && office ? outForABreak(world.agents.filter((a) => !reviewing(world.agents, world.work).has(a.id)), idleSince, now, office.queue) : new Set<string>()), [world, office, idleSince, now]);
+  // Who was where, so those not changing stay put.
+  const park = useRef<Park>(new Map());
+  const games = useRef<Games>(new Map());
+  const gym = useRef<Gym>(new Map());
+  const ping = useRef<PingPong>(new Map());
   // Look again when the next member has been idle long enough, or the next one in the garden takes up something new.
   useEffect(() => {
     if (!office) return;
@@ -359,11 +364,17 @@ function usePark(world: WorldState | null, office: BuildingPlan | null): Buildin
     const timer = setTimeout(() => setNow(Date.now()), due - t + 50);
     return () => clearTimeout(timer);
   }, [office, idleSince, out, now]);
-  // Who was where, so those not changing stay put.
-  const park = useRef<Park>(new Map());
-  const games = useRef<Games>(new Map());
-  const gym = useRef<Gym>(new Map());
-  const ping = useRef<PingPong>(new Map());
+  // And at each visit's end, when the gym moves round: a timer of its own, so it keeps going whatever else changes.
+  const [visit, setVisit] = useState(() => visitAt(Date.now()));
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      setVisit(visitAt(Date.now()));
+      timer = setTimeout(tick, Math.max(1000, (visitAt(Date.now()) + 1) * VISIT * 1000 - Date.now() + 50));
+    };
+    timer = setTimeout(tick, Math.max(1000, (visitAt(Date.now()) + 1) * VISIT * 1000 - Date.now() + 50));
+    return () => clearTimeout(timer);
+  }, []);
   return useMemo(() => {
     if (!office || !world) return office;
     const next = parkPlan(office, out, now, idleSince, park.current);
@@ -386,7 +397,7 @@ function usePark(world: WorldState | null, office: BuildingPlan | null): Buildin
     const spectators = available.filter(a => !games.current.has(a.id) && !gym.current.has(a.id) && !ping.current.has(a.id) && a.status === "idle" && !a.waitingOnYou && !office.queue.includes(a.id) && (!a.teamId || out.has(a.id)));
     spectators.slice(0, seats.length).forEach((a, i) => spots.set(a.id, seats[i]!));
     return { ...next.plan, spots };
-  }, [office, world, out, now, idleSince]);
+  }, [office, world, out, now, idleSince, visit]);
 }
 
 function useMeetings(world: WorldState | null, office: BuildingPlan | null): BuildingPlan | null {

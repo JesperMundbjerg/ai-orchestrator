@@ -15,7 +15,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { spawnScratchOffice } from "../scripts/lib/scratch-office.ts";
 import { gymCorner } from "../src/ui/world/gym.ts";
 import { pingCorner, TABLE_X, TABLE_Z } from "../src/ui/world/pingpong.ts";
-import { CAST, VISIT } from "../src/ui/world/regulars.ts";
+import { CAST, SHIFT, tableAt, VISIT, visitAt } from "../src/ui/world/regulars.ts";
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "playwright");
 const shots = process.env.SHOTS ?? join(homedir(), ".review-inbox/handoffs/agent-office/regulars");
@@ -157,7 +157,8 @@ await withOffice(3, true, async ({ open }) => {
   await look(page, "pingpong");
   await page.screenshot({ path: join(shots, "1-nobody-idle-table.png") });
   await look(page, "gym", { distance: 4.5, side: -1.8, pitch: -0.35 });
-  const lifter = placed.find((p) => p.act === "lift").name;
+  // Someone standing to lift: the click goes a little above where they stand, which over a bench is empty air.
+  const lifter = (placed.find((p) => p.act === "lift" && (p.gym === "platform" || p.gym === "rack")) ?? placed.find((p) => p.act === "lift")).name;
   const click = await clickRegular(page, lifter);
   await page.screenshot({ path: join(shots, "1-click-regular.png") });
   assert.match(click.card ?? "", new RegExp(`${lifter} · Regular at the gym`));
@@ -217,7 +218,11 @@ await withOffice(1, false, async ({ open }) => {
   assert.equal(pair.filter((id) => id.startsWith("regular:")).length, 1, "one regular");
   assert.ok(pair.includes("idle-0"), "and the one agent");
   const acts = Object.fromEntries((await page.evaluate(() => window.__scene().regulars)).map((r) => [r.name, r.act]));
-  assert.equal(Object.values(acts).filter((a) => a === "watch").length, 1, "the other table regular watches");
+  // The other table regular watches; in a shift's last visit so may whoever takes over at the table next.
+  const visit = visitAt(Date.now()), coming = tableAt(visit + 1).find((id) => !tableAt(visit).includes(id));
+  const watchers = Object.entries(acts).filter(([, a]) => a === "watch").map(([name]) => name);
+  const extra = Math.floor((visit + 1) / SHIFT) !== Math.floor(visit / SHIFT) && watchers.some((n) => `regular:${n.toLowerCase()}` === coming) ? 1 : 0;
+  assert.equal(watchers.length, 1 + extra, `the other table regular watches: ${watchers}`);
   assert.equal(Object.values(acts).filter((a) => a === "play").length, 1, "one regular plays");
   await neverAgents(page, 1);
   await look(page, "pingpong");

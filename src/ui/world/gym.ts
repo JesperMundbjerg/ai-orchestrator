@@ -107,13 +107,29 @@ export function gymSpot(plan: Pick<BuildingPlan, "rooms" | "outline" | "hall">, 
 
 // ---------------------------------------------------------------- who
 
-export type Gym = Map<string, Spot>;
+/** How long a visit lasts, in seconds: everyone in the gym, agent or regular, moves on to their next station together. */
+export const VISIT = 60;
+/** The visit at this moment on the office's clock (ms), the same in every browser. */
+export const visitAt = (ms: number) => Math.floor(ms / (VISIT * 1000));
+/**
+ * How far round everyone has moved by a visit: one more each visit, and every other visit (seeded)
+ * two more again, so the step is 1, 3 or -1 and never brings anyone back to the station (of four)
+ * or role (of five) they just had.
+ */
+export const shiftAt = (visit: number) => visit + 2 * (hash(`regulars:${visit}`) & 1);
+
+/** A lifter's place in the gym's round: their station is `STATIONS[(slot + shiftAt(visit)) % 4]`. */
+export interface GymSpot extends Spot { slot: number }
+export type Gym = Map<string, GymSpot>;
+
+const STATION_OF = (slot: number, visit: number) => STATIONS[(((slot + shiftAt(visit)) % STATIONS.length) + STATIONS.length) % STATIONS.length]!;
 
 /**
  * Who trains where. Eligible like the lounge games (idle, not waiting on you nor in line, a project
  * member only once out for a break), and never someone `playing` a game. At most a third of them,
  * one a station; those already there stay while they are eligible, and the rest go by a hash of
- * their id, each to the station they like best that is free.
+ * their id, each to the station they like best that is free. Each keeps their place in the round
+ * and moves on a station every visit, all together, so nobody does the same station twice running.
  */
 export function chooseGym(plan: BuildingPlan, agents: WorldAgent[], since: ReadonlyMap<string, number>, now: number, before: Gym = new Map(), playing: ReadonlySet<string> = new Set()): Gym {
   const out = outForABreak(agents, since, now, plan.queue);
@@ -121,22 +137,37 @@ export function chooseGym(plan: BuildingPlan, agents: WorldAgent[], since: Reado
     .filter((a) => a.status === "idle" && !a.waitingOnYou && !plan.queue.includes(a.id) && (!a.teamId || out.has(a.id)) && !playing.has(a.id))
     .map((a) => a.id);
   const room = Math.min(STATIONS.length, Math.floor(eligible.length * GYM_SHARE + 1e-9));
+  const visit = visitAt(now);
   const result: Gym = new Map();
-  const free = new Set(STATIONS);
+  const free = new Set([0, 1, 2, 3]);
+  const at = (id: string, slot: number) => {
+    free.delete(slot);
+    result.set(id, { ...gymSpot(plan, STATION_OF(slot, visit)), slot });
+  };
   for (const [id, spot] of before) {
-    if (result.size >= room || !eligible.includes(id) || !spot.gym || !free.has(spot.gym)) continue;
-    free.delete(spot.gym);
-    result.set(id, gymSpot(plan, spot.gym));
+    if (result.size >= room || !eligible.includes(id) || !free.has(spot.slot)) continue;
+    at(id, spot.slot);
   }
   const order = eligible.filter((id) => !result.has(id)).sort((a, b) => hash(`gym:${a}`) - hash(`gym:${b}`) || a.localeCompare(b));
   for (const id of order) {
     if (result.size >= room) break;
     const first = hash(`station:${id}`) % STATIONS.length;
-    const station = [0, 1, 2, 3].map((k) => STATIONS[(first + k) % STATIONS.length]!).find((s) => free.has(s))!;
-    free.delete(station);
-    result.set(id, gymSpot(plan, station));
+    const station = [0, 1, 2, 3].map((k) => STATIONS[(first + k) % STATIONS.length]!).find((s) => [...free].some((slot) => STATION_OF(slot, visit) === s))!;
+    at(id, [...free].find((slot) => STATION_OF(slot, visit) === station)!);
   }
   return result;
+}
+
+/**
+ * The way from one place to another in the same corner (the gym's, or the table's): up to the
+ * corner's lane, along it and down to the new place, each leg the last of an approach the corner's
+ * own ways in already take. Null between corners, where the office's routes go.
+ */
+export function cornerWalk(from: Spot, to: Spot): Vec2[] | null {
+  if (from.group !== to.group || (from.group !== "gym" && from.group !== "pingpong")) return null;
+  const a = from.approach.at(-1), b = to.approach.at(-1);
+  if (!a || !b) return null;
+  return [a, b, to.pos];
 }
 
 /** A lifter's time at a station: where, the seed their routine goes by, and when they leave (ms; Infinity while they stay). */

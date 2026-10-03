@@ -185,23 +185,27 @@ try {
     await v.page.video().saveAs(join(shots, `${name}-pingpong.webm`));
     assert.deepEqual(v.errors, []);
   }
-  // Work arrives: the players walk off, the rally stops and the ball rests on the table.
+  // Work arrives: the players walk off, the rally stops and the ball rests on the table until the regulars, back from
+  // watching, take the table again and start a rally of their own (seconds later, so the rest is checked while nobody plays).
   {
     const { page } = desk;
     await page.evaluate(() => { delete window.__now; });
     await writeFile(control, "working");
     await page.waitForFunction(() => window.__scene().avatars.every((a) => a.status === "working" && a.spot.pingpong === undefined), null, { timeout: 10_000 });
-    await page.waitForFunction(() => window.__scene().ping.playback.seconds(Date.now()) === null, null, { timeout: 10_000 });
-    await page.waitForTimeout(2500);
+    await page.waitForFunction((rest) => {
+      const s = window.__scene();
+      return s.ping.playback.seconds(Date.now()) === null && Math.abs(s.store.scene.getObjectByName("pingpong-ball").position.y - rest) < 0.002;
+    }, TABLE_H + BALL_R, { timeout: 10_000 });
     await look(desk.page, { distance: 6.5, side: 1.5, pitch: -0.45 });
     await settle(page, 300);
     await page.screenshot({ path: join(shots, "desktop-leaving.png") });
-    const rest = await page.evaluate(() => window.__scene().store.scene.getObjectByName("pingpong-ball").position.y);
-    assert.ok(Math.abs(rest - (TABLE_H + BALL_R)) < 0.002, "the ball rests on the table");
+    await page.waitForFunction(() => window.__scene().ping.playback.seconds(Date.now()) !== null, null, { timeout: 30_000 });
+    await settle(page, 3000);
+    await page.screenshot({ path: join(shots, "desktop-regulars-back.png") });
   }
   assert.deepEqual(desk.errors, []);
   assert.deepEqual(phone.errors, []);
-  console.log(`Ping pong checked in a scratch office on port ${port}: two players paired, ball on each paddle at its hit, bounces on the right sides and over the net, held in hand between points, players leave on work. Screenshots and videos in ${shots}`);
+  console.log(`Ping pong checked in a scratch office on port ${port}: two players paired, ball on each paddle at its hit, bounces on the right sides and over the net, held in hand between points, players leave on work, the ball rests until the regulars take the table back. Screenshots and videos in ${shots}`);
 } finally {
   await browser?.close();
   await office.stop();
