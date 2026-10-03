@@ -215,7 +215,7 @@ function MemberCard({ agent, team, state, run, switches, holds }: { agent: World
       <span className="member-name">
         {agent.name}
         {agent.waitingOnYou ? <span className="type decide"> waits for you</span> : null}
-        {holds?.length ? <span className="warn small-note" title="Done means its turn ended, not that it can go: closing it stops the project's standing lane until it is recovered onto a replacement"> standing {holds.join(", ")} session</span> : null}
+        {holds?.length ? <span className="muted small-note" title="Done means its turn ended, not that it can go: closing it stops the project's standing lane until it is recovered onto a replacement"> standing {holds.join(", ")} session</span> : null}
       </span>
       {!team ? <span /> : agent.role === "lead" ? (
         <span className="lead-toggle on" title="Hears your instructions and runs the others">{leadTitle(team)}</span>

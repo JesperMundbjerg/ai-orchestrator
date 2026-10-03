@@ -79,16 +79,18 @@ function LaneRow({ lane, onDone }: { lane: StandingLane; onDone: () => void }) {
  * team's lead is online: the founder sees a disconnected dispatcher without it hiding behind a lead.
  */
 export function StandingLanes({ lanes, onChanged }: { lanes: StandingLane[]; onChanged: () => void }) {
-  // A connected lane stays while it carries the outcome of a recovery you asked for.
-  const shown = lanes.filter((l) => l.state !== "connected" || l.recovery);
-  if (!shown.length) return null;
-  return (
-    <div className="machine-warning standing-lanes" role="status">
+  // Red only for a lane that is not connected; a connected one stays, calmly, while it carries the outcome of a recovery you asked for.
+  const wrong = lanes.filter((l) => l.state !== "connected");
+  const recovered = lanes.filter((l) => l.state === "connected" && l.recovery);
+  const block = (shown: StandingLane[], className: string) => shown.length ? (
+    <div className={className} role="status">
       <ul>
         {shown.map((l) => <LaneRow key={`${l.project}/${l.lane}`} lane={l} onDone={onChanged} />)}
       </ul>
     </div>
-  );
+  ) : null;
+  if (!wrong.length && !recovered.length) return null;
+  return <>{block(wrong, "machine-warning standing-lanes")}{block(recovered, "machine-warning calm standing-lanes")}</>;
 }
 
 /** The lanes each agent is the registered running session of, for marking it where agents are listed. */
