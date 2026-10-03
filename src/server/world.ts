@@ -28,6 +28,7 @@ import { Pipelines } from "./pipelines/store.ts";
 import { Waivers } from "./pipelines/waiver.ts";
 import { SessionFiles } from "./models.ts";
 import { allocateName, NAMES } from "./names.ts";
+import { PaneNames } from "./panenames.ts";
 import type { Usage } from "./usage.ts";
 import { EFFORT_TIMEOUT_MS, Efforts } from "./effort.ts";
 import type { EffortReport } from "../shared/types.ts";
@@ -65,6 +66,8 @@ export interface AgentSource {
   /** Reads the agent list again now, rather than waiting for the next change or poll. */
   refresh?(): Promise<void>;
   closePane(paneId: string): Promise<void>;
+  /** Sets the label herdr shows for a pane: its office name (panenames.ts). */
+  renamePane?(paneId: string, label: string): Promise<void>;
   /** Removes a worktree and closes its workspace. It refuses a worktree with uncommitted changes. */
   removeWorktree(repoRoot: string, path: string): Promise<void>;
 }
@@ -179,6 +182,8 @@ export class World {
   private unpresented: Unpresented;
   /** Teams with no lead online while others wait on them; the founder is asked to make someone lead. */
   readonly leadWatch: LeadWatch;
+  /** Standing lanes lend their names, and herdr's panes show office names. */
+  private paneNames: PaneNames;
   onChange: (reason: string) => void = () => {};
   /** The standing lanes ("project/lane") an agent is the registered running session of; the service wires it (standing.ts). */
   standingHolds: (agent: WorldAgent) => string[] = () => [];
@@ -194,6 +199,7 @@ export class World {
     this.unpresented = new Unpresented(db);
     this.source = source;
     this.inbox = inbox;
+    this.paneNames = new PaneNames({ claimName: (id, name) => this.claimName(id, name), renamePane: source?.renamePane?.bind(source), registered: () => this.messages.laneRegistration, now: () => this.now().getTime() });
     this.now = now;
     this.files = files;
     this.messages = new Messages(db, source, () => this.state(), now, (redrawOnly) => this.onChange(redrawOnly ? "activity" : "world"));
@@ -653,6 +659,7 @@ export class World {
    */
   async react(): Promise<void> {
     const state = this.state();
+    this.paneNames.sync(state);
     const changed = this.unpresented.tick(state, this.now().getTime(), (lead, text) => { this.messages.notice(lead, text); });
     const stalled = this.leadWatch.tick(state);
     if (changed || stalled) this.onChange("activity"); // redraw only; do not recursively react
@@ -1089,6 +1096,25 @@ export class World {
     }
     this.onChange("world");
     return this.agent(id);
+  }
+
+  /**
+   * Gives an agent a name only it may hold, a standing lane's (panenames.ts): whoever has it now,
+   * running or a kept record, gets a newcomer's name instead, in the same durable change.
+   */
+  claimName(id: string, name: string): void {
+    const rows = this.db.prepare("SELECT * FROM world_agents").all() as Row[];
+    const records = rows.map((r) => ({ id: str(r.id), name: str(r.name), teamId: r.team_id ? str(r.team_id) : null, removed: Boolean(r.removed), lastSeenAt: str(r.last_seen_at) }));
+    const kept = new Set(records.map((r) => r.id));
+    this.tx(() => {
+      for (const other of rows.filter((r) => str(r.id) !== id && str(r.name).toLowerCase() === name.toLowerCase())) {
+        const fresh = allocateName(records, kept, parseInt(str(other.id).slice(0, 8), 16) % NAMES.length, this.now().getTime()).name;
+        records.push({ id: str(other.id), name: fresh, teamId: null, removed: false, lastSeenAt: "" });
+        this.db.prepare("UPDATE world_agents SET name = ? WHERE id = ?").run(fresh, str(other.id));
+      }
+      this.db.prepare("UPDATE world_agents SET name = ? WHERE id = ?").run(name, id);
+    });
+    this.onChange("world");
   }
 
   private takeOver(row: Row): WorldAgent {

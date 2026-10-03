@@ -281,6 +281,11 @@ export class Herdr implements PresenceSource, AgentSource {
     return created.pane.pane_id;
   }
 
+  /** Sets the label herdr shows for the pane, beside its title; the agent's herdr name, which prompts address, stays (panenames.ts). */
+  async renamePane(paneId: string, label: string): Promise<void> {
+    await this.call(["pane", "rename", paneId, label]);
+  }
+
   async renameAgent(paneId: string, name: string): Promise<void> {
     await this.call(["agent", "rename", paneId, name]);
   }
