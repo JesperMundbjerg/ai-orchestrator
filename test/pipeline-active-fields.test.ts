@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { selected, activation } from "../src/server/pipelines/model.ts";
 import { Pipelines } from "../src/server/pipelines/store.ts";
 import { openDatabase } from "../src/server/db.ts";
@@ -39,6 +39,11 @@ test("unresolved active conditions and guards require their inputs, not inactive
 test("an existing open FysikLab snapshot accepts corrected active-only selections without restarting", t => {
   const dir = mkdtempSync(join(tmpdir(), "pipeline-active-")); const root = join(dir, "repo"); mkdirSync(root);
   const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", ...args], { cwd: root, stdio: "ignore" });
+  // A new run snapshots real source versions; fixture resources contain no executable code.
+  for (const source of new Set(graph.nodes.map(node => node.source).filter((source): source is string => Boolean(source) && !source!.startsWith("builtin:")))) {
+    const file = join(root, source.slice(source.indexOf(":") + 1));
+    mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "# Synthetic workflow resource\n");
+  }
   git("init", "-q", "-b", "dev"); writeFileSync(join(root, "sample.txt"), "synthetic candidate\n"); git("add", "."); git("commit", "-qm", "base");
   const db = openDatabase(join(dir, "office.sqlite"));
   t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });

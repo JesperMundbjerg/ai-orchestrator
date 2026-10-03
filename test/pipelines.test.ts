@@ -89,6 +89,41 @@ function mergedWave(t: TestContext, g = graph("dev"), integrationBranch = "dev")
   return Object.assign(f, { run, upstream, merge, input });
 }
 
+test("an active run keeps its source contract when upstream changes or removes the skill", t => {
+  const g = graph("dev");
+  g.nodes[0]!.source = "skill:.claude/skills/verify/SKILL.md";
+  const f = fixture(t, g);
+  const sourceDir = join(f.root, ".claude", "skills", "verify");
+  mkdirSync(sourceDir, { recursive: true });
+  const source = join(sourceDir, "SKILL.md");
+  writeFileSync(source, "# Verify\nCheck the owned change.\n");
+  git(f.root, "add", "."); git(f.root, "commit", "-qm", "initial verification contract");
+  const base = git(f.root, "rev-parse", "HEAD");
+  const checkout = join(f.dir, "wave");
+  git(f.root, "worktree", "add", "-qb", "wave", checkout);
+  f.lead.cwd = checkout; f.state.teams[0]!.worktrees.push(checkout);
+  writeFileSync(join(checkout, "src.ts"), "export const value = 2;\n");
+  git(checkout, "commit", "-qam", "finished work");
+  const run = f.done(f.p.start(f.lead, { clientId: "frozen-source", base }));
+  const original = run.definitionHashes[g.nodes[0]!.source!];
+  assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, true);
+
+  writeFileSync(source, "# Verify\nNew instructions for future work.\n");
+  git(f.root, "commit", "-qam", "update future verification instructions");
+  const result = f.p.gate(f.lead, f.gate(run));
+  assert.equal(result.allowed, true, result.reasons.join("; "));
+  assert.equal(f.p.get(run.id).definitionHashes[g.nodes[0]!.source!], original);
+  const next = f.p.start(f.lead, { clientId: "new-source", base });
+  assert.notEqual(next.definitionHashes[g.nodes[0]!.source!], original);
+
+  rmSync(source); git(f.root, "commit", "-qam", "retire skill for future work");
+  f.reopen();
+  assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, true, "restart and source retirement do not reopen completed work");
+  assert.throws(() => f.p.start(f.lead, { clientId: "missing-source", base }), /source .* unavailable/);
+  writeFileSync(join(checkout, "src.ts"), "export const value = 3;\n");
+  assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, false, "changed implementation still needs current evidence");
+});
+
 test("re-base preserves unchanged own bytes after upstream merge, history and exact replay", t => {
   const f = mergedWave(t); f.merge();
   assert.deepEqual(capture(f.root, f.run.candidate.base).changedPaths, ["src.ts", "upstream.ts"]);
@@ -103,6 +138,45 @@ test("re-base preserves unchanged own bytes after upstream merge, history and ex
   assert.throws(() => f.p.branch(f.lead, { ...f.input, rationale: "different reason" }), { code: "replay_conflict" });
   f.lead.role = "member"; f.crew.role = "lead";
   assert.throws(() => f.p.branch(f.lead, f.input), { status: 403 });
+});
+
+for (const change of ["none", "owned", "absorbed", "added", "deleted"] as const) test(`published paths leaving the diff preserve evidence only with unchanged reviewed bytes (${change})`, t => {
+  const f = fixture(t, graph("dev"));
+  const remote = join(f.dir, "remote.git");
+  git(f.dir, "init", "--bare", "-q", remote); git(f.root, "remote", "add", "origin", remote);
+  git(f.root, "push", "-q", "origin", "dev");
+  const base = git(f.root, "rev-parse", "HEAD");
+  git(f.root, "checkout", "-qb", "wave");
+  writeFileSync(join(f.root, "src.ts"), "export const value = 2;\n");
+  writeFileSync(join(f.root, "shared.ts"), "export const helper = 2;\n");
+  git(f.root, "add", "."); git(f.root, "commit", "-qm", "owned work and shared prerequisite");
+  const before = f.done(f.p.start(f.lead, { clientId: "before-publication", base }));
+  git(f.root, "checkout", "-q", "dev");
+  writeFileSync(join(f.root, "shared.ts"), "export const helper = 2;\n");
+  writeFileSync(join(f.root, "upstream.ts"), "export const upstream = true;\n");
+  git(f.root, "add", "."); git(f.root, "commit", "-qm", "publish shared prerequisite independently");
+  git(f.root, "push", "-q", "origin", "dev");
+  const published = git(f.root, "rev-parse", "HEAD");
+  git(f.root, "checkout", "-q", "wave"); git(f.root, "merge", "-q", "--no-edit", "dev");
+  if (change === "owned") writeFileSync(join(f.root, "src.ts"), "export const value = 3;\n");
+  if (change === "absorbed") writeFileSync(join(f.root, "shared.ts"), "export const helper = 3;\n");
+  if (change === "added") writeFileSync(join(f.root, "new.ts"), "export const added = true;\n");
+  if (change === "deleted") rmSync(join(f.root, "src.ts"));
+  if (change !== "none") { git(f.root, "add", "."); git(f.root, "commit", "-qm", "material follow-up"); }
+  const run = f.p.branch(f.lead, { runId: before.id, clientId: "published-rebase", base: published, selections: {}, rationale: "Shared prerequisite is already upstream" });
+  assert.equal(run.round, before.round + (change === "none" ? 0 : 1));
+  assert.equal(run.steps[0]!.state, change === "none" ? "done" : "stale");
+  assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, change === "none");
+  if (change !== "none") return;
+  assert.deepEqual(run.candidate.changedPaths, ["src.ts"]);
+  assert.deepEqual(run.candidate.fingerprintPaths, ["shared.ts", "src.ts"]);
+  assert.equal(run.candidate.fingerprint, before.candidate.fingerprint);
+  f.reopen();
+  const repinned = f.p.branch(f.lead, { runId: run.id, clientId: "repeat-pin", expectedRevision: run.revision, candidate: "HEAD", selections: {}, rationale: "Same final commit" });
+  assert.equal(repinned.round, before.round);
+  assert.equal(f.p.gate(f.lead, f.gate(repinned)).allowed, true);
+  git(f.root, "push", "-q", "origin", "HEAD:dev");
+  assert.equal(f.p.get(run.id).state, "delivered", "publication verifies the retained bytes contract too");
 });
 
 test("re-base refuses crew, unpublished local base, non-ancestor and closed runs atomically", t => {

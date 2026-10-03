@@ -244,6 +244,9 @@ export class Pipelines {
       if (!owned.some(p => { try { return repository(p).top === candidate.checkout; } catch { return false; } })) throw new InboxError(403, "use a checkout owned by this team");
       if (input.workId) this.checkWork(input.workId, input.workRound, actor.teamId, candidate.fingerprint);
       const definitions = Object.fromEntries(this.palette(actor.teamId).entries.map(d => [d.id, d.hash]));
+      for (const node of view.graph.nodes) if (node.source && !Object.hasOwn(definitions, node.source)) {
+        throw new InboxError(409, `source ${node.source} is unavailable; repair the workflow before starting a run`, "pipeline_source_unavailable");
+      }
       const at = this.now().toISOString();
       const run: PipelineRun = { id: randomUUID(), teamId: actor.teamId, leadId: actor.id, graph: view.graph, policyHash: view.policyHash!, definitionHashes: definitions, revision: 0, round: 1, candidate,
         selections: {}, rationale: "", steps: view.graph.nodes.map(n => ({ nodeId: n.id, state: "inactive", assignedTo: null, completedBy: null, evidence: [], notes: "" })), state: "open", workId: input.workId ?? null, workRound: input.workRound ?? null, createdAt: at, updatedAt: at };
@@ -270,7 +273,10 @@ export class Pipelines {
       const choices = { ...run.selections, ...input.selections }; const problems = selected(run.graph, choices);
       if (problems.length) throw new InboxError(422, problems.join("; "));
       if (input.candidate || input.base) {
-        const next = capture(run.candidate.checkout, input.base ?? run.candidate.base, input.candidate ?? "HEAD", input.base ? 2 : run.candidate.fingerprintVersion ?? 1);
+        // Publication can remove already-reviewed paths from base..HEAD without changing their
+        // bytes. Keep those paths in the evidence contract, so real changes still invalidate it.
+        const priorPaths = run.candidate.fingerprintPaths ?? (input.base && run.candidate.fingerprintVersion === 2 ? run.candidate.changedPaths : undefined);
+        const next = capture(run.candidate.checkout, input.base ?? run.candidate.base, input.candidate ?? "HEAD", input.base ? 2 : run.candidate.fingerprintVersion ?? 1, priorPaths);
         if (input.base) {
           const adapter = this.adapters.read(run.candidate.repoRoot, basename(run.candidate.repoRoot));
           if (adapter.problems.length) throw new InboxError(422, adapter.problems.join("; "));
@@ -473,11 +479,8 @@ export class Pipelines {
     // Step states come from get()'s evidence evaluator, the same one Runs shows; its reasons travel with the refusal.
     for (const step of run.steps) if (required.has(step.nodeId) && step.state !== "done") reasons.push(`${step.nodeId}: ${step.state}${step.problems?.length ? ` (${step.problems.join("; ")})` : ""}`);
     const baselineFailures = run.steps.filter(s => required.has(s.nodeId) && s.state === "done" && s.baselineFailures?.length).map(s => `${s.nodeId}: fails as on base: ${s.baselineFailures!.join("; ")}`);
-    const palette = this.palette(run.teamId);
-    for (const n of run.graph.nodes.filter(n => required.has(n.id) && n.source)) {
-      const source = palette.entries.find(d => d.id === n.source);
-      if (!source || source.hash !== run.definitionHashes[n.source!]) reasons.push(`${n.id}: source definition changed or unavailable`);
-    }
+    // The graph and source versions are the contract captured at start. Updating a skill for
+    // future runs must not invalidate completed work; candidate evidence is still checked above.
     if (input.delivery === "review") {
       if (!input.workId || run.workId !== input.workId || run.workRound !== input.workRound) reasons.push("review run is bound to another work round");
       else this.checkWork(input.workId, input.workRound, run.teamId, run.candidate.fingerprint);

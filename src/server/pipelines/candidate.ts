@@ -21,7 +21,7 @@ function ref(value: string): string {
   if (!value || value.startsWith("-") || !/^[\w/.-]+$/.test(value)) throw new InboxError(400, "pipeline references must be commit ids or simple Git refs");
   return value;
 }
-export function capture(checkout: string, base = "HEAD", candidate = "HEAD", fingerprintVersion: 1 | 2 = 2): PipelineCandidate {
+export function capture(checkout: string, base = "HEAD", candidate = "HEAD", fingerprintVersion: 1 | 2 = 2, priorPaths?: string[]): PipelineCandidate {
   const repo = repository(checkout);
   const head = git(repo.top, ["rev-parse", "--verify", `${ref(candidate)}^{commit}`]);
   if (head !== git(repo.top, ["rev-parse", "HEAD"])) throw new InboxError(409, "candidate must be checked out; use an owned checkout at the pinned candidate", "pipeline_stale_candidate");
@@ -49,9 +49,11 @@ export function capture(checkout: string, base = "HEAD", candidate = "HEAD", fin
   // commit. No temporary Git index, object write, textconv, hooks or project code execution.
   // Hash only this wave's scope. Unchanged upstream paths must not invalidate its
   // receipts after a protected re-base; additions, deletions and modes still count.
-  const fingerprint = intendedBytes(tree, changedPaths, fingerprintVersion);
+  const fingerprintPaths = [...new Set([...changedPaths, ...(fingerprintVersion === 2 ? priorPaths ?? [] : [])])].sort();
+  const fingerprint = intendedBytes(tree, fingerprintPaths, fingerprintVersion);
   return { checkout: repo.top, repoRoot: repo.root, base: baseSha, head, tree: git(repo.top, ["rev-parse", `${head}^{tree}`]), fingerprint, changedPaths,
-    ...(fingerprintVersion === 2 ? { fingerprintVersion: 2 as const } : {}) };
+    ...(fingerprintVersion === 2 ? { fingerprintVersion: 2 as const } : {}),
+    ...(fingerprintPaths.length > changedPaths.length ? { fingerprintPaths } : {}) };
 }
 function intendedBytes(tree: Map<string, [string, string]>, changedPaths: string[], fingerprintVersion: 1 | 2): string {
   const intended = fingerprintVersion === 1 ? [...tree].sort(([a], [b]) => a.localeCompare(b)) : changedPaths.map(path => [path, tree.get(path) ?? null]);
@@ -75,7 +77,7 @@ export function committedFingerprint(cwd: string, candidate: PipelineCandidate):
   const changedPaths = git(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", candidate.base, candidate.head, "--"]).split("\0").filter(Boolean).sort();
   const tree = treeEntries(cwd, candidate.base); const committed = treeEntries(cwd, candidate.head);
   for (const path of changedPaths) { const entry = committed.get(path); if (entry) tree.set(path, entry); else tree.delete(path); }
-  return intendedBytes(tree, changedPaths, candidate.fingerprintVersion ?? 1);
+  return intendedBytes(tree, [...new Set([...changedPaths, ...(candidate.fingerprintPaths ?? [])])].sort(), candidate.fingerprintVersion ?? 1);
 }
 export function isAncestor(cwd: string, ancestor: string, descendant: string): boolean {
   try { git(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]); return true; } catch { return false; }
@@ -102,7 +104,7 @@ export function requirePublishedBase(candidate: PipelineCandidate, integrationBr
   if (!ancestor(candidate.base, candidate.head)) throw new InboxError(409, "new base must be an ancestor of the candidate", "pipeline_base_not_ancestor");
 }
 export function sameCandidate(saved: PipelineCandidate): boolean {
-  try { const current = capture(saved.checkout, saved.base, "HEAD", saved.fingerprintVersion ?? 1); return current.head === saved.head && current.fingerprint === saved.fingerprint; }
+  try { const current = capture(saved.checkout, saved.base, "HEAD", saved.fingerprintVersion ?? 1, saved.fingerprintPaths); return current.head === saved.head && current.fingerprint === saved.fingerprint; }
   catch { return false; }
 }
 /** The lane whose worktree this checkout is, when `pipelineHooks.laneDelivery` lets that lane deliver outside

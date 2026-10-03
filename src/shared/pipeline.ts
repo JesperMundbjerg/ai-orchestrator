@@ -146,6 +146,8 @@ export interface PipelineCandidate {
   /** Missing on legacy whole-tree snapshots; those are kept valid until an explicit re-base. */
   fingerprintVersion?: 2;
   changedPaths: string[];
+  /** Previously reviewed paths kept in the bytes contract after a published base absorbs them. */
+  fingerprintPaths?: string[];
 }
 export interface PipelineEvidenceInput {
   kind: PipelineEvidenceKind;
