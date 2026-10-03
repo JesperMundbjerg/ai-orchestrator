@@ -4,11 +4,12 @@
 // next `inbox crew` without restarting anyone.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { modelLabel } from "../shared/models.ts";
-import { MIXED, effectiveChoice, effectiveLead, upgradeCrewTree, validateCrewTree, type CrewCatalog, type CrewChoice, type CrewRule, type CrewTree, type CrewTreeState } from "../shared/crewtree.ts";
+import { BUILTIN_PRESETS, MIXED, effectiveChoice, effectiveLead, upgradeCrewGuide, validateCrewGuide, validateCrewTree, type CrewGuideDocument, type CrewCatalog, type CrewChoice, type CrewRule, type CrewTree, type CrewTreeState, type CrewTreeUpdate } from "../shared/crewtree.ts";
 import { InboxError } from "./inbox.ts";
 
 const DEFAULT_FILE = fileURLToPath(new URL("./crewtree.default.json", import.meta.url));
@@ -69,6 +70,43 @@ function clean(tree: CrewTree): CrewTree {
   };
 }
 
+/** Built-ins are recreated from the shipped Balanced tree, never from a user's mutable copy. */
+export function builtinCrewTrees(): Record<string, CrewTree> {
+  const balanced = JSON.parse(readFileSync(DEFAULT_FILE, "utf8")) as CrewTree;
+  const top = structuredClone(balanced);
+  const opus: CrewChoice = { harness: "claude", model: "opus", effort: "medium" };
+  const astra: CrewChoice = { harness: "pi", model: "openai-codex/gpt-6-astra", effort: "high" };
+  const sonnet: CrewChoice = { harness: "claude", model: "sonnet", effort: "high" };
+  const sol: CrewChoice = { harness: "pi", model: "openai-codex/gpt-6.1-sol", effort: "high" };
+  top.rules = top.rules.map((r) => ({ ...r,
+    use: r.id === "deep-thinking" ? opus : astra,
+    backup: r.id === "deep-thinking" ? astra : opus,
+    why: r.id === "deep-thinking" ? "Opus for architecture and open-ended planning." : "Astra for implementation and independent code review.",
+  }));
+  top.fallback = { ...astra, backup: opus, why: "Astra builds; Opus is the alternate perspective." };
+  const thrifty = structuredClone(balanced);
+  thrifty.lead = { use: sonnet, backup: sol, why: "Sonnet plans and supervises without the top-model cost." };
+  thrifty.rules = [{
+    id: "mechanical", when: "Mechanical work with a clear recipe: repetitive edits, formatting, renaming, or straightforward test fixtures.",
+    use: { harness: "pi", model: "openai-codex/gpt-6-luna", effort: "high" }, backup: sonnet,
+    why: "Luna at high effort for bounded work; escalate ambiguous tasks to the next rule.",
+  }, ...thrifty.rules.map((r) => ({ ...r, use: r.id === "deep-thinking" ? sonnet : sol,
+    backup: r.id === "deep-thinking" ? sol : sonnet,
+    why: "Sonnet and Sol handle work that needs judgement without top-model cost.",
+  }))];
+  thrifty.fallback = { ...sol, backup: sonnet, why: "Sol for everyday work, Sonnet as backup." };
+  const single = (harness: string): CrewTree => {
+    const t = structuredClone(balanced);
+    const pair = (use: CrewChoice, backup: CrewChoice) => use.harness === harness ? { use, backup } : { use: backup, backup: use };
+    t.rules = t.rules.map((r) => ({ ...r, ...pair(r.use!, r.backup!), why: `Main choice stays in ${harness === "pi" ? "Pi" : "Claude Code"}; the founder's switch can still select its backup.` }));
+    t.lead = { ...pair(t.lead.use, t.lead.backup), why: "The lead uses the same harness as the crew." };
+    const fb = pair(t.fallback, t.fallback.backup);
+    t.fallback = { ...fb.use, backup: fb.backup, why: "The everyday choice on this harness." };
+    return clean(t);
+  };
+  return { balanced, "top-models": clean(top), thrifty: clean(thrifty), "codex-only": single("pi"), "claude-only": single("claude") };
+}
+
 /** Why the office has paused a harness for now: the founder's rule near a usage limit. */
 export interface CrewPause {
   harness: string;
@@ -101,8 +139,25 @@ export class CrewTreeStore {
     return crewCatalog(this.piStore);
   }
 
-  private defaults(): CrewTree {
-    return JSON.parse(readFileSync(DEFAULT_FILE, "utf8")) as CrewTree;
+  private defaults(): CrewGuideDocument {
+    return { version: 2, mode: MIXED, activePreset: "balanced", copies: [{ id: "my-guide", name: "My guide", tree: builtinCrewTrees().balanced! }] };
+  }
+
+  private readDocument(): CrewGuideDocument {
+    this.seed();
+    const document = upgradeCrewGuide(JSON.parse(readFileSync(this.file, "utf8")));
+    const problems = validateCrewGuide(document, this.catalog());
+    if (problems.length) throw new Error(problems.map((p) => `${p.path}: ${p.message}`).join("; "));
+    return document as CrewGuideDocument;
+  }
+
+  private present(document: CrewGuideDocument, problem: string | null): CrewTreeState {
+    const presets = [
+      ...BUILTIN_PRESETS.map((p) => ({ ...p, builtin: true })),
+      ...document.copies.map((p) => ({ id: p.id, name: p.name, description: p.id === "my-guide" ? "Your original guide, kept safe when you try a preset." : "Your edited copy; built-in presets stay unchanged.", builtin: false })),
+    ];
+    const tree = builtinCrewTrees()[document.activePreset] ?? document.copies.find((p) => p.id === document.activePreset)!.tree;
+    return { tree: clean({ ...tree, mode: document.mode }), activePreset: document.activePreset, presets, catalog: this.catalog(), file: this.file, problem };
   }
 
   /** The default is written once, the first time, and never over a file that exists. */
@@ -122,26 +177,55 @@ export class CrewTreeStore {
    * becomes current on its next save.
    */
   state(): CrewTreeState {
-    this.seed();
-    const catalog = this.catalog();
-    let problem: string;
     try {
-      const tree = upgradeCrewTree(JSON.parse(readFileSync(this.file, "utf8")) as unknown);
-      const problems = validateCrewTree(tree, catalog);
-      if (!problems.length) return { tree: clean(tree as CrewTree), catalog, file: this.file, problem: null };
-      problem = problems.map((p) => `${p.path}: ${p.message}`).join("; ");
+      return this.present(this.readDocument(), null);
     } catch (err) {
-      problem = `not valid JSON (${(err as Error).message})`;
+      const problem = err instanceof SyntaxError ? `not valid JSON (${err.message})` : (err as Error).message;
+      return this.present(this.defaults(), `${this.file} cannot be used, so the default tree stands in for it: ${problem}`);
     }
-    return { tree: this.defaults(), catalog, file: this.file, problem: `${this.file} cannot be used, so the default tree stands in for it: ${problem}` };
   }
 
   save(input: unknown): CrewTreeState {
-    const problems = validateCrewTree(input, this.catalog());
-    if (problems.length) throw new InboxError(422, `The crew tree was not saved: ${problems.map((p) => `${p.path}: ${p.message}`).join("; ")}`);
-    mkdirSync(dirname(this.file), { recursive: true });
+    // Never replace a damaged original with the fallback shown by state().
+    let document: CrewGuideDocument;
+    try { document = this.readDocument(); }
+    catch (err) { throw new InboxError(422, `The crew tree was not saved; repair the existing file first: ${(err as Error).message}`); }
+    const update = input as CrewTreeUpdate;
+    const refuse = (message: string): never => { throw new InboxError(422, `The crew tree was not saved: ${message}`); };
+    if (!update || typeof update !== "object" || Array.isArray(update)) refuse("expected a tree or preset action");
+    if ("action" in update && update.action === "select") {
+      document.activePreset = update.presetId;
+    } else if ("action" in update && update.action === "mode") {
+      document.mode = update.mode;
+    } else {
+      if ("action" in update && update.action !== "edit") refuse("unknown preset action");
+      const tree = "action" in update ? update.tree : update;
+      const problems = validateCrewTree(tree, this.catalog());
+      if (problems.length) refuse(problems.map((p) => `${p.path}: ${p.message}`).join("; "));
+      const id = "action" in update ? update.presetId : document.activePreset;
+      const builtin = BUILTIN_PRESETS.find((p) => p.id === id);
+      const copy = document.copies.find((p) => p.id === id);
+      if (!builtin && !copy) refuse("choose an existing preset or copy");
+      const cleaned = clean({ ...tree, mode: MIXED });
+      const original = clean({ ...(builtin ? builtinCrewTrees()[id]! : copy!.tree), mode: MIXED });
+      if (JSON.stringify(cleaned) !== JSON.stringify(original)) {
+        if (builtin) {
+          const nameBase = `${builtin.name} (my copy)`;
+          let name = nameBase;
+          for (let n = 2; document.copies.some((p) => p.name === name); n++) name = `${nameBase} ${n}`;
+          const saved = { id: `copy-${randomUUID()}`, name, tree: cleaned };
+          document.copies.push(saved);
+          document.activePreset = saved.id;
+        } else { copy!.tree = cleaned; document.activePreset = id; }
+      }
+      // Legacy tree PUTs retain their original switch behavior. Explicit edits cannot reset it.
+      if (!("action" in update)) document.mode = tree.mode;
+    }
+    const problems = validateCrewGuide(document, this.catalog());
+    if (problems.length) refuse(problems.map((p) => `${p.path}: ${p.message}`).join("; "));
+    document.copies = document.copies.map((p) => ({ id: p.id, name: p.name.trim(), tree: clean(p.tree) }));
     const temp = `${this.file}.${process.pid}.tmp`;
-    writeFileSync(temp, `${JSON.stringify(clean(input as CrewTree), null, 2)}\n`);
+    writeFileSync(temp, `${JSON.stringify(document, null, 2)}\n`);
     renameSync(temp, this.file);
     return this.state();
   }
@@ -154,8 +238,8 @@ export class CrewTreeStore {
 
   /** What a lead reads: the tree, compact, each choice with the command that starts it. */
   text(): string {
-    const { tree, catalog, problem } = this.state();
-    return crewText(tree, catalog, problem, this.pause());
+    const { tree, catalog, problem, activePreset, presets } = this.state();
+    return `${crewText(tree, catalog, problem, this.pause())}\nActive preset: ${presets.find((p) => p.id === activePreset)!.name}`;
   }
 }
 

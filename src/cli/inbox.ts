@@ -72,7 +72,7 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox team                      who you are, your project, your part in it, what waits for you
   inbox story "…"                 save your own short office backstory (plain text, capped at 600 characters)
   ${STORY_INTRO}
-  inbox crew                      the founder's crew guide: which harness and model to start for which task, with the start command
+  inbox crew                      the active crew preset and guide: which harness and model to start, under the founder's switch
   inbox say NAME "text"           message an agent, project, team or a project's lane by name; it arrives when they are free
   inbox say founder "text"        answer the founder in a sentence or two; shown beside you in the office
   inbox handoff "Title" --summary "what was done, where, how to check it" [--to TEAM]

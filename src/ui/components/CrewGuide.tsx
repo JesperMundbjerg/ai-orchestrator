@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MIXED, modelOptions, newRuleId, validateCrewTree, type CrewCatalog, type CrewChoice, type CrewRule, type CrewTree, type CrewTreeState } from "../../shared/crewtree.ts";
 import { api } from "../api.ts";
+import "./CrewGuide.css";
 
 type Path = number[];
 
@@ -43,6 +44,7 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
   const [switching, setSwitching] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const baseline = useRef("");
+  const draftPreset = useRef("");
   const draftRef = useRef<CrewTree | null>(null);
   draftRef.current = draft;
 
@@ -54,8 +56,11 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
         if (!live) return;
         setLoaded(s);
         const dirty = draftRef.current && JSON.stringify(draftRef.current) !== baseline.current;
-        baseline.current = JSON.stringify(s.tree);
-        if (!dirty) setDraft(structuredClone(s.tree));
+        if (!dirty) {
+          baseline.current = JSON.stringify(s.tree);
+          draftPreset.current = s.activePreset;
+          setDraft(structuredClone(s.tree));
+        }
       },
       (e: Error) => live && setFailure(e.message),
     );
@@ -101,9 +106,9 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
     setSwitching(true);
     setFailure(null);
     try {
-      const saved = await api.saveCrewTree({ ...loaded.tree, mode });
+      const saved = await api.saveCrewTree({ action: "mode", mode });
       setLoaded(saved);
-      baseline.current = JSON.stringify(saved.tree);
+      baseline.current = JSON.stringify({ ...JSON.parse(baseline.current), mode: saved.tree.mode });
       setDraft((d) => (d ? { ...d, mode: saved.tree.mode } : d));
     } catch (err) {
       setFailure((err as Error).message);
@@ -123,9 +128,10 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
     setSaving(true);
     setFailure(null);
     try {
-      const saved = await api.saveCrewTree(draft);
+      const saved = await api.saveCrewTree({ action: "edit", presetId: draftPreset.current, tree: draft });
       setLoaded(saved);
       baseline.current = JSON.stringify(saved.tree);
+      draftPreset.current = saved.activePreset;
       setDraft(structuredClone(saved.tree));
       setShowErrors(false);
       setSavedAt(Date.now());
@@ -134,6 +140,31 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
     } finally {
       setSaving(false);
     }
+  };
+
+  const active = loaded.presets.find((p) => p.id === loaded.activePreset)!;
+  const editing = loaded.presets.find((p) => p.id === draftPreset.current);
+  const busy = saving || switching;
+  const selectPreset = async (presetId: string) => {
+    if (busy || dirty || presetId === loaded.activePreset) return;
+    setSwitching(true);
+    setFailure(null);
+    try {
+      const saved = await api.saveCrewTree({ action: "select", presetId });
+      setLoaded(saved);
+      baseline.current = JSON.stringify(saved.tree);
+      draftPreset.current = saved.activePreset;
+      setDraft(structuredClone(saved.tree));
+      setSavedAt(null);
+      setShowErrors(false);
+    } catch (err) { setFailure((err as Error).message); }
+    finally { setSwitching(false); }
+  };
+  const discard = () => {
+    baseline.current = JSON.stringify(loaded.tree);
+    draftPreset.current = loaded.activePreset;
+    setDraft(structuredClone(loaded.tree));
+    setShowErrors(false);
   };
 
   // A function, not a component: a component defined here would be remade on each keystroke and lose the focus.
@@ -190,21 +221,34 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
         </div>
         <span className="spacer" />
         <button className="ghost small" onClick={onBack}>← Projects</button>
-        <button className="primary small" disabled={saving || !dirty} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
+        <button className="primary small" disabled={busy || !dirty} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
       </header>
       {loaded.problem ? <p className="warn">{loaded.problem}</p> : null}
       {failure ? <p className="warn">{failure}</p> : null}
       {showErrors && problems.length ? <p className="warn">{problems.length === 1 ? "One thing needs fixing" : `${problems.length} things need fixing`} before this can be saved.</p> : null}
       {savedAt && !dirty ? <p className="board-note">Saved. Leads read the new guide the next time they look at it.</p> : null}
+      <section className="crew-switch crew-presets" aria-label="Guide presets">
+        <h2>Active preset: {active.name}</h2>
+        <p className="muted small-note">Switch the whole guide in one click. Your harness switch below always applies on top.</p>
+        <div className="crew-preset-grid" role="radiogroup" aria-label="Guide preset">
+          {loaded.presets.map((p) => <button key={p.id} role="radio" aria-checked={p.id === loaded.activePreset}
+            disabled={busy || dirty} className={`crew-preset${p.id === loaded.activePreset ? " on" : ""}`} onClick={() => void selectPreset(p.id)}>
+            <strong>{p.name}{p.id === loaded.activePreset ? " · Active" : ""}</strong><span>{p.description}</span>
+          </button>)}
+        </div>
+        <p className="muted small-note">{editing?.builtin ? `Editing ${editing.name}? Save creates your own copy; the built-in and My guide stay untouched.` : "Your saved guide stays here when you try a built-in preset."}</p>
+        {dirty ? <p className="crew-draft-note" role="status">Unsaved edits to {editing?.name}. Save or <button className="ghost small" disabled={busy} onClick={discard}>Discard edits</button> before switching presets.</p> : null}
+      </section>
       <section className="crew-switch" aria-label="Which harness the crew runs on">
         <h2>Which harness runs the crew</h2>
         <div className="crew-modes" role="radiogroup">
           {modes.map((m) => (
-            <button key={m.id} role="radio" aria-checked={loaded.tree.mode === m.id} className={`crew-mode${loaded.tree.mode === m.id ? " on" : ""}`} disabled={switching} onClick={() => void setMode(m.id)}>{m.label}</button>
+            <button key={m.id} role="radio" aria-checked={loaded.tree.mode === m.id} className={`crew-mode${loaded.tree.mode === m.id ? " on" : ""}`} disabled={busy} onClick={() => void setMode(m.id)}>{m.label}</button>
           ))}
         </div>
         <p className="muted small-note">{explain}</p>
       </section>
+      <fieldset className="crew-editor" disabled={busy}>
       <section className="crew-rule crew-lead">
         <h2>Project lead</h2>
         <p className="muted small-note">What a new project's first mate runs on.</p>
@@ -225,6 +269,7 @@ export function CrewGuide({ tick, onBack }: { tick: number; onBack: () => void }
           <input value={draft.fallback.why ?? ""} placeholder="One line" onChange={(e) => edit((t) => void (t.fallback.why = e.target.value))} />
         </label>
       </section>
+      </fieldset>
     </main>
   );
 }

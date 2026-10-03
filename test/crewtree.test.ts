@@ -50,7 +50,7 @@ test("the default tree is today's guidance, valid, and seeded once without overw
   edited.rules[0]!.when = "Anything hard.";
   crew.save(edited);
   new CrewTreeStore(dir, { piStore: "/nowhere" }).seed();
-  assert.equal(JSON.parse(readFileSync(crew.file, "utf8")).rules[0].when, "Anything hard.", "seeding never replaces a file that exists");
+  assert.equal(crew.state().tree.rules[0]!.when, "Anything hard.", "seeding never replaces a file that exists");
 });
 
 test("validation: when, harness, effort, a choice, ids, depth and unsafe model words", () => {
@@ -116,7 +116,8 @@ test("saving writes only what is valid, trimmed and without stray fields; a refu
   const saved = crew.save(good);
   assert.equal(saved.tree.rules[0]!.when, "Hard things.");
   const onDisk = JSON.parse(readFileSync(crew.file, "utf8"));
-  assert.ok(!("stray" in onDisk) && !("why" in onDisk.rules[0]));
+  assert.ok(!JSON.stringify(onDisk).includes('"stray"'));
+  assert.ok(!("why" in crew.state().tree.rules[0]!));
 });
 
 test("a hand edit counts at once; a broken file says so and the default stands in", () => {
@@ -155,7 +156,7 @@ test("a model the catalog does not list is kept, saved, described to leads and o
   const saved = crew.save(tree);
   assert.equal(saved.problem, null);
   assert.equal(saved.tree.rules[0]!.use!.model, "claude-opus-5-5");
-  assert.equal(JSON.parse(readFileSync(crew.file, "utf8")).rules[1].use.model, "openai-codex/gpt-7-nova");
+  assert.equal(crew.state().tree.rules[1]!.use!.model, "openai-codex/gpt-7-nova");
   assert.match(crew.text(), /Use: Opus 5\.5, medium effort, in Claude Code\..*\n.*--model claude-opus-5-5 --effort medium/);
   assert.match(crew.text(), /--model openai-codex\/gpt-7-nova:high/);
 
@@ -291,8 +292,10 @@ test("a tree from before the switch loads with its backups filled in, and is cur
   crew.save(loaded.tree);
   const onDisk = JSON.parse(readFileSync(crew.file, "utf8"));
   assert.equal(onDisk.mode, "mixed");
-  assert.deepEqual(onDisk.rules[0].backup, pi("gpt-6-astra"));
-  assert.ok(onDisk.lead.backup && onDisk.fallback.backup);
+  assert.equal(onDisk.version, 2);
+  assert.equal(onDisk.activePreset, "my-guide");
+  assert.deepEqual(onDisk.copies[0].tree.rules[0].backup, pi("gpt-6-astra"));
+  assert.ok(onDisk.copies[0].tree.lead.backup && onDisk.copies[0].tree.fallback.backup);
 
   assert.deepEqual(upgradeCrewTree(null), null);
   assert.deepEqual(defaultBackup(claude("something-new")), pi("gpt-6.1-sol"));
@@ -360,6 +363,17 @@ test("the endpoints serve the tree and the catalog, and refuse an invalid save w
 
     const said = await (await fetch(`${base}/api/agent/crew`, { method: "POST", headers: json, body: "{}" })).json();
     assert.match(said.text, /Only the hardest things\./);
+    assert.match(said.text, /Active preset: Balanced \(my copy\)/);
+
+    const select = await fetch(`${base}/api/world/crew-tree`, { method: "PUT", headers: json, body: JSON.stringify({ action: "select", presetId: "top-models" }) });
+    assert.equal(select.status, 200);
+    assert.equal((await select.json()).activePreset, "top-models");
+    const mode = await fetch(`${base}/api/world/crew-tree`, { method: "PUT", headers: json, body: JSON.stringify({ action: "mode", mode: "pi" }) });
+    assert.equal(mode.status, 200);
+    const active = await (await fetch(`${base}/api/agent/crew`, { method: "POST", headers: json, body: "{}" })).json();
+    assert.match(active.text, /Active preset: Top models only/);
+    assert.match(active.text, /--model openai-codex\/gpt-6-astra:high/);
+    assert.doesNotMatch(active.text, /--kind claude|--model sonnet|gpt-6.1-sol/);
   } finally {
     server.closeAllConnections();
     server.close();

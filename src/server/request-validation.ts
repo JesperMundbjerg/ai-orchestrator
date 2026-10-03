@@ -4,7 +4,7 @@ import {
   object, optional, nullable, list, text, nonempty, boolean, positiveInteger, oneOf,
   timestamp, record, refine, fail, validateToolInput, type Schema,
 } from "../shared/agent-protocol.ts";
-import type { CrewRule, CrewTree } from "../shared/crewtree.ts";
+import type { CrewRule, CrewTree, CrewTreeUpdate } from "../shared/crewtree.ts";
 
 const maybeText = optional(text);
 // The legacy image contract treats null as no attachments, just like omission.
@@ -44,7 +44,7 @@ const ruleAt = (depth: number): Schema<CrewRule> => ({ parse(input, path = "") {
     children: optional(list(ruleAt(depth + 1))),
   }).parse(source, path);
 } });
-export const crewTreeSchema: Schema<CrewTree> = refine(object({
+const treeSchema: Schema<CrewTree> = refine(object({
   version: oneOf([1]), mode: nonempty, rules: list(ruleAt(1)),
   fallback: object({ harness: nonempty, model: nonempty, effort: nonempty, backup: choice, why: maybeText }),
   lead: object({ use: choice, backup: choice, why: maybeText }),
@@ -54,6 +54,15 @@ export const crewTreeSchema: Schema<CrewTree> = refine(object({
   walk(tree.rules);
   if (count > 60) fail(path ? `${path}.rules` : "rules", "at most 60 rules");
 });
+
+export const crewTreeSchema: Schema<CrewTreeUpdate> = { parse(input, path = "") {
+  const source = record.parse(input, path);
+  if (!("action" in source)) return treeSchema.parse(source, path);
+  const action = oneOf(["select", "mode", "edit"]).parse(source.action, `${path}.action`);
+  if (action === "select") return object({ action: oneOf(["select"]), presetId: nonempty }).parse(source, path);
+  if (action === "mode") return object({ action: oneOf(["mode"]), mode: nonempty }).parse(source, path);
+  return object({ action: oneOf(["edit"]), presetId: nonempty, tree: treeSchema }).parse(source, path);
+} };
 
 // Hooks are deliberately extensible records: these are only the fields this service consumes.
 // Valid hook input still receives {} and never produces a harness decision.

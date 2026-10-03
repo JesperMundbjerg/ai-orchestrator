@@ -53,8 +53,38 @@ export interface CrewCatalog {
   }>;
 }
 
+export const BUILTIN_PRESETS = [
+  { id: "balanced", name: "Balanced", description: "Strong thinking for hard tasks, quick everyday models for the rest." },
+  { id: "top-models", name: "Top models only", description: "Only Opus 5.5 and GPT-6 Astra, with the other as backup." },
+  { id: "thrifty", name: "Thrifty", description: "Luna high for mechanical work; Sol and Sonnet for everything else." },
+  { id: "codex-only", name: "Codex only", description: "Every main choice runs an OpenAI Codex model in Pi." },
+  { id: "claude-only", name: "Claude only", description: "Every main choice runs in Claude Code." },
+] as const;
+
+export interface CrewPreset {
+  id: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+}
+
+/** Mode is global: selecting a preset never resets the founder's harness switch. */
+export interface CrewGuideDocument {
+  version: 2;
+  mode: string;
+  activePreset: string;
+  copies: Array<{ id: string; name: string; tree: CrewTree }>;
+}
+
+export type CrewTreeUpdate = CrewTree
+  | { action: "select"; presetId: string }
+  | { action: "mode"; mode: string }
+  | { action: "edit"; presetId: string; tree: CrewTree };
+
 export interface CrewTreeState {
   tree: CrewTree;
+  activePreset: string;
+  presets: CrewPreset[];
   catalog: CrewCatalog;
   /** Where the tree is kept, for anyone who prefers to edit the file. */
   file: string;
@@ -142,6 +172,38 @@ export function upgradeCrewTree(input: unknown): unknown {
     ...(isChoice(fb) && fb.backup === undefined ? { fallback: { ...fb, backup: defaultBackup(fb) } } : {}),
     lead: t.lead ?? structuredClone(DEFAULT_LEAD),
   };
+}
+
+/** Old files become My guide without changing their rules or switch, or rewriting on read. */
+export function upgradeCrewGuide(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  if ((input as { version?: unknown }).version === 2) return input;
+  const tree = upgradeCrewTree(input) as CrewTree;
+  return { version: 2, mode: tree.mode, activePreset: "my-guide", copies: [{ id: "my-guide", name: "My guide", tree }] };
+}
+
+/** Validate the persisted envelope as well as every saved copy, including inactive ones. */
+export function validateCrewGuide(input: unknown, catalog: CrewCatalog): CrewProblem[] {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return [{ path: "", message: "the guide must be an object" }];
+  const d = input as Partial<CrewGuideDocument>;
+  const problems: CrewProblem[] = [];
+  const add = (path: string, message: string) => problems.push({ path, message });
+  if (d.version !== 2) add("version", "version must be 2");
+  if (![MIXED, ...catalog.harnesses.map((h) => h.id)].includes(d.mode!)) add("mode", "choose a known harness or mixed");
+  if (!Array.isArray(d.copies) || d.copies.length > 100) return [...problems, { path: "copies", message: "copies must be a list of at most 100 guides" }];
+  const ids = new Set<string>(BUILTIN_PRESETS.map((p) => p.id));
+  d.copies.forEach((copy, i) => {
+    const path = `copies.${i}`;
+    if (!copy || typeof copy !== "object") { add(path, "a copy must be an object"); return; }
+    if (typeof copy.id !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(copy.id) || ids.has(copy.id)) add(`${path}.id`, "use a unique lowercase slug, not a built-in id");
+    else ids.add(copy.id);
+    if (typeof copy.name !== "string" || !copy.name.trim() || copy.name.length > 100) add(`${path}.name`, "give the copy a name under 100 characters");
+    if (copy.id === "my-guide" && copy.name !== "My guide") add(`${path}.name`, "keep the original as My guide");
+    problems.push(...validateCrewTree(copy.tree, catalog).map((p) => ({ ...p, path: `${path}.tree.${p.path}` })));
+  });
+  if (!ids.has("my-guide")) add("copies", "keep My guide");
+  if (typeof d.activePreset !== "string" || !ids.has(d.activePreset)) add("activePreset", "choose an existing preset or copy");
+  return problems;
 }
 
 export function newRuleId(): string {
