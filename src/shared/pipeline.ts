@@ -57,6 +57,7 @@ export interface PipelineGraph {
   version: 1;
   id: string;
   label: string;
+  /** Each field must be read by a condition or guard in newly saved graphs. */
   fields: PipelineField[];
   nodes: PipelineNode[];
   edges: PipelineEdge[];
@@ -66,6 +67,25 @@ export interface PipelineGraph {
   /** Optional repo-default positions. Team layout remains a separate revision. */
   positions?: PipelineLayout;
 }
+/** Every modeled reader counts: branch conditions, edge guards and path-rule guards/requirements. */
+export function referencedFieldIds(graph: Pick<PipelineGraph, "nodes" | "edges" | "pathRules">): Set<string> {
+  const referenced = new Set(graph.nodes.filter(n => n.kind === "condition" && n.field).map(n => n.field!));
+  for (const edge of graph.edges) if (edge.when) referenced.add(edge.when.field);
+  for (const rule of graph.pathRules ?? []) {
+    if (rule.when) referenced.add(rule.when.field);
+    if (rule.require) referenced.add(rule.require.field);
+  }
+  return referenced;
+}
+
+/** Pure shared policy check; only fields nothing reads are orphaned. */
+export function orphanFieldProblems(graph: Pick<PipelineGraph, "fields" | "nodes" | "edges" | "pathRules">): Array<{ path: string; message: string }> {
+  const referenced = referencedFieldIds(graph);
+  return graph.fields.flatMap((field, index) => referenced.has(field.id) ? [] : [{
+    path: `fields.${index}.id`, message: `field ${field.id} (${field.label}) is not referenced by any condition or guard; remove it or reference it in the graph`,
+  }]);
+}
+
 export interface PipelineDefinition {
   id: string;
   label: string;

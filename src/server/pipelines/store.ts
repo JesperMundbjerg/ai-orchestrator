@@ -47,7 +47,8 @@ export class Pipelines {
     this.context(teamId); const config = this.config(teamId); const binding = this.binding(teamId, config);
     const problems = [...binding.problems]; let graph: PipelineGraph | null = null;
     let source: PipelineTeamView["source"] = "none";
-    if (config.graph) { graph = validateGraph(JSON.parse(config.graph)); source = "team"; }
+    // Compatibility is read-only: new saves still reject orphan fields.
+    if (config.graph) { graph = validateGraph(JSON.parse(config.graph), { allowUnreferencedFields: true }); source = "team"; }
     else if (binding.root && !binding.problems.length) {
       const result = this.adapters.read(binding.root, basename(binding.root));
       problems.push(...result.problems);
@@ -107,11 +108,14 @@ export class Pipelines {
       const step = run.steps.find(s => s.nodeId === key)!; const node = run.graph.nodes.find(n => n.id === key)!;
       if (!active.has(key)) { step.state = "inactive"; continue; }
       if (step.completedBy) { step.state = fresh && step.evidence.every(e => e.fingerprint === run.candidate.fingerprint && e.round === run.round) ? "done" : "stale"; continue; }
+      const currentEvidence = fresh && step.evidence.some(e => e.fingerprint === run.candidate.fingerprint && e.round === run.round);
+      // Retained history is not an endorsable report, even after branch() clears completion.
+      if (step.evidence.length && !currentEvidence) { step.state = "stale"; continue; }
       const parents = run.graph.edges.filter(e => e.to === key && edges.has(e.id)).map(e => run.steps.find(s => s.nodeId === e.from)!);
       if (parents.some(p => p.state !== "done")) step.state = "blocked";
       else if (node.kind === "condition") step.state = Object.hasOwn(run.selections, node.field!) ? "done" : "blocked";
       else if (node.kind === "delivery") step.state = run.state === "delivered" ? "done" : "ready";
-      else step.state = step.evidence.length ? "reported" : "ready";
+      else step.state = currentEvidence ? "reported" : "ready";
     }
     return run;
   }
@@ -203,7 +207,9 @@ export class Pipelines {
       const node = run.graph.nodes.find(n => n.id === input.nodeId);
       if (!step || !node || !status) throw new InboxError(404, "no such pipeline step");
       if (!["step", "approval"].includes(node.kind)) throw new InboxError(409, "conditions are selected with branch; delivery completes only at its boundary");
-      if (!["ready", "reported", "stale"].includes(status.state) || !sameCandidate(run.candidate)) throw new InboxError(409, "step is inactive, blocked or candidate is stale", "pipeline_step_blocked");
+      const { edges } = activation(run.graph, run.selections);
+      const blocked = run.graph.edges.some(e => e.to === node.id && edges.has(e.id) && live.steps.find(s => s.nodeId === e.from)?.state !== "done");
+      if (!["ready", "reported", "stale"].includes(status.state) || blocked || !sameCandidate(run.candidate)) throw new InboxError(409, "step is inactive, blocked or candidate is stale", "pipeline_step_blocked");
       if (!done && actor.id !== live.leadId && step.assignedTo !== actor.id) throw new InboxError(403, "report only your assigned step");
       if (!input.notes?.trim()) throw new InboxError(400, "record the result or lead disposition");
       const additions = (input.evidence ?? []).map(e => this.evidence(actor, run, e, created));

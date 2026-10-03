@@ -12,7 +12,8 @@ import type { World } from "../src/server/world.ts";
 import { createServer as reservePort } from "node:net";
 import { once } from "node:events";
 import { Pipelines } from "../src/server/pipelines/store.ts";
-import { validateGraph, activation, pathProblems } from "../src/server/pipelines/model.ts";
+import { validateGraph, activation, pathProblems, selected } from "../src/server/pipelines/model.ts";
+import { orphanFieldProblems } from "../src/shared/pipeline.ts";
 import { capture } from "../src/server/pipelines/candidate.ts";
 import { discover } from "../src/server/pipelines/discovery.ts";
 import { parseAdapter } from "../src/server/adapter.ts";
@@ -76,8 +77,102 @@ test("validation rejects cycles, missing delivery, missing condition ports and u
   assert.throws(() => validateGraph({ ...graph(), nodes: [...graph().nodes, { id: "stray", label: "Unreachable", kind: "step", source: "builtin:check", evidence: ["check"] }] }), /reachable/);
 });
 
+test("orphan fields fail shared validation and HTTP saves with a clear path, without changing policy", async t => {
+  const f = fixture(t); const h = await httpFixture(t, f); const before = f.p.teamView("authors");
+  const orphan = graph(); orphan.fields.push({ id: "deletedBranch", label: "Deleted branch", type: "boolean" });
+  const problems = orphanFieldProblems(orphan);
+  assert.equal(problems[0]!.path, "fields.0.id");
+  assert.match(problems[0]!.message, /deletedBranch.*not referenced by any condition or guard/);
+  assert.throws(() => validateGraph(orphan), { status: 422, code: "pipeline_invalid" });
+  assert.throws(() => validateGraph(orphan), /fields\.0\.id/);
+  const refused = await h.request("PUT", "/api/world/teams/authors/pipeline", { expectedRevision: before.revision, graph: orphan });
+  assert.equal(refused.status, 422); assert.equal(refused.body.code, "pipeline_invalid");
+  assert.equal(refused.body.details[0].path, "fields.0.id");
+  assert.match(refused.body.error, /deletedBranch.*not referenced by any condition/);
+  assert.equal(f.p.teamView("authors").revision, before.revision);
+  assert.equal(f.p.teamView("authors").policyHash, before.policyHash);
+});
+
+test("guard-only fields remain valid and required selections for every modeled reader", () => {
+  for (const reader of ["edge", "pathWhen", "pathRequire"] as const) {
+    const g = graph(); g.fields = [{ id: "flag", label: "Lead flag", type: "boolean" }];
+    const match = { field: "flag", equals: true };
+    if (reader === "edge") g.edges[0]!.when = match;
+    else g.pathRules = [{ prefixes: ["src.ts"], message: "Flag needed", ...(reader === "pathWhen" ? { when: match, only: true } : { require: match }) }];
+    assert.deepEqual(orphanFieldProblems(g), []);
+    assert.equal(validateGraph(g).fields.length, 1);
+    assert.deepEqual(selected(g, {}), ["select Lead flag"]);
+    assert.deepEqual(selected(g, { flag: true }), []);
+  }
+});
+
+test("saved orphan fields load after restart but are not required choices in new or existing runs", t => {
+  const f = fixture(t); const legacy = graph(); legacy.fields.push({ id: "deletedBranch", label: "Deleted branch", type: "boolean" });
+  f.p.teamView("authors");
+  f.db.prepare("UPDATE team_pipelines SET graph = ?, revision = 1 WHERE team_id = 'authors'").run(JSON.stringify(legacy));
+  f.reopen(); const view = f.p.teamView("authors");
+  assert.equal(view.source, "team"); assert.equal(view.graph!.fields[0]!.id, "deletedBranch"); assert.deepEqual(view.problems, []);
+  assert.deepEqual(selected(view.graph!, {}), []);
+  assert.deepEqual(selected(view.graph!, { unknown: true }), ["unknown selection unknown"]);
+  let run = f.start(); const snapshot = JSON.stringify(run.graph);
+  f.reopen(); run = f.p.branch(f.lead, { runId: run.id, clientId: "legacy-branch", expectedRevision: run.revision, selections: {}, rationale: "No visible conditions" });
+  run = f.done(run); assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, true);
+  assert.equal(JSON.stringify(run.graph), snapshot, "legacy snapshots are not rewritten");
+  assert.throws(() => f.p.saveOverride("authors", { expectedRevision: 1, graph: legacy }), { status: 422 });
+  const conditional = graph(); conditional.fields = [{ id: "visible", label: "Visible branch", type: "boolean" }, ...legacy.fields];
+  conditional.entry = "choose"; conditional.nodes.unshift({ id: "choose", label: "Visible branch", kind: "condition", field: "visible" });
+  conditional.edges.unshift({ id: "yes", from: "choose", to: "checks", port: "true" }, { id: "no", from: "choose", to: "deliver", port: "false" });
+  assert.deepEqual(selected(conditional, {}), ["select Visible branch"]);
+  assert.deepEqual(selected(conditional, { visible: true }), []);
+});
+
+for (const mismatch of ["both", "round", "fingerprint"] as const) test(`stale-only ${mismatch} evidence stays stale after re-pin; fresh evidence and endorsement unblock successors`, t => {
+  const g = graph("dev"); g.nodes[0]!.evidence = ["report"];
+  g.nodes.splice(1, 0, { id: "final", label: "Final check", kind: "step", source: "builtin:check", evidence: ["check"] });
+  g.edges = [{ id: "after-report", from: "checks", to: "final" }, { id: "after-check", from: "final", to: "deliver" }];
+  const f = fixture(t, g); let run = f.start();
+  const report = () => f.p.report(f.lead, { runId: run.id, clientId: `report-${run.revision}`, expectedRevision: run.revision, nodeId: "checks", notes: "Reported exact candidate", evidence: [{ kind: "report", summary: "Scope reviewed", url: "https://example.invalid/report" }] });
+  const endorse = () => f.p.done(f.lead, { runId: run.id, clientId: `endorse-${run.revision}`, expectedRevision: run.revision, nodeId: "checks", notes: "Accepted current report", evidence: [] });
+  run = report(); run = endorse(); run = f.done(run, "final");
+  assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, true);
+  writeFileSync(join(f.root, "src.ts"), "export const value = 2;\n"); git(f.root, "add", "src.ts"); git(f.root, "commit", "-qm", "changed candidate");
+  assert.deepEqual(f.p.get(run.id).steps.map(s => s.state), ["stale", "stale", "blocked"]);
+  run = f.p.branch(f.lead, { runId: run.id, clientId: "repin", expectedRevision: run.revision, selections: {}, rationale: "Changed implementation", candidate: "HEAD" });
+  if (mismatch !== "both") {
+    for (const step of run.steps) for (const e of step.evidence) {
+      if (mismatch === "round") e.fingerprint = run.candidate.fingerprint;
+      else e.round = run.round;
+    }
+    f.db.prepare("UPDATE pipeline_runs SET snapshot = ? WHERE id = ?").run(JSON.stringify(run), run.id);
+  }
+  f.reopen(); run = f.p.get(run.id);
+  assert.equal(run.round, 2); assert.deepEqual(run.steps.map(s => s.state), ["stale", "stale", "blocked"]);
+  assert.equal(run.steps[0]!.completedBy, null); assert.equal(run.steps[0]!.evidence.length, 1);
+  assert.match(f.p.status(f.lead, run.id).text, /checks: stale/);
+  assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, false);
+  assert.throws(endorse, /required evidence is missing or stale/);
+  assert.throws(() => f.done(run, "final"), /step is inactive, blocked/);
+  run = report(); assert.deepEqual(run.steps.map(s => s.state), ["reported", "stale", "blocked"]);
+  assert.throws(() => f.done(run, "final"), /step is inactive, blocked/);
+  run = endorse(); assert.deepEqual(run.steps.map(s => s.state), ["done", "stale", "blocked"]);
+  run = f.done(run, "final"); assert.deepEqual(run.steps.map(s => s.state), ["done", "done", "ready"]);
+  assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, true);
+});
+
+test("an unendorsed report also becomes stale when live bytes no longer match its pin", t => {
+  const f = fixture(t); let run = f.start();
+  run = f.p.report(f.lead, { runId: run.id, clientId: "unendorsed", expectedRevision: run.revision, nodeId: "checks", notes: "Successful check", evidence: [{ kind: "check", summary: "Pass", command: "test", exitCode: 0 }] });
+  assert.equal(run.steps[0]!.state, "reported");
+  writeFileSync(join(f.root, "src.ts"), "changed bytes\n");
+  assert.deepEqual(f.p.get(run.id).steps.map(s => s.state), ["stale", "blocked"]);
+});
+
 test("FysikLab default preserves mandatory authoring/framework scopes and the dispatched fast path", () => {
-  const g = validateGraph(JSON.parse(readFileSync(new URL("./fixtures/pipelines/fysiklab-default.json", import.meta.url), "utf8")).pipeline);
+  const copy = readFileSync(new URL("./fixtures/pipelines/fysiklab-default.json", import.meta.url), "utf8");
+  const g = validateGraph(JSON.parse(copy).pipeline);
+  assert.deepEqual(orphanFieldProblems(g), []);
+  assert.deepEqual(parseAdapter(copy, "/tmp/fysiklab-copy", "fysiklab").problems, []);
+  assert.ok(selected(g, {}).includes("select Additional architecture scope not already covered?"));
   assert.equal(g.nodes.length, 92); assert.equal(g.edges.length, 177);
   const choices = Object.fromEntries(g.fields.map(f => [f.id, f.type === "boolean" ? false : f.options![0]!]));
   let active = activation(g, { ...choices, kind: "framework" }).active; assert.ok(active.has("frameworkArchitecture"));

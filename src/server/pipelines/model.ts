@@ -1,5 +1,6 @@
 // Pure pipeline validation and activation. Nothing here executes repository instructions.
 import type { PipelineGraph, PipelineLayout, PipelineMatch, PipelineValue } from "../../shared/pipeline.ts";
+import { orphanFieldProblems } from "../../shared/pipeline.ts";
 import { InboxError } from "../inbox.ts";
 import { requestFingerprint } from "../db.ts";
 
@@ -21,7 +22,7 @@ export function validateLayout(input: unknown): PipelineLayout {
   if (Object.keys(out).length > 250) bad("too many positions");
   return out;
 }
-export function validateGraph(input: unknown): PipelineGraph {
+export function validateGraph(input: unknown, options: { allowUnreferencedFields?: boolean } = {}): PipelineGraph {
   const g = obj(input);
   if (g.version !== 1) bad("version must be 1");
   const fields = arr(g.fields).map(v => {
@@ -84,6 +85,10 @@ export function validateGraph(input: unknown): PipelineGraph {
     if (!r.only && r.require === undefined) bad("path rule needs only or require");
     return { prefixes, message: text(r.message), ...(r.when !== undefined ? { when: match(r.when) } : {}), ...(r.require !== undefined ? { require: match(r.require) } : {}), ...(r.only !== undefined ? { only: r.only as boolean } : {}) };
   });
+  if (!options.allowUnreferencedFields) {
+    const details = orphanFieldProblems(graph);
+    if (details.length) throw Object.assign(new InboxError(422, `pipeline: ${details.map(d => `${d.path}: ${d.message}`).join("; ")}`, "pipeline_invalid"), { details });
+  }
   topological(graph);
   const reachable = new Set([entry]);
   for (const n of topological(graph)) if (reachable.has(n)) for (const e of edges.filter(e => e.from === n)) reachable.add(e.to);
