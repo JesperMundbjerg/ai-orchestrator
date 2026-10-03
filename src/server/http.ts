@@ -70,8 +70,9 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   const submitWithWarnings = (req: IncomingMessage, body: SubmitInput & { pipeline?: { runId: string } }) => {
     const actor = body.pipeline ? needWorld().resolve(body.session) : null;
     const snapshot = actor && body.pipeline ? needWorld().pipelines.presentation(actor, body.pipeline.runId) : null;
-    const result = inbox.submit(snapshot ? { ...body, item: { ...body.item, context: [body.item.context, snapshot].filter(Boolean).join("\n\n") } } : body);
-    if (actor && body.pipeline) needWorld().pipelines.bindItem(actor, body.pipeline.runId, result.itemId, result.revision);
+    // The run binding commits with the item, so approve-all already sees that a pipeline needs the founder's own acceptance.
+    const bind = actor && body.pipeline ? (r: { itemId: string; revision: number }) => needWorld().pipelines.bindItem(actor, body.pipeline!.runId, r.itemId, r.revision) : undefined;
+    const result = inbox.submit(snapshot ? { ...body, item: { ...body.item, context: [body.item.context, snapshot].filter(Boolean).join("\n\n") } } : body, bind);
     const origin = `http://${req.headers.host ?? "localhost"}`;
     const warnings = inbox.item(result.itemId).pages.map((p) => inlineProblem(p.url, origin)).filter((w): w is string => w !== null);
     return warnings.length ? { ...result, warnings } : result;

@@ -182,6 +182,8 @@ export interface PipelineStep {
   completedBy: string | null;
   evidence: PipelineEvidence[];
   notes: string;
+  /** Why current evidence does not count, from the same evaluator the delivery gate uses. */
+  problems?: string[];
 }
 export interface PipelineRun {
   id: string;
@@ -204,6 +206,10 @@ export interface PipelineRun {
   abandonment?: { notes: string; byAgentId: string; at: string };
   /** Append-only re-base history, retained with evidence even after closure. */
   rebases?: { oldBase: string; newBase: string; notes: string; byAgentId: string; at: string }[];
+  /** What this run put in front of the founder, and work it handed over, at which round and
+   * selection scope. An approval or review verdict authorizes only that run, round, scope and
+   * intended bytes. Runs recorded before this field rely on the binding's run and bytes alone. */
+  provenance?: PipelineProvenance[];
   /** Its team is gone: finished/disbanded, merged into another, or its checkout went missing.
    * The run is kept as recorded and readable, but never edited, presented or delivered. */
   archived?: PipelineArchive;
@@ -218,6 +224,16 @@ export interface PipelineArchive {
   teamName: string;
   mergedInto?: { teamId: string; teamName: string };
   at: string;
+}
+export interface PipelineProvenance {
+  kind: "approval" | "review";
+  /** Item id for an approval, work id for a review. */
+  id: string;
+  /** Item revision for an approval, work round for a review. */
+  revision: number;
+  round: number;
+  scopeRevision: number;
+  fingerprint: string;
 }
 /** Why a run is archived, for the briefing, gate refusals and Runs alike. */
 export function archivedText(archive: PipelineArchive): string {

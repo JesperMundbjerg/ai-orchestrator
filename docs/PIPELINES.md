@@ -95,6 +95,14 @@ Run-bound reports may be recorded/endorsed while implementation bytes are changi
 
 Checks, review verdicts, founder approvals and delivery remain candidate-bound; the gate still requires a fresh final candidate and every activated candidate-bound step's current evidence. Run binding is not permission to publish unfinished implementation. Runs and briefings show each step's binding. Graph changes apply to new runs, not frozen existing snapshots; configure the planning step before starting the replacement wave.
 
+## Founder approvals and review receipts belong to one run
+
+A founder acceptance authorizes only the run that presented it (`inbox submit` with the run), at the round, selection scope and intended bytes recorded when it was presented. A review verdict likewise counts only for the run that handed that work round over; the receiving team's accepting run never takes over the receipt. Matching bytes are not identity: an abandoned run's approval, another run in the same team, or another repository's run with identical final bytes are refused. A changed-bytes re-pin starts a new round, and an approval from an earlier round stays refused even if the bytes later change back; present the current candidate again. A changed selection scope also needs a fresh approval. Bindings recorded before provenance was kept still require the same run and bytes.
+
+The approval is the founder's latest **decision** on that revision (Accept or Needs changes). A later message on the item neither grants nor withdraws it; **Withdraw approval** (Needs changes with a note) does, and a new Accept on the same revision restores it. Approve-all never answers a run-presented item; it stays in Needs you. An item auto-answered before this rule shows an explicit Accept the founder can still give.
+
+Runs, `inbox pipeline done` and the gate use one evidence evaluator. A completed step whose evidence no longer counts is shown **stale** with the reason (the same text the gate refusal carries) and can be completed again in place with valid evidence; there is no green step that the gate refuses.
+
 ## Closing an undeliverable run
 
 The team's **current first mate** can close an open wave that will not be delivered:

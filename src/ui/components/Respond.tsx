@@ -14,7 +14,7 @@ import { recommendedOption } from "./decision.ts";
 export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, othersWaiting = onNext !== null }: { detail: ItemDetail; onNext: (() => void) | null; onDone?: () => void; onOpenPreview: () => void; onAnswered?: () => void; othersWaiting?: boolean }) {
   const { item, replies } = detail;
   const [text, setText] = useState("");
-  const [mode, setMode] = useState<"answer" | "discuss">("answer");
+  const [mode, setMode] = useState<"answer" | "discuss" | "withdraw">("answer");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showLater, setShowLater] = useState(false);
@@ -54,15 +54,26 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
     }
   };
 
+  // A pipeline's "Founder approves" step counts only your own Accept of this revision. A message never withdraws it;
+  // only an explicit change of decision does. Approve-all leaves these items for you.
+  const approval = detail.pipelineApproval && (item.type === "milestone" || item.type === "try") ? detail.pipelineApproval : null;
+  const acceptLabel = item.type === "milestone" ? "Accept milestone" : "Approve";
+
   if (item.state === "answer_queued" || item.state === "delivered") {
     return (
       <footer className={`respond answered${attachments.dragging ? " dropping" : ""}`} {...attachments.drop}>
         {last ? <div className={`delivery ${last.state}`}>{deliveryLabel(last)}</div> : null}
+        {approval ? <p className="muted small-note pipeline-approval">{approval.accepted
+          ? "A pipeline counts your acceptance of this revision. Messages do not change it; withdraw it only if you no longer approve."
+          : "A pipeline's \u201cFounder approves\u201d step needs your own acceptance of this revision; approve-all does not count."}</p> : null}
         <div className="row">
+          {approval && !approval.accepted ? <button className="primary small" disabled={waiting} onClick={() => void send("accept")}>{acceptLabel}</button> : null}
           <button className="ghost small" onClick={() => setMode("discuss")}>Add a message</button>
+          {approval?.accepted ? <button className="ghost small" onClick={() => setMode("withdraw")}>Withdraw approval</button> : null}
           {onNext ? <button className="primary small" onClick={onNext}>Next needing you <kbd>n</kbd></button> : null}
         </div>
         {mode === "discuss" ? <Discuss text={text} setText={setText} attachments={attachments} busy={waiting} said={said} onSend={() => void send("discuss")} onCancel={() => setMode("answer")} /> : null}
+        {mode === "withdraw" ? <Discuss text={text} setText={setText} attachments={attachments} busy={waiting} said={said} placeholder="Say what needs to change before you approve again…" sendLabel={item.type === "milestone" ? "Request changes" : "Needs changes"} onSend={() => void send("request_changes")} onCancel={() => setMode("answer")} /> : null}
         {error ? <div className="warn">{error}</div> : null}
       </footer>
     );
@@ -117,6 +128,7 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
   return (
     <footer className={`respond${attachments.dragging ? " dropping" : ""}`} {...attachments.drop}>
       {last?.state === "failed" || last?.state === "stale" ? <div className={`delivery ${last.state}`}>{deliveryLabel(last)}</div> : null}
+      {approval ? <p className="muted small-note pipeline-approval">A pipeline's “Founder approves” step waits for your own acceptance; approve-all leaves this for you.</p> : null}
       {mode === "discuss" ? (
         <Discuss text={text} setText={setText} attachments={attachments} busy={waiting} said={said} onSend={() => void send("discuss")} onCancel={() => setMode("answer")} />
       ) : (
@@ -157,7 +169,7 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
             <>
               {note}
               <div className="row">
-                <button className="primary" disabled={waiting} onClick={() => void send("accept")}>Accept milestone</button>
+                <button className="primary" disabled={waiting} onClick={() => void send("accept")}>{acceptLabel}</button>
                 <button className="ghost" disabled={waiting || !said} onClick={() => void send("request_changes")}>Request changes</button>
                 {secondary}
               </div>
@@ -170,15 +182,15 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
   );
 }
 
-function Discuss({ text, setText, attachments, busy, said, onSend, onCancel }: {
-  text: string; setText: (t: string) => void; attachments: Attachments; busy: boolean; said: boolean; onSend: () => void; onCancel: () => void;
+function Discuss({ text, setText, attachments, busy, said, onSend, onCancel, placeholder = "Write to the agent that owns this work… Paste or drop images to show it.", sendLabel = "Send to the agent" }: {
+  text: string; setText: (t: string) => void; attachments: Attachments; busy: boolean; said: boolean; onSend: () => void; onCancel: () => void; placeholder?: string; sendLabel?: string;
 }) {
   return (
     <div className="discuss">
       <textarea
         autoFocus
         className="note"
-        placeholder="Write to the agent that owns this work… Paste or drop images to show it."
+        placeholder={placeholder}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
@@ -188,7 +200,7 @@ function Discuss({ text, setText, attachments, busy, said, onSend, onCancel }: {
       <div className="muted small-note">{SEND_HINT}</div>
       <AttachedImages attachments={attachments} />
       <div className="row">
-        <button className="primary" disabled={busy || !said} onClick={onSend}>Send to the agent</button>
+        <button className="primary" disabled={busy || !said} onClick={onSend}>{sendLabel}</button>
         <button className="ghost" onClick={onCancel}>Cancel</button>
       </div>
     </div>

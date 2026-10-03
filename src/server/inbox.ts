@@ -17,6 +17,7 @@ import { MAX_PAGES, pageUrlProblem, parsePage } from "../shared/pages.ts";
 import { Uploads } from "./uploads.ts";
 import { presentedPoint, recordPresented } from "./unpresented.ts";
 import { requestFingerprint } from "./db.ts";
+import { founderDecision, presentedBy } from "./pipelines/approval.ts";
 
 /** Live session facts from a terminal multiplexer (herdr); absent sessions simply have none. */
 export interface PresenceSource {
@@ -186,7 +187,8 @@ export class Inbox {
 
   // ── Agent protocol ────────────────────────────────────────────────────────────────────
 
-  submit(input: SubmitInput): SubmitResult {
+  /** `bind` runs inside the submission's transaction, before approve-all can see the item. */
+  submit(input: SubmitInput, bind?: (result: { itemId: string; revision: number }) => void): SubmitResult {
     const raw = input?.item;
     if (!raw || !ITEM_TYPES.includes(raw.type)) throw new InboxError(400, `item.type must be one of ${ITEM_TYPES.join(", ")}`);
     if (!raw.title?.trim()) throw new InboxError(400, "item.title is required");
@@ -207,7 +209,7 @@ export class Inbox {
     // Showing a different commit is new evidence, even when the prose and attachments match.
     const hash = sha256(JSON.stringify([fields, attachments.map((a) => [a.kind, a.sha256 ?? a.url, a.caption]), ...(presenting && point ? [point] : [])]));
 
-    const result = this.tx(() => {
+    const write = () => {
       const taskId = this.upsertTask(binding, input.project, input.task, raw.title.trim());
       const key = raw.key?.trim() || slug(raw.title);
       const now = this.iso();
@@ -249,6 +251,11 @@ export class Inbox {
       }
       this.db.prepare("UPDATE tasks SET updated_at = ? WHERE id = ?").run(now, taskId);
       return { itemId, taskId, revision, changed: true };
+    };
+    const result = this.tx(() => {
+      const out = write();
+      bind?.(out);
+      return out;
     });
     this.onSubmitted(result.itemId);
     if (result.changed) this.onChange("item");
@@ -581,7 +588,10 @@ export class Inbox {
   detail(itemId: string): ItemDetail {
     const item = this.item(itemId);
     const task = this.task(item.taskId);
+    const presented = presentedBy(this.db, itemId, item.revision);
+    const decision = presented ? founderDecision(this.db, itemId, item.revision) : null;
     return {
+      ...(presented ? { pipelineApproval: { runId: presented.runId, accepted: decision?.action === "accept" && !decision.automatic && !decision.stale } } : {}),
       item,
       task,
       project: this.project(task.projectId),

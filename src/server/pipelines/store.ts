@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { PipelineAbandonInput, PipelineArchive, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
+import type { PipelineAbandonInput, PipelineArchive, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineProvenance, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
 import { archivedText, nodeBinding } from "../../shared/pipeline.ts";
 import type { Team, WorldAgent, WorldState } from "../../shared/types.ts";
 import { InboxError } from "../inbox.ts";
@@ -11,6 +11,7 @@ import { Adapters } from "../adapter.ts";
 import { activation, pathProblems, policyHash, selected, topological, validateGraph, validateLayout } from "./model.ts";
 import { BUILTINS, discover, within } from "./discovery.ts";
 import { capture, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
+import { founderDecision, presentedBy } from "./approval.ts";
 
 type Config = { team_id: string; repo_root: string | null; graph: string | null; layout: string; revision: number; layout_revision: number; protected: number; observed_hash: string | null };
 export class Pipelines {
@@ -113,11 +114,17 @@ export class Pipelines {
     for (const key of topological(run.graph)) {
       const step = run.steps.find(s => s.nodeId === key)!; const node = run.graph.nodes.find(n => n.id === key)!;
       if (!active.has(key)) { step.state = "inactive"; continue; }
-      const current = (e: PipelineEvidence) => (nodeBinding(node) === "run" || fresh) && this.currentEvidence(run, node, e);
-      if (step.completedBy) { step.state = (nodeBinding(node) === "run" || fresh) && step.evidence.every(current) ? "done" : "stale"; continue; }
-      const currentEvidence = step.evidence.some(current);
+      // The gate and done() judge evidence with this same evaluator, so Runs never shows done when delivery would refuse.
+      const problem = (e: PipelineEvidence) => this.evidenceProblem(run, node, e, fresh);
+      const unpinned = nodeBinding(node) === "candidate" && !fresh ? ["the checkout no longer matches the pinned candidate; refresh the pin"] : [];
+      delete step.problems;
+      if (step.completedBy) {
+        const problems = [...new Set([...unpinned, ...step.evidence.map(problem).filter((p): p is string => p !== null)])];
+        step.state = problems.length ? "stale" : "done"; if (problems.length) step.problems = problems; continue;
+      }
+      const currentEvidence = step.evidence.some(e => !problem(e));
       // Retained history is not an endorsable report, even after branch() clears completion.
-      if (step.evidence.length && !currentEvidence) { step.state = "stale"; continue; }
+      if (step.evidence.length && !currentEvidence) { step.state = "stale"; step.problems = [...new Set(step.evidence.map(problem).filter((p): p is string => p !== null))]; continue; }
       const parents = run.graph.edges.filter(e => e.to === key && edges.has(e.id)).map(e => run.steps.find(s => s.nodeId === e.from)!);
       if (parents.some(p => p.state !== "done")) step.state = "blocked";
       else if (node.kind === "condition") step.state = Object.hasOwn(run.selections, node.field!) ? "done" : "blocked";
@@ -270,10 +277,12 @@ export class Pipelines {
       if (!input.notes?.trim()) throw new InboxError(400, "record the result or lead disposition");
       const additions = (input.evidence ?? []).map(e => this.evidence(actor, run, e, created, node));
       if (done) {
-        const ids = input.evidenceIds ?? step.evidence.filter(e => this.currentEvidence(run, node, e)).map(e => e.id);
+        const ids = input.evidenceIds ?? step.evidence.filter(e => !this.evidenceProblem(run, node, e, true)).map(e => e.id);
         if (ids.some(id => !step.evidence.some(e => e.id === id))) throw new InboxError(422, "evidence id does not belong to this step");
         const endorsed = [...step.evidence.filter(e => ids.includes(e.id)), ...additions];
-        if ((node.evidence ?? []).some(kind => !endorsed.some(e => e.kind === kind && this.currentEvidence(run, node, e)))) throw new InboxError(409, "required evidence is missing or stale", "pipeline_evidence_required");
+        const invalid = endorsed.map(e => this.evidenceProblem(run, node, e, true)).find(p => p !== null);
+        if (invalid) throw new InboxError(409, `cannot endorse evidence that no longer counts: ${invalid}`, "pipeline_evidence_required");
+        if ((node.evidence ?? []).some(kind => !endorsed.some(e => e.kind === kind))) throw new InboxError(409, "required evidence is missing or stale", "pipeline_evidence_required");
         step.evidence = endorsed; step.completedBy = actor.id;
       } else step.evidence.push(...additions);
       step.notes = input.notes; return this.persist(run);
@@ -285,25 +294,69 @@ export class Pipelines {
   private currentEvidence(run: PipelineRun, node: PipelineNode, evidence: PipelineEvidence): boolean {
     return (evidence.binding ?? "candidate") === nodeBinding(node) && evidence.round === run.round && evidence.fingerprint === this.evidenceFingerprint(run, node);
   }
+  /**
+   * The one validity evaluator: why this evidence does not count now, or null. Runs (get), done()
+   * and the gate all ask it. A closed run is history, so only an open run re-checks the founder's
+   * decision, a review's provenance and attachments.
+   */
+  private evidenceProblem(run: PipelineRun, node: PipelineNode, evidence: PipelineEvidence, fresh: boolean): string | null {
+    if (nodeBinding(node) === "candidate" && !fresh) return "the checkout no longer matches the pinned candidate; refresh the pin";
+    if (!this.currentEvidence(run, node, evidence)) return "recorded for an earlier round, selection scope or intended bytes";
+    if (run.state !== "open") return null;
+    const provenance = this.provenanceProblem(run, evidence);
+    if (provenance) return provenance;
+    if (evidence.storedPath) try { if (this.evidenceFile(evidence.id) !== evidence.storedPath) return "attachment changed"; } catch { return "attachment changed or is unavailable"; }
+    return null;
+  }
+  /**
+   * A founder acceptance or review verdict authorizes only the run that presented or handed over
+   * that exact item revision or work round, at the round, selection scope and intended bytes it
+   * was given for. Equal bytes from another run, repository or round never borrow it.
+   */
+  private provenanceProblem(run: PipelineRun, input: PipelineEvidenceInput): string | null {
+    const scope = run.scopeRevision ?? 0;
+    const given = (kind: "approval" | "review", id: string, revision: number) => run.provenance?.find(p => p.kind === kind && p.id === id && p.revision === revision);
+    const earlier = (p: ReturnType<typeof given>) => p && (p.round !== run.round || p.scopeRevision !== scope || p.fingerprint !== run.candidate.fingerprint);
+    if (input.kind === "approval" && input.approval) {
+      const a = input.approval;
+      const item = this.db.prepare("SELECT revision, type, state FROM items WHERE id = ?").get(a.itemId);
+      if (!item) return "founder approval item no longer exists";
+      if (!["try", "milestone"].includes(String(item.type))) return "only an accepted milestone or try-it request is a founder approval";
+      if (item.state === "withdrawn") return "the founder approval item was withdrawn";
+      if (item.revision !== a.revision) return `the founder approval item is now at revision ${item.revision}; revision ${a.revision} no longer counts`;
+      const presented = presentedBy(this.db, a.itemId, a.revision);
+      if (presented?.runId !== run.id) return "the founder accepted another run's presentation, not this run's";
+      const p = given("approval", a.itemId, a.revision);
+      if (presented.fingerprint !== run.candidate.fingerprint || earlier(p)) return "the founder accepted an earlier round, selection scope or intended bytes; present the current candidate again";
+      const decision = founderDecision(this.db, a.itemId, a.revision);
+      if (!decision || decision.stale) return "the founder has not accepted this revision";
+      if (decision.action !== "accept") return "the founder changed the decision to Needs changes";
+      if (decision.automatic) return "required founder approval needs an explicit founder acceptance, not approve-all automation";
+    }
+    if (input.kind === "review" && input.review) {
+      const r = input.review;
+      const work = this.db.prepare("SELECT state, round FROM work WHERE id = ?").get(r.workId);
+      if (!work || work.round !== r.round || work.state !== "accepted") return "review verdict is missing, not an acceptance or for an old work round";
+      const binding = this.db.prepare("SELECT run_id, fingerprint FROM pipeline_work_bindings WHERE work_id = ? AND round = ?").get(r.workId, r.round);
+      if (binding?.run_id !== run.id) return "this run did not hand over that work round; another run's review never counts";
+      if (binding.fingerprint !== run.candidate.fingerprint || earlier(given("review", r.workId, r.round))) return "the review covered an earlier round, selection scope or intended bytes";
+    }
+    return null;
+  }
+  /** Records what an approval or review was given for, without an optimistic-lock bump. */
+  private remember(runId: string, entry: PipelineProvenance): void {
+    const run = this.raw(runId);
+    (run.provenance ??= []).push(entry);
+    this.db.prepare("UPDATE pipeline_runs SET snapshot = ? WHERE id = ?").run(JSON.stringify(run), runId);
+  }
   private evidence(actor: WorldAgent, run: PipelineRun, input: PipelineEvidenceInput, created: string[], node?: PipelineNode): PipelineEvidence {
     if (!input.summary?.trim() || !["report", "check", "artifact", "review", "approval"].includes(input.kind)) throw new InboxError(422, "evidence needs a kind and non-empty summary");
     if (node && nodeBinding(node) === "run" && !["report", "artifact"].includes(input.kind)) throw new InboxError(422, "run-bound planning accepts reports/artifacts only; checks, reviews and approvals need candidate binding");
     if (input.kind === "check" && (!input.command?.trim() || input.exitCode !== 0)) throw new InboxError(409, "check evidence needs its command and successful exit code");
-    if (input.kind === "review") {
-      const r = input.review; if (!r) throw new InboxError(422, "review evidence needs work id and round");
-      const work = this.db.prepare("SELECT * FROM work WHERE id = ?").get(r.workId);
-      const binding = this.db.prepare("SELECT fingerprint FROM pipeline_work_bindings WHERE work_id = ? AND round = ?").get(r.workId, r.round);
-      if (!work || work.state !== "accepted" || work.round !== r.round || binding?.fingerprint !== run.candidate.fingerprint) throw new InboxError(409, "review verdict is missing, stale or not bound to this candidate");
-    }
-    if (input.kind === "approval") {
-      const a = input.approval; if (!a) throw new InboxError(422, "approval needs item id and revision");
-      const item = this.db.prepare("SELECT revision, type, state FROM items WHERE id = ?").get(a.itemId);
-      const accept = this.db.prepare("SELECT id, action, state FROM replies WHERE item_id = ? AND revision = ? ORDER BY rowid DESC LIMIT 1").get(a.itemId, a.revision);
-      const binding = this.db.prepare("SELECT fingerprint FROM pipeline_item_bindings WHERE item_id = ? AND revision = ?").get(a.itemId, a.revision);
-      const automatic = accept && this.db.prepare("SELECT id FROM events WHERE kind = 'reply.queued' AND actor = 'system' AND json_extract(detail, '$.deliveryId') = ?").get(String(accept.id));
-      if (automatic) throw new InboxError(409, "required founder approval needs an explicit founder acceptance, not approve-all automation");
-      if (!item || item.revision !== a.revision || !["try", "milestone"].includes(String(item.type)) || accept?.action !== "accept" || accept.state === "stale" || !["answer_queued", "delivered"].includes(String(item.state)) || binding?.fingerprint !== run.candidate.fingerprint) throw new InboxError(409, "founder acceptance is missing, stale or not bound to this candidate");
-    }
+    if (input.kind === "review" && !input.review) throw new InboxError(422, "review evidence needs work id and round");
+    if (input.kind === "approval" && !input.approval) throw new InboxError(422, "approval needs item id and revision");
+    const provenance = this.provenanceProblem(run, input);
+    if (provenance) throw new InboxError(409, provenance, "pipeline_evidence_provenance");
     const evidence: PipelineEvidence = { kind: input.kind, summary: input.summary, id: randomUUID(), byAgentId: actor.id, fingerprint: this.evidenceFingerprint(run, node), ...(node && nodeBinding(node) === "run" ? { binding: "run" as const } : {}), round: run.round, createdAt: this.now().toISOString(),
       ...(input.path ? { path: input.path } : {}), ...(input.url ? { url: input.url } : {}), ...(input.command ? { command: input.command, exitCode: input.exitCode } : {}),
       ...(input.review ? { review: input.review } : {}), ...(input.approval ? { approval: input.approval } : {}) };
@@ -348,7 +401,8 @@ export class Pipelines {
       const visit = (id: string) => { for (const e of run.graph.edges.filter(e => e.to === id && edges.has(e.id))) if (!required.has(e.from)) { required.add(e.from); visit(e.from); } };
       if (node) visit(node.id);
     } else if (!run.graph.nodes.some(n => n.kind === "delivery" && n.delivery === input.delivery && active.has(n.id))) reasons.push(`no active ${input.delivery} boundary`);
-    for (const step of run.steps) if (required.has(step.nodeId) && step.state !== "done") reasons.push(`${step.nodeId}: ${step.state}`);
+    // Step states come from get()'s evidence evaluator, the same one Runs shows; its reasons travel with the refusal.
+    for (const step of run.steps) if (required.has(step.nodeId) && step.state !== "done") reasons.push(`${step.nodeId}: ${step.state}${step.problems?.length ? ` (${step.problems.join("; ")})` : ""}`);
     const palette = this.palette(run.teamId);
     for (const n of run.graph.nodes.filter(n => required.has(n.id) && n.source)) {
       const source = palette.entries.find(d => d.id === n.source);
@@ -366,14 +420,6 @@ export class Pipelines {
       const target = input.ref?.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
       if (target !== branch || target === "main" || target === "master") reasons.push("ref is not the run repository's protected dev delivery branch");
     }
-    for (const step of run.steps.filter(s => required.has(s.nodeId))) for (const e of step.evidence) {
-      const node = run.graph.nodes.find(n => n.id === step.nodeId)!;
-      if (!this.currentEvidence(run, node, e)) { reasons.push(`${step.nodeId}: stale evidence`); continue; }
-      try {
-        if (e.kind === "approval" || e.kind === "review") this.evidence(actor, run, { ...e, path: undefined }, []);
-        if (e.storedPath && this.evidenceFile(e.id) !== e.storedPath) reasons.push(`${step.nodeId}: attachment changed`);
-      } catch { reasons.push(`${step.nodeId}: evidence no longer valid`); }
-    }
     return { allowed: !reasons.length, runId: run.id, round: run.round, candidate: run.candidate.head, reasons: [...new Set(reasons)] };
   }
   /** Called INSIDE Messages' transaction. Ungoverned teams retain their existing behavior. */
@@ -390,8 +436,11 @@ export class Pipelines {
     return run;
   }
   delivered(run: PipelineRun, workId: string, workRound: number, internal = false): void {
-    this.db.prepare("INSERT OR REPLACE INTO pipeline_work_bindings (work_id, round, run_id, fingerprint) VALUES (?, ?, ?, ?)").run(workId, workRound, run.id, run.candidate.fingerprint);
-    if (!internal) { run.state = "delivered"; run.workId = workId; run.workRound = workRound; this.persist(run); }
+    // The handing-over run owns this work round's receipt; the receiving team's accepting run never overwrites it.
+    const handed = this.db.prepare("INSERT INTO pipeline_work_bindings (work_id, round, run_id, fingerprint) VALUES (?, ?, ?, ?) ON CONFLICT(work_id, round) DO NOTHING").run(workId, workRound, run.id, run.candidate.fingerprint);
+    const entry = { kind: "review" as const, id: workId, revision: workRound, round: run.round, scopeRevision: run.scopeRevision ?? 0, fingerprint: run.candidate.fingerprint };
+    if (!internal) { if (handed.changes) (run.provenance ??= []).push(entry); run.state = "delivered"; run.workId = workId; run.workRound = workRound; this.persist(run); }
+    else if (handed.changes) this.remember(run.id, entry);
   }
   presentation(actor: WorldAgent, runId: string): string {
     const run = this.unarchived(this.get(runId)); this.lead(actor, run.teamId);
@@ -408,7 +457,8 @@ export class Pipelines {
   bindItem(actor: WorldAgent, runId: string, itemId: string, revision: number): void {
     const run = this.unarchived(this.get(runId)); this.lead(actor, run.teamId);
     if (!sameCandidate(run.candidate)) throw new InboxError(409, "cannot present a stale candidate");
-    this.db.prepare("INSERT INTO pipeline_item_bindings (item_id, revision, run_id, fingerprint) VALUES (?, ?, ?, ?) ON CONFLICT(item_id,revision) DO NOTHING").run(itemId, revision, run.id, run.candidate.fingerprint);
+    const bound = this.db.prepare("INSERT INTO pipeline_item_bindings (item_id, revision, run_id, fingerprint) VALUES (?, ?, ?, ?) ON CONFLICT(item_id,revision) DO NOTHING").run(itemId, revision, run.id, run.candidate.fingerprint);
+    if (bound.changes) this.remember(run.id, { kind: "approval", id: itemId, revision, round: run.round, scopeRevision: run.scopeRevision ?? 0, fingerprint: run.candidate.fingerprint });
   }
   status(actor: WorldAgent, runId?: string): PipelineStatus {
     if (!actor.teamId) throw new InboxError(409, "join a team to view its pipeline");

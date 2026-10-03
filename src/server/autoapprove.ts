@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { recommendedOption } from "../shared/recommended-option.ts";
 import type { Item } from "../shared/types.ts";
 import { Inbox } from "./inbox.ts";
+import { presentedBy } from "./pipelines/approval.ts";
 
 export interface AutoApproveState { enabled: boolean; count: number }
 
@@ -56,6 +57,8 @@ export class AutoApprove {
     // Failed/uncertain deliveries require explicit Retry. Never manufacture a second answer
     // for the same revision, even if it returned to Needs you after a failed delivery.
     if (this.db.prepare("SELECT id FROM replies WHERE item_id = ? AND revision = ? LIMIT 1").get(id, item.revision)) return;
+    // A pipeline's "Founder approves" step needs the founder's own acceptance: leave it waiting for them.
+    if (presentedBy(this.db, id, item.revision)) return;
     const answer = autoAnswer(item);
     if (!answer) return;
     this.inbox.answer(id, {

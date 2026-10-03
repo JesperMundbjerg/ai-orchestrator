@@ -203,6 +203,9 @@ export interface ItemDetail {
   evidence: Evidence[];
   replies: Reply[];
   history: HistoryEvent[];
+  /** Present when a pipeline run presented this revision for its "Founder approves" step. Approve-all never
+   * answers it; only the founder's own Accept counts, and a later message does not withdraw it. */
+  pipelineApproval?: { runId: string; accepted: boolean };
 }
 
 // ── Agent protocol inputs ────────────────────────────────────────────────────────────────
