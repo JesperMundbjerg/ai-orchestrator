@@ -29,3 +29,16 @@ The south-east corner's square holds a gym along its outer wall, behind the read
 `GymPlayback` starts a lifter's clock once they are at their station and stops it when they leave, the same way games do. The avatar's rig has knees, ankles and elbows. A two-bone reach keeps the hands on the bar, and the bar follows the pose. Only a moving lift promotes the pacer.
 
 `test/gym.test.ts` covers station choice, lift timing and continuity, hands on the bar across heights and builds, and clear walking routes. The browser check (`npm run build`, then `PLAYWRIGHT_MODULE=… node test/gym.browser.mjs`) runs `test/gym-office.fixture.ts` through the scratch launcher on a free port, with herdr and the integrations off. It holds the clock at each lift's phases and measures hand-to-bar distance in the scene. It takes desktop and phone screenshots and records a video, then gives everyone work and checks that the lifters leave. Output goes to `~/.review-inbox/handoffs/agent-office/gym/` (override with `SHOTS`).
+
+## Ping pong
+
+The south-west corner's square holds a full-size ping pong table along its outer wall, behind the reading nook's sofa, mirrored from the gym's corner (`cornerFrame` in `gym.ts`). `furnishPingPong` adds the top, lines, net and legs to the instanced furniture. `PingPong.tsx` draws the ball, plus a paddle in each player's right hand.
+
+`pingpong.ts` chooses players after the games and the gym, with the same eligibility. Exactly two agents play, paired by a hash of their id, and a lone idle agent never uses the table. If one player leaves, the other keeps their end and the next eligible agent takes the free one. `PingPlayback` starts the rally once both players are at the table and stops it when either walks off. One round is two points, baked once:
+- the ball is held, tossed and served, bouncing on the server's side and then the other;
+- each rally shot bounces once on the far side;
+- the last shot is caught, and the catcher serves next.
+
+Every flight is a true parabola under gravity, with bounce restitution of 0.77–0.89. Each paddle swings back, meets the ball and follows through. `playerPose` crouches each player, steps them across to the ball, reaches the blade with the gym's two-bone reach and turns their head to follow the ball. Only a rally promotes the pacer.
+
+`test/gym-pingpong.test.ts` covers pairing, the clock, bounce sides, net clearance, gravity, restitution, paddle contact, continuity, reach and clear routes. The browser check (`PLAYWRIGHT_MODULE=… node test/gym-pingpong.browser.mjs`) uses the same scratch fixture as the gym's. It holds the clock at the serve, its bounces and the rally's hits, and measures ball-to-blade distance and bounce positions in the scene. It takes desktop and phone screenshots and records videos, then checks that the players leave and the ball comes to rest. Output goes to `~/.review-inbox/handoffs/agent-office/gym/pingpong/`.

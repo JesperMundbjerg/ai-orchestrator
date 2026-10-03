@@ -13,6 +13,8 @@ import { usePace } from "./Pace.tsx";
 import { useGames } from "./Games.tsx";
 import { useGym } from "./Gym.tsx";
 import { armReach, handTarget, newPose, newReach, stationPose } from "./gym.ts";
+import { Paddle, usePing } from "./PingPong.tsx";
+import { newPlayer, playerPose } from "./pingpong.ts";
 
 const WALK_SPEED = 1.9;
 /** Strolling round the garden, taking it easy. */
@@ -82,8 +84,9 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const pace = usePace();
   const games = useGames();
   const gym = useGym();
-  // Scratch for the gym's lifts, so a frame allocates nothing.
-  const lifting = useMemo(() => ({ pose: newPose(), reach: newReach(), hand: [0, 0, 0] as [number, number, number] }), []);
+  const ping = usePing();
+  // Scratch for the gym's lifts and ping pong, so a frame allocates nothing.
+  const lifting = useMemo(() => ({ pose: newPose(), reach: newReach(), hand: [0, 0, 0] as [number, number, number], player: newPlayer() }), []);
 
   // A new spot sends the avatar walking there from wherever it is now.
   useEffect(() => {
@@ -176,6 +179,11 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     const seconds = spot.gym ? gym?.seconds(agent.id, Date.now()) ?? null : null;
     const lift = spot.gym && seconds !== null ? stationPose(spot.gym, seconds, look.height, lifting.pose) : null;
     if (lift?.moving) pace?.moved(performance.now());
+    // At their end of the ping pong table, once both players are there: the rally's stance and swing.
+    const end = spot.pingpong;
+    ping?.playback.arrive(agent.id, !walking && !m.path.length && end !== undefined && agent.status === "idle", Date.now());
+    const rally = end !== undefined ? ping?.playback.seconds(Date.now()) ?? null : null;
+    const playing = ping && end !== undefined && rally !== null ? playerPose(ping.table, m.pos[0], m.pos[1], m.yaw, end, rally, look.height, look.build, lifting.player) : null;
 
     const t = state.clock.elapsedTime + m.phase;
     // At their station while they work, they make something; otherwise they stand at it.
@@ -256,6 +264,20 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
         (i ? ar : al).rotation.set(r.x, r.y, r.z);
         (i ? er : el).rotation.x = r.elbow;
       }
+    } else if (playing && ll && lr && al && ar && kl && kr && nl && nr && el && er && body.current) {
+      const h = look.height;
+      g.position.set(m.pos[0] + Math.cos(m.yaw) * playing.rootX, playing.rootY * h, m.pos[1] - Math.sin(m.yaw) * playing.rootX);
+      body.current.rotation.x = 0;
+      body.current.position.set(0, 0, 0);
+      ll.rotation.x = lr.rotation.x = playing.thigh;
+      kl.rotation.x = kr.rotation.x = playing.knee;
+      nl.rotation.x = nr.rotation.x = playing.ankle;
+      if (upper.current) upper.current.rotation.x = playing.bend;
+      if (head.current) head.current.rotation.set(0, playing.head, 0);
+      ar.rotation.set(playing.right.x, playing.right.y, playing.right.z);
+      er.rotation.x = playing.right.elbow;
+      al.rotation.set(playing.left.x, playing.left.y, playing.left.z);
+      el.rotation.x = playing.left.elbow;
     } else if (body.current) {
       body.current.rotation.x = 0;
       body.current.position.set(0, 0, 0);
@@ -292,7 +314,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
       onPointerOut={() => setHovered(false)}
     >
       <group ref={body} scale={look.height}>
-        <Body look={look} legs={legs} knees={knees} ankles={ankles} elbows={elbows} arms={arms} card={card} folder={carrying} head={head} upper={upper} flower={flower} tool={craft ? <HandTool craft={craft} tool={tool} saw={saw} hammer={hammer} /> : null} />
+        <Body look={look} legs={legs} knees={knees} ankles={ankles} elbows={elbows} held={spot.pingpong !== undefined ? <Paddle /> : null} arms={arms} card={card} folder={carrying} head={head} upper={upper} flower={flower} tool={craft ? <HandTool craft={craft} tool={tool} saw={saw} hammer={hammer} /> : null} />
       </group>
       <mesh ref={lamp} position={[0, 2.18, 0]}>
         <sphereGeometry args={[0.08, 20, 16]} />
@@ -329,13 +351,15 @@ function turn(from: number, to: number, max: number): number {
   return from + Math.max(-max, Math.min(max, d));
 }
 
-export function Body({ look, legs, knees, ankles, elbows, arms, card, folder = false, head, upper, flower, tool = null }: {
+export function Body({ look, legs, knees, ankles, elbows, held = null, arms, card, folder = false, head, upper, flower, tool = null }: {
   look: Look;
   legs: RefObject<[Group | null, Group | null]>;
   /** The legs' and arms' lower joints, for the gym's lifts; straight unless turned. */
   knees?: RefObject<[Group | null, Group | null]>;
   ankles?: RefObject<[Group | null, Group | null]>;
   elbows?: RefObject<[Group | null, Group | null]>;
+  /** In the right hand, turning with the forearm: a ping pong paddle. */
+  held?: ReactNode;
   arms: RefObject<[Group | null, Group | null]>;
   card: Texture | null;
   folder?: boolean;
@@ -401,6 +425,7 @@ export function Body({ look, legs, knees, ankles, elbows, arms, card, folder = f
                   <sphereGeometry args={[0.066, 12, 10]} />
                   {skin}
                 </mesh>
+                {side === 1 ? held : null}
               </group>
               {side === 1 && folder ? (
                 <mesh position={[0, -0.6, 0.14]} rotation={[Math.PI / 2 - 0.9, 0, 0]} castShadow>

@@ -8,6 +8,7 @@ import { Furniture, Kit, officeChair, plant, sofa } from "./Furniture.tsx";
 import { stationsFor, studio } from "./crafts.ts";
 import { Crafts } from "./Crafts.tsx";
 import { furnishGym } from "./Gym.tsx";
+import { furnishPingPong } from "./PingPong.tsx";
 import { GardenScene } from "./Garden.tsx";
 import { ReviewRoom } from "./ReviewRoom.tsx";
 import { meetingLength } from "./meeting.ts";
@@ -204,6 +205,8 @@ function furnish(plan: BuildingPlan) {
   }
   // The south-east corner's back, behind its nook: the gym (Gym.tsx).
   furnishGym(kit, plan);
+  // The south-west corner's: the ping pong table (PingPong.tsx).
+  furnishPingPong(kit, plan);
 
   outerWalls(kit, plan);
   for (const w of plan.walls.filter((x) => x.kind === "glass")) glassWall(kit, w);

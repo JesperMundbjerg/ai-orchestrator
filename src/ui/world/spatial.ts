@@ -3,6 +3,7 @@
 import type { Team, WorldAgent } from "../../shared/types.ts";
 import type { GameSeat } from "./games.ts";
 import type { Station } from "./gym.ts";
+import type { End } from "./pingpong.ts";
 
 export type Vec2 = [number, number];
 export type Zone = "team" | "queue" | "lounge" | "caller" | "garden" | "meeting";
@@ -23,6 +24,8 @@ export interface Spot {
   game?: GameSeat;
   /** Training at this station of the gym, only while idle and at this spot. */
   gym?: Station;
+  /** Playing ping pong from this end of the table, only while idle and at this spot. */
+  pingpong?: End;
   /** Standing in the garden: looking up, picking a flower, watching ducks, chatting or stretching. */
   pose?: Pose;
   /** Once there, stroll round these waypoints and back, again and again. */

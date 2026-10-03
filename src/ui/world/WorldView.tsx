@@ -18,6 +18,8 @@ import { GamePlayback, chooseGames, seatsInLounge, type Games } from "./games.ts
 import { GameContext, GamesScene } from "./Games.tsx";
 import { chooseGym, GymPlayback, type Gym } from "./gym.ts";
 import { GymContext, GymScene } from "./Gym.tsx";
+import { choosePingPong, PingPlayback, pingTable, type PingPong } from "./pingpong.ts";
+import { PingContext, PingScene } from "./PingPong.tsx";
 import { readingNooks } from "./building.ts";
 import { meetingPlan, reviewing, type Meetings } from "./meeting.ts";
 import { CallerCard, CallerNote } from "./Caller.tsx";
@@ -354,6 +356,7 @@ function usePark(world: WorldState | null, office: BuildingPlan | null): Buildin
   const park = useRef<Park>(new Map());
   const games = useRef<Games>(new Map());
   const gym = useRef<Gym>(new Map());
+  const ping = useRef<PingPong>(new Map());
   return useMemo(() => {
     if (!office || !world) return office;
     const next = parkPlan(office, out, now, idleSince, park.current);
@@ -364,8 +367,10 @@ function usePark(world: WorldState | null, office: BuildingPlan | null): Buildin
     for (const [id, spot] of games.current) spots.set(id, spot);
     gym.current = chooseGym(office, available, idleSince, Date.now(), gym.current, new Set(games.current.keys()));
     for (const [id, spot] of gym.current) spots.set(id, spot);
+    ping.current = choosePingPong(office, available, idleSince, Date.now(), ping.current, new Set([...games.current.keys(), ...gym.current.keys()]));
+    for (const [id, spot] of ping.current) spots.set(id, spot);
     const seats = [...seatsInLounge(office), ...readingNooks(office).flatMap(n => n.seats)];
-    const spectators = available.filter(a => !games.current.has(a.id) && !gym.current.has(a.id) && a.status === "idle" && !a.waitingOnYou && !office.queue.includes(a.id) && (!a.teamId || out.has(a.id)));
+    const spectators = available.filter(a => !games.current.has(a.id) && !gym.current.has(a.id) && !ping.current.has(a.id) && a.status === "idle" && !a.waitingOnYou && !office.queue.includes(a.id) && (!a.teamId || out.has(a.id)));
     spectators.slice(0, seats.length).forEach((a, i) => spots.set(a.id, seats[i]!));
     return { ...next.plan, spots };
   }, [office, world, out, now, idleSince]);
@@ -441,6 +446,9 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
   const games = useMemo(() => new GamePlayback(players), [JSON.stringify([...players])]);
   // When each lifter got to their station; kept for the office's life, as lifters come and go.
   const gym = useMemo(() => new GymPlayback(), []);
+  // The two at the ping pong table, by end; their rally starts once both are there.
+  const pair = [...gamePlan.spots].filter(([, s]) => s.pingpong !== undefined).sort(([, a], [, b]) => a.pingpong! - b.pingpong!).map(([id]) => id);
+  const ping = useMemo(() => ({ playback: new PingPlayback(pair), table: pingTable(plan) }), [JSON.stringify(pair), plan.outline, plan.hall]);
   const walk = useMemo(() => routeIn(plan), [plan]);
   // What each member makes at their station in their team's room.
   const makes = useMemo(() => crafters(office.corners), [office]);
@@ -450,6 +458,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
   return (
     <GameContext value={games}>
     <GymContext value={gym}>
+    <PingContext value={ping}>
       <color attach="background" args={["#dde5ee"]} />
       {/* Far enough that the far side of the building stays clear, from the clearing or from above. */}
       <fog attach="fog" args={["#dde5ee", reach + 10, reach * 2 + 60]} />
@@ -470,6 +479,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
       <BuildingOffice plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} meters={world.usage?.meters ?? NO_METERS} />
       <GamesScene plan={gamePlan} />
       <GymScene plan={gamePlan} />
+      <PingScene plan={gamePlan} />
       <Jars corners={office.corners} usage={world.usage} />
       {world.agents.map((a) => {
         const w = waiting.get(a.id);
@@ -500,6 +510,7 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
       </OfficeEdge>
       <Player bounds={plan.bounds} start={OPENING_VIEW} fly={fly} />
       <Wilds office={plan.bounds} />
+    </PingContext>
     </GymContext>
     </GameContext>
   );

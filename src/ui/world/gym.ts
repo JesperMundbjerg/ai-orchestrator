@@ -35,9 +35,9 @@ export const SHOULDER_Y = 1.42;
 export const SHOULDER_X = 0.27;
 export const UPPER_ARM = 0.27;
 export const FOREARM = 0.27;
-const THIGH = 0.43;
-const SHIN = 0.36;
-const FOOT = 0.07;
+export const THIGH = 0.43;
+export const SHIN = 0.36;
+export const FOOT = 0.07;
 /** From the hips up to the shoulders. */
 const TORSO = SHOULDER_Y - HIP;
 /** Half the torso's depth: where a bar on the chest or the back sits. */
@@ -66,12 +66,25 @@ export const PULL_Z = 0.04;
 
 // ---------------------------------------------------------------- where
 
-/** The corner the gym is in: the south-east reading nook's, in the nook's frame (+z towards its way in). */
-export function gymCorner(plan: Pick<BuildingPlan, "rooms" | "outline" | "hall">) {
-  const nook = readingNooks(plan).reduce((a, b) => (b.center[0] + b.center[1] > a.center[0] + a.center[1] ? b : a));
+/**
+ * A corner's square in its reading nook's frame, x mirrored so the nook's way in is on the same
+ * side in every corner: `at` places a point given from the square's middle, the back wall at -half.
+ */
+export function cornerFrame(plan: Pick<BuildingPlan, "rooms" | "outline" | "hall">, nook: ReturnType<typeof readingNooks>[number]) {
   const half = (plan.outline.maxX - plan.hall.maxX) / 2;
   const at = (x: number, z: number): Vec2 => place(nook.center, nook.facing, [x * nook.side, z]);
-  return { nook, half, at, lane: -half + 2.4 };
+  // The corridor down from the nook's way in, on the far side of its sofa.
+  const inside = nook.seats[0]!.approach.slice(0, 3);
+  const corridor = place([0, 0], -nook.facing, [inside[2]![0] - nook.center[0], inside[2]![1] - nook.center[1]])[0] * nook.side;
+  /** The way to (x, z): in by the nook's way in, down the corridor and along `lane` to above it. */
+  const way = (x: number, lane: number): Vec2[] => [...inside, at(corridor, lane), at(x, lane)];
+  return { nook, half, at, way };
+}
+
+/** The corner the gym is in: the south-east reading nook's. */
+export function gymCorner(plan: Pick<BuildingPlan, "rooms" | "outline" | "hall">) {
+  const frame = cornerFrame(plan, readingNooks(plan).reduce((a, b) => (b.center[0] + b.center[1] > a.center[0] + a.center[1] ? b : a)));
+  return { ...frame, lane: -frame.half + 2.4 };
 }
 
 /** Each station: across the back wall from the way in, where its lifter stands and what stands round them. */
@@ -84,19 +97,9 @@ export const LAYOUT: Record<Station, { x: number; z: number }> = {
 
 /** Where a station's lifter stands, facing out from the wall, and the way there: in by the nook, along the lane. */
 export function gymSpot(plan: Pick<BuildingPlan, "rooms" | "outline" | "hall">, station: Station): Spot {
-  const { nook, half, at, lane } = gymCorner(plan);
+  const { nook, half, at, way, lane } = gymCorner(plan);
   const { x, z } = LAYOUT[station];
-  const inside = nook.seats[0]!.approach.slice(0, 3);
-  // The corridor down from the nook's way in, on the far side of its sofa.
-  const corridor = place([0, 0], -nook.facing, [inside[2]![0] - nook.center[0], inside[2]![1] - nook.center[1]])[0] * nook.side;
-  return {
-    pos: at(x, -half + z),
-    facing: nook.facing,
-    zone: "lounge",
-    group: "gym",
-    approach: [...inside, at(corridor, lane), at(x, lane)],
-    gym: station,
-  };
+  return { pos: at(x, -half + z), facing: nook.facing, zone: "lounge", group: "gym", approach: way(x, lane), gym: station };
 }
 
 // ---------------------------------------------------------------- who
@@ -488,32 +491,36 @@ export const newReach = (): Reach => ({ x: 0, y: 0, z: 0, elbow: 0 });
  * bar as much as the grip is, otherwise by the side. `side` is -1 for the left hand, 1 the right.
  */
 export function handTarget(pose: LiftPose, build: number, side: number, out: [number, number, number]): [number, number, number] {
-  let qy: number, qz: number;
-  if (pose.lie) {
-    qy = pose.lieZ - pose.barZ;
-    qz = pose.barY - pose.lieY;
-  } else {
-    qy = pose.barY - pose.rootY;
-    qz = pose.barZ - pose.rootZ;
-  }
-  const uy = qy - HIP, uz = qz;
-  const c = Math.cos(pose.bend), n = Math.sin(pose.bend);
-  const y = uy * c + uz * n + HIP - SHOULDER_Y;
-  const z = -uy * n + uz * c;
+  if (pose.lie) shoulderFrame(0, pose.lieZ - pose.barZ, pose.barY - pose.lieY, 0, build, side, out);
+  else shoulderFrame(0, pose.barY - pose.rootY, pose.barZ - pose.rootZ, pose.bend, build, side, out);
   const x = side * (pose.w - SHOULDER_X * build);
   const g = pose.grip;
   out[0] = side * 0.03 + (x - side * 0.03) * g;
-  out[1] = -0.53 + (y + 0.53) * g;
-  out[2] = 0.04 + (z - 0.04) * g;
+  out[1] = -0.53 + (out[1] + 0.53) * g;
+  out[2] = 0.04 + (out[2] - 0.04) * g;
+  return out;
+}
+
+/**
+ * A point given from the avatar's feet (x across, y up, z forward, in its own units) as seen from
+ * one shoulder, with the upper body bent forward by `bend` at the hips.
+ */
+export function shoulderFrame(qx: number, qy: number, qz: number, bend: number, build: number, side: number, out: [number, number, number]): [number, number, number] {
+  const uy = qy - HIP, uz = qz;
+  const c = Math.cos(bend), n = Math.sin(bend);
+  out[0] = qx - side * SHOULDER_X * build;
+  out[1] = uy * c + uz * n + HIP - SHOULDER_Y;
+  out[2] = -uy * n + uz * c;
   return out;
 }
 
 /**
  * The shoulder and elbow that put the hand at (tx, ty, tz) from the shoulder, the elbow towards the
- * pole (px, py, pz): a two-bone reach. Out of reach, the arm points straight at it.
+ * pole (px, py, pz): a two-bone reach. Out of reach, the arm points straight at it. A longer
+ * `forearm` reaches with something held in the hand, along the forearm, instead.
  */
-export function armReach(tx: number, ty: number, tz: number, px: number, py: number, pz: number, out: Reach): Reach {
-  const max = UPPER_ARM + FOREARM - 1e-4;
+export function armReach(tx: number, ty: number, tz: number, px: number, py: number, pz: number, out: Reach, forearm = FOREARM): Reach {
+  const max = UPPER_ARM + forearm - 1e-4;
   let d = Math.hypot(tx, ty, tz);
   if (d < 1e-4) { tx = 0; ty = -1e-4; tz = 0; d = 1e-4; }
   const k = Math.min(1, max / d);
@@ -525,7 +532,7 @@ export function armReach(tx: number, ty: number, tz: number, px: number, py: num
   let on = Math.hypot(ox, oy, oz);
   if (on < 1e-6) { ox = 0; oy = 0; oz = -1; dot = az; ox -= dot * ax; oy -= dot * ay; oz -= dot * az; on = Math.hypot(ox, oy, oz) || 1; }
   ox /= on; oy /= on; oz /= on;
-  const along = (UPPER_ARM ** 2 - FOREARM ** 2 + d * d) / (2 * d);
+  const along = (UPPER_ARM ** 2 - forearm ** 2 + d * d) / (2 * d);
   const off = Math.sqrt(Math.max(0, UPPER_ARM ** 2 - along ** 2));
   // The elbow, and the arm's own axes: y up the upper arm, z towards the forearm's bend, x across.
   const ex = ax * along + ox * off, ey = ay * along + oy * off, ez = az * along + oz * off;
@@ -551,15 +558,15 @@ export function armReach(tx: number, ty: number, tz: number, px: number, py: num
     out.z = 0;
   }
   fx = tx - ex; fy = ty - ey; fz = tz - ez;
-  const cos = Math.max(-1, Math.min(1, -(fx * yx + fy * yy + fz * yz) / FOREARM));
+  const cos = Math.max(-1, Math.min(1, -(fx * yx + fy * yy + fz * yz) / forearm));
   out.elbow = -Math.acos(cos);
   return out;
 }
 
 /** Where a reach puts the hand, from the shoulder: the rig's own sums, for checking. */
-export function handFrom(r: Reach): [number, number, number] {
+export function handFrom(r: Reach, forearm = FOREARM): [number, number, number] {
   // Upper arm and forearm in the arm's frame, then the shoulder's turn (Rx Ry Rz).
-  const v: [number, number, number] = [0, -UPPER_ARM - FOREARM * Math.cos(r.elbow), -FOREARM * Math.sin(r.elbow)];
+  const v: [number, number, number] = [0, -UPPER_ARM - forearm * Math.cos(r.elbow), -forearm * Math.sin(r.elbow)];
   const rz = (p: [number, number, number], a: number): [number, number, number] => [p[0] * Math.cos(a) - p[1] * Math.sin(a), p[0] * Math.sin(a) + p[1] * Math.cos(a), p[2]];
   const ry = (p: [number, number, number], a: number): [number, number, number] => [p[0] * Math.cos(a) + p[2] * Math.sin(a), p[1], -p[0] * Math.sin(a) + p[2] * Math.cos(a)];
   const rx = (p: [number, number, number], a: number): [number, number, number] => [p[0], p[1] * Math.cos(a) - p[2] * Math.sin(a), p[1] * Math.sin(a) + p[2] * Math.cos(a)];
