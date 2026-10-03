@@ -416,6 +416,26 @@ export interface WorldTeam extends Team {
   status: TeamStatus;
   /** Who holds the team up, when it is blocked. */
   blockedBy: string[];
+  /** Its lead is offline (or it has none) while others have waited on it past the threshold; null otherwise. */
+  stalled?: TeamStall | null;
+}
+
+/** A team nobody can move: no lead online, and something has waited on it for ten minutes or more (leadwatch.ts). */
+export interface TeamStall {
+  teamId: string;
+  teamName: string;
+  /** The offline lead; null when the team has none. */
+  leadId: string | null;
+  leadName: string | null;
+  /** When the oldest thing still waiting on it started waiting (ISO). */
+  since: string;
+  /** How many things wait: queued messages to its lead, work handed to it for review, pipeline steps reported to its lead. */
+  waiting: number;
+  /** Who is held up, as the founder reads it: other teams by name, agents by name, and "you" for your own messages. */
+  blocking: string[];
+  blockingAgentIds: string[];
+  /** Its other members, running first: who the founder can make lead. */
+  candidates: Array<{ id: string; name: string; running: boolean }>;
 }
 
 /** A repository agents work in, where a new project's worktree can be made. */
@@ -506,6 +526,8 @@ export interface Delivery {
   state: DeliveryState;
   error: string | null;
   updatedAt: string;
+  /** While queued for an agent that is offline: who, worded for the sender ("Mission Control's lead (Alma)"). */
+  offline?: string;
 }
 
 /** Something said in the office, and how it reached each agent it was meant for. */

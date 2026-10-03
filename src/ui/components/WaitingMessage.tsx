@@ -5,7 +5,7 @@ import { waitingLabel } from "../../shared/waiting.ts";
 /** The age keeps advancing even if neither presence nor the thread changes. */
 export function WaitingMessage({ message, agentId }: { message: Message; agentId?: string }) {
   const [now, setNow] = useState(Date.now);
-  const queued = !message.fromAgentId && !message.fromOffice && message.deliveries.some((d) => d.state === "queued");
+  const queued = !message.fromOffice && message.deliveries.some((d) => d.state === "queued" && (!message.fromAgentId || d.offline));
   useEffect(() => {
     if (!queued) return;
     const timer = setInterval(() => setNow(Date.now()), 30_000);

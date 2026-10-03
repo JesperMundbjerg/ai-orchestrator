@@ -7,6 +7,7 @@ import { HiddenLine, MessageRow, TellTeam, ThreadToggle, useThreadView, withMe, 
 import { TellAllLeads } from "./TellAllLeads.tsx";
 import { SwitchHarness } from "./SwitchHarness.tsx";
 import { MachineWarning } from "./MachineWarning.tsx";
+import { StalledNote, StalledTeams } from "./StalledTeams.tsx";
 import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
 
 import { PipelineButton } from "../pipelines/PipelineButton.tsx";
@@ -69,6 +70,7 @@ export function TeamBoard({ state, tick, onOffice, onCrewGuide }: { state: Inbox
         <TellAllLeads world={world} />
         <button className="primary small" onClick={() => (setError(null), setAdding(!adding))}>{adding ? "Cancel" : "+ New project"}</button>
       </header>
+      <StalledTeams teams={world.teams} />
       <MachineWarning tick={tick} note />
       {error ? <p className="warn warn-dismiss">{error} <button className="ghost small" onClick={() => setError(null)}>OK</button></p> : loadError ? <p className="warn">The office did not answer ({loadError}).</p> : null}
       {note ? <p className="board-note">{note} <button className="ghost small" onClick={() => setNote(null)}>OK</button></p> : null}
@@ -172,6 +174,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
             <button className="ghost small" onClick={() => (clearError(), setEditing(true))}>Edit</button>
           </div>
           <span className={team.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
+          <StalledNote team={team} />
           <span className="muted small-note" title={team.path ?? undefined}>{team.standing ? "Always on" : `Worktree on ${team.branch ?? "an unknown branch"}`}{team.worktrees.length ? ` · ${team.worktrees.length}${team.standing ? "" : " more"} ${team.worktrees.length === 1 ? "worktree" : "worktrees"}` : ""}</span>
           {!!team.unpresentedCommits && <span className="muted small-note">{team.unpresentedCommits} {team.unpresentedCommits === 1 ? "commit" : "commits"} not shown to you yet</span>}
           {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}

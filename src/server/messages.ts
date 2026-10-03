@@ -16,6 +16,7 @@ import { imageIds, InboxError, type Inbox } from "./inbox.ts";
 import type { Uploads } from "./uploads.ts";
 import { laneRecipient } from "./queue.ts";
 import { WaitingMessages } from "./waiting.ts";
+import { offlineRecipient, withOffline } from "../shared/waiting.ts";
 import { MessageLoops } from "./loops.ts";
 import { OfficeNotices } from "./notices.ts";
 import { Undelivered } from "./undelivered.ts";
@@ -85,7 +86,11 @@ export class Messages {
   /** Only queued recipients need immediate screen sampling; never scan unrelated panes. */
   queuedPanes(state: WorldState): Set<string> {
     const rows = this.db.prepare("SELECT m.*, d.agent_id, d.updated_at AS queued_at FROM message_deliveries d JOIN messages m ON m.id = d.message_id WHERE d.state = 'queued'").all() as Row[];
-    this.waiting.check(rows.map((r) => toMessage(r, [{ agentId: str(r.agent_id), state: "queued", updatedAt: str(r.queued_at), error: null }])), this.now().getTime());
+    const agents = new Map(state.agents.map((a) => [a.id, a]));
+    this.waiting.check(rows.map((r) => {
+      const offline = offlineRecipient(agents.get(str(r.agent_id)), state.teams);
+      return toMessage(r, [{ agentId: str(r.agent_id), state: "queued", updatedAt: str(r.queued_at), error: null, ...(offline ? { offline } : {}) }]);
+    }), this.now().getTime());
     const ids = new Set(rows.map((r) => str(r.agent_id)));
     return new Set([
       ...state.agents.filter((a) => ids.has(a.id) && a.paneId).map((a) => a.paneId!),
@@ -183,6 +188,18 @@ export class Messages {
     return this.store("message", null, null, text(input.text, images.length > 0), null, [agent.id], replay, false, images);
   }
 
+  /**
+   * The founder made someone else lead of a team whose lead was offline: what was said to the team
+   * and never taken up by the old lead goes to the new one, keeping its age. Messages to the old lead
+   * by name stay theirs. A message the new lead already has is left where it is.
+   */
+  handOverQueued(teamId: string, fromAgentId: string, toAgentId: string): number {
+    const moved = this.db.prepare(`UPDATE OR IGNORE message_deliveries SET agent_id = ? WHERE agent_id = ? AND state = 'queued'
+      AND message_id IN (SELECT id FROM messages WHERE team_id = ?)`).run(toAgentId, fromAgentId, teamId).changes;
+    if (moved) this.changed();
+    return Number(moved);
+  }
+
   /** The office itself telling an agent what it saw, such as a browser left running: typed like any message, never shown as yours. */
   notice(agentId: string, body: string): Message {
     return this.store("message", null, null, text(body), null, [agentId], undefined, false, [], true);
@@ -207,17 +224,19 @@ export class Messages {
     if (name === FOUNDER) return this.store("message", from.id, null, body, null, [], replay, true);
     const state = this.world();
     const agent = state.agents.find((a) => a.name.toLowerCase() === name);
+    // The sender is told at once when whoever it is for is offline, rather than reading "busy" later.
+    const told = (message: Message) => withOffline([message], state.agents, state.teams)[0]!;
     if (agent) {
       if (agent.id === from.id) throw new InboxError(400, "that is you");
-      return this.store("message", from.id, null, body, null, [agent.id], replay);
+      return told(this.store("message", from.id, null, body, null, [agent.id], replay));
     }
     const team = state.teams.find((t) => t.name.toLowerCase() === name);
-    if (team) return this.store("message", from.id, team.id, body, null, recipients(state, team, from.id), replay);
+    if (team) return told(this.store("message", from.id, team.id, body, null, recipients(state, team, from.id), replay));
     // A project's lane by the name its own tools use: `inbox say einstein`.
     const lane = laneRecipient(state, from, name);
     if (!lane) throw new InboxError(404, `nobody called ${input.to} in the office: see who is there with \`inbox team\``);
     if (lane.id === from.id) throw new InboxError(400, "that is you");
-    return this.store("message", from.id, null, body, null, [lane.id], replay);
+    return told(this.store("message", from.id, null, body, null, [lane.id], replay));
   }
 
   /**

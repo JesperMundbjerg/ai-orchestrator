@@ -352,6 +352,8 @@ async function main(argv: string[]): Promise<void> {
       if (!to || !text) throw new Error('inbox say needs a name and the text: inbox say NAME "text"');
       const message = await call<Message>("/api/agent/say", { session: session(), to, text, clientId: randomUUID() });
       if (message.toFounder) return console.log("Said to the founder: it shows in your panel in the office.");
+      const offline = [...new Set(message.deliveries.flatMap((d) => d.offline ?? []))];
+      if (offline.length) return console.log(`Queued for ${to}, but ${offline.join(" and ")} ${offline.length === 1 ? "is" : "are"} offline: it waits until they are back. If it holds you up for long, the founder is asked to make someone else lead.`);
       return console.log(`Sent to ${to}: it is typed into their terminal once they are free (${message.deliveries.length} ${message.deliveries.length === 1 ? "agent" : "agents"}).`);
     }
     case "handoff": {

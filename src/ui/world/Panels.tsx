@@ -17,6 +17,7 @@ import { agentMessages, Conversation, conversation, BetweenAgents, HiddenLine, M
 import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "./status.ts";
 import type { Waiting } from "./WorldView.tsx";
 import { PipelineButton } from "../pipelines/PipelineButton.tsx";
+import { stallLine } from "../components/StalledTeams.tsx";
 
 /** The project list: where each stands, open one, start a project, change or finish one. */
 export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
@@ -148,6 +149,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
         <span className="muted" title={team.path ?? undefined}> · {team.standing ? "always on" : `worktree on ${team.branch ?? "an unknown branch"}`}</span>
       </div>
 
+      {team.stalled ? <p className="warn small-note">{stallLine(team.stalled)}.</p> : null}
       {!!team.unpresentedCommits && <p className="muted small-note">{team.unpresentedCommits} {team.unpresentedCommits === 1 ? "commit" : "commits"} not shown to you yet</p>}
       {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}
       {team.handsTo ? <div className="muted small-note">Hands its finished work to {world.teams.find((t) => t.id === team.handsTo)?.name ?? "another team"}.</div> : null}

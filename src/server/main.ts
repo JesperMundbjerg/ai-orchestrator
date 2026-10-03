@@ -34,6 +34,8 @@ const usage = new Usage(db);
 world.usage = usage;
 world.crew.pause = () => usage.crewPause();
 world.messages.replies = inbox;
+// A team with no lead online that others wait on is put to the founder as one inbox decision.
+world.leadWatch.inbox = inbox;
 world.messages.uploads = inbox.uploads;
 herdr.queuedPanes = () => world.messages.queuedPanes(world.state());
 inbox.presentationPath = (session) => {

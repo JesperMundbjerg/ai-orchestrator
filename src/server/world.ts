@@ -32,6 +32,8 @@ import { EFFORT_TIMEOUT_MS, Efforts } from "./effort.ts";
 import type { EffortReport } from "../shared/types.ts";
 import { whyStuck } from "../shared/stuck.ts";
 import { Unpresented } from "./unpresented.ts";
+import { LEAD_WATCH_SESSION, LeadWatch } from "./leadwatch.ts";
+import { withOffline } from "../shared/waiting.ts";
 import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, linkedWorktrees, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
 
 /** An agent a terminal multiplexer reports as running. */
@@ -166,6 +168,8 @@ export class World {
   private activityTimer: NodeJS.Timeout | null = null;
   private adapters = new Adapters();
   private unpresented: Unpresented;
+  /** Teams with no lead online while others wait on them; the founder is asked to make someone lead. */
+  readonly leadWatch: LeadWatch;
   onChange: (reason: string) => void = () => {};
   /** Panes the office does not see yet or any more: an agent being switched to another harness (switch.ts) sets them. */
   hiddenPanes: () => ReadonlySet<string> = () => NONE;
@@ -184,6 +188,12 @@ export class World {
     this.messages = new Messages(db, source, () => this.state(), now, (redrawOnly) => this.onChange(redrawOnly ? "activity" : "world"));
     this.pipelines = new Pipelines(db, () => this.state(), { now, changed: () => this.onChange("world") });
     this.messages.pipelines = this.pipelines;
+    this.leadWatch = new LeadWatch(db, now, {
+      makeLead: (id) => { this.updateAgent(id, { role: "lead" }); },
+      handOver: (teamId, from, to) => this.messages.handOverQueued(teamId, from, to),
+      openRuns: (teamId) => (this.db.prepare("SELECT id, snapshot FROM pipeline_runs WHERE team_id = ?").all(teamId) as Row[])
+        .filter((r) => (JSON.parse(str(r.snapshot)) as { state?: string }).state === "open").map((r) => this.pipelines.get(str(r.id))),
+    });
   }
 
   state(): WorldState {
@@ -287,9 +297,9 @@ export class World {
 
     return {
       agents: world,
-      teams: teams.map((team) => ({ ...team, unpresentedCommits: team.standing ? 0 : this.unpresented.count(team.path), ...teamStatus(world.filter((a) => a.teamId === team.id)) })),
-      messages: this.messages.list(),
-      withFounder: this.messages.withFounder(),
+      teams: teams.map((team) => ({ ...team, unpresentedCommits: team.standing ? 0 : this.unpresented.count(team.path), ...teamStatus(world.filter((a) => a.teamId === team.id)), stalled: this.leadWatch.stall(team.id) })),
+      messages: withOffline(this.messages.list(), world, teams),
+      withFounder: withOffline(this.messages.withFounder(), world, teams),
       work,
       repositories: this.repositories(world, teams),
       herdr: this.source?.available() ? "connected" : "unavailable",
@@ -584,6 +594,9 @@ export class World {
     const lines = [`You are ${me.name} (${me.harness}${me.cwd ? `, ${me.cwd}` : ""}).`];
     if (me.story) lines.push(storyLine(me.story));
     if (me.storyAsk) lines.push(STORY_INTRO);
+    for (const stall of this.leadWatch.all().filter((st) => st.blockingAgentIds.includes(me.id))) {
+      lines.push(`${stall.teamName} has no lead online${stall.leadName ? ` (${stall.leadName} is offline)` : ""}: what you are waiting on from it has waited ${Math.floor((this.now().getTime() - Date.parse(stall.since)) / 60_000)} min. The founder has been asked to make someone there lead.`);
+    }
     if (!team) {
       lines.push("You are not on a project: you work straight for the founder.");
     } else {
@@ -623,7 +636,8 @@ export class World {
     const state = this.state();
     const watched = this.messages.watch(state);
     const changed = this.unpresented.tick(state, this.now().getTime(), (lead, text) => { this.messages.notice(lead, text); });
-    if (changed || watched) this.onChange("activity"); // redraw only; do not recursively react
+    const stalled = this.leadWatch.tick(state);
+    if (changed || watched || stalled) this.onChange("activity"); // redraw only; do not recursively react
     const first = this.announced === null;
     const before = this.announced ?? new Map<string, TeamStatus>();
     this.announced = new Map(state.teams.map((t) => [t.id, t.status]));
@@ -650,7 +664,8 @@ export class World {
       out.set(identity, { identity, harness: a.harness, cwd: a.cwd, status: a.status, title: a.title, paneId: a.paneId, taskIds: [], sessionId: a.sessionId });
     }
     for (const task of tasks) {
-      if (task.parked) continue;
+      // The office's own decisions (a stalled team's lead) are asked by nobody in the office.
+      if (task.parked || (task.binding.harness === LEAD_WATCH_SESSION.harness && task.binding.sessionId === LEAD_WATCH_SESSION.sessionId)) continue;
       const byPane = task.presence ? [...out.values()].find((a) => a.paneId === task.presence!.paneId) : undefined;
       const identity = byPane?.identity ?? identityOf(task.binding.harness, task.binding.cwd, task.binding.sessionId);
       const agent = out.get(identity);
