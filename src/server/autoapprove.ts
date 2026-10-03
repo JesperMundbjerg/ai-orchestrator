@@ -4,6 +4,7 @@ import { recommendedOption } from "../shared/recommended-option.ts";
 import type { Item } from "../shared/types.ts";
 import { Inbox } from "./inbox.ts";
 import { presentedBy } from "./pipelines/approval.ts";
+import { isWaiverItem } from "./pipelines/waiver.ts";
 
 export interface AutoApproveState { enabled: boolean; count: number }
 
@@ -59,6 +60,8 @@ export class AutoApprove {
     if (this.db.prepare("SELECT id FROM replies WHERE item_id = ? AND revision = ? LIMIT 1").get(id, item.revision)) return;
     // A pipeline's "Founder approves" step needs the founder's own acceptance: leave it waiting for them.
     if (presentedBy(this.db, id, item.revision)) return;
+    // An exact-SHA repair waiver is the founder's own call, always.
+    if (isWaiverItem(this.db, id)) return;
     const answer = autoAnswer(item);
     if (!answer) return;
     this.inbox.answer(id, {

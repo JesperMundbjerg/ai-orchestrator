@@ -89,6 +89,7 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox pipeline done RUN NODE [--report FILE --check "command" --exit-code 0] --notes "disposition"
   inbox pipeline status [RUN]
   inbox pipeline gate --operation push|pr|merge|land|publish --repo PATH --ref REF --candidate SHA --run RUN [--round N]
+  inbox pipeline waiver --repo PATH --ref dev --candidate SHA --reason "why"   ask the founder to allow exactly this commit to that branch once, without a run
       --json FILE supplies an operation payload (including structured evidence); --revision N is an optimistic lock
       --client-id ID makes a lost-response retry replay-safe. Gate is preflight, not a publication receipt.
   inbox switch NAME [--to claude|pi] [--model M] [--effort E]
@@ -131,7 +132,7 @@ const OPTIONS = {
   revision: { type: "string" }, round: { type: "string" }, select: { type: "string", multiple: true },
   report: { type: "string", multiple: true }, "exit-code": { type: "string" }, "work-round": { type: "string" },
   "client-id": { type: "string" }, operation: { type: "string" }, repo: { type: "string" }, ref: { type: "string" },
-  delivery: { type: "string" }, node: { type: "string" },
+  delivery: { type: "string" }, node: { type: "string" }, reason: { type: "string" },
   to: { type: "string" },
   work: { type: "string" },
   cwd: { type: "string" },

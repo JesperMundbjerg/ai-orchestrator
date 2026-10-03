@@ -5,6 +5,7 @@ import { pipelineApi, PipelineRequestError } from "./api.ts";
 import { Canvas } from "./Canvas.tsx";
 import { Inspector } from "./Inspector.tsx";
 import { RunView } from "./RunView.tsx";
+import { WaiverList } from "./WaiverList.tsx";
 import { builtins, connect, graphWarnings, nodeFromDefinition, positionsFor, removeNode } from "./model.ts";
 import { tidyLayout } from "./layout.ts";
 import { useChangeSignal } from "../hooks.ts";
@@ -148,7 +149,7 @@ export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: 
       {notice && <p className="pipeline-notice" role="status">{notice}</p>}
       {view?.problems.length || palette?.problems.length ? <div className="pipeline-notice" role="alert"><strong>Office validation / discovery</strong><ul>{[...(view?.problems ?? []), ...(palette?.problems ?? [])].map((problem, index) => <li key={index}>{problem}</li>)}</ul></div> : null}
       {mode !== "run" && warnings.length > 0 && <div className="pipeline-notice warn" role="alert"><strong>Draft warnings</strong><ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
-      {!view ? <div className="pipeline-empty">{busy ? "Loading the team pipeline…" : "Pipeline unavailable. No local mock or default has been substituted."}</div> : mode === "run" ? <RunView runs={view.runs} selectedId={selectedRun} onSelect={setSelectedRun} refresh={() => void refreshRuns()} busy={busy} /> : <div className="pipeline-body">
+      {!view ? <div className="pipeline-empty">{busy ? "Loading the team pipeline…" : "Pipeline unavailable. No local mock or default has been substituted."}</div> : mode === "run" ? <><RunView runs={view.runs} selectedId={selectedRun} onSelect={setSelectedRun} refresh={() => void refreshRuns()} busy={busy} /><WaiverList teamId={teamId} tick={tick} /></> : <div className="pipeline-body">
         <aside className="pipeline-palette" aria-label="Step palette"><h3>Add a step</h3><p className="pipeline-help">Choose a repo definition or a built-in obligation.</p><input type="search" aria-label="Search discovered steps" placeholder="Find a step…" value={query} onChange={(event) => setQuery(event.target.value)} />
           {(["agent", "skill", "command", "builtin"] as const).map((kind) => <section key={kind}><h4>{kind === "builtin" ? "Built-ins" : `Repo ${kind}s`}</h4><div className="pipeline-palette-items">{matches.filter((d) => d.kind === kind).map((definition) => <button className="pipeline-palette-item" disabled={busy} key={definition.id} title={[definition.description, definition.path, definition.hash].filter(Boolean).join("\n")} onClick={() => add(definition)}>{definition.label}<small>{definition.description || definition.path}</small></button>)}</div>{!matches.some((d) => d.kind === kind) && <p className="pipeline-help">{query ? "No matches" : "None discovered"}</p>}</section>)}
         </aside>

@@ -1,4 +1,5 @@
 import type { PipelineLayoutInput, PipelineOverrideInput, PipelinePalette, PipelineTeamView } from "../../shared/pipeline.ts";
+import type { PipelineWaiver } from "../../shared/waiver.ts";
 
 export class PipelineRequestError extends Error {
   readonly status: number;
@@ -21,4 +22,5 @@ export const pipelineApi = {
   palette: (teamId: string) => request<PipelinePalette>(`${base(teamId)}/palette`),
   save: (teamId: string, input: PipelineOverrideInput) => request<PipelineTeamView>(base(teamId), input),
   layout: (teamId: string, input: PipelineLayoutInput) => request<PipelineTeamView>(`${base(teamId)}/layout`, input),
+  waivers: (teamId: string) => request<PipelineWaiver[]>(`${base(teamId)}/waivers`),
 };

@@ -121,6 +121,16 @@ Retain `--client-id` before sending. An exact retry with the same caller, run, n
 
 Finishing or disbanding a team, merging it into another, or the office seeing its worktree gone never deletes a run, its copied evidence files or its item/work bindings (migration 10 removed the cascade from teams). The team's runs are marked **archived** with the reason, the team's name and the time, and are kept exactly as last recorded, whatever their state (open, delivered or abandoned): no freshness is recomputed against a checkout that may not exist. An archived run is readable (`inbox pipeline status RUN` from any team, its attachments by URL) but is never edited, re-based, abandoned, presented or delivered: mutations and presentation answer `409 pipeline_run_archived`, and the gate refuses it. Exact replays still return their original receipts, and the run they name still resolves. A merge keeps each run under its original team as provenance and lists it in the target's Runs; it is never the target's open wave, so the target's lead starts a new run. Runs shows archived entries muted with the reason, and an abandoned or archived run's unfinished steps read "abandoned"/"archived", not "waiting". Tests: `test/pipeline-history.test.ts`.
 
+## Repairing without a run: the founder's exact-SHA waiver
+
+When a repair cannot go through a run (the team is blocked, or the pipeline itself is broken), ask the founder for a waiver for exactly that commit:
+
+```sh
+inbox pipeline waiver --repo CHECKOUT --ref dev --candidate SHA --reason "The Pi guard blocks every push; this one-line fix restores it." [--client-id ID]
+```
+
+The team's lead asks, or any member while the team has no lead online. The founder gets one inbox decision with the repository, branch, full commit id, its diff stat and diff against where `dev` points now (`origin/dev` when it exists, else the local `dev`), and your reason. Only their own **Allow this commit once** grants it: approve-all never answers it, and messages change nothing. Then deliver **without naming a run**: the hooks' `inbox pipeline gate` with no `--run` asks the waiver gate. It allows exactly that commit to exactly that branch in that repository, for one delivery, while `dev` has not moved since the diff was taken, and within 24 hours of the founder's choice. The first allowed boundary consumes it, and the rest of that same delivery (preflight then pre-push, or land then publish) passes for 15 minutes. If `dev` moves first, ask again. Runs lists waivers as waiting, granted, used, expired or refused. The rules and the data contract are in [DESIGN.md](DESIGN.md#exact-sha-repair-waiver).
+
 ## Outages and limits
 
 If the office/gate is unavailable, protected delivery fails closed with **“Restart the office and retry; editing, tests and local commits remain available.”** There is no cached green response, broad environment bypass, model call, or reasoning intermediary.

@@ -148,7 +148,8 @@ test("a version 9 database keeps its runs, files and bindings and stops cascadin
 
   const db = openDatabase(file);
   t.after(() => db.close());
-  assert.equal(Number(db.prepare("PRAGMA user_version").get()!.user_version), 10);
+  // Migration 10 ran; later migrations (11, waivers) may follow it.
+  assert.ok(Number(db.prepare("PRAGMA user_version").get()!.user_version) >= 10);
   assert.deepEqual({ ...db.prepare("SELECT team_id, ledger_team_id, snapshot FROM pipeline_runs").get() }, { team_id: "t", ledger_team_id: "t", snapshot: '{"id":"r"}' });
   db.exec("DELETE FROM teams WHERE id = 't'");
   assert.deepEqual(["pipeline_runs", "pipeline_files", "pipeline_work_bindings"].map(table => count(db, table)), [1, 1, 1]);

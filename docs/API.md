@@ -178,6 +178,9 @@ Pipeline routes use domain decoders in `src/server/pipelines/protocol.ts` and DT
 | `POST /api/agent/pipeline/branch` | `{session, runId, clientId, selections, rationale, expectedRevision?, base?, candidate?}` → `PipelineRun` |
 | `POST /api/agent/pipeline/abandon` | `{session, runId, clientId, notes}` → `PipelineRun` |
 | `POST /api/agent/pipeline/gate` | `{session, runId, delivery, round, candidate, ...}` → `{allowed, runId, round, candidate, reasons}` |
+| `POST /api/agent/pipeline/waiver` | `{session, clientId, repo, ref, candidate, reason}` → `PipelineWaiver` (`src/shared/waiver.ts`); the lead, or anyone while the team has no lead online; one founder inbox decision per waiting commit/branch/base |
+| `POST /api/agent/pipeline/waiver/gate` | `{session, repo, ref, candidate, operation?}` → `{allowed, waiverId, candidate, reasons}`; a delivery that names no run, allowed only by a founder-granted waiver |
+| `GET /api/world/teams/:id/pipeline/waivers` | the team repository's `PipelineWaiver[]`, newest first |
 
 `branch` requires the run team's current first mate, including on replay retrieval. Ordinary selection/re-pin edits require `expectedRevision`; a re-base with `base` may omit it so CLI retries do not acquire a newer revision. `selections` is an object (use `{}` to retain current choices), and non-empty `rationale` is required. `candidate` defaults to the owned checkout's HEAD when re-basing. The new base must be reachable from a remote-tracking `dev` (or adapter `integrationBranch`) ref and ancestral to the candidate; a local branch is insufficient. Failure returns 409 `pipeline_base_unpublished` or `pipeline_base_not_ancestor`. No network fetch or Git writes occur.
 

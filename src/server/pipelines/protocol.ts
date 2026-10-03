@@ -1,6 +1,7 @@
 // Pipeline HTTP decoders stay beside the domain. Additions to existing requests remain optional.
 import { object, optional, nonempty, positiveInteger, number, list, record, refine, oneOf, sessionSchema, fail, handoffSchema, reviewSchema, submitSchema, type Schema } from "../../shared/agent-protocol.ts";
 import type { PipelineAbandonInput, PipelineAgentRequest, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidenceInput, PipelineGateInput, PipelineLayoutInput, PipelineOverrideInput, PipelineReportInput, PipelineStartInput, PipelineStatusInput } from "../../shared/pipeline.ts";
+import type { WaiverGateInput, WaiverRequestInput } from "../../shared/waiver.ts";
 import { validateGraph, validateLayout } from "./model.ts";
 
 const revision = refine(number, (n, p) => { if (!Number.isSafeInteger(n) || n < 0) fail(p, "must be a non-negative integer"); });
@@ -25,6 +26,10 @@ export const pipelineSchemas = {
   done: object({ ...edit, nodeId: nonempty, evidence: list(evidence), notes: nonempty, evidenceIds: optional(list(nonempty)) }) as Schema<PipelineAgentRequest<PipelineDoneInput>>,
   status: object({ session: sessionSchema, runId: optional(nonempty) }) as Schema<PipelineAgentRequest<PipelineStatusInput>>,
   gate: object({ session: sessionSchema, runId: nonempty, delivery: oneOf(["handoff", "review", "dev"]), round: positiveInteger, candidate: nonempty, workId: optional(nonempty), workRound: optional(positiveInteger), nodeId: optional(nonempty), ...deliveryOptions }) as Schema<PipelineAgentRequest<PipelineGateInput>>,
+};
+export const waiverSchemas = {
+  request: object({ session: sessionSchema, clientId: nonempty, repo: nonempty, ref: nonempty, candidate: nonempty, reason: nonempty }) as Schema<PipelineAgentRequest<WaiverRequestInput>>,
+  gate: object({ session: sessionSchema, repo: nonempty, ref: nonempty, candidate: nonempty, operation: deliveryOptions.operation }) as Schema<PipelineAgentRequest<WaiverGateInput>>,
 };
 export const overrideSchema: Schema<PipelineOverrideInput> = {
   parse(input, path) { const b = object({ expectedRevision: revision, repoRoot: optional(nonempty), graph: { parse(v) { return v === null ? null : validateGraph(v); } } }).parse(input, path); return b; },

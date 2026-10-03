@@ -22,7 +22,7 @@ import type { Machine } from "./machine.ts";
 import type { Switches } from "./switch.ts";
 import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
-import { pipelineSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema } from "./pipelines/protocol.ts";
+import { pipelineSchemas, waiverSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema } from "./pipelines/protocol.ts";
 
 const TYPES: Record<string, string> = {
   ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
@@ -124,6 +124,10 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/agent\/pipeline\/done$/, pipelineSchemas.done, (_r, b) => needWorld().pipelines.done(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/pipeline\/status$/, pipelineSchemas.status, (_r, b) => needWorld().pipelines.status(needWorld().resolve(b.session), b.runId)),
     route("POST", /^\/api\/agent\/pipeline\/gate$/, pipelineSchemas.gate, (_r, b) => needWorld().pipelines.gate(needWorld().resolve(b.session), b)),
+    // Founder-only exact-SHA repair waivers: the request becomes one inbox decision; the gate answers a delivery that names no run.
+    route("POST", /^\/api\/agent\/pipeline\/waiver$/, waiverSchemas.request, (_r, b) => needWorld().waivers.request(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/pipeline\/waiver\/gate$/, waiverSchemas.gate, (_r, b) => needWorld().waivers.gate(needWorld().resolve(b.session), b)),
+    route("GET", /^\/api\/world\/teams\/([\w-]+)\/pipeline\/waivers$/, emptySchema, (_r, _b, [id]) => needWorld().waivers.list(needWorld().pipelines.teamView(id!).repoRoot)),
     route("POST", /^\/api\/world\/teams\/([\w-]+)\/merge$/, validation.mergeSchema, (_r, b, [id]) => needWorld().mergeTeam(id!, b.into)),
     route("POST", /^\/api\/world\/all-leads\/messages$/, validation.allLeadsSchema, (_r, b) => needWorld().messages.tellAllLeads(b)),
     route("POST", /^\/api\/world\/teams\/([\w-]+)\/messages$/, validation.messageSchema, (_r, b, [id]) => needWorld().messages.instruct(id!, b)),

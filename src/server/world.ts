@@ -25,6 +25,7 @@ import { Adapters } from "./adapter.ts";
 import { InboxError } from "./inbox.ts";
 import { FOUNDER, Messages } from "./messages.ts";
 import { Pipelines } from "./pipelines/store.ts";
+import { Waivers } from "./pipelines/waiver.ts";
 import { SessionFiles } from "./models.ts";
 import { allocateName, NAMES } from "./names.ts";
 import type { Usage } from "./usage.ts";
@@ -158,6 +159,8 @@ export class World {
   private announced: Map<string, TeamStatus> | null = null;
   readonly messages: Messages;
   readonly pipelines: Pipelines;
+  /** Founder-only exact-SHA repair waivers; the service wires in the inbox. */
+  readonly waivers: Waivers;
   /** The founder's crew tree; the service sets it. Leads read it, so an edit reaches them without a restart. */
   crew: CrewTreeStore | null = null;
   private activity = new Activity();
@@ -187,6 +190,8 @@ export class World {
     this.files = files;
     this.messages = new Messages(db, source, () => this.state(), now, (redrawOnly) => this.onChange(redrawOnly ? "activity" : "world"));
     this.pipelines = new Pipelines(db, () => this.state(), { now, changed: () => this.onChange("world") });
+    this.waivers = new Waivers(db, () => this.state(), now);
+    this.waivers.changed = () => this.onChange("world");
     this.messages.pipelines = this.pipelines;
     this.leadWatch = new LeadWatch(db, now, {
       makeLead: (id) => { this.updateAgent(id, { role: "lead" }); },

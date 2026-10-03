@@ -36,6 +36,8 @@ world.crew.pause = () => usage.crewPause();
 world.messages.replies = inbox;
 // A team with no lead online that others wait on is put to the founder as one inbox decision.
 world.leadWatch.inbox = inbox;
+// Exact-SHA repair waivers are put to the founder as inbox decisions, and only their own choice grants one.
+world.waivers.inbox = inbox;
 world.messages.uploads = inbox.uploads;
 herdr.queuedPanes = () => world.messages.queuedPanes(world.state());
 inbox.presentationPath = (session) => {
@@ -60,6 +62,7 @@ setInterval(() => {
   } catch (err) {
     console.error(`usage: ${(err as Error).message}`);
   }
+  try { world.waivers.sync(); } catch (err) { console.error(`waivers: ${(err as Error).message}`); }
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();
 

@@ -142,6 +142,37 @@ Both routes use `review-excerpt.ts`: canonical checkout confinement, no dot/priv
 
 The queue on the clearing is `needsYou` from the inbox, one place per agent. The office never shows an agent's terminal: you read what they are doing and what was said, and a message to one agent goes through the same deliveries as everything else. herdr's own errors reach the UI as one line.
 
+## Exact-SHA repair waiver
+
+The founder's one sanctioned way to deliver a commit without a pipeline run (`src/server/pipelines/waiver.ts`, migration 11, `test/pipeline-waiver.test.ts`). It exists for repairs, like a broken guard, that a blocked team cannot put through a run. Only the founder's attention guards it, so its rules are narrow:
+
+- **Who asks.** The team's lead, or any member while the team has no lead online (otherwise 403 `pipeline_lead_required`): `inbox pipeline waiver --repo R --ref dev --candidate SHA --reason "…"`. The candidate must be a commit id (not a ref name) that builds on the branch's current position. A rewind or rewrite, a no-op and `main`/`master` are refused. A retry with the same client id returns the same waiver, and a second request for the same commit, branch and base while one is waiting returns that one: one question, one item.
+- **What the founder sees.** One blocking inbox decision from the office ("Repair waivers", grouped under the repository), naming the requester and their role, the repository, the branch, the full commit id, the reason, the complete `git diff --stat` and the diff itself against where the branch points now (shown up to 40,000 characters; `diffSha256` covers the whole diff). It has two options, **Allow this commit once** and **Refuse**, and no recommendation.
+- **Only the founder's explicit choice counts.** Approve all never answers it (the waiver row commits with the item, so automation sees it from the first moment), and an automatic answer that reached it anyway grants nothing. A message is conversation: it never grants, refuses or revokes. A message before the founder decides puts the request back in Needs you as a new revision. Once decided, the item is resolved and takes no further answers. Revoking a grant is not built; it lapses on its own.
+- **What a grant allows.** Exactly that commit, to exactly that branch, in exactly that repository (its Git common dir, so any of its worktrees), for a `push`, `land` or `publish`, never a PR or merge. It allows only while the branch still points to the base the diff was taken against, and only until 24 hours after the founder's Allow. An unanswered request lapses 24 hours after it was made, and its item is withdrawn.
+- **Single use.** The first allowed gate call consumes the waiver (`used`). That same delivery's later boundaries (a tool preflight followed by Git's pre-push, or land followed by publish) are allowed for 15 minutes while the branch has still not moved. Once the branch has moved, including by that delivery itself, nothing is allowed. A refusal never consumes it.
+- **Where it is checked.** A protected delivery that names **no** pipeline run (`inbox pipeline gate` without `--run`, which is what the installed hooks run when no `INBOX_PIPELINE_RUN` is given) asks the waiver gate, `POST /api/agent/pipeline/waiver/gate`. A delivery that names a run is judged by the run gate alone, and a waiver never repairs a run's refusal.
+- **Record.** Rows are never deleted. Every step is an event: `pipeline.waiver.requested`, `.granted`, `.refused`, `.used`, `.allowed` (a follow-up boundary), `.expired` and `.gate_refused` with its reasons. Runs lists the repository's waivers as waiting for you, granted, used, expired or refused.
+
+**Data contract for other enforcement points** (such as a GitHub ruleset bot). The `pipeline_waivers` table, also served as `PipelineWaiver` in `src/shared/waiver.ts` by `GET /api/world/teams/:id/pipeline/waivers`:
+
+| Field | Meaning |
+|---|---|
+| `id` | waiver id |
+| `repoCommon`, `repoRoot` | the repository's Git common dir (its identity) and main checkout |
+| `ref` | short branch name, e.g. `dev` |
+| `targetRef` | the ref whose position was shown: `refs/remotes/origin/<ref>` when it existed, else `refs/heads/<ref>` |
+| `candidate` | full commit id that may be delivered |
+| `base` | `targetRef`'s commit when the diff was taken; the waiver is usable only while the branch is still here |
+| `diffStat`, `diffSha256` | what the founder saw: the stat, and the sha256 of the whole diff `base..candidate` |
+| `reason`, `requestedBy`, `requestedTeamId`, `requesterRole` (`lead`/`crew`), `requestedAt` | the request |
+| `state` | `requested` → `granted` or `refused`; `granted` → `used` or `expired`; `requested` → `expired` |
+| `decidedAt`, `decidedReply` | when the founder chose, and the reply id |
+| `expiresAt` | an unanswered request lapses at this time; after Allow, the grant lapses at this time (24 h after the choice) |
+| `usedAt`, `usedBy`, `usedUntil` | the first allowed gate call, and the end of that delivery's follow-up window |
+
+Another enforcement point should honour a waiver exactly when `state` is `granted` (or `used` with now before `usedUntil`), now is before `expiresAt`, the update targets `ref` in this repository with new value `candidate`, and the remote branch's old value is `base`. It must never widen that: not another commit, not a descendant, and not a force update. Recording the use belongs to the office (`POST /api/agent/pipeline/waiver/gate`), so a second enforcement point sees `used` and stops once the branch has moved.
+
 ## Codex
 
 Codex posts through the CLI and receives by **pull** today. Two routes could make it boundary or live; each needs a check against the installed Codex before building on it:

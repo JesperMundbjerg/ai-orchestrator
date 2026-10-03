@@ -7,6 +7,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { migratePipelines, retainPipelineHistory } from "./pipelines/migration.ts";
+import { migrateWaivers } from "./pipelines/waiver.ts";
 
 export function dataDir(): string {
   return process.env.INBOX_DATA_DIR ?? join(homedir(), ".review-inbox");
@@ -345,7 +346,7 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
 }, (db) => {
   // When the founder put an item at the back of their queue; NULL for every existing item.
   addColumn(db, "items", "backed_at", "TEXT");
-}, retainPipelineHistory];
+}, retainPipelineHistory, migrateWaivers];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) {
