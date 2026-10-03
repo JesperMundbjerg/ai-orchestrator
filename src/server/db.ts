@@ -338,7 +338,11 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
 }, (db) => {
   // Snapshot counts and first-image lookup must search one item's revision, not scan all evidence.
   db.exec("CREATE INDEX IF NOT EXISTS evidence_item_revision_kind ON evidence (item_id, revision, kind)");
-}, migratePipelines];
+}, migratePipelines, (db) => {
+  // adoptLegacy gained these after databases had already passed it, so they need a migration of their own.
+  addColumn(db, "world_agents", "story_prompt", "INTEGER");
+  addColumn(db, "world_agents", "story_asked", "INTEGER");
+}];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) {

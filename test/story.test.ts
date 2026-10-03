@@ -202,3 +202,45 @@ test("a failed delivery does not use up the one re-ask", async () => {
     assert.ok(o.typed.at(-1)!.includes(STORY_INTRO));
   } finally { o.close(); }
 });
+
+test("an office database already past the legacy adoption gains the story columns and keeps working", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "story-existing-"));
+  const file = join(dir, "inbox.sqlite");
+  try {
+    // An existing office as it was before the story columns: current schema, version 7, no such columns.
+    openDatabase(file).close();
+    const old = new DatabaseSync(file);
+    old.exec("ALTER TABLE world_agents DROP COLUMN story_prompt; ALTER TABLE world_agents DROP COLUMN story_asked; PRAGMA user_version = 7;");
+    assert.ok(!old.prepare("PRAGMA table_info(world_agents)").all().some((c) => c.name === "story_prompt" || c.name === "story_asked"));
+    old.close();
+
+    const o = office(file);
+    try {
+      assert.equal(Number(o.db.prepare("PRAGMA user_version").get()!.user_version), 8);
+      const me = o.world.resolve(session);
+      assert.deepEqual(o.world.setStory(session, story), { story });
+      assert.equal(o.db.prepare("SELECT story_prompt FROM world_agents WHERE id = ?").get(me.id)!.story_prompt, STORY_PROMPT);
+      o.db.prepare("UPDATE world_agents SET story = 'An old job story.', story_prompt = NULL WHERE id = ?").run(me.id);
+      o.world.messages.tell(me.id, { text: "Start.", clientId: "start" });
+      await o.world.react();
+      assert.ok(o.typed.at(-1)!.includes("Start."));
+      assert.equal(o.db.prepare("SELECT state FROM message_deliveries WHERE agent_id = ?").get(me.id)!.state, "delivered");
+      assert.equal(o.db.prepare("SELECT story_asked FROM world_agents WHERE id = ?").get(me.id)!.story_asked, STORY_PROMPT);
+    } finally { o.close(); }
+    openDatabase(file).close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a failing story_asked update never fails or retries a delivery", async () => {
+  const o = office();
+  try {
+    const me = o.world.resolve(session);
+    o.db.prepare("UPDATE world_agents SET story = 'An old job story.' WHERE id = ?").run(me.id);
+    o.db.exec("CREATE TRIGGER no_story_asked BEFORE UPDATE OF story_asked ON world_agents BEGIN SELECT RAISE(ABORT, 'story_asked broken'); END");
+    o.world.messages.tell(me.id, { text: "Once.", clientId: "once" });
+    await o.world.react();
+    await o.world.react();
+    assert.equal(o.typed.filter((t) => t.includes("Once.")).length, 1, "typed exactly once");
+    assert.equal(o.db.prepare("SELECT state FROM message_deliveries WHERE agent_id = ?").get(me.id)!.state, "delivered");
+  } finally { o.close(); }
+});

@@ -406,7 +406,10 @@ export class Messages {
         requeue ? str(row.queued_at) : this.now().toISOString(), str(row.id), agent.id);
     }
     // An agent with a story under an older prompt is asked to retell it once: in the prompt just typed.
-    if (!error && agent.story && agent.storyAsk) this.db.prepare("UPDATE world_agents SET story_asked = ? WHERE id = ?").run(STORY_PROMPT, agent.id);
+    // The prompt is already typed and the deliveries recorded, so a failure here must never surface as a failed or retried delivery.
+    if (!error && agent.story && agent.storyAsk) {
+      try { this.db.prepare("UPDATE world_agents SET story_asked = ? WHERE id = ?").run(STORY_PROMPT, agent.id); } catch { /* asked again next time */ }
+    }
     // A safe refusal waits for the next presence event or poll, not a recursive reaction
     // to its own requeue (which would hammer a pane that is still starting).
     this.changed(starting);
