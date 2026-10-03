@@ -355,6 +355,16 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
   db.exec("UPDATE auto_approve SET mode = CASE WHEN enabled = 1 THEN 'approve_all' ELSE 'off' END");
   // Who answered: NULL is the founder; the QA agent's answers and the founder's overrides of them are marked.
   addColumn(db, "replies", "answered_by", "TEXT CHECK (answered_by IN ('approve_all', 'qa_agent', 'qa_override'))");
+}, (db) => {
+  // In manual mode the QA agent's answer is only a prediction of the founder's: never a reply, never delivered.
+  // One per revision, compared with the founder's own answer; \`judged\` is the QA agent's verdict on answers in words.
+  db.exec(`CREATE TABLE IF NOT EXISTS qa_predictions (
+    item_id TEXT NOT NULL REFERENCES items(id), revision INTEGER NOT NULL, agent_id TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('choose', 'answer', 'accept', 'request_changes')), choice TEXT, text TEXT NOT NULL,
+    reason TEXT NOT NULL, learnings TEXT NOT NULL, at TEXT NOT NULL,
+    judged TEXT CHECK (judged IN ('match', 'mismatch')), judged_at TEXT,
+    PRIMARY KEY (item_id, revision)
+  )`);
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {

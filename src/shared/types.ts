@@ -216,6 +216,8 @@ export interface ItemDetail {
   pipelineApproval?: { runId: string; accepted: boolean };
   /** The QA agent has this item now (see ItemSummary.withQa). */
   withQa?: boolean;
+  /** What the QA agent predicted in manual mode, only for revisions the founder has already answered, so it never biases them. */
+  qaPredictions?: QaPrediction[];
 }
 
 // ── Inbox automation: Approve all, or the QA agent answering on the founder's behalf ─────────
@@ -243,6 +245,11 @@ export interface QaSummary {
   /** Revisions it answered, and how many of those the founder overrode, over its lifetime. */
   answered: number;
   overridden: number;
+  /** Manual mode: revisions it predicted; of those the founder has answered, how many it judged and agreed with; words still to judge. */
+  predicted?: number;
+  judged?: number;
+  agreed?: number;
+  toJudge?: number;
 }
 
 /** What `inbox qa next` hands the QA agent: one question, and where the learnings are. */
@@ -253,6 +260,8 @@ export interface QaNext {
   /** Founder answers it has not learned from yet (`inbox qa answers`). */
   toLearn: number;
   learnings: string;
+  /** Manual mode: an answer is recorded only as a prediction of the founder's, never sent. Absent from older services. */
+  predicting?: boolean;
 }
 
 /** A founder answer the QA agent learns from. Approve-all and QA answers are never in this feed. */
@@ -274,7 +283,27 @@ export interface FounderAnswer {
   text: string;
   /** The QA agent's answer this one overrode, with the learnings it cited. */
   overrode: { action: ReplyAction; choice: string | null; learnings: string[] } | null;
+  /** What the QA agent predicted for this revision in manual mode (never sent), and how it compares. Absent from older services. */
+  predicted?: QaPrediction | null;
 }
+
+/** In manual mode the QA agent's answer is only a prediction of the founder's: never a reply, never delivered. */
+export interface QaPrediction {
+  predicted: true;
+  itemId: string;
+  revision: number;
+  action: "choose" | "answer" | "accept" | "request_changes";
+  choice: string | null;
+  text: string;
+  reason: string;
+  learnings: string[];
+  at: string;
+  /** Null until the founder answers that revision. Same action and choice (or both accept, or both request changes) is a
+   * match; two answers in words need the QA agent's judgement (`inbox qa judge`) until it records one. */
+  verdict: QaVerdict | null;
+}
+
+export type QaVerdict = "match" | "mismatch" | "needs_judging";
 
 // ── Agent protocol inputs ────────────────────────────────────────────────────────────────
 

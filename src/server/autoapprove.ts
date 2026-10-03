@@ -63,8 +63,8 @@ export class AutoApprove {
   /** Also run at service startup: an interruption between submit and answer loses nothing. */
   sweep(): void {
     const mode = this.mode();
-    if (mode === "qa") return this.qa.offer();
-    if (mode !== "approve_all") return;
+    // QA answers, or manual mode with a QA agent chosen (it predicts): the QA agent is told, nothing is answered.
+    if (mode !== "approve_all") return this.qa.offer();
     const rows = this.db.prepare("SELECT id FROM items WHERE state IN ('needs_attention', 'snoozed') ORDER BY created_at, id").all();
     for (const row of rows) this.answer(String(row.id));
   }
@@ -72,8 +72,8 @@ export class AutoApprove {
   private answer(id: string): void {
     const mode = this.mode();
     // QA answers never answer anything here: the QA agent is told, and the item waits for it or for you.
-    if (mode === "qa") return this.qa.offer();
-    if (mode !== "approve_all") return;
+    // In manual mode the chosen QA agent is told too, but only to predict your answer.
+    if (mode !== "approve_all") return this.qa.offer();
     const item = this.inbox.item(id);
     if (item.state !== "needs_attention" && item.state !== "snoozed") return;
     // Failed/uncertain deliveries require explicit Retry. Never manufacture a second answer

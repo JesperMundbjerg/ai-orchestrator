@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { DELIVERY_LABEL } from "../../shared/harnesses.ts";
-import type { Evidence, ItemDetail } from "../../shared/types.ts";
+import type { Evidence, ItemDetail, QaPrediction } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { actionLabel, ago, clock, deliveryLabel, TYPE_LABEL } from "../format.ts";
 import { Images } from "./Attach.tsx";
@@ -237,13 +237,31 @@ function answeredBy(detail: Record<string, unknown>): string {
   return detail.overridesQa ? "You · overriding the QA agent" : "You";
 }
 
-function ConversationTab({ detail: { item, history, replies } }: { detail: ItemDetail }) {
+const VERDICT: Record<NonNullable<QaPrediction["verdict"]>, string> = { match: "agreed with you", mismatch: "differed from you", needs_judging: "the QA agent has yet to judge it" };
+
+/** What the QA agent predicted in manual mode: never sent, collapsed, and only shown once you have answered. */
+function Prediction({ prediction: p, type }: { prediction: QaPrediction; type: ItemDetail["item"]["type"] }) {
+  return (
+    <details className={`qa-prediction ${p.verdict ?? ""}`}>
+      <summary>QA prediction (not sent){p.verdict ? ` · ${VERDICT[p.verdict]}` : ""}</summary>
+      <div className="msg-head">{actionLabel(p.action, type)}{p.choice ? ` · Option ${p.choice.toUpperCase()}` : ""}</div>
+      {p.text ? <Prose text={p.text} /> : null}
+      <p className="muted small-note">Why: {p.reason}{p.learnings.length ? ` · Learnings: ${p.learnings.join(", ")}` : ""}</p>
+    </details>
+  );
+}
+
+function ConversationTab({ detail: { item, history, replies, qaPredictions = [] } }: { detail: ItemDetail }) {
   const byId = new Map(replies.map((r) => [r.id, r]));
+  // Each prediction once, under your first answer to its revision (the service sends it only after you answered).
+  const unshown = new Map(qaPredictions.map((p) => [p.revision, p]));
   return (
     <ol className="thread">
       {history.map((h) => {
         const reply = typeof h.detail.deliveryId === "string" ? byId.get(h.detail.deliveryId) : undefined;
         if (h.kind === "reply.queued" && reply) {
+          const prediction = reply.answeredBy === "founder" ? unshown.get(reply.revision) : undefined;
+          if (prediction) unshown.delete(reply.revision);
           return (
             <li key={h.id} className="msg user">
               <div className="msg-head">{answeredBy(h.detail)} · {actionLabel(reply.action, item.type)} · {clock(h.at)} · revision {reply.revision}</div>
@@ -252,6 +270,7 @@ function ConversationTab({ detail: { item, history, replies } }: { detail: ItemD
               <Images ids={reply.images} />
               <div className={`delivery ${reply.state}`}>{deliveryLabel(reply)}</div>
               {reply.state === "failed" ? <button className="ghost small" onClick={() => void api.retry(reply.id)}>Retry delivery</button> : null}
+              {prediction ? <Prediction prediction={prediction} type={item.type} /> : null}
             </li>
           );
         }

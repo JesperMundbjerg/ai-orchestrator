@@ -3,11 +3,13 @@
 // founder's own answers to learn from, and records its answers as the QA agent's through the ordinary answer path.
 // Nothing here ever answers by itself. An item the QA agent has is out of Needs you only while it is online;
 // when it is offline or missing, or QA answers are off, the item is the founder's again.
+// In manual mode (Off) the chosen QA agent still decides, but only as a prediction of the founder's answer: it is
+// never a reply, never delivered and never an approval, and it is compared with the founder's own answer.
 import type { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { LEARNING_SLUG, QA_NOTICE_PREFIX } from "../shared/qa.ts";
-import type { FounderAnswer, InboxState, Item, ItemDetail, Option, QaNext, QaSummary, Reply, ReplyAction, SessionInput } from "../shared/types.ts";
+import type { FounderAnswer, InboxState, Item, ItemDetail, Option, QaNext, QaPrediction, QaSummary, QaVerdict, Reply, ReplyAction, SessionInput } from "../shared/types.ts";
 import { Inbox, InboxError } from "./inbox.ts";
 import { presentedBy } from "./pipelines/approval.ts";
 import { isWaiverItem } from "./pipelines/waiver.ts";
@@ -35,6 +37,12 @@ export interface QaAnswerInput {
 
 type Row = Record<string, unknown>;
 const DECIDING: ReplyAction[] = ["choose", "answer", "accept", "request_changes"];
+const DECIDING_SQL = DECIDING.map((a) => `'${a}'`).join(", ");
+/** Each prediction beside the founder's first deciding answer to that revision (seq, action, choice), when there is one. */
+const COMPARED = `SELECT p.*, e.id AS seq, r.action AS founder_action, r.choice AS founder_choice FROM qa_predictions p
+  LEFT JOIN events e ON e.id = (SELECT min(e2.id) FROM events e2 JOIN replies r2 ON r2.id = json_extract(e2.detail, '$.deliveryId')
+    WHERE e2.item_id = p.item_id AND e2.kind = 'reply.queued' AND e2.actor = 'user' AND r2.revision = p.revision AND r2.action IN (${DECIDING_SQL}))
+  LEFT JOIN replies r ON r.id = json_extract(e.detail, '$.deliveryId')`;
 
 export class QaDesk {
   private db: DatabaseSync;
@@ -49,9 +57,10 @@ export class QaDesk {
     this.learnings = learnings;
   }
 
-  private setting(): { on: boolean; agentId: string | null; through: number } {
+  /** `on`: QA answers; `predicting`: manual mode, where the chosen QA agent's answers are only predictions. */
+  private setting(): { on: boolean; predicting: boolean; agentId: string | null; through: number } {
     const row = this.db.prepare("SELECT mode, qa_agent_id, qa_learned_through FROM auto_approve WHERE singleton = 1").get()!;
-    return { on: row.mode === "qa", agentId: row.qa_agent_id == null ? null : String(row.qa_agent_id), through: Number(row.qa_learned_through) };
+    return { on: row.mode === "qa", predicting: row.mode === "off", agentId: row.qa_agent_id == null ? null : String(row.qa_agent_id), through: Number(row.qa_learned_through) };
   }
 
   agentId(): string | null {
@@ -71,10 +80,12 @@ export class QaDesk {
     return null;
   }
 
-  /** What the QA agent may answer now: needing the founder, unanswered at this revision, not founder-only. Blocking first, then oldest. */
+  /** What the QA agent may answer now: needing the founder, unanswered at this revision, not founder-only. Blocking first, then oldest.
+   * In manual mode, also not yet predicted. */
   private open(agent: QaAgent): Item[] {
+    const predicted = this.setting().predicting ? "AND NOT EXISTS (SELECT 1 FROM qa_predictions p WHERE p.item_id = i.id AND p.revision = i.revision)" : "";
     const rows = this.db.prepare(`SELECT id FROM items i WHERE state = 'needs_attention'
-      AND NOT EXISTS (SELECT 1 FROM replies r WHERE r.item_id = i.id AND r.revision = i.revision)
+      AND NOT EXISTS (SELECT 1 FROM replies r WHERE r.item_id = i.id AND r.revision = i.revision) ${predicted}
       ORDER BY blocking DESC, created_at, id`).all() as Row[];
     return rows.map((r) => this.inbox.item(String(r.id))).filter((item) => !this.founderOnly(item, agent));
   }
@@ -92,8 +103,18 @@ export class QaDesk {
     return ids.size ? { ...state, items: state.items.map((i) => (ids.has(i.id) ? { ...i, withQa: true } : i)) } : state;
   }
 
+  /** Also what the QA agent predicted, but only for revisions the founder has answered, so it never biases them. */
   markDetail(detail: ItemDetail): ItemDetail {
-    return this.holding()?.items.some((i) => i.id === detail.item.id) ? { ...detail, withQa: true } : detail;
+    const withQa = this.holding()?.items.some((i) => i.id === detail.item.id);
+    const qaPredictions = (this.db.prepare(`${COMPARED} WHERE p.item_id = ? AND e.id IS NOT NULL ORDER BY p.revision`).all(detail.item.id) as Row[]).map(toPrediction);
+    return { ...detail, ...(withQa ? { withQa: true } : {}), ...(qaPredictions.length ? { qaPredictions } : {}) };
+  }
+
+  /** How the predictions compare with the founder's answers, as counts. */
+  private agreement(): { predicted: number; judged: number; agreed: number; toJudge: number } {
+    const verdicts = (this.db.prepare(COMPARED).all() as Row[]).map((r) => verdict(r));
+    const n = (v: QaVerdict | null) => verdicts.filter((x) => x === v).length;
+    return { predicted: verdicts.length, judged: n("match") + n("mismatch"), agreed: n("match"), toJudge: n("needs_judging") };
   }
 
   summary(): QaSummary | null {
@@ -105,6 +126,7 @@ export class QaDesk {
       agentId, agentName: agent?.name ?? null, online: Boolean(agent?.online), withQa: this.holding()?.items.length ?? 0,
       answered: count("SELECT count(*) AS n FROM replies WHERE answered_by = 'qa_agent'"),
       overridden: count("SELECT count(DISTINCT item_id || ':' || revision) AS n FROM replies WHERE answered_by = 'qa_override'"),
+      ...this.agreement(),
     };
   }
 
@@ -114,8 +136,8 @@ export class QaDesk {
 
   /** Tell the QA agent there is something for it, at most once until that notice has been typed. Never answers anything. */
   offer(): void {
-    const { on, agentId } = this.setting();
-    const agent = on && agentId ? this.office?.agent(agentId) : null;
+    const { on, predicting, agentId } = this.setting();
+    const agent = (on || predicting) && agentId ? this.office?.agent(agentId) : null;
     if (!agent) return;
     const waiting = this.open(agent).length, toLearn = this.toLearn();
     if (!waiting && !toLearn) return;
@@ -123,20 +145,21 @@ export class QaDesk {
       WHERE m.from_office = 1 AND d.agent_id = ? AND d.state IN ('queued', 'sending') AND m.text LIKE ? LIMIT 1`).get(agent.id, `${QA_NOTICE_PREFIX}%`);
     if (told) return;
     // No counts: they would be stale by the time this is typed; \`inbox qa next\` says how many.
-    const parts = [waiting ? "questions wait for you to decide for the founder" : "", toLearn ? "founder answers wait for you to learn from" : ""].filter(Boolean);
+    const decide = predicting ? "questions wait for you to predict the founder's answer (manual mode: recorded as predictions, never sent)" : "questions wait for you to decide for the founder";
+    const parts = [waiting ? decide : "", toLearn ? "founder answers wait for you to learn from" : ""].filter(Boolean);
     this.office!.notice(agent.id, `${QA_NOTICE_PREFIX} ${parts.join(", and ")}. Learn first with \`inbox qa answers\`, then decide with \`inbox qa next\`; \`inbox qa guide\` says how.`);
   }
 
-  /** Only the chosen QA agent's own session; deciding also needs QA answers on. */
+  /** Only the chosen QA agent's own session; deciding also needs QA answers on, or manual mode (predicting). */
   private caller(session: SessionInput, deciding: boolean): QaAgent {
     if (!this.office) throw new InboxError(404, "this service runs without the office, so it has no QA agent");
-    const { on, agentId } = this.setting();
+    const { on, predicting, agentId } = this.setting();
     const me = this.office.resolve(session);
     if (me.id !== agentId) {
       const name = agentId ? this.office.agent(agentId)?.name : null;
       throw new InboxError(403, name ? `only the QA agent (${name}) answers for the founder` : "the founder has not chosen a QA agent");
     }
-    if (deciding && !on) throw new InboxError(409, "QA answers are off: the founder answers everything now");
+    if (deciding && !on && !predicting) throw new InboxError(409, "Approve all is on: there is nothing for you to decide or predict now");
     return me;
   }
 
@@ -148,11 +171,12 @@ export class QaDesk {
     const project = task ? String(this.db.prepare("SELECT name FROM projects WHERE id = ?").get(task.projectId)?.name ?? "") : "";
     return {
       item: first && task ? { ...first, project, taskTitle: task.title } : null,
-      waiting: items.length, toLearn: this.toLearn(), learnings: this.learnings ?? "",
+      waiting: items.length, toLearn: this.toLearn(), learnings: this.learnings ?? "", predicting: this.setting().predicting,
     };
   }
 
-  answer(input: QaAnswerInput): Reply {
+  /** In QA answers mode, the QA agent's answer; in manual mode the same command only records its prediction. */
+  answer(input: QaAnswerInput): Reply | QaPrediction {
     const agent = this.caller(input.session, true);
     const item = this.inbox.item(input.item);
     const why = this.founderOnly(item, agent);
@@ -173,11 +197,49 @@ export class QaDesk {
       if (!LEARNING_SLUG.test(slug)) throw new InboxError(400, `"${slug}" is not a learning name (lowercase words joined by hyphens)`);
       if (this.learnings && !existsSync(join(this.learnings, `${slug}.md`))) throw new InboxError(400, `no learning "${slug}" in ${this.learnings}`);
     }
+    if (this.setting().predicting) return this.predict(agent, item, input.action, input.choice ?? null, words, reason, learnings);
     const signed = `QA agent ${agent.name}, for the founder: ${reason}${learnings.length ? ` Learnings: ${learnings.join(", ")}.` : " No learning applied."}`;
     return this.inbox.answer(item.id, {
       id: `qa:${item.id}:${item.revision}`, revision: item.revision, action: input.action,
       choice: input.action === "choose" ? input.choice ?? null : null, text: [words, signed].filter(Boolean).join("\n\n"),
     }, "qa_agent", { qaAgent: { id: agent.id, name: agent.name }, reason, learnings });
+  }
+
+  /** Records a prediction: never a reply, never delivered, never an approval; the item stays in Needs you. One per revision. */
+  private predict(agent: QaAgent, item: Item, action: ReplyAction, choice: string | null, text: string, reason: string, learnings: string[]): QaPrediction {
+    // The same shape the answer path would accept, so a prediction compares with an answer the founder could give.
+    const fits = item.type === "decide" ? (item.options.length ? action === "choose" : action === "answer") : action === "accept" || action === "request_changes";
+    if (!fits) throw new InboxError(400, item.type === "decide" ? (item.options.length ? "this decision has options: choose one" : "this is an open question: answer it in words") : `"${action}" does not answer a ${item.type} item`);
+    if (action === "choose" && !item.options.some((o) => o.id === choice)) throw new InboxError(400, "choose needs one of the item's options");
+    if (this.db.prepare("SELECT 1 FROM qa_predictions WHERE item_id = ? AND revision = ?").get(item.id, item.revision)) {
+      throw new InboxError(409, "you already predicted this revision");
+    }
+    this.db.prepare(`INSERT INTO qa_predictions (item_id, revision, agent_id, action, choice, text, reason, learnings, at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(item.id, item.revision, agent.id, action, action === "choose" ? choice : null, text, reason, JSON.stringify(learnings), new Date().toISOString());
+    this.inbox.onChange("qa-prediction");
+    return this.prediction(item.id, item.revision)!;
+  }
+
+  private prediction(itemId: string, revision: number): QaPrediction | null {
+    const row = this.db.prepare(`${COMPARED} WHERE p.item_id = ? AND p.revision = ?`).get(itemId, revision) as Row | undefined;
+    return row ? toPrediction(row) : null;
+  }
+
+  /** The QA agent's verdict on a prediction in words, once the founder has answered that revision in words too. Recorded once. */
+  judge(session: SessionInput, itemId: string, revision: number, agrees: boolean): QaPrediction {
+    this.caller(session, false);
+    const row = this.db.prepare(`${COMPARED} WHERE p.item_id = ? AND p.revision = ?`).get(itemId, revision) as Row | undefined;
+    if (!row) throw new InboxError(404, `you made no prediction for ${itemId} revision ${revision}`);
+    if (row.seq == null) throw new InboxError(409, "the founder has not answered that revision yet");
+    const judged = agrees ? "match" : "mismatch";
+    if (row.judged != null) {
+      if (row.judged !== judged) throw new InboxError(409, `you already judged this prediction a ${String(row.judged)}`);
+    } else {
+      if (verdict(row) !== "needs_judging") throw new InboxError(409, "only a prediction in words beside the founder's answer in words is judged; this one compares by itself");
+      this.db.prepare("UPDATE qa_predictions SET judged = ?, judged_at = ? WHERE item_id = ? AND revision = ?").run(judged, new Date().toISOString(), itemId, revision);
+      this.inbox.onChange("qa-prediction");
+    }
+    return this.prediction(itemId, revision)!;
   }
 
   /** The founder's own answers after the QA agent's cursor, oldest first. Approve-all and QA answers are never here. */
@@ -200,6 +262,7 @@ export class QaDesk {
         recommendation: seen.recommendation ?? String(r.recommendation), options, action: String(r.action) as ReplyAction,
         choice: r.choice == null ? null : String(r.choice), choiceLabel: options.find((o) => o.id === r.choice)?.label ?? null,
         text: String(r.text), overrode: r.answered_by === "qa_override" ? this.overridden(String(r.item_id), Number(r.revision)) : null,
+        predicted: this.prediction(String(r.item_id), Number(r.revision)),
       };
     });
     const last = answers.at(-1)?.seq ?? through;
@@ -221,6 +284,9 @@ export class QaDesk {
     this.caller(session, false);
     const max = Number(this.db.prepare("SELECT coalesce(max(id), 0) AS n FROM events").get()!.n);
     if (!Number.isInteger(through) || through < 0 || through > max) throw new InboxError(400, `--through must be an answer's seq from \`inbox qa answers\``);
+    // A prediction in words is part of what is learned: judge it before moving past the founder's answer.
+    const unjudged = (this.db.prepare(`${COMPARED} WHERE e.id <= ? AND e.id > ?`).all(through, this.setting().through) as Row[]).find((r) => verdict(r) === "needs_judging");
+    if (unjudged) throw new InboxError(409, `judge your prediction first: inbox qa judge ${String(unjudged.item_id)} --revision ${Number(unjudged.revision)} --match | --mismatch`);
     this.db.prepare("UPDATE auto_approve SET qa_learned_through = max(qa_learned_through, ?) WHERE singleton = 1").run(through);
     return { learnedThrough: this.setting().through };
   }
@@ -233,4 +299,21 @@ export class QaDesk {
     if (!existsSync(index)) writeFileSync(index, `---\nokf_version: "0.2"\n---\n# Founder answer learnings\n\nHow the founder has answered review-inbox questions, kept by the office's QA agent: one Markdown file per learning, in Open Knowledge Format v0.2 (https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md). \`inbox qa guide\` describes a learning.\n`);
     if (!existsSync(log)) writeFileSync(log, "# Log\n");
   }
+}
+
+/** Same action and the same choice, or both accept, or both request changes, is a match; words are judged by the QA agent. */
+function verdict(r: Row): QaVerdict | null {
+  if (r.seq == null) return null;
+  if (r.judged != null) return r.judged as QaVerdict;
+  if (r.action !== r.founder_action) return "mismatch";
+  if (r.action === "choose") return r.choice === r.founder_choice ? "match" : "mismatch";
+  return r.action === "answer" ? "needs_judging" : "match";
+}
+
+function toPrediction(r: Row): QaPrediction {
+  return {
+    predicted: true, itemId: String(r.item_id), revision: Number(r.revision), action: String(r.action) as QaPrediction["action"],
+    choice: r.choice == null ? null : String(r.choice), text: String(r.text), reason: String(r.reason),
+    learnings: JSON.parse(String(r.learnings)) as string[], at: String(r.at), verdict: verdict(r),
+  };
 }

@@ -188,6 +188,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/agent\/qa\/answer$/, protocol.qaAnswer.request, (_r, b) => needAutoApprove().qa.answer(b)),
     route("POST", /^\/api\/agent\/qa\/answers$/, protocol.qaAnswers.request, (_r, b) => needAutoApprove().qa.answers(b.session, b.limit)),
     route("POST", /^\/api\/agent\/qa\/learned$/, protocol.qaLearned.request, (_r, b) => needAutoApprove().qa.learned(b.session, b.through)),
+    route("POST", /^\/api\/agent\/qa\/judge$/, protocol.qaJudge.request, (_r, b) => needAutoApprove().qa.judge(b.session, b.item, b.revision, b.agrees)),
     route("POST", /^\/api\/agent\/ack$/, protocol.acknowledge.request, (_r, b) => inbox.acknowledge(b.session, b.deliveryId, b.error)),
     route("POST", /^\/api\/agent\/withdraw$/, protocol.withdraw.request, (_r, b) => inbox.closeItem(b.session, b.item, "withdrawn")),
     route("POST", /^\/api\/agent\/resolve$/, protocol.resolve.request, (_r, b) => inbox.closeItem(b.session, b.item, "resolved")),

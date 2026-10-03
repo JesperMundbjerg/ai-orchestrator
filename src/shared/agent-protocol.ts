@@ -6,7 +6,7 @@ import {
   DELIVERY_STATES, WORK_STATES,
   type SessionInput, type SubmitInput, type ActivityInput, type ActivityEvent,
   type EffortReport, type SubmitResult, type PendingReply, type Task, type Item,
-  type Reply, type Message, type Work, type TeamBrief, type AgentSwitch, type FounderAnswer, type QaNext,
+  type Reply, type Message, type Work, type TeamBrief, type AgentSwitch, type FounderAnswer, type QaNext, type QaPrediction,
 } from "./types.ts";
 import type { LimitReading } from "./usage.ts";
 import { parsePage } from "./pages.ts";
@@ -160,6 +160,7 @@ export const qaAnswerSchema = object({
 });
 export const qaAnswersSchema = object({ session: sessionSchema, limit: optional(positiveInteger) });
 export const qaLearnedSchema = object({ session: sessionSchema, through: number });
+export const qaJudgeSchema = object({ session: sessionSchema, item: nonempty, revision: positiveInteger, agrees: boolean });
 
 export type RepliesRequest = Infer<typeof repliesSchema>;
 export type AcknowledgeRequest = Infer<typeof ackSchema>;
@@ -217,10 +218,19 @@ const switchResponse: Schema<AgentSwitch> = object({
   says: text, handoff: nullText, error: nullText,
   batchId: nullText, startedAt: text, updatedAt: text,
 });
+const qaPredictionResponse: Schema<QaPrediction> = object({
+  predicted: schema<true>((v, p) => v === true ? true : fail(p, "must be true")),
+  itemId: text, revision: positiveInteger, action: oneOf(["choose", "answer", "accept", "request_changes"]), choice: nullText, text,
+  reason: text, learnings: strings, at: text, verdict: nullable(oneOf(["match", "mismatch", "needs_judging"])),
+});
+// QA answers mode answers (a Reply); manual mode only records a prediction of the founder's answer.
+const qaAnswerResponse = schema<Reply | QaPrediction>((v, p) =>
+  (record.parse(v, p) as { predicted?: unknown }).predicted === true ? qaPredictionResponse.parse(v, p) : replyResponse.parse(v, p));
 const founderAnswerResponse: Schema<FounderAnswer> = object({
   seq: number, at: text, itemId: text, revision: positiveInteger, project: text, itemType: oneOf(ITEM_TYPES), title: text, request: text,
   recommendation: text, options: list(optionSchema), action: oneOf(REPLY_ACTIONS), choice: nullText, choiceLabel: nullText, text,
   overrode: nullable(object({ action: oneOf(REPLY_ACTIONS), choice: nullText, learnings: strings })),
+  predicted: optional(nullable(qaPredictionResponse)),
 });
 const okResponse = object({ ok: boolean });
 const workResult = object({ work: workResponse, message: messageResponse });
@@ -245,11 +255,12 @@ export const agentOperations = {
   resolve: post("/api/agent/resolve", closeItemSchema, itemResponse),
   qaNext: post("/api/agent/qa/next", sessionRequestSchema, object({
     item: nullable(refine(record, (v, p) => { itemResponse.parse(v, p); object({ project: text, taskTitle: text }).parse(v, p); })),
-    waiting: number, toLearn: number, learnings: text,
+    waiting: number, toLearn: number, learnings: text, predicting: optional(boolean),
   }) as Schema<QaNext>),
-  qaAnswer: post("/api/agent/qa/answer", qaAnswerSchema, replyResponse),
+  qaAnswer: post("/api/agent/qa/answer", qaAnswerSchema, qaAnswerResponse),
   qaAnswers: post("/api/agent/qa/answers", qaAnswersSchema, object({ answers: list(founderAnswerResponse), remaining: number, learnedThrough: number })),
   qaLearned: post("/api/agent/qa/learned", qaLearnedSchema, object({ learnedThrough: number })),
+  qaJudge: post("/api/agent/qa/judge", qaJudgeSchema, qaPredictionResponse),
   switchAgent: post("/api/world/switches", switchSchema, switchResponse),
   switchAll: post("/api/world/switches/all-from", switchAllSchema, object({ batchId: text, switches: list(switchResponse), skipped: list(object({ name: text, why: text })) })),
 };

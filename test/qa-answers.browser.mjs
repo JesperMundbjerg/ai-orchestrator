@@ -122,13 +122,12 @@ try {
   }
   await page.screenshot({ path: join(shots, "09-phone.png") });
 
-  // Off again: the QA agent decides nothing.
+  // Off again: the QA agent only predicts (test/qa-predictions.browser.mjs covers that).
   await page.getByRole("radio", { name: "Off" }).click();
   await page.locator('[role="radio"][aria-checked="true"]', { hasText: "Off" }).waitFor();
-  const refused = await fetch(`${url}/api/agent/qa/next`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: qaSession }) });
-  assert.equal(refused.status, 409);
+  assert.equal((await post("/api/agent/qa/next", { session: qaSession })).predicting, true);
   assert.deepEqual(errors, []);
-  console.log(`QA answers browser passed: setting, agent picker, offline stays with founder, QA answer marked, override, office header, phone, off. Screenshots: ${shots}`);
+  console.log(`QA answers browser passed: setting, agent picker, offline stays with founder, QA answer marked, override, office header, phone, off predicts. Screenshots: ${shots}`);
 } catch (err) {
   await page?.screenshot({ path: join(shots, "failed.png") }).catch(() => {});
   throw err;

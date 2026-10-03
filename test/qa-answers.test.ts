@@ -10,7 +10,7 @@ import { AutoApprove } from "../src/server/autoapprove.ts";
 import { Messages } from "../src/server/messages.ts";
 import type { QaAgent } from "../src/server/qa.ts";
 import { formatReply } from "../src/shared/agent-client.ts";
-import type { SessionInput, SubmitInput, WorldState } from "../src/shared/types.ts";
+import type { QaPrediction, Reply, SessionInput, SubmitInput, WorldState } from "../src/shared/types.ts";
 import { needsYou } from "../src/ui/queue.ts";
 
 const presence: PresenceSource = { available: () => false, forSession: () => null, resolvePane: () => null };
@@ -114,7 +114,7 @@ test("only the chosen QA agent decides, through the ordinary answer path, marked
   assert.throws(() => auto.qa.answer({ session: qaSession, item: itemId, revision: 1, action: "discuss", reason: "r" }), /decides/);
   assert.throws(() => auto.qa.answer({ session: qaSession, item: itemId, revision: 2, action: "choose", choice: "a", reason: "r" }), /stale/);
 
-  const reply = auto.qa.answer({ session: qaSession, item: itemId, revision: 1, action: "choose", choice: "a", reason: "The founder keeps drafts visible.", learnings: ["prefer-docked-layouts"] });
+  const reply = auto.qa.answer({ session: qaSession, item: itemId, revision: 1, action: "choose", choice: "a", reason: "The founder keeps drafts visible.", learnings: ["prefer-docked-layouts"] }) as Reply;
   assert.equal(reply.id, `qa:${itemId}:1`);
   assert.equal(reply.answeredBy, "qa_agent");
   assert.equal(reply.state, "queued");
@@ -133,10 +133,11 @@ test("only the chosen QA agent decides, through the ordinary answer path, marked
   assert.doesNotMatch(told, /This is the user's answer/);
   assert.equal(auto.state().qa?.answered, 1);
 
-  // Off: the QA agent decides nothing.
-  const later = submit({ type: "milestone", title: "Later" });
-  auto.setMode("off");
-  assert.throws(() => auto.qa.answer({ session: qaSession, item: later.itemId, revision: 1, action: "accept", reason: "r" }), (e: InboxError) => e.status === 409 && /off/.test(e.message));
+  // Approve all: the QA agent decides nothing (in manual mode it only predicts; see below).
+  auto.setMode("approve_all");
+  const later = submit({ type: "decide", title: "What next?" });
+  assert.throws(() => auto.qa.answer({ session: qaSession, item: later.itemId, revision: 1, action: "answer", text: "x", reason: "r" }), (e: InboxError) => e.status === 409 && /Approve all/.test(e.message));
+  assert.equal(auto.state().qa?.predicted, 0, "an answer in QA answers mode is not a prediction");
 });
 
 test("the QA agent answers open questions in words, and asks for changes with what to change", (t) => {
@@ -144,7 +145,7 @@ test("the QA agent answers open questions in words, and asks for changes with wh
   auto.setMode("qa", "quinn");
   const open = submit({ type: "decide", title: "What should the demo open on?" });
   assert.throws(() => auto.qa.answer({ session: qaSession, item: open.itemId, revision: 1, action: "answer", reason: "r" }), /in words/);
-  const reply = auto.qa.answer({ session: qaSession, item: open.itemId, revision: 1, action: "answer", text: "The pendulum.", reason: "It is the founder's usual opener." });
+  const reply = auto.qa.answer({ session: qaSession, item: open.itemId, revision: 1, action: "answer", text: "The pendulum.", reason: "It is the founder's usual opener." }) as Reply;
   assert.match(reply.text, /^The pendulum\.\n\nQA agent Quinn, for the founder: It is the founder's usual opener\. No learning applied\.$/);
   const tryIt = submit({ type: "try", title: "Try it", preview: "http://localhost:3000" });
   assert.throws(() => auto.qa.answer({ session: qaSession, item: tryIt.itemId, revision: 1, action: "request_changes", reason: "r" }), /what needs to change/);
@@ -252,3 +253,96 @@ test("migration keeps an Approve all that was on as Approve all, and off as off"
     db.close();
   }
 });
+
+test("in manual mode the QA agent only predicts: never a reply, never delivered, and the item stays in Needs you", (t) => {
+  const { db, inbox, auto, submit, notices, replies } = setup(t);
+  auto.setMode("qa", "quinn");
+  auto.setMode("off");
+  const { itemId } = submit({ type: "decide", title: "Layout?", options: choices, recommendation: "Docked" });
+  assert.match(notices().at(-1)!, /^QA: questions wait for you to predict the founder's answer \(manual mode: recorded as predictions, never sent\)/);
+  const next = auto.qa.next(qaSession);
+  assert.equal(next.item?.id, itemId);
+  assert.equal(next.predicting, true);
+
+  // The same command as in QA answers mode, but it records a prediction only.
+  const predicted = auto.qa.answer({ session: qaSession, item: itemId, revision: 1, action: "choose", choice: "a", reason: "The recommendation." }) as QaPrediction;
+  assert.equal(predicted.predicted, true);
+  assert.equal(predicted.verdict, null, "nothing to compare until the founder answers");
+  assert.equal(replies(), 0, "never a reply");
+  assert.deepEqual(inbox.pendingReplies(asker, "pull"), [], "never delivered to the asking agent");
+  assert.equal(inbox.item(itemId).state, "needs_attention");
+  assert.equal(needsYou(auto.qa.mark(inbox.state()), "all", null).length, 1, "still in Needs you");
+  assert.equal(inbox.detail(itemId).history.some((h) => h.kind === "reply.queued"), false);
+  assert.equal(auto.qa.markDetail(inbox.detail(itemId)).qaPredictions, undefined, "hidden from the founder until they answer, so it cannot bias them");
+  assert.equal(auto.qa.next(qaSession).item, null, "predicted once per revision");
+  assert.throws(() => auto.qa.answer({ session: qaSession, item: itemId, revision: 1, action: "choose", choice: "b", reason: "r" }), (e: InboxError) => e.status === 409 && /already predicted/.test(e.message));
+  assert.throws(() => auto.qa.answer({ session: qaSession, item: itemId, revision: 1, action: "answer", text: "x", reason: "r" }), /options: choose one/);
+
+  // The founder answers differently: a mismatch, shown to them only now, and counted.
+  inbox.answer(itemId, { revision: 1, action: "choose", choice: "b" });
+  const shown = auto.qa.markDetail(inbox.detail(itemId)).qaPredictions!;
+  assert.deepEqual(shown.map((p) => [p.revision, p.action, p.choice, p.verdict]), [[1, "choose", "a", "mismatch"]]);
+  assert.deepEqual(pick(auto.state().qa!), { predicted: 1, judged: 1, agreed: 0, toJudge: 0 });
+  // A prediction after the founder answered never counts.
+  const late = submit({ type: "milestone", title: "Late" });
+  inbox.answer(late.itemId, { revision: 1, action: "accept" });
+  assert.throws(() => auto.qa.answer({ session: qaSession, item: late.itemId, revision: 1, action: "accept", reason: "r" }), /already answered/);
+  assert.equal(Number(db.prepare("SELECT count(*) AS n FROM qa_predictions").get()!.n), 1);
+});
+
+test("predictions compare with the founder's answer; words are judged by the QA agent while learning, and mismatches reach the learn feed", (t) => {
+  const { inbox, auto, submit } = setup(t);
+  auto.setMode("qa", "quinn");
+  auto.setMode("off");
+  const predict = (itemId: string, action: QaPrediction["action"], extra: { choice?: string; text?: string } = {}) =>
+    auto.qa.answer({ session: qaSession, item: itemId, revision: 1, action, ...extra, reason: "r" });
+  const same = submit({ type: "decide", title: "Layout?", options: choices }).itemId;
+  const accepted = submit({ type: "milestone", title: "Ready" }).itemId;
+  const changes = submit({ type: "try", title: "Try it", preview: "http://localhost:3000" }).itemId;
+  const differ = submit({ type: "milestone", title: "Also ready" }).itemId;
+  const words = submit({ type: "decide", title: "What should the demo open on?" }).itemId;
+  predict(same, "choose", { choice: "a" });
+  predict(accepted, "accept");
+  predict(changes, "request_changes", { text: "The hint overlaps." });
+  predict(differ, "accept");
+  predict(words, "answer", { text: "The pendulum." });
+  assert.throws(() => auto.qa.judge(qaSession, words, 1, true), /not answered/);
+
+  inbox.answer(same, { revision: 1, action: "choose", choice: "a" });
+  inbox.answer(accepted, { revision: 1, action: "accept" });
+  inbox.answer(changes, { revision: 1, action: "request_changes", text: "Bigger buttons." });
+  inbox.answer(differ, { revision: 1, action: "request_changes", text: "No phone screenshot." });
+  inbox.answer(words, { revision: 1, action: "answer", text: "Open on the pendulum, paused." });
+  assert.deepEqual(pick(auto.state().qa!), { predicted: 5, judged: 4, agreed: 3, toJudge: 1 });
+
+  const feed = auto.qa.answers(qaSession);
+  const verdicts = Object.fromEntries(feed.answers.map((a) => [a.itemId, a.predicted?.verdict]));
+  assert.deepEqual(verdicts, { [same]: "match", [accepted]: "match", [changes]: "match", [differ]: "mismatch", [words]: "needs_judging" });
+  assert.equal(feed.answers.find((a) => a.itemId === words)!.predicted!.text, "The pendulum.", "its prediction beside the founder's answer");
+
+  // Learning past an answer in words needs its judgement first; a judgement is recorded once.
+  const last = feed.answers.at(-1)!.seq;
+  assert.throws(() => auto.qa.learned(qaSession, last), (e: InboxError) => e.status === 409 && /inbox qa judge/.test(e.message));
+  assert.throws(() => auto.qa.judge(qaSession, same, 1, false), /compares by itself/);
+  assert.throws(() => auto.qa.judge(crewSession, words, 1, true), (e: InboxError) => e.status === 403);
+  assert.equal(auto.qa.judge(qaSession, words, 1, true).verdict, "match");
+  assert.equal(auto.qa.judge(qaSession, words, 1, true).verdict, "match", "the same judgement again is harmless");
+  assert.throws(() => auto.qa.judge(qaSession, words, 1, false), /already judged/);
+  assert.equal(auto.qa.learned(qaSession, last).learnedThrough, last);
+  assert.deepEqual(pick(auto.state().qa!), { predicted: 5, judged: 5, agreed: 4, toJudge: 0 });
+});
+
+test("Approve all is unchanged by predictions: the QA agent gets no notice and neither decides nor predicts", (t) => {
+  const { auto, submit, notices } = setup(t);
+  auto.setMode("qa", "quinn");
+  auto.setMode("approve_all");
+  const before = notices().length;
+  const open = submit({ type: "decide", title: "What next?" });
+  assert.equal(notices().length, before);
+  assert.throws(() => auto.qa.next(qaSession), /Approve all/);
+  assert.throws(() => auto.qa.answer({ session: qaSession, item: open.itemId, revision: 1, action: "answer", text: "x", reason: "r" }), /Approve all/);
+});
+
+function pick(qa: { predicted?: number; judged?: number; agreed?: number; toJudge?: number }) {
+  return { predicted: qa.predicted, judged: qa.judged, agreed: qa.agreed, toJudge: qa.toJudge };
+}
