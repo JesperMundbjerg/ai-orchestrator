@@ -10,7 +10,7 @@ import { openDatabase } from "../src/server/db.ts";
 import { Inbox } from "../src/server/inbox.ts";
 import { World, type LiveAgent } from "../src/server/world.ts";
 import { createInboxServer } from "../src/server/http.ts";
-import { commandBoundaries, guardPrePush, guardTool, installHooks, type HookConfig } from "../src/cli/pipeline-hooks.ts";
+import { commandBoundaries, guardPrePush, guardTool, installHooks, stableNode, type HookConfig } from "../src/cli/pipeline-hooks.ts";
 
 function scratch(t: { after: (fn: () => void) => void }) {
   const root = mkdtempSync(join(tmpdir(), "pipeline-hooks-")); const repo = join(root, "repo space"); mkdirSync(repo);
@@ -193,6 +193,61 @@ test("installed harness hooks read the run from the command; a Git push passes i
   const push = spawnSync("git", ["-C", s.repo, "push", "origin", "HEAD:dev"], { encoding: "utf8", env: { ...clean, INBOX_PIPELINE_RUN: "from-push", INBOX_PIPELINE_ROUND: "2" } });
   assert.equal(push.status, 0, push.stderr);
   const args = s.readCalls()[before]!; assert.equal(args[args.indexOf("--run") + 1], "from-push"); assert.equal(args[args.indexOf("--round") + 1], "2");
+});
+
+function fakeNode(root: string, ...parts: string[]): string {
+  const file = join(root, ...parts); mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, "#!/bin/sh\nexit 0\n"); chmodSync(file, 0o755); return realpathSync(file);
+}
+
+test("stableNode prefers a non-versioned alias that resolves to the running node, else warns", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "stable-node-"))); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const running = fakeNode(root, "Cellar/node@24/24.21.0/bin/node");
+  // No alias yet: keep the running (versioned) node and say what that risks.
+  const fallback = stableNode(running); assert.equal(fallback.path, running); assert.match(fallback.warning!, /fail silently/);
+  // Homebrew's opt symlink resolves to the same file: use it; it survives a keg upgrade.
+  mkdirSync(join(root, "opt"), { recursive: true }); symlinkSync("../Cellar/node@24/24.21.0", join(root, "opt/node@24"));
+  assert.deepEqual(stableNode(running), { path: join(root, "opt/node@24/bin/node") });
+  // After an upgrade the alias still names a node that exists; before re-install the old path would be gone.
+  rmSync(join(root, "opt/node@24")); symlinkSync("../Cellar/node@24/24.22.0", join(root, "opt/node@24")); fakeNode(root, "Cellar/node@24/24.22.0/bin/node");
+  assert.equal(stableNode(join(root, "Cellar/node@24/24.22.0/bin/node")).path, join(root, "opt/node@24/bin/node"));
+  // An alias for a different node is never substituted.
+  assert.equal(stableNode(running).path, running);
+  assert.ok(stableNode(running).warning);
+  // The prefix bin/node is the second choice, and an already unversioned path is kept without a warning.
+  const other = fakeNode(root, "Cellar/node/25.0.0/bin/node"); mkdirSync(join(root, "bin"), { recursive: true }); symlinkSync("../Cellar/node/25.0.0/bin/node", join(root, "bin/node"));
+  assert.deepEqual(stableNode(other), { path: join(root, "bin/node") });
+  const plain = fakeNode(root, "usr/bin/node"); assert.deepEqual(stableNode(plain), { path: plain });
+});
+
+test("install writes the stable node everywhere, marks every generated file, and replaces earlier node paths without duplicates", async (t) => {
+  const s = scratch(t); const stale = join(s.root, "Cellar/node@24/24.21.0/bin/node"); const stable = join(s.root, "opt/node@24/bin/node");
+  const local = join(realpathSync(s.repo), ".review-inbox-pipeline");
+  mkdirSync(join(s.repo, ".claude")); mkdirSync(join(s.repo, ".codex"));
+  // v1 shape: harness commands call the runner CLI directly, with a node path that a brew upgrade removed.
+  for (const [dir, file, mode] of [[".claude", "settings.json", "claude"], [".codex", "hooks.json", "codex"]]) {
+    writeFileSync(join(s.repo, dir!, file!), JSON.stringify({ hooks: { PreToolUse: [{ matcher: ".*", hooks: [{ type: "command", command: `'${stale}' '${join(local, "pipeline-hooks.ts")}' ${mode} '${join(local, "config.json")}'` }, { type: "command", command: "keep-me" }] }] } }));
+  }
+  const warnings: string[] = [];
+  s.install({ node: stable, warn: (m: string) => warnings.push(m) }); s.install({ node: stable });
+  for (const [dir, file, mode] of [[".claude", "settings.json", "claude"], [".codex", "hooks.json", "codex"]]) {
+    const hooks = JSON.parse(readFileSync(join(s.repo, dir!, file!), "utf8")).hooks.PreToolUse.flatMap((g: any) => g.hooks).map((h: any) => h.command);
+    assert.deepEqual(hooks, ["keep-me", `'${stable}' '${join(realpathSync(s.repo), ".claude/hooks/review-inbox-pipeline.mjs")}' ${mode}`]);
+  }
+  const wrapper = readFileSync(join(s.repo, ".git/hooks/pre-push"), "utf8"); assert.match(wrapper, new RegExp(`'${stable}' '[^']*review-inbox-pipeline.mjs' pre-push`));
+  for (const text of [wrapper, readFileSync(join(local, "pipeline-hooks.ts"), "utf8"), readFileSync(join(s.repo, ".pi/extensions/review-inbox-pipeline.ts"), "utf8"), readFileSync(join(s.repo, ".claude/hooks/review-inbox-pipeline.mjs"), "utf8")]) {
+    assert.match(text, /GENERATED by the Review Inbox pipeline installer; do not edit\. Regenerate with: .*pipeline install-hooks/);
+    assert.ok(text.includes("review-inbox-pipeline-guard-v2")); assert.ok(!text.includes(stale));
+  }
+  for (const file of ["config.json", "manifest.json"]) assert.match(JSON.parse(readFileSync(join(local, file), "utf8"))._generated, /do not edit\. Regenerate with: .*install-hooks/);
+  assert.equal(JSON.parse(readFileSync(join(local, "config.json"), "utf8")).inboxCommand[0], s.config.inboxCommand[0], "an explicit inbox command is kept");
+  // Re-installing from the installed runner copy does not stack headers.
+  const copy = await import(join(local, "pipeline-hooks.ts")); copy.installHooks(s.repo, { inboxCommand: s.config.inboxCommand, node: stable });
+  const runnerText = readFileSync(join(local, "pipeline-hooks.ts"), "utf8"); assert.equal(runnerText.match(/^\/\/ GENERATED /gm)!.length, 1);
+  assert.match(runnerText, /^\/\/ review-inbox-pipeline-guard-v2\n\/\/ GENERATED /);
+  // Uninstall removes our entries whichever node wrote them.
+  s.install({ uninstall: true, node: "/another/node" });
+  for (const [dir, file] of [[".claude", "settings.json"], [".codex", "hooks.json"]]) assert.deepEqual(JSON.parse(readFileSync(join(s.repo, dir!, file!), "utf8")).hooks.PreToolUse[0].hooks.map((h: any) => h.command), ["keep-me"]);
 });
 
 test("Claude and Codex installed hooks emit deny/reason when CLI unavailable, ordinary tools remain untouched", (t) => {
