@@ -25,19 +25,19 @@
 .pipeline-palette-item { display: block; width: 100%; padding: 9px 10px; margin: 6px 0; background: var(--paper); border: 1px solid var(--line); border-radius: var(--note-radius); text-align: left; }
 .pipeline-palette-item:hover { border-color: var(--accent); background: var(--accent-soft); }
 .pipeline-palette-item small { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; overflow-wrap: anywhere; }
-.pipeline-canvas { min-width: 0; min-height: 0; background: var(--bg); position: relative; }
+.pipeline-canvas { min-width: 0; min-height: 0; background: var(--bg); position: relative; overflow: hidden; }
 .pipeline-canvas .react-flow { --xy-background-color: var(--bg); --xy-edge-stroke: var(--control-line); --xy-edge-stroke-selected: var(--accent); --xy-edge-stroke-width: 2; --xy-edge-label-background-color: var(--panel); --xy-edge-label-color: var(--text); --xy-controls-button-background-color: var(--panel); --xy-controls-button-background-color-hover: var(--panel-2); --xy-controls-button-color: var(--text); --xy-controls-button-border-color: var(--line); --xy-attribution-background-color: var(--panel); }
 .pipeline-canvas .react-flow__attribution a { color: var(--muted); }
-.pipeline-node { width: 210px; background: var(--paper); border: 1px solid var(--control-line); border-radius: var(--note-radius); box-shadow: var(--paper-shadow); padding: 12px 14px; }
+.pipeline-node { box-sizing: border-box; display: flex; flex-direction: column; background: var(--paper); border: 1px solid var(--control-line); border-radius: var(--note-radius); box-shadow: var(--paper-shadow); padding: 12px 14px; overflow-wrap: anywhere; }
 .pipeline-node.selected { outline: 2px solid var(--accent); outline-offset: 3px; }
 .pipeline-node.condition { background: var(--milestone-soft); border-color: var(--milestone); }
 .pipeline-node.terminal { background: var(--accent-soft); }
-.pipeline-node .pipeline-kind { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 5px; }
-.pipeline-node strong { display: block; font-size: 14px; }
-.pipeline-node .pipeline-node-rule { display: block; font-size: 11px; color: var(--muted); margin-top: 7px; }
+.pipeline-node .pipeline-kind { display: block; color: var(--muted); font-size: 10px; line-height: 12px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 5px; }
+.pipeline-node strong { display: block; font-size: 14px; line-height: 20px; }
+.pipeline-node .pipeline-node-rule { display: block; font-size: 11px; line-height: 16px; color: var(--muted); margin-top: 7px; }
 .pipeline-node .react-flow__handle { width: 12px; height: 12px; background: var(--accent); border: 2px solid var(--panel); }
-.pipeline-ports { display: flex; justify-content: space-around; gap: 8px; margin: 14px -4px -5px; }
-.pipeline-port { position: relative; flex: 1; text-align: center; padding-bottom: 12px; font-size: 11px; color: var(--milestone); overflow-wrap: anywhere; }
+.pipeline-ports { display: flex; justify-content: space-around; gap: 8px; margin: auto -4px -5px; padding-top: 14px; }
+.pipeline-port { position: relative; flex: 1; text-align: center; padding-bottom: 12px; font-size: 11px; line-height: 16px; color: var(--milestone); white-space: nowrap; }
 .pipeline-port .react-flow__handle { bottom: -12px; }
 .pipeline-state { display: inline-block; border-radius: 12px; padding: 2px 8px; background: var(--panel-2); font-size: 12px; }
 .pipeline-state.done { color: var(--ok); background: var(--accent-soft); }
@@ -48,6 +48,7 @@
 .pipeline-notice { margin: 0; padding: 9px 18px; background: var(--milestone-soft); font-size: 13px; }
 .pipeline-notice ul { margin: 3px 0; padding-left: 18px; max-height: 90px; overflow: auto; }
 .pipeline-list, .pipeline-runs { overflow: auto; padding: 18px; }
+.pipeline-list { box-sizing: border-box; height: 100%; overscroll-behavior: contain; }
 .pipeline-list ol, .pipeline-runs ol { list-style: none; padding: 0; margin: 0; }
 .pipeline-list li, .pipeline-run-step { padding: 12px; margin-bottom: 9px; border: 1px solid var(--line); border-radius: var(--note-radius); background: var(--paper); }
 .pipeline-list li > button { width: 100%; text-align: left; }

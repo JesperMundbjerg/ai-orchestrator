@@ -5,13 +5,16 @@ import { pipelineApi, PipelineRequestError } from "./api.ts";
 import { Canvas } from "./Canvas.tsx";
 import { Inspector } from "./Inspector.tsx";
 import { RunView } from "./RunView.tsx";
-import { builtins, connect, graphWarnings, nodeFromDefinition, positionsFor, removeNode } from "./model.ts";
+import { builtins, connect, graphWarnings, nodeFromDefinition, positionsFor, pruneFields, removeNode } from "./model.ts";
+import { tidyLayout } from "./layout.ts";
+import { useChangeSignal } from "../hooks.ts";
 import "./pipelines.css";
 
 const emptyGraph = (teamId: string, teamName: string): PipelineGraph => ({ version: 1, id: `team-${teamId}`, label: `${teamName} delivery`, fields: [], nodes: [], edges: [], entry: "" });
 
 export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: string; teamName: string; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const tick = useChangeSignal();
   const [view, setView] = useState<PipelineTeamView | null>(null);
   const [palette, setPalette] = useState<PipelinePalette | null>(null);
   const [graph, setGraph] = useState<PipelineGraph>(() => emptyGraph(teamId, teamName));
@@ -24,6 +27,7 @@ export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: 
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [runsError, setRunsError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [notice, setNotice] = useState("");
   const dirty = graphDirty || layoutDirty;
@@ -44,6 +48,21 @@ export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: 
     } catch (reason) { fail(reason); } finally { setBusy(false); }
   }, [teamId, apply]);
   useEffect(() => { void load(); }, [load]);
+  // The office's changed SSE signal (also bumped on reconnect) invalidates the
+  // ledger. Adopt runs only: live updates must never discard drafts or advance
+  // their optimistic policy/layout locks behind the user's back.
+  useEffect(() => {
+    if (busy) return;
+    let live = true;
+    pipelineApi.team(teamId).then((next) => {
+      if (!live) return;
+      setView((current) => current ? { ...current, runs: next.runs } : current);
+      setRunsError(null);
+    }, (reason: unknown) => {
+      if (live) setRunsError(`Live evidence refresh failed; displayed runs may be outdated. ${reason instanceof Error ? reason.message : String(reason)}`);
+    });
+    return () => { live = false; };
+  }, [teamId, tick, busy]);
   useEffect(() => { dialog.current?.showModal(); }, []);
   useEffect(() => {
     if (!dirty) return;
@@ -73,8 +92,8 @@ export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: 
     if (!view) return;
     setBusy(true); setError(null);
     try {
-      const next = await pipelineApi.save(teamId, { expectedRevision: view.revision, graph });
-      setView({ ...next, layoutRevision: view.layoutRevision }); setGraph(next.graph ?? graph); setGraphDirty(false); setConflict(false);
+      const next = await pipelineApi.save(teamId, { expectedRevision: view.revision, graph: pruneFields(graph) });
+      setView({ ...next, layoutRevision: view.layoutRevision }); setGraph(next.graph ?? pruneFields(graph)); setGraphDirty(false); setConflict(false);
       setNotice("Team override saved. Existing runs keep their snapshots.");
     } catch (reason) { fail(reason); } finally { setBusy(false); }
   };
@@ -100,11 +119,11 @@ export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: 
   };
   const refreshRuns = async () => {
     setBusy(true); setError(null);
-    try { const next = await pipelineApi.team(teamId); setView((current) => current ? { ...current, runs: next.runs } : current); }
+    try { const next = await pipelineApi.team(teamId); setView((current) => current ? { ...current, runs: next.runs } : current); setRunsError(null); }
     catch (reason) { fail(reason); } finally { setBusy(false); }
   };
   const exportProposal = () => {
-    const blob = new Blob([JSON.stringify({ pipeline: graph }, null, 2) + "\n"], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ pipeline: pruneFields(graph) }, null, 2) + "\n"], { type: "application/json" });
     const url = URL.createObjectURL(blob); const anchor = document.createElement("a");
     anchor.href = url; anchor.download = "pipeline-proposal.json"; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     setNotice("Exported a proposed orchestrator.json pipeline field. The repository was not changed.");
@@ -122,9 +141,10 @@ export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: 
       <nav className="pipeline-toolbar" aria-label="Pipeline views">
         {(["canvas", "list", "run"] as const).map((tab) => <button className="ghost small" key={tab} aria-pressed={mode === tab} onClick={() => setMode(tab)}>{tab === "canvas" ? "Canvas" : tab === "list" ? "List & keyboard" : `Runs${view?.runs.length ? ` (${view.runs.length})` : ""}`}</button>)}
         <span className="spacer" />
-        {mode !== "run" && <><button className="ghost small" disabled={busy || graphDirty || !layoutDirty || !view || conflict} onClick={() => void saveLayout()}>Save layout</button><button className="primary small" disabled={busy || !graphDirty || !graph.nodes.length || warnings.length > 0 || !view || conflict} onClick={() => void saveGraph()}>Save team override</button></>}
+        {mode !== "run" && <><button className="ghost small" disabled={busy || !graph.nodes.length} onClick={() => { changeLayout(tidyLayout(graph)); setNotice("Layout tidied top-down. Save layout to keep it; policy and evidence are unchanged."); }}>Tidy layout</button><button className="ghost small" disabled={busy || graphDirty || !layoutDirty || !view || conflict} onClick={() => void saveLayout()}>Save layout</button><button className="primary small" disabled={busy || !graphDirty || !graph.nodes.length || warnings.length > 0 || !view || conflict} onClick={() => void saveGraph()}>Save team override</button></>}
       </nav>
       {error && <div className="pipeline-notice warn" role="alert">{conflict ? "Another editor changed this pipeline. Your draft is still here. Export it or reload; nothing was overwritten. " : ""}{error} <button className="ghost small" disabled={busy} onClick={() => { if (!dirty || window.confirm("Reload from the office and discard your unsaved edits?")) void load(); }}>Reload from office</button></div>}
+      {mode === "run" && runsError && <p className="pipeline-notice warn" role="alert">{runsError}</p>}
       {notice && <p className="pipeline-notice" role="status">{notice}</p>}
       {view?.problems.length || palette?.problems.length ? <div className="pipeline-notice" role="alert"><strong>Office validation / discovery</strong><ul>{[...(view?.problems ?? []), ...(palette?.problems ?? [])].map((problem, index) => <li key={index}>{problem}</li>)}</ul></div> : null}
       {mode !== "run" && warnings.length > 0 && <div className="pipeline-notice warn" role="alert"><strong>Draft warnings</strong><ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}

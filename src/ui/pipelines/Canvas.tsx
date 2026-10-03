@@ -3,14 +3,19 @@ import { Background, Controls, Handle, Position, ReactFlow, useUpdateNodeInterna
 import { useEffect } from "react";
 import type { PipelineGraph, PipelineLayout, PipelineNode } from "../../shared/pipeline.ts";
 import { ports } from "./model.ts";
+import { cardSize } from "./layout.ts";
+
+// Very tall repo graphs need a genuine overview, including on a narrow phone.
+const minZoom = .005;
+const fitOptions = { padding: .25, minZoom, maxZoom: 1.8 };
 import "@xyflow/react/dist/style.css";
 
-type StepNode = Node<{ step: PipelineNode; ports: string[] }, "pipeline">;
+type StepNode = Node<{ step: PipelineNode; ports: string[]; size: { width: number; height: number } }, "pipeline">;
 function Step({ id, data, selected }: NodeProps<StepNode>) {
   const update = useUpdateNodeInternals();
   const signature = data.ports.join("\0");
   useEffect(() => { update(id); }, [id, signature, update]);
-  return <div className={`pipeline-node ${data.step.kind === "delivery" ? "terminal" : data.step.kind} ${selected ? "selected" : ""}`}>
+  return <div style={data.size} className={`pipeline-node ${data.step.kind === "delivery" ? "terminal" : data.step.kind} ${selected ? "selected" : ""}`}>
     <Handle type="target" position={Position.Top} aria-label={`Connect into ${data.step.label}`} />
     <span className="pipeline-kind">{data.step.kind === "delivery" ? "Delivery boundary" : data.step.kind}</span>
     <strong>{data.step.label}</strong>
@@ -36,14 +41,14 @@ export function Canvas({ graph, layout, selected, onSelect, onLayout, onConnect,
     let timer: ReturnType<typeof setTimeout>;
     const resize = new ResizeObserver(() => {
       clearTimeout(timer);
-      timer = setTimeout(() => { void flow.current?.fitView({ padding: .25 }); }, 100);
+      timer = setTimeout(() => { void flow.current?.fitView(fitOptions); }, 100);
     });
     if (container.current) resize.observe(container.current);
     return () => { clearTimeout(timer); resize.disconnect(); };
   }, []);
   const nodes = useMemo<StepNode[]>(() => graph.nodes.map((step) => ({
     id: step.id, type: "pipeline", position: layout[step.id] ?? { x: 0, y: 0 }, selected: selected === step.id,
-    data: { step, ports: ports(graph, step) }, ariaLabel: `${step.label}, ${step.kind}`,
+    data: { step, ports: ports(graph, step), size: cardSize(graph, step) }, ariaLabel: `${step.label}, ${step.kind}`,
   })), [graph, layout, selected]);
   const edges = useMemo(() => graph.edges.map((edge) => ({
     id: edge.id, source: edge.from, target: edge.to, sourceHandle: edge.port, selected: selectedEdges.includes(edge.id),
@@ -71,7 +76,7 @@ export function Canvas({ graph, layout, selected, onSelect, onLayout, onConnect,
     onEdgeClick={() => onSelect(null)}
     onDelete={({ nodes: deletedNodes, edges: deletedEdges }) => onDelete(deletedNodes.map((node) => node.id), deletedEdges.map((edge) => edge.id))}
     nodesDraggable={!disabled} nodesConnectable={!disabled} elementsSelectable={!disabled}
-    deleteKeyCode={null} fitView fitViewOptions={{ padding: .25 }} minZoom={.15} maxZoom={1.8}>
-    <Background gap={22} size={1} color="var(--line)" /><Controls showInteractive={false} />
+    deleteKeyCode={null} fitView fitViewOptions={fitOptions} minZoom={minZoom} maxZoom={1.8}>
+    <Background gap={22} size={1} color="var(--line)" /><Controls showInteractive={false} fitViewOptions={fitOptions} />
   </ReactFlow></div>;
 }

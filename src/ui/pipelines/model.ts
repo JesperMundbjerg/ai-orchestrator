@@ -44,10 +44,18 @@ export function connect(graph: PipelineGraph, from: string, to: string, port?: s
   return { ...graph, edges: [...graph.edges, edge] };
 }
 
-/** Remove incident edges too; no orphaned connections are left by node deletion. */
+/** A field without a selecting node must not become an invisible run obligation.
+ * Guards are deliberately preserved: dangling guard references must fail validation,
+ * not silently weaken the policy when a condition is removed. */
+export function pruneFields(graph: PipelineGraph): PipelineGraph {
+  const referenced = new Set(graph.nodes.map((node) => node.field).filter(Boolean));
+  return { ...graph, fields: graph.fields.filter((field) => referenced.has(field.id)) };
+}
+
+/** Remove incident edges, positions and fields no surviving node selects. */
 export function removeNode(graph: PipelineGraph, id: string): PipelineGraph {
-  return { ...graph, nodes: graph.nodes.filter((n) => n.id !== id), edges: graph.edges.filter((e) => e.from !== id && e.to !== id), entry: graph.entry === id ? "" : graph.entry,
-    ...(graph.positions ? { positions: Object.fromEntries(Object.entries(graph.positions).filter(([key]) => key !== id)) } : {}) };
+  return pruneFields({ ...graph, nodes: graph.nodes.filter((n) => n.id !== id), edges: graph.edges.filter((e) => e.from !== id && e.to !== id), entry: graph.entry === id ? "" : graph.entry,
+    ...(graph.positions ? { positions: Object.fromEntries(Object.entries(graph.positions).filter(([key]) => key !== id)) } : {}) });
 }
 
 export function positionsFor(graph: PipelineGraph, layout: PipelineLayout): PipelineLayout {
