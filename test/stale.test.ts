@@ -105,7 +105,7 @@ test("fake herdr: a stale agent takes its queued messages in the existing single
   assert.equal(world.state().agents[0]!.status, "idle");
   await Promise.all([world.react(), world.react()]);
   const prompts = o.calls().filter((a) => a[1] === "prompt");
-  assert.equal(prompts.length, 1); assert.match(prompts[0]![3]!, /^2 messages arrived/);
+  assert.equal(prompts.length, 1); assert.match(prompts[0]![3]!, /\x1b\[200~2 messages arrived/);
   assert.match(prompts[0]![3]!, /First note[\s\S]*Second note/);
   assert.ok(world.state().messages.every((m) => m.deliveries[0]!.state === "delivered"));
   assert.equal(o.herdr.live()[0]!.status, "working", "the new prompt clears stale evidence immediately");
