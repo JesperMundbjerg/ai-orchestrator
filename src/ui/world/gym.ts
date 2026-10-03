@@ -7,10 +7,13 @@
 //   who      like the lounge games: idle agents who could be out for a break, never one already
 //            playing, at most a third of them and one a station, picked by a hash of their id so it
 //            is always the same people at the same stations; they stay while they are eligible
-//   what     the platform: three snatches, then two clean and jerks; the rack: back squats; the
-//            bench: bench presses; the rig: pull-ups. A set of reps with rests between, then a long
-//            rest, round again. A pose is a few joint angles and where the bar is, eased between
-//            keyframes, and the hands are put on the bar by a two-bone reach (`armReach`)
+//   what     the platform: snatches and clean and jerks; the rack: back and front squats; the bench:
+//            bench presses; the rig: pull-ups and hanging knee raises. A lifter does a routine seeded
+//            by who they are: three sets, the exercise changing between them where the station has
+//            more than one, each set followed by a rest (getting their breath, shaking their arms out
+//            or a sip from their bottle; at the bench, sat up on it). A pose is a few joint angles and
+//            where the bar is, eased between keyframes, and the hands are put on the bar by a two-bone
+//            reach (`armReach`)
 //
 // Lengths are in the avatar's own units (Avatar.tsx's body before it is scaled to its height):
 // hips 0.86 up, shoulders 1.42 up and 0.27 out, arms of two 0.27 halves, thighs 0.43, shins 0.36
@@ -24,7 +27,7 @@ import type { Spot, Vec2 } from "./spatial.ts";
 
 export type Station = "platform" | "rack" | "bench" | "pullup";
 export const STATIONS: Station[] = ["platform", "rack", "bench", "pullup"];
-export type Lift = "snatch" | "clean" | "squat" | "bench" | "pullup";
+export type Lift = "snatch" | "clean" | "squat" | "frontsquat" | "bench" | "pullup" | "kneeraise";
 
 /** At most this share of the idle agents trains, so the garden, the lounge and the nooks keep theirs. */
 export const GYM_SHARE = 1 / 3;
@@ -136,20 +139,39 @@ export function chooseGym(plan: BuildingPlan, agents: WorldAgent[], since: Reado
   return result;
 }
 
+/** A lifter's time at a station: where, the seed their routine goes by, and when they leave (ms; Infinity while they stay). */
+export interface Visit { station: Station; seed: string; until: number }
+export interface Training extends Visit { start: number }
+
 /**
- * When each lifter got to their station: a lift's clock starts once they are there, never on
- * the way, and walking away stops it, so coming back starts the set again.
+ * When each lifter got to their station, and which: a lift's clock starts once they are there,
+ * never on the way, and walking away stops it, so coming back starts the routine again. The bars
+ * go by it, so a bar is lifted by whoever is at its station, agent or regular.
  */
 export class GymPlayback {
-  starts = new Map<string, number>();
-  arrive(id: string, ready: boolean, now: number): void {
-    if (!ready) this.starts.delete(id);
-    else if (!this.starts.has(id)) this.starts.set(id, now);
+  /** Who is training, where, since when and until when. */
+  readonly training = new Map<string, Training>();
+  arrive(id: string, ready: boolean, now: number, visit?: Visit): void {
+    const was = this.training.get(id);
+    if (!ready || !visit) this.training.delete(id);
+    else if (!was || was.station !== visit.station || was.seed !== visit.seed) this.training.set(id, { ...visit, start: now });
+    else was.until = visit.until;
   }
   /** Seconds they have been training, or null while they are not there. */
   seconds(id: string, now: number): number | null {
-    const start = this.starts.get(id);
-    return start === undefined ? null : Math.max(0, (now - start) / 1000);
+    const t = this.training.get(id);
+    return t === undefined ? null : Math.max(0, (now - t.start) / 1000);
+  }
+  /** Who is training at a station, or null. */
+  lifterAt(station: Station): string | null {
+    for (const [id, t] of this.training) if (t.station === station) return id;
+    return null;
+  }
+  /** A lifter's pose this moment, for one this tall, written into `out`; null while they are not training. */
+  pose(id: string, now: number, h: number, out: LiftPose): LiftPose | null {
+    const t = this.training.get(id);
+    if (!t) return null;
+    return sessionPose(t.station, t.seed, Math.max(0, (now - t.start) / 1000), (t.until - t.start) / 1000, h, out);
   }
 }
 
@@ -250,8 +272,8 @@ function clean(): LiftPlay {
 }
 
 export const REPS = 5;
-/** The rest after a set of squats, bench presses or pull-ups. */
-export const SET_REST = 6;
+/** Stood still at the end of a set of squats, bench presses, pull-ups or knee raises, before the rest. */
+export const SET_END = 1;
 
 function squat(): LiftPlay {
   const keys: Key[] = [];
@@ -273,8 +295,36 @@ function squat(): LiftPlay {
   keys.push(key((at += 0.8), { ...STAND, b: 0.05 }, "back", 1, ELBOWS_BACK));
   keys.push(key((at += 0.8), under, "hooks", 1, ELBOWS_BACK));
   keys.push(key((at += 0.6), STAND, "hooks", 0, ELBOWS_BACK));
-  keys.push(hold(keys, (at += SET_REST)));
+  keys.push(hold(keys, (at += SET_END)));
   return { lift: "squat", lie: false, w: 0.55, keys, length: at };
+}
+
+function frontSquat(): LiftPlay {
+  // Stood further back than for a back squat, so the hooks are in front of the neck and the bar
+  // comes off them onto the front of the shoulders, elbows high.
+  const keys: Key[] = [];
+  const IN = 0.2;
+  const under = { t: 0.45, s: 0.45, b: 0.05, back: IN };
+  const out = { ...STAND, back: IN + WALKOUT };
+  const bottom = { t: 1.3, s: 0.95, b: 0.2, back: IN + WALKOUT };
+  keys.push(key(0, STAND, "hooks", 0, ELBOWS_FRONT));
+  keys.push(key(0.7, { ...STAND, back: IN }, "hooks", 0, ELBOWS_FRONT));
+  keys.push(key(1.4, under, "hooks", 1, ELBOWS_FRONT));
+  keys.push(key(2.0, { ...STAND, back: IN }, "rack", 1, ELBOWS_FRONT));
+  keys.push(key(2.8, out, "rack", 1, ELBOWS_FRONT));
+  keys.push(hold(keys, 3.2));
+  let at = 3.2;
+  for (let r = 0; r < REPS; r++) {
+    keys.push(key((at += 1.2), bottom, "rack", 1, ELBOWS_FRONT));
+    keys.push(key((at += 1.0), out, "rack", 1, ELBOWS_FRONT));
+    keys.push(hold(keys, (at += 0.6)));
+  }
+  keys.push(key((at += 0.8), { ...STAND, back: IN }, "rack", 1, ELBOWS_FRONT));
+  keys.push(key((at += 0.6), under, "hooks", 1, ELBOWS_FRONT));
+  keys.push(key((at += 0.6), { ...STAND, back: IN }, "hooks", 0, ELBOWS_FRONT));
+  keys.push(key((at += 0.7), STAND, "hooks", 0, ELBOWS_FRONT));
+  keys.push(hold(keys, (at += SET_END)));
+  return { lift: "frontsquat", lie: false, w: 0.3, keys, length: at };
 }
 
 function bench(): LiftPlay {
@@ -292,7 +342,7 @@ function bench(): LiftPlay {
   }
   keys.push(key((at += 0.7), STAND, "uprights", 1, ELBOWS_OUT));
   keys.push(key((at += 0.5), STAND, "uprights", 0, ELBOWS_OUT));
-  keys.push(hold(keys, (at += SET_REST)));
+  keys.push(hold(keys, (at += SET_END)));
   return { lift: "bench", lie: true, w: 0.48, keys, length: at };
 }
 
@@ -312,31 +362,124 @@ function pullup(): LiftPlay {
     keys.push(hold(keys, (at += 0.6)));
   }
   keys.push(key((at += 0.5), STAND, "pullbar", 0, ELBOWS_HANG));
-  keys.push(hold(keys, (at += SET_REST)));
+  keys.push(hold(keys, (at += SET_END)));
   return { lift: "pullup", lie: false, w: 0.42, keys, length: at };
 }
 
-/** Every lift, baked once. */
-export const LIFTS: Record<Lift, LiftPlay> = { snatch: snatch(), clean: clean(), squat: squat(), bench: bench(), pullup: pullup() };
+function kneeRaise(): LiftPlay {
+  // Hanging from the pull-up bar, the knees drawn up to the chest and lowered again.
+  const keys: Key[] = [];
+  const down = { t: 0.05, s: 0.05, b: 0 };
+  const up = { t: 1.45, s: 0, b: -0.08 };
+  keys.push(key(0, STAND, "pullbar", 0, ELBOWS_HANG));
+  keys.push(key(0.7, STAND, "pullbar", 0.85, ELBOWS_HANG));
+  keys.push(key(1.0, down, "pullbar", 1, ELBOWS_HANG, { hang: 0.5 }));
+  keys.push(hold(keys, 1.6));
+  let at = 1.6;
+  for (let r = 0; r < REPS; r++) {
+    keys.push(key((at += 1.0), up, "pullbar", 1, ELBOWS_HANG, { hang: 0.5 }));
+    keys.push(hold(keys, (at += 0.4)));
+    keys.push(key((at += 1.0), down, "pullbar", 1, ELBOWS_HANG, { hang: 0.5 }));
+    keys.push(hold(keys, (at += 0.4)));
+  }
+  keys.push(key((at += 0.5), STAND, "pullbar", 0, ELBOWS_HANG));
+  keys.push(hold(keys, (at += SET_END)));
+  return { lift: "kneeraise", lie: false, w: 0.42, keys, length: at };
+}
 
-/** What each station does, round and round. */
-export const PROGRAMS: Record<Station, Lift[]> = {
-  platform: ["snatch", "snatch", "snatch", "clean", "clean"],
-  rack: ["squat"],
+/** Every lift, baked once. */
+export const LIFTS: Record<Lift, LiftPlay> = { snatch: snatch(), clean: clean(), squat: squat(), frontsquat: frontSquat(), bench: bench(), pullup: pullup(), kneeraise: kneeRaise() };
+
+/** What each station is for. */
+export const EXERCISES: Record<Station, Lift[]> = {
+  platform: ["snatch", "clean"],
+  rack: ["squat", "frontsquat"],
   bench: ["bench"],
-  pullup: ["pullup"],
+  pullup: ["pullup", "kneeraise"],
 };
 
-/** Which lift a station's lifter is at after this many seconds there, and how far into it. */
-export function liftAt(station: Station, seconds: number): { lift: Lift; t: number } {
-  const program = PROGRAMS[station];
-  const round = program.reduce((sum, l) => sum + LIFTS[l].length, 0);
-  let t = ((Math.max(0, seconds) % round) + round) % round;
-  for (const lift of program) {
-    if (t < LIFTS[lift].length) return { lift, t };
-    t -= LIFTS[lift].length;
+// ---------------------------------------------------------------- sets and rests
+
+/** What a lifter does with their hands while they rest: get their breath back hands on hips, shake their arms out, or drink. */
+export type Gesture = "breathe" | "shake" | "sip";
+export const GESTURES: Gesture[] = ["breathe", "shake", "sip"];
+/** Sets in a routine, and how long a rest after one lasts (seconds). */
+export const SETS = 3;
+export const REST_MIN = 6;
+export const REST_MAX = 9.5;
+
+/** A stretch of a routine: a set of `reps` of a lift (singles on the platform), or a rest after one. */
+export interface Segment { at: number; length: number; lift: Lift; reps: number; rest: Gesture | null }
+
+const routines = new Map<string, Segment[]>();
+
+/**
+ * A lifter's routine at a station, the same every time for the same seed: three sets, each followed
+ * by a rest. Where the station has two exercises the routine changes over after the first or second
+ * set; on the platform a set is two or three singles. The rests last 6 to 9.5 seconds and each has
+ * its own gesture.
+ */
+export function routine(station: Station, seed: string): Segment[] {
+  const name = `${station}|${seed}`;
+  const known = routines.get(name);
+  if (known) return known;
+  const h = hash(`routine:${name}`);
+  const ex = EXERCISES[station];
+  const out: Segment[] = [];
+  let at = 0;
+  const switchAfter = 1 + ((h >>> 4) & 1);
+  for (let j = 0; j < SETS; j++) {
+    const lift = ex[((h >>> 1) + (j >= switchAfter ? 1 : 0)) % ex.length]!;
+    const reps = station === "platform" ? 2 + ((h >>> (5 + j)) & 1) : 1;
+    const set = reps * LIFTS[lift].length;
+    out.push({ at, length: set, lift, reps, rest: null });
+    at += set;
+    const rest = REST_MIN + ((h >>> (8 + 3 * j)) & 7) * 0.5;
+    out.push({ at, length: rest, lift, reps: 0, rest: GESTURES[((h >>> 20) + j) % GESTURES.length]! });
+    at += rest;
   }
-  return { lift: program[0]!, t: 0 };
+  // A long session asks for few routines (the lifters are few), but a regular's seed changes each visit.
+  if (routines.size > 256) routines.clear();
+  routines.set(name, out);
+  return out;
+}
+
+/** Where a lifter is in their routine: in a set (`rest` null, `t` into the lift) or resting (`t` into the rest). */
+export interface Session { lift: Lift; t: number; rest: Gesture | null; length: number; done: boolean }
+export const newSession = (): Session => ({ lift: "snatch", t: 0, rest: null, length: 0, done: false });
+
+/**
+ * Where a lifter is this many seconds into their time at a station. With no `budget` (seconds
+ * until they leave) the routine goes round and round. With one, it is done once, and a set that
+ * would not be over before they leave is a rest instead, so they never walk off mid-set: once
+ * done, they get their breath back until they go.
+ */
+export function sessionAt(station: Station, seed: string, seconds: number, budget = Infinity, out: Session = newSession()): Session {
+  const segs = routine(station, seed);
+  const last = segs.at(-1)!;
+  let s = Math.max(0, seconds);
+  if (!Number.isFinite(budget)) s %= last.at + last.length;
+  // Where the routine stops: the first set that would not be over in time, else its end.
+  let cut = last.at + last.length;
+  for (const seg of segs) if (!seg.rest && seg.at + seg.length > budget) { cut = seg.at; break; }
+  let lift = segs[0]!.lift;
+  for (const seg of segs) {
+    if (seg.at >= cut) break;
+    lift = seg.lift;
+    if (s >= seg.at + seg.length) continue;
+    out.lift = seg.lift;
+    out.rest = seg.rest;
+    out.length = seg.length;
+    out.t = seg.rest ? s - seg.at : (s - seg.at) % LIFTS[seg.lift].length;
+    out.done = false;
+    return out;
+  }
+  out.lift = lift;
+  out.rest = "breathe";
+  out.t = s - cut;
+  out.length = Math.max(out.t, budget - cut);
+  out.done = true;
+  return out;
 }
 
 /** A pose: joint angles for the avatar's rig, where the body is, and where the bar is in the station's frame. */
@@ -366,9 +509,15 @@ export interface LiftPose {
   poleZ: number;
   /** Anything is moving: a hold or a rest is drawn at the office's resting rate. */
   moving: boolean;
+  /** Resting between sets: what the hands do, how far into the rest and how long it is; null in a set. */
+  rest: Gesture | null;
+  restT: number;
+  restLength: number;
+  /** Sat up on the bench to rest. */
+  sit: boolean;
 }
 
-export const newPose = (): LiftPose => ({ lift: "snatch", rootY: 0, rootZ: 0, thigh: 0, knee: 0, ankle: 0, bend: 0, lie: false, lieY: 0, lieZ: 0, barY: 0, barZ: 0, carried: true, grip: 0, w: 0, poleX: 0, poleY: 0, poleZ: 0, moving: false });
+export const newPose = (): LiftPose => ({ lift: "snatch", rootY: 0, rootZ: 0, thigh: 0, knee: 0, ankle: 0, bend: 0, lie: false, lieY: 0, lieZ: 0, barY: 0, barZ: 0, carried: true, grip: 0, w: 0, poleX: 0, poleY: 0, poleZ: 0, moving: false, rest: null, restT: 0, restLength: 0, sit: false });
 
 /** One keyframe made concrete for a lifter this tall; written into `out`. */
 function resolve(play: LiftPlay, k: Key, h: number, out: LiftPose): LiftPose {
@@ -379,7 +528,7 @@ function resolve(play: LiftPlay, k: Key, h: number, out: LiftPose): LiftPose {
   out.poleX = k.pole[0];
   out.poleY = k.pole[1];
   out.poleZ = k.pole[2];
-  out.carried = play.lift !== "pullup";
+  out.carried = play.lift !== "pullup" && play.lift !== "kneeraise";
   const reach = Math.sqrt(Math.max(0, 0.53 ** 2 - Math.max(0, play.w - SHOULDER_X) ** 2));
   if (play.lie) {
     // On the back on the bench, the shoulders just past the uprights, the feet down on the floor.
@@ -458,19 +607,77 @@ export function liftPose(lift: Lift, t: number, h: number, out: LiftPose): LiftP
   out.poleX = mix(A.poleX, B.poleX);
   out.poleY = mix(A.poleY, B.poleY);
   out.poleZ = mix(A.poleZ, B.poleZ);
-  out.moving = raw < 1 && (A.rootY !== B.rootY || A.thigh !== B.thigh || A.bend !== B.bend || A.barY !== B.barY || A.barZ !== B.barZ || A.grip !== B.grip);
+  out.rest = null;
+  out.restT = 0;
+  out.restLength = 0;
+  out.sit = false;
+  out.moving = raw < 1 && (A.rootY !== B.rootY || A.rootZ !== B.rootZ || A.thigh !== B.thigh || A.bend !== B.bend || A.barY !== B.barY || A.barZ !== B.barZ || A.grip !== B.grip);
   return out;
 }
 
-/** A station's pose after this many seconds there. */
-export function stationPose(station: Station, seconds: number, h: number, out: LiftPose): LiftPose {
-  const { lift, t } = liftAt(station, seconds);
-  return liftPose(lift, t, h, out);
+/** The bench's seat, from the lifter's feet: hips this far up (metres, over the pad) and back. */
+export const SEAT_Y = BENCH_TOP + 0.08;
+const SIT_SHIN = -0.1;
+
+/**
+ * Sat up on the end of the bench, for a lifter this tall, written into `out`: the hips on the pad,
+ * the feet flat on the floor where they stood, leaning on the knees, the bar back in its uprights.
+ */
+export function sitPose(h: number, out: LiftPose): LiftPose {
+  const play = LIFTS.bench;
+  resolve(play, play.keys[0]!, h, out);
+  const hipY = SEAT_Y / h;
+  const t = Math.acos(Math.max(-1, Math.min(1, (hipY - FOOT - SHIN * Math.cos(SIT_SHIN)) / THIGH)));
+  out.lie = false;
+  out.lieY = 0; out.lieZ = 0;
+  out.rootY = hipY - HIP;
+  out.rootZ = -(THIGH * Math.sin(t) - SHIN * Math.sin(SIT_SHIN));
+  out.thigh = -t; out.knee = t + SIT_SHIN; out.ankle = -SIT_SHIN; out.bend = 0.25;
+  out.grip = 0;
+  out.moving = false;
+  out.sit = true;
+  return out;
+}
+
+const SESSION = newSession();
+
+/**
+ * A lifter's pose this many seconds into their time at a station (see `sessionAt`), for one this
+ * tall, written into `out`. Resting, they stand where the set left them, the bar back where it
+ * rests and their hands off it; at the bench they sit up on it.
+ */
+export function sessionPose(station: Station, seed: string, seconds: number, budget: number, h: number, out: LiftPose): LiftPose {
+  const at = sessionAt(station, seed, seconds, budget, SESSION);
+  if (!at.rest) return liftPose(at.lift, at.t, h, out);
+  if (station === "bench") sitPose(h, out);
+  else liftPose(at.lift, LIFTS[at.lift].length, h, out);
+  out.moving = false;
+  out.rest = at.rest;
+  out.restT = at.t;
+  out.restLength = at.length;
+  return out;
+}
+
+/** A station's pose after this many seconds there, for an agent: their routine round and round. */
+export function stationPose(station: Station, seconds: number, h: number, out: LiftPose, seed: string = station): LiftPose {
+  return sessionPose(station, seed, seconds, Infinity, h, out);
 }
 
 /** Where a station's bar rests while nobody trains there: where its lifter picks it up. */
 export function restingBar(station: Station, out: LiftPose): LiftPose {
-  return stationPose(station, 0, 1, out);
+  return liftPose(EXERCISES[station][0]!, 0, 1, out);
+}
+
+const smooth = (u: number) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u));
+
+/**
+ * How far into a rest's gesture a lifter is (0 to 1): into it over half a second once the set is
+ * put down, held, and out of it before the next set, so the hands are back at their sides to pick
+ * the bar up.
+ */
+export function gestureAt(pose: Pick<LiftPose, "rest" | "restT" | "restLength">): number {
+  if (!pose.rest) return 0;
+  return Math.min(smooth((pose.restT - 0.6) / 0.5), smooth((pose.restLength - 0.6 - pose.restT) / 0.5));
 }
 
 // ---------------------------------------------------------------- the hands on the bar

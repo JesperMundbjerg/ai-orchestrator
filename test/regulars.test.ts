@@ -2,9 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Team, WorldAgent } from "../src/shared/types.ts";
 import { planBuilding, routeIn } from "../src/ui/world/building.ts";
-import { chooseGym, gymSpot, LIFTS, PROGRAMS, stationPose, STATIONS, newPose } from "../src/ui/world/gym.ts";
+import { chooseGym, gymSpot, routine, STATIONS, type Station } from "../src/ui/world/gym.ts";
 import { choosePingPong, pingSpot, PingPlayback, RALLY } from "../src/ui/world/pingpong.ts";
-import { CAST, cheerAt, coolerAt, highFiveAt, isRegular, partnerLone, placeRegulars, regularLook, sipAt, asideSpot } from "../src/ui/world/regulars.ts";
+import { CAST, cheerAt, coolerAt, highFiveAt, isRegular, partnerLone, placeRegulars, placeSpot, cornerWalk, regularLook, rolesAt, scheduleRegulars, SHIFT, tableAt, VISIT, visitAt, asideSpot, type Place } from "../src/ui/world/regulars.ts";
 import type { Spot } from "../src/ui/world/spatial.ts";
 import { NAMES } from "../src/server/names.ts";
 
@@ -120,32 +120,140 @@ test("regulars are never chosen as agents: the gym and the table choose from age
   for (const id of [...chooseGym(plan, agents, since, 60_000).keys(), ...choosePingPong(plan, agents, since, 60_000).keys()]) assert.ok(!isRegular(id));
 });
 
-test("a lifter sips between sets, with their hands off the bar and standing still", () => {
-  for (const station of STATIONS) {
-    const round = PROGRAMS[station].reduce((sum, l) => sum + LIFTS[l].length, 0);
-    let sipped = 0;
-    for (let t = 0; t < round * 2; t += 0.05) {
-      const s = sipAt(station, t);
-      assert.ok(s >= 0 && s <= 1);
-      if (!s) continue;
-      sipped++;
-      const pose = stationPose(station, t, 1, newPose());
-      assert.ok(pose.grip < 1e-6, `${station} at ${t.toFixed(2)}: hands off the bar`);
-      assert.ok(!pose.moving, `${station} at ${t.toFixed(2)}: resting`);
+// A morning's worth of visits, from today's office clock: wherever the clock is, the same rules.
+const today = visitAt(Date.UTC(2026, 9, 3, 9));
+const visits = Array.from({ length: 6 * SHIFT * 3 }, (_, i) => today + i);
+const where = (p: { act: string; spot: Spot }) => `${p.act}@${p.spot.pos.map((x) => x.toFixed(2))}`;
+const placesOf = (plan: ReturnType<typeof office>) => (["mat0", "mat1", "cooler0", "cooler1", "watch0", "watch1"] as Place[]).map((p) => placeSpot(plan, p));
+
+test("in the gym they move round every visit: never the same role twice running, and over a shift every station and a break", () => {
+  const plan = office();
+  for (const v of visits) {
+    const now = rolesAt(v), next = rolesAt(v + 1);
+    for (const r of CAST) {
+      const a = now.get(r.id)!, b = next.get(r.id)!;
+      if (typeof a === "string" || typeof b === "string") assert.notEqual(a, b, `${r.name} at ${a} twice running (visit ${v})`);
     }
-    assert.ok(sipped > 0, `${station} has a sip each round`);
+    // With nobody else about, two at the table, the rest in the gym, each somewhere new.
+    const placed = scheduleRegulars(plan, new Map(), v), after = scheduleRegulars(plan, new Map(), v + 1);
+    assert.deepEqual(scheduleRegulars(plan, new Map(), v), placed, "the same visit, the same places");
+    assert.equal([...placed.values()].filter((p) => p.act === "play").length, 2);
+    assert.ok([...placed.values()].filter((p) => p.act === "lift").length >= 3, "the gym is busy");
+    for (const r of CAST) {
+      const p = placed.get(r.id)!, q = after.get(r.id)!;
+      if (p.act !== "play" && q.act !== "play") assert.notEqual(where(p), where(q), `${r.name} moves on (visit ${v})`);
+    }
+  }
+  // Over a shift in the gym everyone there lifts at three stations or more and takes a break.
+  for (let start = today - (today % SHIFT); start < today + 6 * SHIFT; start += SHIFT) {
+    const gym = CAST.filter((r) => !tableAt(start).includes(r.id));
+    for (const r of gym) {
+      const roles = Array.from({ length: SHIFT }, (_, i) => rolesAt(start + i).get(r.id)!);
+      assert.ok(new Set(roles.filter((x) => x !== "break")).size >= 3, `${r.name}: ${roles}`);
+    }
+  }
+  // Over the morning everyone lifts at every station, takes breaks and plays.
+  for (const r of CAST) {
+    const roles = new Set(visits.map((v) => rolesAt(v).get(r.id)!));
+    assert.ok(STATIONS.every((st) => roles.has(st)) && roles.has("break") && (roles.has(0) || roles.has(1)), `${r.name}: ${[...roles]}`);
   }
 });
 
-test("after each point the one who didn't catch it cheers, the watchers after every point, and the high five comes round", () => {
-  for (const h of RALLY.holds) {
+test("the table changes over a player a shift, each keeping their end, and everyone gets a turn", () => {
+  const players = new Set<string>();
+  for (const v of visits) {
+    const [a, b] = tableAt(v), [c, d] = tableAt(v + 1);
+    assert.notEqual(a, b);
+    if (Math.floor((v + 1) / SHIFT) === Math.floor(v / SHIFT)) assert.deepEqual([c, d], [a, b], "a whole shift at the table");
+    else assert.equal(+(a === c) + +(b === d), 1, "one hands over, the other stays at their end");
+    players.add(a).add(b);
+  }
+  assert.equal(players.size, CAST.length);
+});
+
+test("a visit's places: never two at one place, never where an agent is, a free end always played, and a set never cut short", () => {
+  const plan = office();
+  const s = (st: Station) => gymSpot(plan, st);
+  const crowds: Array<Map<string, Spot>> = [
+    new Map(),
+    new Map([["a", pingSpot(plan, 0)]]),
+    new Map([["a", pingSpot(plan, 1)], ["b", s("rack")]]),
+    new Map([["a", pingSpot(plan, 0)], ["b", pingSpot(plan, 1)]]),
+    new Map([["a", s("platform")], ["b", s("bench")]]),
+    new Map([...STATIONS.map((st) => [st, s(st)] as const), ["p0", pingSpot(plan, 0)], ["p1", pingSpot(plan, 1)]]),
+  ];
+  const aside = placesOf(plan);
+  for (const agents of crowds) {
+    for (const v of visits) {
+      const placed = scheduleRegulars(plan, agents, v);
+      assert.equal(placed.size, CAST.length);
+      const spots = [...placed.values()].map((p) => p.spot);
+      spots.forEach((a, i) => spots.slice(i + 1).forEach((b) => assert.ok(far(a.pos, b.pos, 0.8), `two at one place (visit ${v})`)));
+      for (const p of placed.values()) {
+        for (const o of agents.values()) assert.ok(far(p.spot.pos, o.pos, 0.8), `${p.regular.name} where an agent is`);
+        if (p.act === "lift") {
+          assert.deepEqual(p.spot, gymSpot(plan, p.spot.gym!));
+          assert.deepEqual(p.visit, { station: p.spot.gym, seed: `${p.regular.id}:${v}`, until: (v + 1) * VISIT * 1000 });
+        } else if (p.act === "play") assert.deepEqual(p.spot, pingSpot(plan, p.spot.pingpong!));
+        else assert.ok(aside.some((a) => a.pos[0] === p.spot.pos[0] && a.pos[1] === p.spot.pos[1]), `${p.regular.name} ${p.act} at a place aside`);
+        assert.equal(p.act === "lift", !!p.visit);
+      }
+      for (const end of [0, 1] as const) {
+        const taken = [...agents.values()].some((a) => a.pingpong === end);
+        assert.equal([...placed.values()].filter((p) => p.act === "play" && p.spot.pingpong === end).length, taken ? 0 : 1, `end ${end} played once (visit ${v})`);
+      }
+      // The two at the cooler chat and high five, and only they.
+      const cooler = [...placed.values()].filter((p) => p.act === "cooler");
+      for (const p of cooler) assert.equal(p.partner, cooler.length === 2 ? cooler.find((o) => o !== p)!.regular.id : null);
+    }
+  }
+});
+
+test("a lone agent at the table always has a regular to play, whoever's turn it is", () => {
+  const plan = office();
+  for (const end of [0, 1] as const) {
+    for (const v of visits) {
+      const placed = scheduleRegulars(plan, new Map([["lone", pingSpot(plan, end)]]), v);
+      const other = [...placed.values()].filter((p) => p.act === "play");
+      assert.equal(other.length, 1);
+      assert.equal(other[0]!.spot.pingpong, 1 - end);
+    }
+  }
+});
+
+test("moving round the gym leaves time for a set: the walks are short, and the first set fits the rest of a visit", () => {
+  for (const n of [1, 8, 23]) {
+    const plan = office(n);
+    const walk = routeIn(plan);
+    const gym = [...STATIONS.map((st) => gymSpot(plan, st)), ...(["mat0", "mat1", "cooler0", "cooler1"] as Place[]).map((p) => placeSpot(plan, p))];
+    let longest = 0;
+    for (const a of gym) for (const b of gym) {
+      const path = [a.pos, ...(cornerWalk(a, b) ?? walk(a.pos, a, b))];
+      let d = 0;
+      for (let i = 1; i < path.length; i++) d += Math.hypot(path[i]![0] - path[i - 1]![0], path[i]![1] - path[i - 1]![1]);
+      longest = Math.max(longest, d);
+    }
+    // Regulars walk at 1.6 m/s (Regulars.tsx).
+    const seconds = longest / 1.6;
+    assert.ok(seconds < 12, `${n} agents: ${seconds.toFixed(1)} s across the gym`);
+    for (const st of STATIONS) for (let i = 0; i < 30; i++) {
+      const first = routine(st, `regular:x:${i}`)[0]!;
+      assert.ok(first.length + seconds < VISIT, `${st}: a first set of ${first.length} s fits after a walk`);
+    }
+  }
+});
+
+test("after each point its winner cheers, the watchers after every point, and the high five comes round", () => {
+  const won = RALLY.holds.filter((h) => h.winner !== undefined);
+  assert.ok(won.length >= 10);
+  for (const h of won) {
     const t = h.t0 + 0.6;
-    assert.equal(cheerAt(h.end, t), 0, "the catcher has the ball to serve");
-    assert.equal(cheerAt((1 - h.end) as 0 | 1, t), 1);
+    assert.equal(cheerAt(h.winner!, t), 1);
+    assert.equal(cheerAt((1 - h.winner!) as 0 | 1, t), 0, "the loser doesn't");
     assert.equal(cheerAt(null, t), 1);
   }
-  // Mid-rally, nobody cheers.
-  const mid = RALLY.hits[3]!.at;
+  // Mid-rally, and while the server waits to serve, nobody cheers.
+  const mid = RALLY.hits.find((x) => !x.serve && x.at > RALLY.intro + 5)!.at;
   assert.equal(cheerAt(0, mid) + cheerAt(1, mid) + cheerAt(null, mid), 0);
   assert.equal(highFiveAt(500), 1);
   assert.equal(highFiveAt(5000), 0);

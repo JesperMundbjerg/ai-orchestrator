@@ -5,8 +5,9 @@ import type { Vec2 } from "../src/ui/world/spatial.ts";
 import { place, planBuilding, routeIn, type BuildingPlan } from "../src/ui/world/building.ts";
 import { chooseGames } from "../src/ui/world/games.ts";
 import {
-  armReach, BENCH_FROM, BENCH_TO, chooseGym, gymCorner, gymSpot, GymPlayback, handFrom, handTarget, LAYOUT, liftAt, LIFTS, liftPose, newPose, newReach,
-  PLATE_R, PLATFORM_H, PROGRAMS, PULL_Y, PULL_Z, restingBar, SET_REST, SHOULDER_Y, stationPose, STATIONS, UPRIGHT_Z, type Lift, type Station,
+  armReach, BENCH_FROM, BENCH_TO, chooseGym, EXERCISES, FOOT, gestureAt, GESTURES, gymCorner, gymSpot, GymPlayback, handFrom, handTarget, HIP, LAYOUT, LIFTS, liftPose,
+  newPose, newReach, PLATE_R, PLATFORM_H, PULL_Y, PULL_Z, REST_MAX, REST_MIN, restingBar, routine, SEAT_Y, sessionAt, sessionPose, SETS, SHIN, SHOULDER_Y, sitPose,
+  stationPose, STATIONS, THIGH, UPRIGHT_Z, type Lift, type Station,
 } from "../src/ui/world/gym.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({ id, identity: id, name: id, harness: "manual", cwd: null, project: null, branch: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra });
@@ -57,29 +58,143 @@ test("game players don't train, and nobody is in two places", () => {
 
 test("the clock starts on arrival, never on the way, and walking off stops it", () => {
   const play = new GymPlayback();
+  const v = { station: "rack" as const, seed: "a", until: Infinity };
   assert.equal(play.seconds("a", 1000), null);
   play.arrive("a", false, 1000);
   assert.equal(play.seconds("a", 2000), null);
-  play.arrive("a", true, 5000);
-  play.arrive("a", true, 9000);
+  play.arrive("a", true, 5000, v);
+  play.arrive("a", true, 9000, v);
   assert.equal(play.seconds("a", 9000), 4);
   play.arrive("a", false, 9500);
   assert.equal(play.seconds("a", 9600), null);
-  play.arrive("a", true, 20_000);
+  play.arrive("a", true, 20_000, v);
   assert.equal(play.seconds("a", 20_000), 0, "back again: the set starts over");
 });
 
-test("the platform goes three snatches then two clean and jerks; the others repeat their set", () => {
-  const s = LIFTS.snatch.length, c = LIFTS.clean.length;
-  assert.deepEqual(liftAt("platform", 0), { lift: "snatch", t: 0 });
-  assert.equal(liftAt("platform", 2 * s + 1).lift, "snatch");
-  assert.deepEqual(liftAt("platform", 3 * s + 1), { lift: "clean", t: 1 });
-  assert.equal(liftAt("platform", 3 * s + c + 1).lift, "clean");
-  assert.deepEqual(liftAt("platform", 3 * s + 2 * c + 1), { lift: "snatch", t: 1 });
-  for (const station of ["rack", "bench", "pullup"] as const) {
-    const lift = PROGRAMS[station][0]!, n = LIFTS[lift].length;
-    assert.ok(n > 5 * 2 + SET_REST, `${lift} is a set of five and a rest`);
-    assert.deepEqual(liftAt(station, n + 2), { lift, t: 2 });
+test("the bars go by who is at each station, and a new visit starts the routine over", () => {
+  const play = new GymPlayback();
+  const visit = { station: "rack" as const, seed: "a", until: Infinity };
+  play.arrive("a", true, 1000, visit);
+  play.arrive("b", false, 1000, { station: "bench", seed: "b", until: Infinity });
+  assert.equal(play.lifterAt("rack"), "a");
+  assert.equal(play.lifterAt("bench"), null);
+  play.arrive("a", true, 4000, visit);
+  assert.equal(play.seconds("a", 4000), 3, "staying keeps the clock");
+  assert.deepEqual({ ...play.pose("a", 4000, 1, newPose()) }, { ...stationPose("rack", 3, 1, newPose(), "a") });
+  play.arrive("a", true, 5000, { station: "platform", seed: "a:2", until: 60_000 });
+  assert.equal(play.seconds("a", 5000), 0, "somewhere new: the routine starts over");
+  assert.equal(play.lifterAt("rack"), null);
+  assert.equal(play.lifterAt("platform"), "a");
+  play.arrive("a", false, 6000);
+  assert.equal(play.pose("a", 6000, 1, newPose()), null);
+});
+
+const seeds = Array.from({ length: 40 }, (_, i) => `lifter-${i}`);
+
+test("a routine is three sets, each with a rest after it, changing exercise where the station has two", () => {
+  for (const station of STATIONS) {
+    const lifts = new Set<Lift>(), gestures = new Set<string>();
+    const shapes = new Set<string>();
+    for (const seed of seeds) {
+      const r = routine(station, seed);
+      assert.deepEqual(routine(station, seed), r, "the same seed, the same routine");
+      assert.equal(r.length, SETS * 2);
+      let at = 0;
+      r.forEach((seg, i) => {
+        assert.equal(seg.at, at, "back to back");
+        at += seg.length;
+        if (i % 2 === 0) {
+          assert.equal(seg.rest, null, "a set");
+          assert.ok(EXERCISES[station].includes(seg.lift));
+          assert.ok(station === "platform" ? seg.reps >= 2 && seg.reps <= 3 : seg.reps === 1);
+          assert.equal(seg.length, seg.reps * LIFTS[seg.lift].length);
+          lifts.add(seg.lift);
+        } else {
+          assert.ok(seg.rest && seg.length >= REST_MIN && seg.length <= REST_MAX, `${station}: a rest of ${seg.length}s`);
+          gestures.add(seg.rest);
+        }
+      });
+      // Each rest in a routine is a different one, and a station with two exercises does both.
+      assert.equal(new Set(r.filter((g) => g.rest).map((g) => g.rest)).size, SETS);
+      assert.equal(new Set(r.filter((g) => !g.rest).map((g) => g.lift)).size, Math.min(2, EXERCISES[station].length), `${station} ${seed}`);
+      shapes.add(r.map((g) => `${g.lift}${g.reps}${g.rest}${g.length}`).join());
+    }
+    assert.deepEqual(lifts, new Set(EXERCISES[station]));
+    assert.deepEqual(gestures, new Set(GESTURES));
+    assert.ok(shapes.size >= 10, `${station}: lifters vary (${shapes.size} routines of ${seeds.length})`);
+  }
+});
+
+test("resting, the hands are off the bar, the bar is where it rests and nothing jumps into or out of it", () => {
+  for (const station of STATIONS) {
+    for (const seed of seeds.slice(0, 8)) {
+      const r = routine(station, seed), total = r.at(-1)!.at + r.at(-1)!.length;
+      const rest = restingBar(station, newPose());
+      let rests = 0;
+      for (let t = 0; t < total * 2; t += 0.05) {
+        const p = { ...sessionPose(station, seed, t, Infinity, 1, newPose()) };
+        if (p.rest) {
+          rests++;
+          assert.ok(p.grip < 1e-9 && !p.moving, `${station} ${seed} ${t.toFixed(2)}: still, hands off the bar`);
+          assert.ok(Math.abs(p.barY - rest.barY) < 1e-9 && Math.abs(p.barZ - rest.barZ) < 1e-9, `${station}: the bar back where it rests`);
+          assert.equal(p.sit, station === "bench", "sat up on the bench, standing elsewhere");
+        }
+      }
+      assert.ok(rests > 0);
+      // The bench's lifter sits up and lies back down; everywhere else they rest where the set left them.
+      if (station === "bench") continue;
+      for (const seg of r) {
+        const a = { ...sessionPose(station, seed, seg.at - 0.01, Infinity, 1, newPose()) }, b = { ...sessionPose(station, seed, seg.at + 0.01, Infinity, 1, newPose()) };
+        for (const k of ["rootY", "rootZ", "thigh", "bend", "barY", "barZ", "grip"] as const) assert.ok(Math.abs(a[k] - b[k]) < 0.02, `${station} ${seed}: ${k} jumps at ${seg.at}s`);
+      }
+    }
+  }
+});
+
+test("the gestures come in once the set is down and go before the next, so the hands are free to lift", () => {
+  for (const station of STATIONS) {
+    const r = routine(station, "g");
+    for (const seg of r) {
+      const mid = sessionPose(station, "g", seg.at + seg.length / 2, Infinity, 1, newPose());
+      if (!seg.rest) { assert.equal(gestureAt(mid), 0); continue; }
+      assert.equal(gestureAt(mid), 1, "fully into it mid-rest");
+      assert.equal(gestureAt(sessionPose(station, "g", seg.at + 0.05, Infinity, 1, newPose())), 0);
+      assert.equal(gestureAt(sessionPose(station, "g", seg.at + seg.length - 0.05, Infinity, 1, newPose())), 0);
+    }
+  }
+});
+
+test("with a time to leave, a set that would not be over is a rest, so nobody walks off mid-set", () => {
+  for (const station of STATIONS) {
+    for (const seed of seeds.slice(0, 10)) {
+      for (let budget = 0; budget < 120; budget += 3.7) {
+        // As they leave: resting, or a set just over, the bar down and standing still.
+        const at = sessionPose(station, seed, budget - 0.01, budget, 1, newPose());
+        assert.ok(budget < 0.01 || at.rest || (at.grip < 1e-9 && !at.moving), `${station} ${seed}: done when they leave at ${budget.toFixed(1)}s`);
+        // Never past the routine's end into a second round.
+        for (let t = 0; t < budget; t += 0.5) {
+          const s = sessionAt(station, seed, t, budget);
+          if (s.rest) continue;
+          const seg = routine(station, seed).find((g) => !g.rest && t >= g.at && t < g.at + g.length)!;
+          assert.ok(seg && seg.at + seg.length <= budget, `${station} ${seed}: a set at ${t}s that ends by ${budget.toFixed(1)}s`);
+        }
+      }
+      // Done with time to spare: a rest until they go.
+      const r = routine(station, seed), total = r.at(-1)!.at + r.at(-1)!.length;
+      const after = sessionAt(station, seed, total + 5, total + 20);
+      assert.ok(after.done && after.rest === "breathe");
+    }
+  }
+});
+
+test("sat on the bench: the hips on its pad and the feet flat on the floor, whatever the height", () => {
+  for (const h of [0.92, 1, 1.08]) {
+    const p = sitPose(h, newPose());
+    assert.ok(!p.lie && p.sit);
+    assert.ok(Math.abs((p.rootY + HIP) * h - SEAT_Y) < 1e-9, "the hips at the seat");
+    assert.ok(p.rootZ * h < BENCH_TO - 0.1 && p.rootZ * h > BENCH_FROM, `over the pad (${(p.rootZ * h).toFixed(2)} m)`);
+    const feet = p.rootY + HIP - THIGH * Math.cos(-p.thigh) - SHIN * Math.cos(p.ankle) - FOOT;
+    assert.ok(Math.abs(feet) < 1e-9, "feet on the floor");
   }
 });
 

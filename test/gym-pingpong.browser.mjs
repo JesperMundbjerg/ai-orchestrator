@@ -3,8 +3,9 @@
 // Starts its own isolated office through the scratch launcher (test/gym-office.fixture.ts: a fake world of idle agents,
 // herdr disabled, nothing read from sessions or accounts), on a free port that is never 4870, in headless Chromium,
 // and closes both in finally. Two idle agents pair up at the table; the clock is held at the serve, its two bounces and
-// the rally's hits and bounces, to check the ball meets each paddle, lands on the right side and clears the net, with
-// pictures at desktop and phone width and a short video. Then everyone gets work: the players leave and the ball rests.
+// the rally's hits and bounces, to check the ball meets each paddle, lands on the right side and clears the net, and
+// at a point's end: the ball caught, held through the pause and tossed for the next serve. Pictures at desktop and
+// phone width, a minute of video (several points, each kind of ending) and a short one at phone width. Then everyone gets work: the players leave and the ball rests.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -30,8 +31,16 @@ const office = await spawnScratchOffice(process.execPath, ["test/gym-office.fixt
   stdio: "ignore",
 });
 
-// The moments to hold: the serve, its bounces, a rally shot over the net and its bounce, and each hit's paddle.
-const serve = RALLY.hits[0], first = RALLY.flights[1], second = RALLY.flights[2], shot = RALLY.flights[4];
+// The moments to hold: the serve, its bounces, a rally shot over the net and its bounce, and each hit's paddle; then
+// the first point's end, the pause holding the ball, and the next toss; a long ball and a net ball.
+const serve = RALLY.hits[0];
+const after = (t) => RALLY.flights.filter((f) => f.t0 >= t - 1e-6);
+const [first, second] = after(serve.at);
+const shot = after(RALLY.hits[1].at)[0];
+const end = RALLY.holds.find((h) => h.winner !== undefined && h.t0 > serve.at);
+const next = RALLY.hits.find((h) => h.serve && h.at > end.t0);
+const longBall = RALLY.points.find((p) => p.ending === "long"), netBall = RALLY.points.find((p) => p.ending === "net");
+const caught = (p) => RALLY.holds.find((h) => h.t0 > p.t0 && h.winner !== undefined).t0;
 const MOMENTS = [
   { name: "1-toss", at: serve.at - 0.25 },
   { name: "2-serve", at: serve.at },
@@ -42,6 +51,11 @@ const MOMENTS = [
   { name: "7-rally-over-net", at: shot.t0 + ((shot.t1 - shot.t0) * Math.abs(shot.a0)) / Math.abs(shot.a1 - shot.a0) },
   { name: "8-rally-bounce", at: shot.t1 },
   { name: "9-rally-hit", at: RALLY.hits[3].at },
+  { name: "10-point-caught", at: end.t0 + 0.05 },
+  { name: "11-pause", at: (end.t1 + next.at) / 2 },
+  { name: "12-next-toss", at: next.at - 0.25 },
+  { name: "13-long-caught", at: caught(longBall) + 0.05 },
+  { name: "14-net-caught", at: caught(netBall) + 0.05 },
 ];
 
 let browser;
@@ -137,6 +151,10 @@ try {
     assert.equal(tableSide("3-serve-first-bounce"), serve.end, "the serve bounces first on the server's side");
     assert.equal(tableSide("5-serve-second-bounce"), 1 - serve.end, "then on the other side");
     for (const name of ["4-serve-over-net", "7-rally-over-net"]) assert.ok(results[name].ball[1] > TABLE_H + NET_H + BALL_R, `${name}: clear of the net`);
+    // Between points the ball is off the table and still: in the catcher's hand, then the server's.
+    for (const name of ["10-point-caught", "11-pause", "13-long-caught", "14-net-caught"]) {
+      assert.ok(Math.abs(results[name].ball[1] - (TABLE_H + BALL_R)) > 0.008, `${name}: the ball is in a hand, not on the table`);
+    }
     await writeFile(join(shots, "measurements.json"), JSON.stringify(results, null, 2));
   }
   // At phone width: the serve, a rally shot over the net and a hit.
@@ -152,12 +170,17 @@ try {
       await page.screenshot({ path: join(shots, `phone-${m.name}.png`) });
     }
   }
-  // Videos in real time, at each width: a whole point and into the next.
-  for (const [name, viewport, options] of [["desktop", { width: 1280, height: 800 }, {}], ["phone", { width: 390, height: 844 }, { distance: 6.2, side: 0.6, pitch: -0.55, fov: 78 }]]) {
+  // Videos in real time from the players' arrival: a minute of points at desktop width, and the first at phone width.
+  for (const [name, viewport, options, ms] of [["desktop", { width: 1280, height: 800 }, {}, 62_000], ["phone", { width: 390, height: 844 }, { distance: 6.2, side: 0.6, pitch: -0.55, fov: 78 }, 14_000]]) {
     const v = await open(viewport, true);
     await playing(v.page);
+    // Wound back to the players' arrival, so it opens on the pick-up and the first serve.
+    await v.page.evaluate(() => {
+      const ping = window.__scene().ping, now = Date.now(), shift = ping.playback.seconds(now) * 1000, prev = Date.now;
+      Date.now = () => prev() - shift;
+    });
     await look(v.page, options);
-    await v.page.waitForTimeout(14_000);
+    await v.page.waitForTimeout(ms);
     await v.context.close();
     await v.page.video().saveAs(join(shots, `${name}-pingpong.webm`));
     assert.deepEqual(v.errors, []);
@@ -178,7 +201,7 @@ try {
   }
   assert.deepEqual(desk.errors, []);
   assert.deepEqual(phone.errors, []);
-  console.log(`Ping pong checked in a scratch office on port ${port}: two players paired, ball on each paddle at its hit, bounces on the right sides and over the net, players leave on work. Screenshots and videos in ${shots}`);
+  console.log(`Ping pong checked in a scratch office on port ${port}: two players paired, ball on each paddle at its hit, bounces on the right sides and over the net, held in hand between points, players leave on work. Screenshots and videos in ${shots}`);
 } finally {
   await browser?.close();
   await office.stop();

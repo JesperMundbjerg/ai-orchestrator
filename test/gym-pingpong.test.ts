@@ -5,7 +5,7 @@ import type { Vec2 } from "../src/ui/world/spatial.ts";
 import { place, planBuilding, routeIn, type BuildingPlan } from "../src/ui/world/building.ts";
 import { FOREARM, gymCorner, gymSpot, handFrom, shoulderFrame, STATIONS } from "../src/ui/world/gym.ts";
 import {
-  BALL_R, ballAt, BLADE, choosePingPong, NET_H, newPing, newPlayer, paddleAt, pingCorner, pingSpot, PingPlayback, pingTable, playerPose, RALLY, SHOTS, TABLE_H, TABLE_L, TABLE_W, TABLE_X, TABLE_Z, type End,
+  bakeRally, BALL_R, BALL_REST, ballAt, BLADE, choosePingPong, handAt, NET_H, newHand, newPing, newPlayer, ON_HAND, paddleAt, pingCorner, pingSpot, PingPlayback, pingTable, playerPose, RALLY, STAND, TABLE_H, TABLE_L, TABLE_W, TABLE_X, TABLE_Z, type End, type Ping, type Player,
 } from "../src/ui/world/pingpong.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({ id, identity: id, name: id, harness: "manual", cwd: null, project: null, branch: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra });
@@ -62,42 +62,75 @@ test("the rally starts once both are at the table and stops when either walks of
 const g = 9.81;
 const top = TABLE_H + BALL_R;
 const at = (t: number) => ({ ...ballAt(t, newPing()) });
+const side = (a: number): End => (a < 0 ? 0 : 1);
+/** The flights between two moments. */
+const during = (t0: number, t1: number) => RALLY.flights.filter((f) => f.t0 >= t0 - 1e-9 && f.t1 <= t1 + 1e-9);
 
-test("the serve bounces once on each side and every rally shot once on the far one, on the table and over the net", () => {
-  const { hits, flights } = RALLY;
-  assert.equal(hits.length, 2 * (SHOTS + 1), "two points a round, the last shot of each caught");
-  assert.deepEqual(hits.filter((h) => h.serve).map((h) => h.end), [0, 1], "each end serves in turn");
-  for (let i = 0; i + 1 < hits.length; i++) {
-    const h = hits[i]!, next = hits[i + 1]!;
-    if (next.end === h.end) continue;
-    const bounces = flights.filter((f) => f.bounce && f.t1 > h.at && f.t1 < next.at);
-    const side = (a: number) => (a < 0 ? 0 : 1);
-    if (h.serve) assert.deepEqual(bounces.map((f) => side(f.a1)), [h.end, next.end], "the serve: the server's side, then the other's");
-    else assert.deepEqual(bounces.map((f) => side(f.a1)), [next.end], "a shot: once, on the far side");
-    for (const f of bounces) {
-      assert.ok(Math.abs(f.a1) < TABLE_L / 2 - 0.05 && Math.abs(f.c1) < TABLE_W / 2 - 0.05, "on the table");
-      assert.ok(Math.abs(at(f.t1).y - top) < 1e-9, "on its top");
+test("every point is served by whoever has the ball: a bounce on each side, then each shot once on the far side, on the table and over the net", () => {
+  let server: End = 0;
+  for (const p of RALLY.points) {
+    assert.equal(p.server, server, "the one with the ball serves");
+    const hits = RALLY.hits.filter((h) => h.at >= p.t0 && h.at < p.t1);
+    assert.equal(hits[0]!.serve && hits[0]!.end, p.server);
+    assert.equal(hits.length, p.shots + (p.ending === "miss" ? 0 : 1), "the shots, and the one that goes long or into the net");
+    hits.forEach((h, i) => assert.equal(h.end, i % 2 ? 1 - p.server : p.server, "in turn"));
+    for (let i = 0; i < hits.length; i++) {
+      const h = hits[i]!, next = hits[i + 1]?.at ?? p.t1;
+      const last = i === hits.length - 1;
+      const bounces = during(h.at, next).filter((f) => f.bounce);
+      if (last && p.ending === "long") assert.equal(bounces.length, 0, "long: over the far end without touching it");
+      else if (last && p.ending === "net") {
+        assert.ok(bounces.every((f) => side(f.a1) === h.end), "into the net: back on the hitter's side");
+        assert.ok(during(h.at, next).some((f) => f.roll), "and rolls off their end");
+      } else if (h.serve) assert.deepEqual(bounces.map((f) => side(f.a1)), [h.end, 1 - h.end], "the serve: the server's side, then the other's");
+      else assert.deepEqual(bounces.map((f) => side(f.a1)), [1 - h.end], "a shot: once, on the far side");
+      for (const f of bounces) {
+        assert.ok(Math.abs(f.a1) < TABLE_L / 2 - 0.05 && Math.abs(f.c1) < TABLE_W / 2 - 0.05, "on the table");
+        assert.ok(Math.abs(at(f.t1).y - top) < 1e-9, "on its top");
+      }
+      // Over the net, unless it is the one into it.
+      if (last && p.ending === "net") continue;
+      for (let t = h.at; t < next; t += 0.002) {
+        const a = at(t), b = at(t + 0.002);
+        if (Math.sign(a.a) !== Math.sign(b.a)) assert.ok(a.y > TABLE_H + NET_H + BALL_R, `over the net at ${t.toFixed(2)}s`);
+      }
     }
-    // Over the net: wherever the ball crosses the middle, it is above the net.
-    for (let t = h.at; t < next.at; t += 0.002) {
-      const p = at(t), q = at(t + 0.002);
-      if (Math.sign(p.a) !== Math.sign(q.a)) assert.ok(p.y > TABLE_H + NET_H + BALL_R, `over the net at ${t.toFixed(2)}s`);
-    }
+    server = RALLY.holds.find((h) => Math.abs(h.t1 - p.t1) < 1e-9)!.end;
   }
 });
 
-test("the ball flies in arcs under gravity, bounces believably, and meets each paddle as it swings", () => {
+test("no two points alike: how many shots, how fast and how high, where they land and where they are met, and how each ends", () => {
+  const shots = RALLY.points.map((p) => p.shots);
+  assert.ok(Math.min(...shots) <= 2 && Math.max(...shots) >= 7, `from ${Math.min(...shots)} to ${Math.max(...shots)} shots`);
+  for (const ending of ["miss", "long", "net"] as const) assert.ok(RALLY.points.filter((p) => p.ending === ending).length >= 2, `${ending} at least twice`);
+  assert.ok(new Set(RALLY.points.map((p) => p.winner)).size === 2, "both win points");
+  const across = RALLY.flights.filter((f) => !f.roll && Math.abs(f.a1 - f.a0) > 1);
+  const speeds = across.map((f) => Math.abs(f.a1 - f.a0) / (f.t1 - f.t0)), tops = across.map((f) => f.y0 + (f.vy * f.vy) / (2 * f.g));
+  assert.ok(Math.max(...speeds) / Math.min(...speeds) > 1.8, "slow and fast");
+  assert.ok(Math.max(...tops) - Math.min(...tops) > 0.4, "flat and lobbed");
+  const lands = RALLY.flights.filter((f) => f.bounce).map((f) => Math.abs(f.a1));
+  assert.ok(Math.max(...lands) - Math.min(...lands) > 0.6, "short and deep");
+  const met = RALLY.hits.map((h) => STAND - Math.abs(h.a));
+  assert.ok(Math.max(...met) - Math.min(...met) > 0.35, "met close to the table and back from it");
+  const durations = RALLY.points.map((p) => p.t1 - p.t0);
+  assert.ok(Math.max(...durations) > 2 * Math.min(...durations), "short points and long ones");
+  // Seeded: the same seed, the same match; another, another.
+  assert.deepEqual(bakeRally(), RALLY);
+  assert.notDeepEqual(bakeRally("another").points.map((p) => p.shots), RALLY.points.map((p) => p.shots));
+});
+
+test("the ball flies in arcs under gravity, bounces believably, rolls to a stop, and meets each paddle as it swings", () => {
   for (const f of RALLY.flights) {
     if (f.t1 - f.t0 < 0.05) continue;
-    // A parabola: constant speed along the table, falling at g.
     const T = f.t1 - f.t0, dt = T / 4;
     const y = (t: number) => at(t).y;
     const accel = (y(f.t0 + 3 * dt) - 2 * y(f.t0 + 2 * dt) + y(f.t0 + dt)) / (dt * dt);
-    assert.ok(Math.abs(accel + g) < 1e-6, "falling at g");
+    assert.ok(Math.abs(accel + f.g) < 1e-6, f.roll ? "rolling flat" : "falling at g");
+    assert.equal(f.g, f.roll ? 0 : g);
   }
   for (let i = 0; i + 1 < RALLY.flights.length; i++) {
     const f = RALLY.flights[i]!, next = RALLY.flights[i + 1]!;
-    if (!f.bounce) continue;
+    if (!f.bounce || next.roll) continue;
     const e = next.vy / -(f.vy - g * (f.t1 - f.t0));
     assert.ok(e > 0.7 && e < 0.95, `a bounce gives back ${e.toFixed(2)} of its speed`);
   }
@@ -109,36 +142,87 @@ test("the ball flies in arcs under gravity, bounces believably, and meets each p
   }
 });
 
-test("a round loops seamlessly and nothing jumps: the ball, each paddle and each player", () => {
+test("between points the ball is caught or picked up, held a moment, tossed and served: it never jumps or stops in the air", () => {
   const p = newPing(), q = newPing();
-  const close = (a: { a: number; y: number; c: number }, b: { a: number; y: number; c: number }, d: number) => Math.hypot(a.a - b.a, a.y - b.y, a.c - b.c) < d;
-  assert.ok(close(at(0), at(RALLY.length - 1e-9), 1e-3), "the ball");
-  for (const end of [0, 1] as const) assert.ok(close(paddleAt(end, 0, p), paddleAt(end, RALLY.length - 1e-9, q), 1e-3), `paddle ${end}`);
-  for (let t = 0; t < 2 * RALLY.length; t += 0.01) {
-    assert.ok(close(ballAt(t, p), ballAt(t + 0.01, q), 0.07), `the ball jumps at ${t.toFixed(2)}s`);
-    for (const end of [0, 1] as const) assert.ok(close(paddleAt(end, t, p), paddleAt(end, t + 0.01, q), 0.04), `paddle ${end} jumps at ${t.toFixed(2)}s`);
+  const close = (a: Ping, b: Ping, d: number) => Math.hypot(a.a - b.a, a.y - b.y, a.c - b.c) < d;
+  // Lying on the table where it rests when nobody plays, until the first server picks it up.
+  assert.deepEqual(at(0), BALL_REST);
+  assert.deepEqual(at(RALLY.holds[0]!.t0 - 0.01), BALL_REST);
+  for (let t = 0; t < RALLY.length + 20; t += 0.005) {
+    assert.ok(close(ballAt(t, p), ballAt(t + 0.005, q), 0.035), `the ball jumps at ${t.toFixed(3)}s`);
+    assert.ok(p.y >= BALL_R - 1e-9, "never through the floor");
+  }
+  for (const h of RALLY.holds) {
+    // In the free hand from the catch to the toss: from where it was caught.
+    const caught = at(h.t0 - 1e-6), hand = handAt(h.end, h.t0, newHand());
+    assert.ok(close(caught, hand, 1e-3) && Math.abs(hand.w - 1) < 1e-9, `taken in the hand at ${h.t0.toFixed(2)}s`);
+  }
+  // Each serve: held still for a moment before the toss, which goes up and comes down onto the paddle.
+  for (const point of RALLY.points) {
+    const serve = RALLY.hits.find((h) => h.at >= point.t0 && h.serve)!;
+    const hold = RALLY.holds.find((h) => h.t0 === point.t0)!;
+    assert.ok(hold.t1 - hold.t0 >= 0.6, "a breath before the serve");
+    const still = (t: number) => Math.hypot(...(["a", "y", "c"] as const).map((k) => at(t + 0.05)[k] - at(t)[k])) < 1e-6;
+    assert.ok(still(hold.t0 + 0.05) && still(hold.t1 - 0.35), "held still");
+    const toss = RALLY.flights.find((f) => f.t0 === hold.t1)!;
+    assert.ok(toss.vy > 1.5 && toss.t1 === serve.at, "tossed up and met on the way down");
   }
 });
 
-test("each player's paddle hand reaches the blade to where the rally has it, at every height and build", () => {
+test("the players never jump: every joint, the step and the reach, through the whole match and round again, easing in from standing", () => {
   const plan = planBuilding([], [], []);
   const table = pingTable(plan);
-  const pose = newPlayer(), paddle = newPing(), target: [number, number, number] = [0, 0, 0];
   for (const end of [0, 1] as const) {
     const spot = pingSpot(plan, end);
+    const a = newPlayer(), b = newPlayer();
+    playerPose(table, spot.pos[0], spot.pos[1], spot.facing, end, 0, 1, 1, a);
+    for (const v of [a.rootX, a.rootY, a.rootZ, a.thigh, a.bend, a.head, a.right.x, a.right.elbow, a.left.x]) assert.ok(Math.abs(v) < 1e-9, "standing as they arrive");
+    const flat = (p: Player) => [p.rootX, p.rootY, p.rootZ, p.stride, p.thigh, p.knee, p.bend, p.head, p.right.x, p.right.y, p.right.z, p.right.elbow, p.left.x, p.left.y, p.left.z, p.left.elbow];
+    const names = ["rootX", "rootY", "rootZ", "stride", "thigh", "knee", "bend", "head", "right.x", "right.y", "right.z", "right.elbow", "left.x", "left.y", "left.z", "left.elbow"];
+    for (let t = 0; t < RALLY.length + 20; t += 0.01) {
+      playerPose(table, spot.pos[0], spot.pos[1], spot.facing, end, t, 1, 1, a);
+      playerPose(table, spot.pos[0], spot.pos[1], spot.facing, end, t + 0.01, 1, 1, b);
+      const p = flat(a), q = flat(b);
+      for (let i = 0; i < p.length; i++) {
+        // At most 0.25 rad (or 2.5 cm) a hundredth of a second: under a frame's worth of blur at 20 fps.
+        assert.ok(Math.abs(p[i]! - q[i]!) < (i < 3 ? 0.025 : 0.25), `end ${end}: ${names[i]} jumps ${(q[i]! - p[i]!).toFixed(3)} at ${t.toFixed(2)}s`);
+      }
+    }
+  }
+});
+
+test("each player's paddle hand reaches the blade, and the free hand the ball it holds, at every height and build", () => {
+  const plan = planBuilding([], [], []);
+  const table = pingTable(plan);
+  const pose = newPlayer(), paddle = newPing(), hand = newHand(), target: [number, number, number] = [0, 0, 0];
+  for (const end of [0, 1] as const) {
+    const spot = pingSpot(plan, end);
+    const local = (p: Ping) => {
+      const [wx, wz] = table.world(p.a, p.c);
+      return place([0, 0], -spot.facing, [wx - spot.pos[0], wz - spot.pos[1]]);
+    };
     for (const [h, build] of [[0.92, 0.9], [1, 1], [1.08, 1.2]] as const) {
-      let worst = 0;
-      for (let t = 0; t < RALLY.length; t += 0.05) {
+      let worst = 0, worstHand = 0, worstAt = 0, worstHandAt = 0;
+      for (let t = 0.6; t < RALLY.length; t += 0.05) {
         playerPose(table, spot.pos[0], spot.pos[1], spot.facing, end, t, h, build, pose);
         paddleAt(end, t, paddle);
-        const [wx, wz] = table.world(paddle.a, paddle.c);
-        const [lx, lz] = place([0, 0], -spot.facing, [wx - spot.pos[0], wz - spot.pos[1]]);
-        shoulderFrame((lx - pose.rootX) / h, paddle.y / h - pose.rootY, lz / h, pose.bend, build, 1, target);
+        const [lx, lz] = local(paddle);
+        shoulderFrame((lx - pose.rootX) / h, paddle.y / h - pose.rootY, (lz - pose.rootZ) / h, pose.bend, build, 1, target);
         const blade = handFrom(pose.right, FOREARM + BLADE);
-        worst = Math.max(worst, Math.hypot(blade[0] - target[0], blade[1] - target[1], blade[2] - target[2]) * h);
-        assert.ok(Math.abs(pose.rootX) <= 0.5 && Math.abs(pose.head) <= 0.9);
+        const miss = Math.hypot(blade[0] - target[0], blade[1] - target[1], blade[2] - target[2]) * h;
+        if (miss > worst) { worst = miss; worstAt = t; }
+        handAt(end, t, hand);
+        if (hand.w > 0.999) {
+          const [hx, hz] = local(hand);
+          shoulderFrame((hx - pose.rootX) / h, (hand.y - ON_HAND) / h - pose.rootY, (hz - pose.rootZ) / h, pose.bend, build, -1, target);
+          const fist = handFrom(pose.left, FOREARM);
+          const off = Math.hypot(fist[0] - target[0], fist[1] - target[1], fist[2] - target[2]) * h;
+          if (off > worstHand) { worstHand = off; worstHandAt = t; }
+        }
+        assert.ok(Math.abs(pose.rootX) <= 0.5 && Math.abs(pose.head) <= 0.9 && pose.rootZ >= -0.25 && pose.rootZ <= 0.45);
       }
-      assert.ok(worst < 0.03, `end ${end} at ${h}/${build}: the blade ${worst.toFixed(3)} m from where it should be`);
+      assert.ok(worst < 0.03, `end ${end} at ${h}/${build}: the blade ${worst.toFixed(3)} m from where it should be at ${worstAt.toFixed(2)}s`);
+      assert.ok(worstHand < 0.03, `end ${end} at ${h}/${build}: the free hand ${worstHand.toFixed(3)} m from the ball at ${worstHandAt.toFixed(2)}s`);
     }
   }
 });

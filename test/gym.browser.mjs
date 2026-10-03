@@ -12,7 +12,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { spawnScratchOffice } from "../scripts/lib/scratch-office.ts";
-import { gymCorner, gymSpot, LIFTS, PLATE_R, PLATFORM_H, PULL_Y, PULL_Z, STATIONS } from "../src/ui/world/gym.ts";
+import { gymCorner, gymSpot, PLATE_R, PLATFORM_H, PULL_Y, PULL_Z, routine, STATIONS } from "../src/ui/world/gym.ts";
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "playwright");
 const home = await mkdtemp(join(tmpdir(), "inbox-gym-test-"));
@@ -30,29 +30,43 @@ const office = await spawnScratchOffice(process.execPath, ["test/gym-office.fixt
   stdio: "ignore",
 });
 
-// What each lift looks like, as seconds into its station's round.
-const clean = LIFTS.snatch.length * 3;
+// What each lift looks like, as seconds into a set of it; each lifter's routine (seeded by their id) says when that is.
 const PHASES = [
-  { station: "platform", name: "snatch-1-setup", at: 1.3 },
-  { station: "platform", name: "snatch-2-pull", at: 2.1 },
-  { station: "platform", name: "snatch-3-catch", at: 2.7 },
-  { station: "platform", name: "snatch-4-overhead", at: 4.3 },
-  { station: "platform", name: "snatch-5-drop", at: 5.0 },
-  { station: "platform", name: "clean-1-setup", at: clean + 1.3 },
-  { station: "platform", name: "clean-2-front-squat", at: clean + 2.7 },
-  { station: "platform", name: "clean-3-shoulders", at: clean + 4.4 },
-  { station: "platform", name: "clean-4-dip", at: clean + 5.0 },
-  { station: "platform", name: "clean-5-jerk", at: clean + 6.4 },
-  { station: "rack", name: "squat-1-unrack", at: 1.2 },
-  { station: "rack", name: "squat-2-standing", at: 2.4 },
-  { station: "rack", name: "squat-3-bottom", at: 3.8 },
-  { station: "bench", name: "bench-1-lockout", at: 2.2 },
-  { station: "bench", name: "bench-2-chest", at: 3.6 },
-  { station: "pullup", name: "pullup-1-hang", at: 1.6 },
-  { station: "pullup", name: "pullup-2-top", at: 2.6 },
+  { station: "platform", lift: "snatch", name: "snatch-1-setup", at: 1.3 },
+  { station: "platform", lift: "snatch", name: "snatch-2-pull", at: 2.1 },
+  { station: "platform", lift: "snatch", name: "snatch-3-catch", at: 2.7 },
+  { station: "platform", lift: "snatch", name: "snatch-4-overhead", at: 4.3 },
+  { station: "platform", lift: "snatch", name: "snatch-5-drop", at: 5.0 },
+  { station: "platform", lift: "clean", name: "clean-1-setup", at: 1.3 },
+  { station: "platform", lift: "clean", name: "clean-2-front-squat", at: 2.7 },
+  { station: "platform", lift: "clean", name: "clean-3-shoulders", at: 4.4 },
+  { station: "platform", lift: "clean", name: "clean-4-dip", at: 5.0 },
+  { station: "platform", lift: "clean", name: "clean-5-jerk", at: 6.4 },
+  { station: "rack", lift: "squat", name: "squat-1-unrack", at: 1.2 },
+  { station: "rack", lift: "squat", name: "squat-2-standing", at: 2.4 },
+  { station: "rack", lift: "squat", name: "squat-3-bottom", at: 3.8 },
+  { station: "rack", lift: "frontsquat", name: "frontsquat-1-unrack", at: 1.6 },
+  { station: "rack", lift: "frontsquat", name: "frontsquat-2-standing", at: 3.0 },
+  { station: "rack", lift: "frontsquat", name: "frontsquat-3-bottom", at: 4.4 },
+  { station: "bench", lift: "bench", name: "bench-1-lockout", at: 2.2 },
+  { station: "bench", lift: "bench", name: "bench-2-chest", at: 3.6 },
+  { station: "pullup", lift: "pullup", name: "pullup-1-hang", at: 1.6 },
+  { station: "pullup", lift: "pullup", name: "pullup-2-top", at: 2.6 },
+  { station: "pullup", lift: "kneeraise", name: "kneeraise-1-hang", at: 1.6 },
+  { station: "pullup", lift: "kneeraise", name: "kneeraise-2-top", at: 2.8 },
+  // The rests between sets: sat up on the bench, and the first rest at each of the others.
+  { station: "bench", rest: true, name: "rest-bench-sit", at: 3 },
+  { station: "platform", rest: true, name: "rest-platform", at: 3 },
+  { station: "rack", rest: true, name: "rest-rack", at: 3 },
+  { station: "pullup", rest: true, name: "rest-pullup", at: 3 },
 ];
+/** When a phase comes, in ms on the office's clock, for this lifter: into the first set of its lift, or the first rest. */
+const when = (p, t) => {
+  const seg = routine(p.station, t.seed).find((g) => (p.rest ? !!g.rest : !g.rest && g.lift === p.lift));
+  return t.start + (seg.at + p.at) * 1000;
+};
 // Gripping the bar at these: the hands must be on it.
-const GRIPPED = new Set(PHASES.filter((p) => !/drop/.test(p.name)).map((p) => p.name));
+const GRIPPED = new Set(PHASES.filter((p) => !p.rest && !/drop/.test(p.name)).map((p) => p.name));
 
 let browser;
 try {
@@ -80,7 +94,7 @@ try {
           const p = f.memoizedProps;
           if (p?.plan?.rooms) plan = p.plan;
           if (p?.value?.getState && p.value.getState()?.scene) store = p.value.getState();
-          if (p?.value?.starts instanceof Map && typeof p.value.seconds === "function") gym = p.value;
+          if (p?.value?.training instanceof Map && typeof p.value.seconds === "function") gym = p.value;
           if (p?.agent && p?.spot) avatars.set(p.agent.id, { id: p.agent.id, status: p.agent.status, spot: p.spot });
           let h = f.memoizedState;
           while (h && typeof h === "object") { const v = h.memoizedState?.current; if (v && typeof v.eye === "number" && typeof v.yaw === "number") view = v; h = h.next; }
@@ -138,19 +152,19 @@ try {
   const desk = await open({ width: 1600, height: 1000 });
   {
     const { page } = desk;
-    await page.waitForFunction(() => window.__scene().gym?.starts.size === 4, null, { timeout: 30_000 });
+    await page.waitForFunction(() => window.__scene().gym?.training.size === 4, null, { timeout: 30_000 });
     const who = await lifters(page);
     assert.deepEqual(Object.keys(who).sort(), [...STATIONS].sort(), "one idle agent at each station");
     assert.equal(new Set(Object.values(who)).size, 4);
-    const starts = await page.evaluate(() => Object.fromEntries(window.__scene().gym.starts));
-    await page.evaluate((t) => { window.__now = t; }, Math.max(...Object.values(starts)) + 2000);
+    const training = await page.evaluate(() => Object.fromEntries([...window.__scene().gym.training].map(([id, t]) => [id, { ...t }])));
+    await page.evaluate((t) => { window.__now = t; }, Math.max(...Object.values(training).map((t) => t.start)) + 2000);
     await overview(page);
     await settle(page, 1600);
     await page.screenshot({ path: join(shots, "desktop-gym-overview.png") });
     const gaps = {};
     for (const p of PHASES) {
       const lifter = who[p.station];
-      await page.evaluate((t) => { window.__now = t; }, starts[lifter] + p.at * 1000);
+      await page.evaluate((t) => { window.__now = t; }, when(p, training[lifter]));
       await look(page, p.station, p.station === "bench" ? { side: 3.2, distance: 2.6, pitch: -0.42 } : {});
       await settle(page);
       await page.screenshot({ path: join(shots, `desktop-${p.name}.png`) });
@@ -160,7 +174,8 @@ try {
     await writeFile(join(shots, "hand-gaps.json"), JSON.stringify(gaps, null, 2));
     // A dropped snatch lands where it was picked up, on the platform.
     const lifter = who.platform;
-    await page.evaluate((t) => { window.__now = t; }, starts[lifter] + 7000);
+    // Into a snatch set, past the drop.
+    await page.evaluate((t) => { window.__now = t; }, when({ station: "platform", lift: "snatch", at: 7 }, training[lifter]));
     await settle(page, 400);
     const rest = await page.evaluate(() => window.__scene().store.scene.getObjectByName("gym-bar:platform").position.y);
     assert.ok(Math.abs(rest - (PLATE_R + PLATFORM_H)) < 0.002, `the platform bar rests on its plates (${rest})`);
@@ -169,15 +184,15 @@ try {
   const phone = await open({ width: 390, height: 844 });
   {
     const { page } = phone;
-    await page.waitForFunction(() => window.__scene().gym?.starts.size === 4, null, { timeout: 30_000 });
+    await page.waitForFunction(() => window.__scene().gym?.training.size === 4, null, { timeout: 30_000 });
     const who = await lifters(page);
-    const starts = await page.evaluate(() => Object.fromEntries(window.__scene().gym.starts));
-    await page.evaluate((t) => { window.__now = t; }, Math.max(...Object.values(starts)) + 2000);
+    const training = await page.evaluate(() => Object.fromEntries([...window.__scene().gym.training].map(([id, t]) => [id, { ...t }])));
+    await page.evaluate((t) => { window.__now = t; }, Math.max(...Object.values(training).map((t) => t.start)) + 2000);
     await overview(page, { distance: 9, fov: 75, pitch: -0.55 });
     await settle(page, 1600);
     await page.screenshot({ path: join(shots, "phone-gym-overview.png") });
-    for (const p of PHASES.filter((p) => /catch|overhead|front-squat|jerk|bottom|chest|top/.test(p.name))) {
-      await page.evaluate((t) => { window.__now = t; }, starts[who[p.station]] + p.at * 1000);
+    for (const p of PHASES.filter((p) => /catch|overhead|front-squat|jerk|bottom|chest|top|sit/.test(p.name))) {
+      await page.evaluate((t) => { window.__now = t; }, when(p, training[who[p.station]]));
       await look(page, p.station, p.station === "bench" ? { side: 3.4, distance: 3.4, pitch: -0.45, fov: 72 } : { distance: 5.4, side: 1.4, fov: 72 });
       await settle(page);
       await page.screenshot({ path: join(shots, `phone-${p.name}.png`) });
@@ -186,7 +201,7 @@ try {
   // Videos in real time: the whole gym training, at each width.
   for (const [name, viewport, options] of [["desktop", { width: 1280, height: 800 }, {}], ["phone", { width: 390, height: 844 }, { distance: 9, fov: 75, pitch: -0.55 }]]) {
     const v = await open(viewport, true);
-    await v.page.waitForFunction(() => window.__scene().gym?.starts.size === 4, null, { timeout: 30_000 });
+    await v.page.waitForFunction(() => window.__scene().gym?.training.size === 4, null, { timeout: 30_000 });
     await overview(v.page, options);
     await v.page.waitForTimeout(26_000);
     await v.context.close();
@@ -202,7 +217,7 @@ try {
     await overview(page);
     await writeFile(control, "working");
     await page.waitForFunction(() => window.__scene().avatars.every((a) => a.status === "working" && !a.spot.gym), null, { timeout: 10_000 });
-    await page.waitForFunction(() => window.__scene().gym.starts.size === 0, null, { timeout: 10_000 });
+    await page.waitForFunction(() => window.__scene().gym.training.size === 0, null, { timeout: 10_000 });
     const bar = await page.evaluate(() => window.__scene().store.scene.getObjectByName("gym-bar:platform").position.y);
     assert.ok(Math.abs(bar - (PLATE_R + PLATFORM_H)) < 0.002, "the platform bar is back on the platform");
     await page.waitForTimeout(2500);

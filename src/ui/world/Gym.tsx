@@ -5,12 +5,13 @@ import type { BuildingPlan } from "./building.ts";
 import type { Kit } from "./Furniture.tsx";
 import { lookFor } from "./look.ts";
 import { usePace } from "./Pace.tsx";
-import { BAR_LENGTH, BENCH_FROM, BENCH_TO, BENCH_TOP, GymPlayback, gymCorner, gymSpot, HOOK_Y, HOOK_Z, LAYOUT, newPose, PLATE_R, PLATFORM_H, PULL_Y, PULL_Z, restingBar, stationPose, STATIONS, UPRIGHT_Y, UPRIGHT_Z, type Station } from "./gym.ts";
+import { BAR_LENGTH, BENCH_FROM, BENCH_TO, BENCH_TOP, GymPlayback, gymCorner, gymSpot, HOOK_Y, HOOK_Z, LAYOUT, newPose, PLATE_R, PLATFORM_H, PULL_Y, PULL_Z, restingBar, STATIONS, UPRIGHT_Y, UPRIGHT_Z, type Station } from "./gym.ts";
 import type { Spot } from "./spatial.ts";
 
 // The gym as drawn: its boxes go in with the building's furniture (`furnishGym`), and what is
 // round, the bars and the plates, is a few meshes on shared geometry and materials (`GymScene`).
-// A bar is where its lifter's pose says while they train, and back where it rests otherwise.
+// A bar is where its lifter's pose says while they train, and back where it rests otherwise: the
+// lifter is whoever the gym's clock has at its station, an agent or a regular moving round.
 
 export const GymContext = createContext<GymPlayback | null>(null);
 export const useGym = () => useContext(GymContext);
@@ -114,12 +115,11 @@ const LOADS: Record<Exclude<Station, "pullup">, Array<[number, number, string]>>
 /** The bars and plates, and the pull-up rig's bar. Only a bar being lifted asks the pacer for frames. */
 export function GymScene({ plan }: { plan: BuildingPlan }) {
   const spots = useMemo(() => new Map(STATIONS.map((s) => [s, gymSpot(plan, s)] as const)), [plan]);
-  const lifters = new Map([...plan.spots].flatMap(([id, s]) => (s.gym ? [[s.gym, id] as const] : [])));
   const pull = spots.get("pullup")!;
   const tree = treeAt(plan);
   return (
     <group name="gym">
-      {(["platform", "rack", "bench"] as const).map((s) => <Barbell key={s} station={s} spot={spots.get(s)!} lifter={lifters.get(s) ?? null} />)}
+      {(["platform", "rack", "bench"] as const).map((s) => <Barbell key={s} station={s} spot={spots.get(s)!} />)}
       <group position={[pull.pos[0], 0, pull.pos[1]]} rotation-y={pull.facing}>
         <mesh geometry={BAR} material={STEEL} position={[0, PULL_Y, PULL_Z]} rotation-z={Math.PI / 2} scale={[1.6, 1.7, 1.6]} castShadow />
       </group>
@@ -133,21 +133,25 @@ export function GymScene({ plan }: { plan: BuildingPlan }) {
   );
 }
 
-function Barbell({ station, spot, lifter }: { station: Exclude<Station, "pullup">; spot: Spot; lifter: string | null }) {
+function Barbell({ station, spot }: { station: Exclude<Station, "pullup">; spot: Spot }) {
   const root = useRef<Group>(null);
   const gym = useGym();
   const pace = usePace();
   const pose = useMemo(newPose, []);
-  const height = lifter ? lookFor(lifter).height : 1;
+  // The lifter's height, looked up once each time someone new is at the station.
+  const lifter = useRef<{ id: string | null; height: number }>({ id: null, height: 1 });
   useFrame(() => {
     const g = root.current;
     if (!g) return;
-    const seconds = lifter ? gym?.seconds(lifter, Date.now()) ?? null : null;
-    const p = seconds === null ? restingBar(station, pose) : stationPose(station, seconds, height, pose);
-    const h = seconds === null ? 1 : height;
-    if (seconds !== null && p.moving) pace?.moved(performance.now());
+    const id = gym?.lifterAt(station) ?? null;
+    const l = lifter.current;
+    if (id !== l.id) { l.id = id; l.height = id ? lookFor(id).height : 1; }
+    const p = id ? gym!.pose(id, Date.now(), l.height, pose) : null;
+    const h = p ? l.height : 1;
+    if (p?.moving) pace?.moved(performance.now());
+    if (!p) restingBar(station, pose);
     const f = spot.facing;
-    g.position.set(spot.pos[0] + Math.sin(f) * p.barZ * h, p.barY * h, spot.pos[1] + Math.cos(f) * p.barZ * h);
+    g.position.set(spot.pos[0] + Math.sin(f) * pose.barZ * h, pose.barY * h, spot.pos[1] + Math.cos(f) * pose.barZ * h);
     g.rotation.y = f;
   });
   // Loaded outside the uprights each bar rests in.

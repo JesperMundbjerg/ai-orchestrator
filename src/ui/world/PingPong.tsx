@@ -4,7 +4,7 @@ import { BoxGeometry, CylinderGeometry, MeshStandardMaterial, SphereGeometry, ty
 import type { BuildingPlan } from "./building.ts";
 import type { Kit } from "./Furniture.tsx";
 import { usePace } from "./Pace.tsx";
-import { ballAt, BALL_R, BLADE, NET_H, newPing, PingPlayback, pingTable, TABLE_H, TABLE_L, TABLE_W } from "./pingpong.ts";
+import { ballAt, BALL_R, BALL_REST, BLADE, NET_H, newPing, PingPlayback, pingTable, TABLE_H, TABLE_L, TABLE_W } from "./pingpong.ts";
 
 // The ping pong table as drawn: its boxes go in with the building's furniture (`furnishPingPong`),
 // the ball is one small mesh (`PingScene`) and each player holds a paddle (`Paddle`, in Avatar.tsx).
@@ -54,7 +54,7 @@ export function Paddle() {
   );
 }
 
-/** The ball: in play while both players are at the table, otherwise resting on it. Only a rally asks the pacer for frames. */
+/** The ball: in play while both players are at the table, otherwise lying on it by player 0's end, where play starts. Only a rally asks the pacer for frames. */
 export function PingScene({ plan }: { plan: BuildingPlan }) {
   const ping = usePing();
   const pace = usePace();
@@ -66,7 +66,7 @@ export function PingScene({ plan }: { plan: BuildingPlan }) {
     if (!m) return;
     const seconds = ping?.playback.seconds(Date.now()) ?? null;
     if (seconds === null) {
-      at.a = -0.45; at.y = TABLE_H + BALL_R; at.c = 0.3;
+      Object.assign(at, BALL_REST);
     } else {
       ballAt(seconds, at);
       pace?.moved(performance.now());

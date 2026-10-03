@@ -2,9 +2,10 @@
 // npm run build && PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs [SHOTS=/dir] node test/regulars.browser.mjs
 // Three isolated offices in turn, each through the scratch launcher (test/gym-office.fixture.ts: a fake world, herdr
 // disabled, nothing read from sessions or accounts), on a free port that is never 4870, in headless Chromium, closed in
-// finally. Nobody idle: the regulars fill the gym and the table. One idle agent: they play ping pong with a regular.
-// Many idle agents: the agents take the stations and the table, the regulars step aside. Throughout, the regulars are
-// never avatars, never counted in the header, and a click on one shows their card, never an agent's panel.
+// finally. Nobody idle: two regulars play each other and the rest use the gym, moving round it each visit, with
+// rests between sets (recorded across a visit's end). One idle agent: they play ping pong with a regular. Many idle
+// agents: the agents take the stations and the table, the regulars step aside. Throughout, the regulars are never
+// avatars, never counted in the header, and a click on one shows their card, never an agent's panel.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -14,7 +15,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { spawnScratchOffice } from "../scripts/lib/scratch-office.ts";
 import { gymCorner } from "../src/ui/world/gym.ts";
 import { pingCorner, TABLE_X, TABLE_Z } from "../src/ui/world/pingpong.ts";
-import { CAST } from "../src/ui/world/regulars.ts";
+import { CAST, VISIT } from "../src/ui/world/regulars.ts";
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "playwright");
 const shots = process.env.SHOTS ?? join(homedir(), ".review-inbox/handoffs/agent-office/regulars");
@@ -61,13 +62,15 @@ async function withOffice(agents, working, run) {
         window.__roots = new Set();
         window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { supportsFiber: true, inject: () => 1, onCommitFiberRoot: (_, r) => window.__roots.add(r), onCommitFiberUnmount: () => {} };
         window.__scene = () => {
-          let store, view, ping, plan, regulars;
+          let store, view, ping, plan, gym;
+          const regulars = [];
           const avatars = new Map();
           const visit = (f) => {
             if (!f) return;
             const p = f.memoizedProps;
             if (p?.plan?.rooms) plan = p.plan;
-            if (p?.regulars instanceof Map) regulars = p.regulars;
+            if (p?.placement?.regular) regulars.push(p.placement);
+            if (p?.value?.training instanceof Map && typeof p.value.pose === "function") gym = p.value;
             if (p?.value?.getState && p.value.getState()?.scene) store = p.value.getState();
             if (p?.value?.playback && p.value.table) ping = p.value;
             if (p?.agent && p?.spot) avatars.set(p.agent.id, { id: p.agent.id, status: p.agent.status, spot: p.spot });
@@ -76,8 +79,10 @@ async function withOffice(agents, working, run) {
             visit(f.child); visit(f.sibling);
           };
           for (const r of window.__roots) visit(r.current);
-          const placed = regulars ? [...regulars.values()].map((p) => ({ id: p.regular.id, name: p.regular.name, act: p.act, gym: p.spot.gym ?? null, end: p.spot.pingpong ?? null })) : [];
-          return { store, view, ping, plan, regulars: placed, avatars: [...avatars.values()] };
+          const placed = regulars.map((p) => ({ id: p.regular.id, name: p.regular.name, act: p.act, gym: p.spot.gym ?? null, end: p.spot.pingpong ?? null, at: p.spot.pos }));
+          // Who is training now, and whether they are resting between sets.
+          const training = gym ? [...gym.training].map(([id, t]) => ({ id, station: t.station, rest: gym.pose(id, Date.now(), 1, {})?.rest ?? null })) : [];
+          return { store, view, ping, plan, regulars: placed, training, avatars: [...avatars.values()] };
         };
       });
       await page.goto(`${url}/#/world`);
@@ -134,12 +139,15 @@ async function clickRegular(page, name) {
 
 const report = [];
 
-// 1. Nobody idle: three agents at work, the regulars in every station and at both ends.
+// 1. Nobody idle: three agents at work, two regulars at the table and the rest in the gym.
 await withOffice(3, true, async ({ open }) => {
   const desk = await open({ width: 1600, height: 1000 });
   const { page } = desk;
   const placed = await page.evaluate(() => window.__scene().regulars);
-  assert.deepEqual(placed.map((p) => p.act).sort(), ["lift", "lift", "lift", "lift", "play", "play"]);
+  const acts = placed.map((p) => p.act);
+  assert.equal(acts.filter((a) => a === "play").length, 2, "two regulars play each other");
+  assert.ok(acts.filter((a) => a === "lift").length >= 3, `the gym is busy: ${acts}`);
+  assert.equal(new Set(placed.filter((p) => p.gym).map((p) => p.gym)).size, acts.filter((a) => a === "lift").length, "one to a station");
   await rallying(page);
   const pair = await page.evaluate(() => [...window.__scene().ping.playback.pair]);
   assert.ok(pair.every((id) => id.startsWith("regular:")), "two regulars at the table");
@@ -149,9 +157,10 @@ await withOffice(3, true, async ({ open }) => {
   await look(page, "pingpong");
   await page.screenshot({ path: join(shots, "1-nobody-idle-table.png") });
   await look(page, "gym", { distance: 4.5, side: -1.8, pitch: -0.35 });
-  const click = await clickRegular(page, "Kwabena");
+  const lifter = placed.find((p) => p.act === "lift").name;
+  const click = await clickRegular(page, lifter);
   await page.screenshot({ path: join(shots, "1-click-regular.png") });
-  assert.match(click.card ?? "", /Kwabena · Regular at the gym/);
+  assert.match(click.card ?? "", new RegExp(`${lifter} · Regular at the gym`));
   assert.equal(click.panel, false, "no agent panel for a regular");
   assert.deepEqual(desk.errors, []);
   // At phone width too.
@@ -159,17 +168,44 @@ await withOffice(3, true, async ({ open }) => {
   await look(phone.page, "gym", { distance: 9, pitch: -0.55, fov: 80 });
   await phone.page.screenshot({ path: join(shots, "1-nobody-idle-gym-phone.png") });
   assert.deepEqual(phone.errors, []);
-  // A short video: the gym, then the table.
+  report.push(`nobody idle: ${acts.filter((a) => a === "lift").length} regulars lifting, 2 playing each other`);
+});
+
+// 1b. Moving round: about a minute across a visit's end, in real time, with the regulars resting between sets and
+// moving on to new stations. A screenshot on each side of the change, and of a rest.
+await withOffice(3, true, async ({ open }) => {
+  const visit = VISIT * 1000;
+  // Start recording a quarter of a minute before the visit ends.
+  const lead = 15_000;
+  await delay(((visit - lead - 4000 - (Date.now() % visit)) + visit) % visit);
   const v = await open({ width: 1280, height: 800 }, true);
-  await rallying(v.page);
-  await look(v.page, "gym");
-  await v.page.waitForTimeout(9000);
-  await look(v.page, "pingpong");
-  await v.page.waitForTimeout(9000);
+  const { page } = v;
+  await look(page, "gym", { distance: 8.2, pitch: -0.48 });
+  const before = await page.evaluate(() => window.__scene().regulars);
+  const seen = { rests: new Set(), stations: new Map(before.filter((p) => p.gym).map((p) => [p.name, new Set([p.gym])])), aside: new Set() };
+  let shotRest = false, shotBefore = false, shotAfter = false;
+  const end = Date.now() + 62_000;
+  while (Date.now() < end) {
+    const s = await page.evaluate(() => ({ training: window.__scene().training, regulars: window.__scene().regulars }));
+    for (const t of s.training) if (t.rest) seen.rests.add(`${t.id}:${t.rest}`);
+    for (const p of s.regulars) {
+      if (p.gym) (seen.stations.get(p.name) ?? seen.stations.set(p.name, new Set()).get(p.name)).add(p.gym);
+      if (p.act !== "lift" && p.act !== "play") seen.aside.add(`${p.name}:${p.act}`);
+    }
+    const left = visit - (Date.now() % visit);
+    if (!shotBefore && left < 3000) { await page.screenshot({ path: join(shots, "4-before-moving-round.png") }); shotBefore = true; }
+    if (!shotAfter && shotBefore && left < visit - 12_000 && left > visit - 20_000) { await page.screenshot({ path: join(shots, "4-after-moving-round.png") }); shotAfter = true; }
+    if (!shotRest && s.training.some((t) => t.rest === "sip" || t.rest === "shake" || t.rest === "breathe")) { await page.waitForTimeout(1200); await page.screenshot({ path: join(shots, "4-resting-between-sets.png") }); shotRest = true; }
+    await page.waitForTimeout(250);
+  }
+  const after = await page.evaluate(() => window.__scene().regulars);
   await v.context.close();
-  await v.page.video().saveAs(join(shots, "1-nobody-idle.webm"));
+  await v.page.video().saveAs(join(shots, "4-moving-round.webm"));
   assert.deepEqual(v.errors, []);
-  report.push("nobody idle: 4 regulars lifting, 2 playing each other");
+  const moved = before.filter((p) => p.gym).filter((p) => after.find((q) => q.name === p.name).gym !== p.gym);
+  assert.ok(moved.length >= 3, `the gym's regulars moved on: ${moved.map((p) => p.name)}`);
+  assert.ok(seen.rests.size >= 2, `rests between sets: ${[...seen.rests]}`);
+  report.push(`moving round: ${moved.map((p) => `${p.name} ${p.gym}→${after.find((q) => q.name === p.name).act === "lift" ? after.find((q) => q.name === p.name).gym : after.find((q) => q.name === p.name).act}`).join(", ")}; rests seen ${[...seen.rests].map((r) => r.slice("regular:".length)).join(", ")}; aside ${[...seen.aside].join(", ") || "nobody"}`);
 });
 
 // 2. One idle agent: they play ping pong with a regular.
@@ -182,6 +218,7 @@ await withOffice(1, false, async ({ open }) => {
   assert.ok(pair.includes("idle-0"), "and the one agent");
   const acts = Object.fromEntries((await page.evaluate(() => window.__scene().regulars)).map((r) => [r.name, r.act]));
   assert.equal(Object.values(acts).filter((a) => a === "watch").length, 1, "the other table regular watches");
+  assert.equal(Object.values(acts).filter((a) => a === "play").length, 1, "one regular plays");
   await neverAgents(page, 1);
   await look(page, "pingpong");
   await page.screenshot({ path: join(shots, "2-one-idle-table.png") });

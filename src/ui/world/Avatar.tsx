@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
-import type { Group, Mesh, MeshBasicMaterial, Texture } from "three";
+import { CylinderGeometry, MeshStandardMaterial, type Group, type Mesh, type MeshBasicMaterial, type Texture } from "three";
 import type { ItemType, WorldAgent } from "../../shared/types.ts";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
 import { textTexture } from "./label.ts";
@@ -12,7 +12,7 @@ import { craftPose, HandTool } from "./Crafts.tsx";
 import { usePace } from "./Pace.tsx";
 import { useGames } from "./Games.tsx";
 import { useGym } from "./Gym.tsx";
-import { armReach, handTarget, newPose, newReach, stationPose, type LiftPose, type Reach } from "./gym.ts";
+import { armReach, gestureAt, handTarget, newPose, newReach, type LiftPose, type Reach, type Visit } from "./gym.ts";
 import { Paddle, usePing } from "./PingPong.tsx";
 import { newPlayer, playerPose, type Player as PingPlayer } from "./pingpong.ts";
 
@@ -87,6 +87,9 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const ping = usePing();
   // Scratch for the gym's lifts and ping pong, so a frame allocates nothing.
   const lifting = useMemo(() => ({ pose: newPose(), reach: newReach(), hand: [0, 0, 0] as [number, number, number], player: newPlayer() }), []);
+  // At a gym station they do their own routine, round and round, for as long as they stay.
+  const visit: Visit | undefined = useMemo(() => (spot.gym ? { station: spot.gym, seed: agent.id, until: Infinity } : undefined), [spot.gym, agent.id]);
+  const bottle = useRef<Group>(null);
   const joints: Joints = useMemo(() => ({ body, upper, head, legs, knees, ankles, arms, elbows }), []);
 
   // A new spot sends the avatar walking there from wherever it is now.
@@ -176,9 +179,8 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     const gaming = play?.active && play.player === spot.game?.player ? play : null;
     if (play?.active) pace?.moved(performance.now());
     // At a gym station, once there and while idle: the lift's pose, the hands on the bar.
-    gym?.arrive(agent.id, !walking && !m.path.length && !!spot.gym && agent.status === "idle", Date.now());
-    const seconds = spot.gym ? gym?.seconds(agent.id, Date.now()) ?? null : null;
-    const lift = spot.gym && seconds !== null ? stationPose(spot.gym, seconds, look.height, lifting.pose) : null;
+    gym?.arrive(agent.id, !walking && !m.path.length && !!visit && agent.status === "idle", Date.now(), visit);
+    const lift = visit ? gym?.pose(agent.id, Date.now(), look.height, lifting.pose) ?? null : null;
     if (lift?.moving) pace?.moved(performance.now());
     // At their end of the ping pong table, once both players are there: the rally's stance and swing.
     const end = spot.pingpong;
@@ -245,7 +247,13 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     }
     // Walking bob, and a gentle breath at rest.
     g.position.y = sitting ? SEAT_H - HIP * look.height : picking ? -STEP_DROP * look.height : walking ? Math.abs(Math.sin(t * 9)) * 0.035 : Math.sin(t * 1.6) * 0.006;
-    if (!(lift && liftRig(joints, g, m.pos, m.yaw, lift, look, lifting)) && !(playing && playRig(joints, g, m.pos, m.yaw, playing, look))) restRig(joints);
+    let sip = 0;
+    if (lift && liftRig(joints, g, m.pos, m.yaw, lift, look, lifting)) {
+      // Between sets: their breath back, their arms shaken out or a sip from the bottle.
+      sip = restGesture(joints, lift, t);
+      if (gestureAt(lift) > 0) pace?.ambled(performance.now());
+    } else if (!(playing && playRig(joints, g, m.pos, m.yaw, playing, look))) restRig(joints);
+    if (bottle.current) bottle.current.visible = sip > 0;
 
     const status = LAMP[agent.status];
     const pulse = agent.status === "working" ? 0.75 + 0.25 * Math.sin(t * 4) : agent.status === "blocked" ? (Math.sin(t * 6) > 0 ? 1 : 0.35) : 1;
@@ -275,7 +283,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
       onPointerOut={() => setHovered(false)}
     >
       <group ref={body} scale={look.height}>
-        <Body look={look} legs={legs} knees={knees} ankles={ankles} elbows={elbows} held={spot.pingpong !== undefined ? <Paddle /> : null} arms={arms} card={card} folder={carrying} head={head} upper={upper} flower={flower} tool={craft ? <HandTool craft={craft} tool={tool} saw={saw} hammer={hammer} /> : null} />
+        <Body look={look} legs={legs} knees={knees} ankles={ankles} elbows={elbows} held={spot.pingpong !== undefined ? <Paddle /> : spot.gym ? <Bottle ref={bottle} /> : null} arms={arms} card={card} folder={carrying} head={head} upper={upper} flower={flower} tool={craft ? <HandTool craft={craft} tool={tool} saw={saw} hammer={hammer} /> : null} />
       </group>
       <mesh ref={lamp} position={[0, 2.18, 0]}>
         <sphereGeometry args={[0.08, 20, 16]} />
@@ -345,10 +353,13 @@ export function playRig(j: Joints, g: Group, pos: Vec2, yaw: number, playing: Pi
   const [ll, lr] = j.legs.current, [kl, kr] = j.knees.current, [nl, nr] = j.ankles.current, [al, ar] = j.arms.current, [el, er] = j.elbows.current;
   if (!(ll && lr && al && ar && kl && kr && nl && nr && el && er && j.body.current)) return false;
   const h = look.height;
-  g.position.set(pos[0] + Math.cos(yaw) * playing.rootX, playing.rootY * h, pos[1] - Math.sin(yaw) * playing.rootX);
+  // Across to the ball, and in a step towards the table.
+  g.position.set(pos[0] + Math.cos(yaw) * playing.rootX + Math.sin(yaw) * playing.rootZ, playing.rootY * h, pos[1] - Math.sin(yaw) * playing.rootX + Math.cos(yaw) * playing.rootZ);
   j.body.current.rotation.x = 0;
   j.body.current.position.set(0, 0, 0);
-  ll.rotation.x = lr.rotation.x = playing.thigh;
+  // Stepping in, the left foot forward and the right back.
+  ll.rotation.x = playing.thigh - playing.stride;
+  lr.rotation.x = playing.thigh + playing.stride * 0.5;
   kl.rotation.x = kr.rotation.x = playing.knee;
   nl.rotation.x = nr.rotation.x = playing.ankle;
   if (j.upper.current) j.upper.current.rotation.x = playing.bend;
@@ -369,6 +380,63 @@ export function restRig(j: Joints): void {
   if (kl && kr && nl && nr) kl.rotation.x = kr.rotation.x = nl.rotation.x = nr.rotation.x = 0;
   if (el && er) el.rotation.x = er.rotation.x = 0;
   if (al && ar) al.rotation.y = ar.rotation.y = 0;
+}
+
+// What a lifter drinks from between sets, in the right hand: one geometry and one material for everyone's.
+const BOTTLE = new CylinderGeometry(0.032, 0.032, 0.2, 10);
+const BOTTLE_FINISH = new MeshStandardMaterial({ color: "#5fb3e6", roughness: 0.3, transparent: true, opacity: 0.85 });
+
+/** A water bottle in the hand, hidden until they drink. */
+export function Bottle({ ref }: { ref: RefObject<Group | null> }) {
+  return (
+    <group ref={ref} visible={false} position={[0, -0.3, 0.05]}>
+      <mesh geometry={BOTTLE} material={BOTTLE_FINISH} />
+    </group>
+  );
+}
+
+/** Arm poses the touches blend to, from the right shoulder (mirrored for the left): worked out once. */
+const reachTo = (x: number, y: number, z: number, pole: [number, number, number]): Reach => armReach(x, y, z, pole[0], pole[1], pole[2], newReach());
+export const TO_MOUTH = reachTo(-0.2, 0.17, 0.2, [1, -1, 0]);
+export const HIGH_FIVE = reachTo(-0.22, 0.45, 0.42, [1, -0.3, -0.4]);
+export const UP = reachTo(-0.04, 0.6, 0.1, [1, 0, -0.2]);
+/** Hands on the hips, the elbows out. */
+const HIPS = reachTo(-0.1, -0.44, 0.02, [1, 0.1, -0.5]);
+
+/** Turn an arm part of the way to a pose given for the right arm; `side` -1 mirrors it for the left. */
+export function blend(arm: Group, elbow: Group, to: Reach, side: number, f: number): void {
+  arm.rotation.set(arm.rotation.x + (to.x - arm.rotation.x) * f, arm.rotation.y + (side * to.y - arm.rotation.y) * f, arm.rotation.z + (side * to.z - arm.rotation.z) * f);
+  elbow.rotation.x += (to.elbow - elbow.rotation.x) * f;
+}
+
+/**
+ * A rest between sets on a rig `liftRig` has put in the rest's pose: hands on the hips getting
+ * their breath, the arms shaken out, or a sip from the bottle. `t` is the avatar's own clock, for
+ * the shaking. How far the bottle is up (0 to 1), to show it.
+ */
+export function restGesture(j: Joints, lift: LiftPose, t: number): number {
+  const f = gestureAt(lift);
+  const [al, ar] = j.arms.current, [el, er] = j.elbows.current;
+  if (f <= 0 || !al || !ar || !el || !er) return 0;
+  if (lift.rest === "breathe") {
+    blend(ar, er, HIPS, 1, f);
+    blend(al, el, HIPS, -1, f);
+    if (j.upper.current) j.upper.current.rotation.x += (0.12 + Math.sin(t * 2.4) * 0.04) * f;
+    if (j.head.current) j.head.current.rotation.x = 0.2 * f;
+    return 0;
+  }
+  if (lift.rest === "shake") {
+    const shake = Math.sin(t * 21) * f;
+    al.rotation.z += -0.14 * shake;
+    ar.rotation.z += 0.14 * shake;
+    al.rotation.x += 0.1 * shake;
+    ar.rotation.x -= 0.1 * shake;
+    el.rotation.x = er.rotation.x = -0.2 * f - 0.15 * Math.abs(shake);
+    return 0;
+  }
+  blend(ar, er, TO_MOUTH, 1, f);
+  if (j.head.current) j.head.current.rotation.x = -0.3 * f;
+  return f;
 }
 
 export function turn(from: number, to: number, max: number): number {
