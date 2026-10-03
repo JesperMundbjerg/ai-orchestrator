@@ -12,6 +12,7 @@ import { StandingLanes } from "./standing.ts";
 import { CrewTreeStore } from "./crewtree.ts";
 import { Inbox } from "./inbox.ts";
 import { AutoApprove } from "./autoapprove.ts";
+import { QaAgents } from "./qa-agent.ts";
 import { Machine } from "./machine.ts";
 import { Switches } from "./switch.ts";
 import { startIntegrations, startupConfig } from "./startup-config.ts";
@@ -37,6 +38,9 @@ autoApprove.qa.office = {
 };
 world.crew = new CrewTreeStore(dir);
 world.crew.seed();
+// The founder picks the QA agent's model; the office starts it in herdr, like a project's lead, and designates it.
+const crew = world.crew;
+autoApprove.agents = new QaAgents(db, herdr, { catalog: () => crew.catalog(), learnings: autoApprove.qa.learnings });
 // The plan's limits and each agent's use; near Claude's 5-hour limit the crew guide gives Pi under Mix, and near Codex's limits Claude.
 const usage = new Usage(db);
 world.usage = usage;

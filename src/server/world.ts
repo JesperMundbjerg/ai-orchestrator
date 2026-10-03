@@ -91,12 +91,12 @@ const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
  * Keep word boundaries (including Unicode whitespace), strip other controls, and leave
  * quotes and Unicode intact: herdr, not this helper, does the shell quoting.
  */
-function briefArgument(text: string): string {
+export function briefArgument(text: string): string {
   return text.replace(/[\s\p{White_Space}]/gu, " ").replace(/\p{Cc}/gu, "").replace(/ +/g, " ").trim();
 }
 
 /** The CLI of the checkout the service runs from; a lead's pane need not have `inbox` on its PATH. */
-const INBOX_BIN = fileURLToPath(new URL("../../bin/inbox", import.meta.url));
+export const INBOX_BIN = fileURLToPath(new URL("../../bin/inbox", import.meta.url));
 
 /**
  * What a project's lead is, in the sense of firstmate (github.com/kunchenguid/firstmate): the

@@ -30,7 +30,7 @@ Pi extension ──────────┘                        │
 | `src/server/switch.ts` | Durable workflow/checkpoints around non-idempotent effects, replacement-pane visibility/held deliveries, identity takeover and recovery-required pauses |
 | `src/server/activity.ts`, `effort.ts`, `models.ts` | Ephemeral tools/helpers/model/session-name observations, in-memory session-only effort control, local transcript model fallback |
 | `src/server/review-fallback.ts` | Asynchronously cached git candidate lists and safe projector selection; display-only changes, no invented agent activity or model call |
-| `src/server/autoapprove.ts`, `qa.ts`; `src/shared/qa.ts` | The founder's inbox automation setting (Off, Approve all, QA answers); the QA agent's queue, answers, learning feed and cursor. No model call; the QA agent is an ordinary office session |
+| `src/server/autoapprove.ts`, `qa.ts`, `qa-agent.ts`; `src/shared/qa.ts` | The founder's inbox automation setting (Off, Approve all, QA answers); the QA agent's queue, answers, learning feed and cursor; starting the QA agent on the model the founder picks, and closing only one the office started. No model call; the QA agent is an ordinary office session |
 | `src/server/crewtree.ts`, `crewtree.default.json`; `src/shared/crewtree.ts` | Authoritative crew-choice JSON, seed, validation and selection rules |
 | `src/server/usage.ts`, `codexaccount.ts`; `src/shared/usage.ts` | Local transcript/cache parsing, token attribution, persisted latest meter readings/pause notices, optional authenticated account read; no model inference |
 | `src/server/herdr.ts`, `machine.ts` | Concrete terminal presence/prompt/focus/pane/worktree adapter; optional local process watcher and verified headless-main-process signalling |

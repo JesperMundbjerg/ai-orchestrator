@@ -118,12 +118,12 @@ test("open questions, unrecommended, unrecognised and ambiguous recommendations 
     assert.equal(inbox.item(itemId).state, "needs_attention");
     assert.deepEqual(inbox.detail(itemId).replies, []);
   }
-  assert.deepEqual(auto.state(), { enabled: true, count: 0, mode: "approve_all", qa: null });
+  assert.deepEqual(auto.state(), { enabled: true, count: 0, mode: "approve_all", qa: null, qaModels: [], qaAgent: null, qaError: null });
 });
 
 test("off by default and turning off stops new items and revisions", (t) => {
   const { inbox, auto, submit } = setup(t);
-  assert.deepEqual(auto.state(), { enabled: false, count: 0, mode: "off", qa: null });
+  assert.deepEqual(auto.state(), { enabled: false, count: 0, mode: "off", qa: null, qaModels: [], qaAgent: null, qaError: null });
   const { itemId } = submit({ key: "work", type: "milestone", title: "First" });
   assert.deepEqual(inbox.detail(itemId).replies, []);
   auto.setEnabled(true);
@@ -133,7 +133,7 @@ test("off by default and turning off stops new items and revisions", (t) => {
   assert.equal(inbox.item(itemId).state, "needs_attention");
   assert.equal(inbox.detail(itemId).replies[0]!.state, "stale");
   assert.deepEqual(inbox.detail(other.itemId).replies, []);
-  assert.deepEqual(auto.state(), { enabled: false, count: 1, mode: "off", qa: null });
+  assert.deepEqual(auto.state(), { enabled: false, count: 1, mode: "off", qa: null, qaModels: [], qaAgent: null, qaError: null });
 });
 
 test("enabling answers waiting, snoozed and parked items but not closed or already answered items", (t) => {
@@ -243,7 +243,7 @@ test("persisted mode/count survive reopening the database; startup sweep repairs
   db = openDatabase(path);
   inbox = new Inbox(db, join(dir, "files"), presence);
   auto = new AutoApprove(db, inbox);
-  assert.deepEqual(auto.state(), { enabled: true, count: 1, mode: "approve_all", qa: null });
+  assert.deepEqual(auto.state(), { enabled: true, count: 1, mode: "approve_all", qa: null, qaModels: [], qaAgent: null, qaError: null });
   auto.sweep();
   assert.equal(inbox.detail(first.itemId).replies.length, 1);
   assert.equal(inbox.item(waiting.itemId).state, "answer_queued");
@@ -254,7 +254,7 @@ test("persisted mode/count survive reopening the database; startup sweep repairs
   db.close();
   db = openDatabase(path);
   auto = new AutoApprove(db, new Inbox(db, join(dir, "files"), presence));
-  assert.deepEqual(auto.state(), { enabled: false, count: 3, mode: "off", qa: null });
+  assert.deepEqual(auto.state(), { enabled: false, count: 3, mode: "off", qa: null, qaModels: [], qaAgent: null, qaError: null });
   db.close();
 });
 
@@ -268,7 +268,7 @@ test("setting HTTP writes use normal JSON/origin guards and reject invalid enabl
   await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
   const url = `http://localhost:${port}/api/auto-approve`;
-  assert.deepEqual(await (await fetch(url)).json(), { enabled: false, count: 0, mode: "off", qa: null });
+  assert.deepEqual(await (await fetch(url)).json(), { enabled: false, count: 0, mode: "off", qa: null, qaModels: [], qaAgent: null, qaError: null });
   for (const [headers, body, status] of [
     [{ "content-type": "text/plain" }, '{"enabled":true}', 415],
     [{ "content-type": "application/json", origin: "http://example.com" }, '{"enabled":true}', 403],
@@ -276,5 +276,5 @@ test("setting HTTP writes use normal JSON/origin guards and reject invalid enabl
     [{ "content-type": "application/json" }, '{}', 400],
   ] as const) assert.equal((await fetch(url, { method: "POST", headers, body })).status, status);
   const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: '{"enabled":true}' });
-  assert.deepEqual(await response.json(), { enabled: true, count: 0, mode: "approve_all", qa: null });
+  assert.deepEqual(await response.json(), { enabled: true, count: 0, mode: "approve_all", qa: null, qaModels: [], qaAgent: null, qaError: null });
 });

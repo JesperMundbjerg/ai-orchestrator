@@ -14,7 +14,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 export const api = {
   autoApprove: () => request<AutoApproveState>("GET", "/api/auto-approve"),
-  setAutoApprove: (mode: AutomationMode, agentId?: string | null) => request<AutoApproveState>("POST", "/api/auto-approve", { mode, agentId }),
+  /** `qaModel` has the office start a QA agent on that model (null: none). */
+  setAutoApprove: (mode: AutomationMode, qaModel?: { harness: string; model: string; effort: string } | null) => request<AutoApproveState>("POST", "/api/auto-approve", { mode, qaModel }),
   state: () => request<InboxState>("GET", "/api/state"),
   detail: (itemId: string) => request<ItemDetail>("GET", `/api/items/${itemId}`),
   answer: (itemId: string, body: { id: string; revision: number; action: ReplyAction; choice?: string; text?: string; images?: string[] }) =>

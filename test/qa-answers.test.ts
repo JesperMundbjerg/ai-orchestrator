@@ -220,7 +220,7 @@ test("the QA agent learns only from the founder's own answers, as they were aske
 
 test("choosing QA answers needs an agent the office knows and prepares an empty OKF bundle without overwriting it", (t) => {
   const { auto, learnings } = setup(t);
-  assert.throws(() => auto.setMode("qa"), /choose the agent/);
+  assert.throws(() => auto.setMode("qa"), /choose the model/);
   assert.throws(() => auto.setMode("qa", "nobody"), (e: InboxError) => e.status === 404);
   assert.equal(auto.state().mode, "off");
   auto.setMode("qa", "quinn");
@@ -346,8 +346,8 @@ test("manual mode chooses the QA agent by itself: it prepares the learnings, and
   assert.equal(auto.state().qa, null);
   assert.throws(() => auto.qa.next(qaSession), (e: InboxError) => e.status === 403 && /has not chosen a QA agent/.test(e.message));
   assert.throws(() => auto.qa.answer({ session: qaSession, item: itemId, revision: 1, action: "accept", reason: "r" }), (e: InboxError) => e.status === 403);
-  assert.throws(() => auto.setMode("qa", null), /choose the agent/);
-  assert.throws(() => auto.setMode("qa"), /choose the agent/);
+  assert.throws(() => auto.setMode("qa", null), /choose the model/);
+  assert.throws(() => auto.setMode("qa"), /choose the model/);
   assert.equal(auto.state().mode, "off");
 });
 

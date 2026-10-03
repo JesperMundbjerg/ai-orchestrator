@@ -87,7 +87,9 @@ try {
   assert.deepEqual(detail.replies.map((r) => r.state), ["stale", "queued"]);
   await stop();
   await start();
-  assert.deepEqual(await get("/api/auto-approve"), { enabled: true, count: 4, mode: "approve_all", qa: null });
+  const { qaModels, ...setting } = await get("/api/auto-approve");
+  assert.deepEqual(setting, { enabled: true, count: 4, mode: "approve_all", qa: null, qaAgent: null, qaError: null });
+  assert.ok(qaModels.length, "the QA model picker lists the crew catalog");
   const after = await submit("after-restart", { type: "milestone", title: "Ready after restart" });
   assert.equal((await get(`/api/items/${after}`)).replies[0].state, "queued");
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });

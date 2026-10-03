@@ -21,10 +21,15 @@ export const taskPatchSchema = object({
   lastDecision: maybeText, lastAcceptedMilestone: maybeText, parked: optional(boolean),
 });
 export const pinSchema = object({ pinned: boolean });
-// The older {enabled} switch still works; {mode, agentId} picks Off, Approve all or QA answers (and which agent is QA).
-export const autoApproveSchema = refine(object({ enabled: optional(boolean), mode: optional(oneOf(AUTOMATION_MODES)), agentId: optional(nullable(nonempty)) }), (b, p) => {
+// The older {enabled} switch still works; {mode, qaModel} picks Off, Approve all or QA answers and the model the office
+// starts the QA agent on; {mode, agentId} designates an agent already in the office instead.
+export const autoApproveSchema = refine(object({
+  enabled: optional(boolean), mode: optional(oneOf(AUTOMATION_MODES)), agentId: optional(nullable(nonempty)),
+  qaModel: optional(nullable(object({ harness: nonempty, model: nonempty, effort: nonempty }))),
+}), (b, p) => {
   if (b.enabled === undefined && b.mode === undefined) fail(p, "give mode (or enabled)");
   if (b.enabled !== undefined && b.mode !== undefined) fail(p, "give mode or enabled, not both");
+  if (b.agentId !== undefined && b.qaModel !== undefined) fail(p, "give qaModel or agentId, not both");
 });
 export const uploadSchema = object({ data: nonempty });
 export const teamCreateSchema = object({

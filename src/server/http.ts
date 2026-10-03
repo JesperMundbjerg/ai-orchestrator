@@ -86,7 +86,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("GET", /^\/api\/state$/, emptySchema, () => opts.autoApprove ? opts.autoApprove.qa.mark(inbox.state()) : inbox.state()),
     route("GET", /^\/api\/auto-approve$/, emptySchema, () => needAutoApprove().state()),
     route("POST", /^\/api\/auto-approve$/, validation.autoApproveSchema, (_r, b) => b.mode !== undefined
-      ? needAutoApprove().setMode(b.mode, b.agentId) : needAutoApprove().setEnabled(b.enabled!)),
+      ? needAutoApprove().setMode(b.mode, b.agentId, b.qaModel) : needAutoApprove().setEnabled(b.enabled!)),
     route("GET", /^\/api\/items\/([\w-]+)$/, emptySchema, (_r, _b, [id]) => opts.autoApprove ? opts.autoApprove.qa.markDetail(inbox.detail(id!)) : inbox.detail(id!)),
     route("POST", /^\/api\/items\/([\w-]+)\/replies$/, validation.answerSchema, (_r, b, [id]) => inbox.answer(id!, b)),
     route("POST", /^\/api\/items\/([\w-]+)\/snooze$/, validation.snoozeSchema, (_r, b, [id]) => inbox.snooze(id!, b.until)),

@@ -233,6 +233,33 @@ export interface AutoApproveState {
   mode: AutomationMode;
   /** The QA agent, when one is chosen (whatever the mode). */
   qa: QaSummary | null;
+  /** What the office can start a QA agent on: the crew catalog's harness, model and effort entries. */
+  qaModels: QaModel[];
+  /** The QA agent the office started, or is starting; null when none (a QA agent chosen otherwise shows only in `qa`). */
+  qaAgent: QaAgentView | null;
+  /** Why the last QA agent the office tried to start is not running; nothing was designated. */
+  qaError: string | null;
+}
+
+/** A model a QA agent can run on, as the founder picks it. `label` is all the UI shows. */
+export interface QaModel {
+  harness: string;
+  model: string;
+  effort: string;
+  /** "Opus 5.5 · medium (Claude Code)" */
+  label: string;
+  /** The harness's label, to group the choices. */
+  group: string;
+}
+
+export interface QaAgentView {
+  model: QaModel;
+  /** Starting: the office is starting it, and nothing is designated yet. Offline: designated, but not running. */
+  status: "starting" | "online" | "offline";
+  /** The office agent it is, once designated. */
+  agentId: string | null;
+  /** While starting: the setting that applies once it runs (QA answers wait for their agent). */
+  mode?: AutomationMode;
 }
 
 export interface QaSummary {

@@ -1,10 +1,12 @@
 // Optional browser regression (no Playwright dependency in the service):
 // npm run build && PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs [SHOTS=/dir] node test/qa-predictions.browser.mjs
-// Starts its own isolated office through the scratch launcher (herdr disabled), uses headless Chromium, and closes both in
-// finally. Manual mode with a QA agent chosen: its answers are predictions, never sent; the founder sees one only after
-// answering, collapsed; the header shows how often it agreed.
+// Starts its own isolated office through the scratch launcher (herdr disabled; test/qa-agent.fixture.ts fakes the QA agent's
+// start, so nothing really starts), uses headless Chromium, and closes both in finally. Manual mode with a QA model picked:
+// the office starts the QA agent, whose answers are predictions, never sent; the founder sees one only after answering,
+// collapsed; the header shows how often it agreed. Then another model replaces it, a failed start changes nothing, and
+// none closes it.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,8 +23,9 @@ const port = socket.address().port;
 await new Promise((resolve) => socket.close(resolve));
 assert.notEqual(port, 4870);
 const url = `http://localhost:${port}`;
-const office = await spawnScratchOffice(process.execPath, ["src/server/main.ts"], {
-  env: { ...process.env, HOME: home, INBOX_DATA_DIR: join(home, "data"), INBOX_PORT: String(port), HERDR_BIN_PATH: "/usr/bin/false", HERDR_SOCKET_PATH: "/nonexistent", INBOX_CODEX_ACCOUNT_POLLING: "0", INBOX_PRESENCE_DISCOVERY: "0", INBOX_BROWSER_CLEANUP: "0" },
+const fixtureLog = join(home, "herdr.log");
+const office = await spawnScratchOffice(process.execPath, ["test/qa-agent.fixture.ts"], {
+  env: { ...process.env, QA_FIXTURE_LOG: fixtureLog, HOME: home, INBOX_DATA_DIR: join(home, "data"), INBOX_PORT: String(port), HERDR_BIN_PATH: "/usr/bin/false", HERDR_SOCKET_PATH: "/nonexistent", INBOX_CODEX_ACCOUNT_POLLING: "0", INBOX_PRESENCE_DISCOVERY: "0", INBOX_BROWSER_CLEANUP: "0" },
   stdio: "ignore",
 });
 let browser, page;
@@ -40,30 +43,31 @@ try {
   };
   const project = { name: "Lantern", root: join(home, "lantern") };
   const asker = { harness: "manual", sessionId: "Clara" };
-  const qaSession = { harness: "manual", sessionId: "Quinn" };
-  await post("/api/agent/items", { session: qaSession, project, task: { title: "QA desk" }, item: { key: "hello", type: "milestone", title: "QA desk ready" } });
   const submit = async (item) => (await post("/api/agent/items", { session: asker, project, task: { title: "Release" }, item })).itemId;
   const decision = await submit({ key: "door", type: "decide", title: "Which colour for the door?", request: "I need it for the sign.", options: [{ id: "a", label: "Blue" }, { id: "b", label: "Green" }], recommendation: "Blue" });
   const milestone = await submit({ key: "sign", type: "milestone", title: "The sign is up" });
   const open = await submit({ key: "font", type: "decide", title: "Which font for the sign?" });
-  const world = await get("/api/world");
-  const qaAgent = world.agents.find((a) => a.identity.includes("Quinn")) ?? world.agents.at(0);
-  assert.ok(qaAgent, "the QA agent is known to the office");
   browser = await chromium.launch({ headless: true });
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  // Choose who predicts in manual mode itself, never turning QA answers on.
+  // Pick the QA agent's model in manual mode itself, never turning QA answers on; the office starts it.
   await page.goto(url);
-  const predictWith = page.getByRole("combobox", { name: "Predict with" });
+  const predictWith = page.getByRole("combobox", { name: "QA model" });
   await predictWith.waitFor();
   assert.equal(await predictWith.inputValue(), "");
   await page.screenshot({ path: join(shots, "07-predict-with-none.png") });
-  await predictWith.selectOption(qaAgent.id);
-  for (let i = 0; !(await get("/api/auto-approve")).qa; i++) { if (i === 50) break; await delay(100); }
+  await predictWith.selectOption({ label: "Opus 5.5 · medium (Claude Code)" });
+  const agentStatus = page.getByRole("status", { name: "QA agent" });
+  await agentStatus.filter({ hasText: "starting" }).waitFor();
+  await agentStatus.filter({ hasText: "online" }).waitFor({ timeout: 10_000 });
+  assert.equal(await agentStatus.innerText(), "QA agent: Opus 5.5 · medium (Claude Code) · online");
   const setting = await get("/api/auto-approve");
   assert.equal(setting.mode, "off");
-  assert.equal(setting.qa.agentId, qaAgent.id);
+  assert.equal(setting.qa.agentId, setting.qaAgent.agentId);
+  const qaAgent = (await get("/api/world")).agents.find((a) => a.id === setting.qa.agentId);
+  assert.ok(qaAgent?.paneId, "the started QA agent is in the office");
+  const qaSession = { harness: "claude", sessionId: "qa-fixture", paneId: qaAgent.paneId };
   await page.getByRole("status").filter({ hasText: "QA predicted 0" }).waitFor();
   await page.screenshot({ path: join(shots, "08-predict-with-agent.png") });
 
@@ -135,14 +139,40 @@ try {
   const box = await status.boundingBox();
   assert.ok(box && box.x >= 0 && box.x + box.width <= 390, JSON.stringify(box));
   await page.screenshot({ path: join(shots, "06-phone.png") });
-  // Choosing none stops predictions.
+  // Another model replaces the QA agent: the new one is designated, then the one the office started is closed.
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByRole("combobox", { name: "Predict with" }).selectOption("");
+  await predictWith.selectOption({ label: "Sonnet 5.5 · high (Claude Code)" });
+  await agentStatus.filter({ hasText: "Sonnet 5.5 · high (Claude Code) · starting" }).waitFor();
+  await page.screenshot({ path: join(shots, "09-replacing.png") });
+  await agentStatus.filter({ hasText: "Sonnet 5.5 · high (Claude Code) · online" }).waitFor({ timeout: 10_000 });
+  for (let i = 0; (await get("/api/world")).agents.some((a) => a.id === qaAgent.id); i++) { if (i === 50) break; await delay(100); }
+  const replaced = await get("/api/auto-approve");
+  assert.notEqual(replaced.qa.agentId, qaAgent.id);
+  assert.ok(!(await get("/api/world")).agents.some((a) => a.id === qaAgent.id), "the replaced QA agent was closed");
+  assert.match(await readFile(fixtureLog, "utf8"), new RegExp(`close ${qaAgent.paneId}\n`));
+  assert.equal(await page.getByRole("status").filter({ hasText: "QA predicted" }).innerText(), "QA predicted 3 · agreed 2 of 3 (67%)", "the record stays");
+  await page.screenshot({ path: join(shots, "10-replaced.png") });
+
+  // A start that fails says why and changes nothing: Sonnet stays the QA agent.
+  await predictWith.selectOption({ label: "Haiku 4.5 · low (Claude Code)" });
+  const failed = page.getByRole("alert").filter({ hasText: "did not start" });
+  await failed.waitFor({ timeout: 10_000 });
+  assert.match(await failed.innerText(), /Haiku 4\.5 · low \(Claude Code\) did not start \(herdr: agent did not become ready within 30s\)/);
+  assert.equal((await get("/api/auto-approve")).qa.agentId, replaced.qa.agentId);
+  assert.equal(await agentStatus.innerText(), "QA agent: Sonnet 5.5 · high (Claude Code) · online");
+  assert.equal(await predictWith.inputValue(), "claude|sonnet|high");
+  await page.screenshot({ path: join(shots, "11-start-failed.png") });
+
+  // None stops predictions and closes the QA agent the office started.
+  await predictWith.selectOption("");
   for (let i = 0; (await get("/api/auto-approve")).qa; i++) { if (i === 50) break; await delay(100); }
   assert.equal((await get("/api/auto-approve")).qa, null);
-  assert.equal((await fetch(`${url}/api/agent/qa/next`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: qaSession }) })).status, 403);
+  for (let i = 0; (await get("/api/world")).agents.some((a) => a.id === replaced.qa.agentId); i++) { if (i === 50) break; await delay(100); }
+  assert.ok(!(await get("/api/world")).agents.some((a) => a.id === replaced.qa.agentId), "none closed it");
+  assert.equal((await fetch(`${url}/api/agent/qa/next`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session: qaSession }) })).status, 404);
+  await page.screenshot({ path: join(shots, "12-none.png") });
   assert.deepEqual(errors, []);
-  console.log(`QA predictions browser passed: predict-with picker in Off, predictions never sent, hidden until answered, collapsed in history, header rate, judging, phone. Screenshots: ${shots}`);
+  console.log(`QA predictions browser passed: model picker in Off starts the QA agent, predictions never sent, hidden until answered, collapsed in history, header rate, judging, phone, replace closes the old one, failed start changes nothing, none closes it. Screenshots: ${shots}`);
 } catch (err) {
   await page?.screenshot({ path: join(shots, "failed.png") }).catch(() => {});
   throw err;

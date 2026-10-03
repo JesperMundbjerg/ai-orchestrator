@@ -365,6 +365,9 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
     judged TEXT CHECK (judged IN ('match', 'mismatch')), judged_at TEXT,
     PRIMARY KEY (item_id, revision)
   )`);
+}, (db) => {
+  // The QA agent the office started itself (JSON), so it closes only that one when the founder picks another model or none.
+  addColumn(db, "auto_approve", "qa_started", "TEXT");
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {

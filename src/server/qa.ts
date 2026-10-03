@@ -73,6 +73,11 @@ export class QaDesk {
     this.db.prepare("UPDATE auto_approve SET qa_agent_id = ? WHERE singleton = 1").run(agentId);
   }
 
+  /** The office designates an agent it has just started itself. */
+  designate(agentId: string): void {
+    this.db.prepare("UPDATE auto_approve SET qa_agent_id = ? WHERE singleton = 1").run(agentId);
+  }
+
   /** Why an item stays the founder's own, whatever the QA agent knows; null when it may answer. */
   founderOnly(item: Item, agent: QaAgent): string | null {
     if (presentedBy(this.db, item.id, item.revision)) return "a pipeline's “Founder approves” step needs the founder's own acceptance";

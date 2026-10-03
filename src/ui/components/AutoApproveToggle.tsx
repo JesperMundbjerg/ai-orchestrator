@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
-import type { AutoApproveState, AutomationMode, QaSummary, WorldAgent } from "../../shared/types.ts";
+import type { AutoApproveState, AutomationMode, QaAgentView, QaModel, QaSummary } from "../../shared/types.ts";
 import { api } from "../api.ts";
 
 const MODES: Array<{ mode: AutomationMode; label: string; title: string }> = [
-  { mode: "off", label: "Off", title: "You answer everything. With a QA agent chosen, it predicts your answers without sending them, and the header shows how often it agreed with you." },
+  { mode: "off", label: "Off", title: "You answer everything. With a QA model picked, the office starts a QA agent that predicts your answers without sending them, and the header shows how often it agreed with you." },
   { mode: "approve_all", label: "Approve all", title: "Accept milestones and try-it checks; choose clearly recommended options. Open questions and decisions without a clear recommendation still need you. Works while the inbox is closed." },
-  { mode: "qa", label: "QA answers", title: "An office agent you choose decides for you, with a reason and what it learned from your past answers. Its answers are marked as its own and you can override them. While it is offline, everything is yours again; nothing is answered automatically." },
+  { mode: "qa", label: "QA answers", title: "A QA agent the office starts on the model you pick decides for you, with a reason and what it learned from your past answers. Its answers are marked as its own and you can override them. While it is offline, everything is yours again; nothing is answered automatically." },
 ];
+
+const key = (m: { harness: string; model: string; effort: string }) => `${m.harness}|${m.model}|${m.effort}`;
 
 /** Both headers show the same persisted server setting, never a local-only switch. */
 export function AutoApproveToggle({ tick }: { tick: number }) {
   const [state, setState] = useState<AutoApproveState | null>(null);
-  const [agents, setAgents] = useState<WorldAgent[]>([]);
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,26 +21,28 @@ export function AutoApproveToggle({ tick }: { tick: number }) {
     api.autoApprove().then((s) => { if (live) { setState(s); setError(null); } }, (e: Error) => { if (live) setError(e.message); });
     return () => { live = false; };
   }, [tick]);
-  // Both QA answers and manual mode (which predicts with it) choose the QA agent.
-  const choosing = picking || state?.mode === "qa" || state?.mode === "off";
-  useEffect(() => {
-    if (!choosing) return;
-    let live = true;
-    api.world().then((w) => { if (live) setAgents(w.agents); }, () => {});
-    return () => { live = false; };
-  }, [choosing, tick]);
 
-  const set = async (mode: AutomationMode, agentId?: string | null) => {
+  const qa = state?.qa ?? null;
+  const running = state?.qaAgent ?? null;
+  const starting = running?.status === "starting";
+  const set = async (mode: AutomationMode, qaModel?: QaModel | null) => {
     if (!state || busy) return;
-    // QA answers need an agent first; choosing one turns them on.
-    if (mode === "qa" && !agentId && !state.qa) { setPicking(true); return; }
+    // QA answers need an agent first; picking its model starts one, and QA answers turn on once it runs.
+    if (mode === "qa" && qaModel === undefined && !qa && !starting) { setPicking(true); return; }
     setBusy(true);
-    try { setState(await api.setAutoApprove(mode, agentId)); setPicking(false); setError(null); }
+    try {
+      const choice = qaModel ? { harness: qaModel.harness, model: qaModel.model, effort: qaModel.effort } : qaModel;
+      setState(await api.setAutoApprove(mode, choice)); setPicking(false); setError(null);
+    }
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };
-  const qa = state?.qa ?? null;
-  const shown = picking ? "qa" : state?.mode;
+  const shown = picking ? "qa" : (starting && running.mode) || state?.mode;
+  // The picker serves both manual mode (the QA agent predicts) and QA answers (it answers).
+  const choosing = state && (shown === "off" || shown === "qa");
+  const models = state?.qaModels ?? [];
+  const groups = [...new Set(models.map((m) => m.group))];
+  const value = running ? key(running.model) : qa ? "other" : "";
   return <div className="auto-approve-control">
     <div className="automation-modes" role="radiogroup" aria-label="Who answers for you">
       {MODES.map((m) => (
@@ -50,25 +53,27 @@ export function AutoApproveToggle({ tick }: { tick: number }) {
         </button>
       ))}
     </div>
-    {state?.mode === "approve_all" ? <span className="auto-approve-count">{state.count} auto-answered</span> : null}
-    {shown === "off" && state ? (
-      <label className="qa-predict small">Predict with
-        <select className="qa-agent small" aria-label="Predict with" disabled={busy} value={qa?.agentId ?? ""}
-          title="An office agent that predicts your answers without sending them, so you can see how often it agrees with you."
-          onChange={(e) => void set("off", e.target.value || null)}>
-          <option value="">none</option>
-          {qa && !agents.some((a) => a.id === qa.agentId) ? <option value={qa.agentId}>{qa.agentName ?? "an agent no longer in the office"}</option> : null}
-          {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.status === "offline" ? " (offline)" : ""}</option>)}
+    {state?.mode === "approve_all" && !starting ? <span className="auto-approve-count">{state.count} auto-answered</span> : null}
+    {choosing ? (
+      <label className="qa-predict small">{shown === "off" ? "Predict with" : "QA agent on"}
+        <select className="qa-agent small" aria-label="QA model" disabled={busy || starting} value={value}
+          title={shown === "off"
+            ? "The office starts a QA agent on this model. It predicts your answers without sending them, so you can see how often it agrees with you."
+            : "The office starts a QA agent on this model to answer for you; QA answers turn on once it runs."}
+          onChange={(e) => {
+            const picked = models.find((m) => key(m) === e.target.value);
+            if (picked) void set(shown!, picked);
+            else if (!e.target.value) void set(shown!, null);
+          }}>
+          <option value="" disabled={shown === "qa"}>{shown === "qa" && !qa ? "Choose a model…" : "none"}</option>
+          {qa && !running ? <option value="other" disabled>{qa.agentName ?? "an agent no longer in the office"}</option> : null}
+          {groups.map((g) => <optgroup key={g} label={g}>
+            {models.filter((m) => m.group === g).map((m) => <option key={key(m)} value={key(m)}>{m.label}</option>)}
+          </optgroup>)}
         </select>
       </label>
-    ) : choosing ? (
-      <select className="qa-agent small" aria-label="QA agent" disabled={!state || busy} value={qa?.agentId ?? ""}
-        onChange={(e) => { if (e.target.value) void set("qa", e.target.value); }}>
-        {!qa ? <option value="">Choose the QA agent…</option> : null}
-        {qa && !agents.some((a) => a.id === qa.agentId) ? <option value={qa.agentId}>{qa.agentName ?? "an agent no longer in the office"}</option> : null}
-        {agents.map((a) => <option key={a.id} value={a.id}>{a.name}{a.status === "offline" ? " (offline)" : ""}</option>)}
-      </select>
     ) : null}
+    {running || qa ? <QaAgentStatus running={running} qa={qa} /> : null}
     {state?.mode === "qa" && qa ? (
       <span className={`auto-approve-count qa-status${qa.online ? "" : " offline"}`} role="status">
         <strong>{qa.withQa} with QA agent</strong>
@@ -77,8 +82,19 @@ export function AutoApproveToggle({ tick }: { tick: number }) {
       </span>
     ) : null}
     {state?.mode === "off" && qa ? <Predictions qa={qa} /> : null}
+    {state?.qaError ? <span role="alert" className="error">{state.qaError}</span> : null}
     {error ? <span role="alert" className="error">{error}</span> : null}
   </div>;
+}
+
+/** The QA agent the office runs: its model and whether it is starting, online or offline. */
+function QaAgentStatus({ running, qa }: { running: QaAgentView | null; qa: QaSummary | null }) {
+  const status = running?.status ?? (qa?.online ? "online" : "offline");
+  const who = running ? running.model.label : qa?.agentName ?? "an agent no longer in the office";
+  return <span className={`auto-approve-count qa-agent-status ${status}`} role="status" aria-label="QA agent"
+    title={running ? `${qa?.agentName ? `${qa.agentName}, ` : ""}started by the office` : "Chosen earlier; the office did not start it and never closes it."}>
+    QA agent: {who} · {status}
+  </span>;
 }
 
 /** Manual mode: the QA agent predicts your answers without sending them; how often it agreed with you. */
