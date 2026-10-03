@@ -223,6 +223,8 @@ test("starting a project makes its worktree beside the repository and starts a f
   assert.ok(!/exactly one of three|--model sonnet|gpt-6-astra/.test(brief), "the choices live in the crew tree, not in the brief");
   assert.match(brief, /Never any other kind or model/);
   assert.match(brief, /hand it to QA for review/);
+  assert.match(brief, /a `Writes: <globs>` line in its task.*`inbox surface-check --writes/, "each crew task names its write surface, checked before landing");
+  assert.match(brief, /Changed \(files\) \/ Why \/ Verified \(commands with their result\) \/ Left undone \/ Needs outside my surface \/ Questions/);
   assert.ok(!lead!.args.some((a) => a.startsWith("Start on the project")), "started with its brief only, so herdr sees it ready");
   assert.deepEqual(prompts, [{ pane: "w2:p1", text: "Start on the project: A live simulation on the front page" }], "then given its first task");
 

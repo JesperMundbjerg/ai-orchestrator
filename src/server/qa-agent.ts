@@ -41,11 +41,20 @@ export function qaModels(catalog: CrewCatalog): QaModel[] {
   }))));
 }
 
+/**
+ * Flags that start a harness without its file-editing tools: QA decides, it never changes code, so its read-only status is
+ * structural rather than promised. Bash stays, for `inbox` and the learnings, so this lowers the risk rather than removing it.
+ */
+export function readOnlyFlags(harness: Harness): string[] {
+  return harness === "pi" ? ["--exclude-tools", "edit,write"] : ["--disallowedTools", "Edit,Write,NotebookEdit"];
+}
+
 export function qaBrief(learnings: string | null, model: QaModel): string {
   return [
     `The office started you as its QA agent, on ${model.label}. \`inbox\` below is ${INBOX_BIN}.`,
     "Office notices that start with \"QA:\" tell you questions or the founder's answers wait for you: then follow the loop below until `inbox qa next` has nothing left, and wait for the next notice. Do nothing else in between, and do not answer acknowledgments.",
     learnings ? `Your learnings are in ${learnings}.` : "",
+    "You run without file-editing tools: you decide, you never change code. Write your learnings with Bash (for example `cat > FILE <<'EOF'`).",
     QA_GUIDE,
   ].filter(Boolean).join("\n");
 }
@@ -101,7 +110,7 @@ export class QaAgents {
     } catch (err) {
       throw new InboxError(502, `herdr could not open a pane for the QA agent: ${(err as Error).message}`);
     }
-    const args = [...startFlags(model), ...(harness === "claude" ? hookSettings(this.cwd) : []), "--append-system-prompt", briefArgument(qaBrief(this.learnings, model))];
+    const args = [...startFlags(model), ...readOnlyFlags(harness), ...(harness === "claude" ? hookSettings(this.cwd) : []), "--append-system-prompt", briefArgument(qaBrief(this.learnings, model))];
     let failure: Error | null = null;
     try { await source.startAgent(paneId, name, harness, args); } catch (err) { failure = err as Error; }
     // herdr may give up waiting for it to look ready while it runs all the same, as with a lead.

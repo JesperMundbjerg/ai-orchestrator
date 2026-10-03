@@ -2,6 +2,7 @@
 // items, report activity and collect replies; the session is identified from the harness's
 // environment (or the herdr pane) so no setup is needed per conversation.
 
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -15,6 +16,7 @@ import { parsePage } from "../shared/pages.ts";
 import { projectRoot } from "../shared/project.ts";
 import { QA_GUIDE } from "../shared/qa.ts";
 import { STORY_INTRO } from "../shared/story.ts";
+import { changedFiles, parseWrites, strayFiles } from "../shared/surface.ts";
 import type { AgentSwitch, StandingLane, EvidenceInput, FounderAnswer, Item, ItemType, Message, Page, QaNext, QaPrediction, Reply, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
@@ -103,6 +105,9 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox lane recover PROJECT LANE --to NAME
                                   attach the lane to NAME's running session through the project's own attach command; it never
                                   renames anyone or changes a lead, and says exactly what a fresh check confirmed or why it was refused
+  inbox surface-check --writes "GLOB,GLOB" --base SHA [--commit SHA]
+                                  in the repository: the files changed from base to commit (default HEAD) outside a crew
+                                  member's write surface; exits 1 when there are any. ** spans folders, * stays in one
   inbox pane [--cwd DIR]          open a pane in your herdr tab (a grid: 2x2 first, then it grows) and print its id: P=$(inbox pane)
 
   QA answers (only the agent the founder chose as QA; \`inbox qa guide\` explains the loop and the learnings):
@@ -163,6 +168,7 @@ const OPTIONS = {
   choice: { type: "string" }, answer: { type: "string" }, accept: { type: "boolean" }, "request-changes": { type: "string" },
   learning: { type: "string", multiple: true }, through: { type: "string" }, limit: { type: "string" },
   match: { type: "boolean" }, mismatch: { type: "boolean" },
+  writes: { type: "string", multiple: true }, commit: { type: "string" },
 } as const;
 
 type Flags = ReturnType<typeof parseArgs<{ allowPositionals: true; options: typeof OPTIONS }>>["values"];
@@ -425,6 +431,8 @@ async function main(argv: string[]): Promise<void> {
       return laneCommand(parsed.positionals.slice(1));
     case "qa":
       return qaCommand(arg, parsed.positionals[2]);
+    case "surface-check":
+      return surfaceCheck();
     case "pane": {
       const paneId = await openPane(resolve(flags.cwd ?? process.cwd()));
       // The agent that starts there joins the caller's team even outside its worktree. Opening the pane has worked, so this only warns.
@@ -439,6 +447,24 @@ async function main(argv: string[]): Promise<void> {
     default:
       throw new Error(`unknown command "${command}"\n\n${HELP}`);
   }
+}
+
+/** Checks a crew member's commit against the write surface its brief gave it; needs only git, not the office. */
+function surfaceCheck(): void {
+  const globs = parseWrites(flags.writes ?? []);
+  if (!globs.length || !flags.base) throw new Error('inbox surface-check needs the write surface and the base: inbox surface-check --writes "GLOB,GLOB" --base SHA [--commit SHA]');
+  const commit = flags.commit ?? "HEAD";
+  const diff = execFileSync("git", ["diff", "--name-status", "-z", "-M", `${flags.base}..${commit}`, "--"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const files = changedFiles(diff);
+  const stray = strayFiles(files, globs);
+  const range = `${flags.base}..${commit}`;
+  if (!stray.length) return console.log(`All ${files.length} changed ${files.length === 1 ? "file is" : "files are"} inside the write surface (${globs.join(", ")}) in ${range}.`);
+  const how: Record<string, string> = { A: "added", D: "deleted", M: "modified", T: "type changed" };
+  console.log([
+    `${stray.length} of ${files.length} changed ${files.length === 1 ? "file is" : "files are"} outside the write surface (${globs.join(", ")}) in ${range}:`,
+    ...stray.map((f) => `  ${f.path} (${how[f.status] ?? f.status})`),
+  ].join("\n"));
+  process.exitCode = 1;
 }
 
 /** The QA agent's commands: it decides for the founder through the office, and learns from the founder's own answers. */

@@ -79,6 +79,8 @@ test("picking a model starts a QA agent on it and designates it once it runs", a
   assert.match(start.name, /^qa-opus-[0-9a-f]{4}$/);
   assert.equal(start.harness, "claude");
   assert.deepEqual(start.args.slice(0, 4), ["--model", "opus", "--effort", "medium"]);
+  assert.equal(start.args[start.args.indexOf("--disallowedTools") + 1], "Edit,Write,NotebookEdit", "started without Claude's editing tools");
+  assert.ok(!start.args.some((a) => /\bBash\b/.test(a) && a !== start.args[start.args.indexOf("--append-system-prompt") + 1]), "Bash stays, for inbox");
   const brief = start.args[start.args.indexOf("--append-system-prompt") + 1]!;
   assert.match(brief, /started you as its QA agent, on Opus 5\.5 · medium \(Claude Code\)/);
   assert.match(brief, /inbox qa next/);
@@ -105,6 +107,8 @@ test("another model replaces the QA agent, closing only an agent the office star
   await settle();
   const first = herdr.started[0]!;
   assert.deepEqual(first.args.slice(0, 2), ["--model", "openai-codex/gpt-6.1-sol:high"]);
+  assert.equal(first.args[first.args.indexOf("--exclude-tools") + 1], "edit,write", "started without Pi's editing tools");
+  assert.ok(!first.args.includes("--disallowedTools"), "Pi gets its own flag, not Claude's");
   assert.equal(first.harness, "pi");
   assert.notEqual(auto.state().qa?.agentId, quinn.id);
   assert.deepEqual(herdr.closed, [], "Quinn was chosen, not started, by the office: never closed");

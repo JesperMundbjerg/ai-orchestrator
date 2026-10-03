@@ -222,6 +222,10 @@ Submission `evidence.path` explicitly copies a local file into the data director
 
 Pasted images use `POST /api/uploads`; bytes must really be PNG, JPEG, GIF or WebP and at most 10 MiB. Up to eight image ids can be attached to a message/answer. `GET /uploads/:id` serves the stored image with sandbox CSP and immutable private caching (no HEAD/range API). Agents receive absolute image paths, not image bytes in terminal text. There is no automatic retention/deletion API: back up SQLite, files and uploads together.
 
+## Local CLI: write surface check
+
+`inbox surface-check --writes "GLOB,GLOB" --base SHA [--commit SHA]` runs in a repository checkout and calls no service. It lists the files changed from `--base` to `--commit` (default `HEAD`; `git diff --name-status -M`) and prints each one no glob covers, exiting 1 when there are any and 0 otherwise. `--writes` takes comma-separated globs and may be repeated. `**` spans any number of folders (none included), `*` and `?` stay within one path part, and a trailing `/` covers a whole folder. A rename counts both its old path (deleted) and its new one; a deletion is a change like any other; a copy counts only the copy. Matching lives in `src/shared/surface.ts` (`test/surface.test.ts`). First mates give each crew task a `Writes: <globs>` line and run this before landing; it is a check on a diff, not a sandbox.
+
 ## Checks
 
 `test/api-reference.test.ts` guards operation names/methods/paths against registry drift. Behavioral coverage: `test/http-contract.test.ts` (validation/methods/errors), `test/api-replay.test.ts` (keys/conflicts/atomic work), `test/typed-replies.test.ts` and `test/inbox.test.ts` (claim/recovery/revisions), `test/agent-client.test.ts` (typed client/errors), `test/pi-delivery.test.ts` (actual receipt boundary). These are isolated tests, not certification of every real harness/provider release.
