@@ -142,6 +142,7 @@ These routes use `src/server/request-validation.ts` and domain DTOs in `src/shar
 | `GET /api/auto-approve`; `POST /api/auto-approve` | Inbox-only persisted automation state; `{enabled: boolean}` (off by default) |
 | `POST /api/items/:id/replies` | Answer, as above |
 | `POST /api/items/:id/snooze` | `{until: timestamp}` |
+| `POST /api/items/:id/back-of-queue` | `{}`; the founder moves an item that needs them behind every other waiting item. It stays `needs_attention` (not snoozed, not resolved), no reply is created and nothing is sent to the agent. Returns the item with `backedAt` set; 409 unless it is `needs_attention`. Logged as the item event `item.backqueued`. Order rule in [DESIGN](DESIGN.md#layout) |
 | `POST /api/items/:id/resolve` | `{}`; mark handled without an agent reply |
 | `GET /api/items/:id/preview-check`; `GET /api/items/:id/pages/:index/check` | Reachability/framing check of item's own URL, zero-based index |
 | `POST /api/replies/:id/retry` | `{}`; explicit delivery retry |

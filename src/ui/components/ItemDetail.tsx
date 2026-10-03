@@ -13,7 +13,7 @@ import { decisionAnswer } from "./decision.ts";
 type Tab = "context" | "screenshots" | "pages" | "conversation";
 
 /** onDone moves on once any response to the item has been accepted; without it, onNext does. */
-export function ItemDetailView({ detail, onNext, onDone, onAnswered }: { detail: ItemDetail; onNext: (() => void) | null; onDone?: () => void; onAnswered?: () => void }) {
+export function ItemDetailView({ detail, onNext, onDone, onAnswered, othersWaiting }: { detail: ItemDetail; onNext: (() => void) | null; onDone?: () => void; onAnswered?: () => void; othersWaiting?: boolean }) {
   const { item, task, project, evidence, replies } = detail;
   const current = evidence.filter((e) => e.revision === item.revision);
   const tabs: Array<{ id: Tab; label: string }> = [
@@ -48,7 +48,7 @@ export function ItemDetailView({ detail, onNext, onDone, onAnswered }: { detail:
               <h2 id={`question-${item.id}`} tabIndex={-1}>{item.title}</h2>
               {item.request ? <p className="decision-request" title={item.request}>{item.request}</p> : null}
             </header>
-            <Respond key={item.revision} detail={detail} onNext={onNext} onDone={onDone ?? onNext ?? undefined} onOpenPreview={() => (setDetailsOpen(true), setTab("pages"))} onAnswered={() => { setDetailsOpen(false); setExpandedAnswer(false); onAnswered?.(); }} />
+            <Respond key={item.revision} detail={detail} onNext={onNext} onDone={onDone ?? onNext ?? undefined} othersWaiting={othersWaiting} onOpenPreview={() => (setDetailsOpen(true), setTab("pages"))} onAnswered={() => { setDetailsOpen(false); setExpandedAnswer(false); onAnswered?.(); }} />
             {answer !== null ? <button className="link small" onClick={() => setExpandedAnswer(false)}>Collapse answer</button> : null}
           </>
         )}
@@ -116,7 +116,7 @@ export function ItemDetailView({ detail, onNext, onDone, onAnswered }: { detail:
         {activeTab === "conversation" ? <ConversationTab detail={detail} /> : null}
       </div>
 
-      <Respond detail={detail} onNext={onNext} onDone={onDone ?? onNext ?? undefined} onOpenPreview={() => setTab("pages")} />
+      <Respond detail={detail} onNext={onNext} onDone={onDone ?? onNext ?? undefined} othersWaiting={othersWaiting} onOpenPreview={() => setTab("pages")} />
       <p className="route-note">{DELIVERY_LABEL[task.capabilities.reply]}.</p>
     </article>
   );
@@ -262,6 +262,7 @@ const EVENT_TEXT: Record<string, (d: Record<string, unknown>) => string> = {
   "reply.failed": (d) => `Delivery failed: ${d.error}`,
   "item.snoozed": (d) => `Snoozed until ${clock(String(d.until))}`,
   "item.woke": () => "Back from snooze",
+  "item.backqueued": () => "Put at the back of the queue; still waiting on you",
   "item.resolved": () => "Marked handled",
   "item.withdrawn": () => "The agent withdrew this request",
 };

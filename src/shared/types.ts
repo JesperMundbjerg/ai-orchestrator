@@ -150,6 +150,8 @@ export interface Item {
   blocking: boolean;
   state: ItemState;
   snoozedUntil: string | null;
+  /** When the founder put this item at the back of the queue; null if they have not. It still needs them. */
+  backedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }

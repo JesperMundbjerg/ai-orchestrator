@@ -449,7 +449,7 @@ export class Inbox {
       this.db
         .prepare("INSERT INTO replies (id, item_id, revision, action, choice, text, images, state, created_at, replay_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)")
         .run(deliveryId, itemId, item.revision, input.action, choice, text, images.length ? JSON.stringify(images) : null, now, fingerprint);
-      this.db.prepare("UPDATE items SET state = 'answer_queued', snoozed_until = NULL, updated_at = ? WHERE id = ?").run(now, itemId);
+      this.db.prepare("UPDATE items SET state = 'answer_queued', snoozed_until = NULL, backed_at = NULL, updated_at = ? WHERE id = ?").run(now, itemId);
       if (option) this.db.prepare("UPDATE tasks SET last_decision = ? WHERE id = ?").run(`${option.label} (${item.title})`, task.id);
       if (input.action === "accept" && item.type === "milestone") this.db.prepare("UPDATE tasks SET last_accepted_milestone = ? WHERE id = ?").run(item.title, task.id);
       this.log(source ? "system" : "user", "reply.queued", { taskId: task.id, itemId }, { deliveryId, action: input.action, choice, ...(source ? { autoApproved: true } : {}) });
@@ -478,8 +478,28 @@ export class Inbox {
     if (Number.isNaN(at.getTime()) || at <= this.now()) throw new InboxError(400, "snooze needs a future time");
     const item = this.item(itemId);
     if (item.state !== "needs_attention") throw new InboxError(409, `only an item that needs you can be snoozed; this one is ${item.state}`);
-    this.db.prepare("UPDATE items SET state = 'snoozed', snoozed_until = ?, updated_at = ? WHERE id = ?").run(at.toISOString(), this.iso(), itemId);
+    this.db.prepare("UPDATE items SET state = 'snoozed', snoozed_until = ?, backed_at = NULL, updated_at = ? WHERE id = ?").run(at.toISOString(), this.iso(), itemId);
     this.log("user", "item.snoozed", { taskId: item.taskId, itemId }, { until: at.toISOString() });
+    this.onChange("item");
+    return this.item(itemId);
+  }
+
+  /**
+   * Moves an item that needs the user behind every other waiting one. It still needs them: the agent
+   * keeps waiting, nothing is sent, and it is neither snoozed nor resolved. Backing several items
+   * queues them in the order they were backed; a later one goes behind an earlier one.
+   */
+  backOfQueue(itemId: string): Item {
+    const item = this.item(itemId);
+    if (item.state !== "needs_attention") throw new InboxError(409, `only an item that needs you can go to the back of the queue; this one is ${item.state}`);
+    this.tx(() => {
+      // Strictly after every earlier backing, so two quick clicks cannot tie.
+      const last = this.db.prepare("SELECT max(backed_at) AS at FROM items WHERE backed_at IS NOT NULL").get() as Row;
+      const now = this.now().getTime();
+      const at = new Date(last.at ? Math.max(now, Date.parse(str(last.at)) + 1) : now).toISOString();
+      this.db.prepare("UPDATE items SET backed_at = ? WHERE id = ?").run(at, itemId);
+      this.log("user", "item.backqueued", { taskId: item.taskId, itemId }, { revision: item.revision });
+    });
     this.onChange("item");
     return this.item(itemId);
   }
@@ -492,7 +512,7 @@ export class Inbox {
   private setItemState(itemId: string, state: "resolved" | "withdrawn" | "needs_attention", actor: HistoryEvent["actor"]): Item {
     const item = this.item(itemId);
     this.tx(() => {
-      this.db.prepare("UPDATE items SET state = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?").run(state, this.iso(), itemId);
+      this.db.prepare("UPDATE items SET state = ?, snoozed_until = NULL, backed_at = NULL, updated_at = ? WHERE id = ?").run(state, this.iso(), itemId);
       if (state !== "needs_attention") {
         this.db.prepare("UPDATE replies SET state = 'stale' WHERE item_id = ? AND state IN ('queued', 'failed')").run(itemId);
       }
@@ -524,6 +544,8 @@ export class Inbox {
   setPinned(projectId: string, pinned: boolean): Project {
     this.project(projectId);
     this.db.prepare("UPDATE projects SET pinned = ? WHERE id = ?").run(pinned ? 1 : 0, projectId);
+    // Pinning says this project matters now: what was sent to the back comes forward again.
+    if (pinned) this.db.prepare("UPDATE items SET backed_at = NULL WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").run(projectId);
     this.onChange("project");
     return this.project(projectId);
   }
@@ -671,7 +693,7 @@ function toPending(r: Row, uploads: Uploads): PendingReply {
   };
 }
 
-function normalizeItem(raw: SubmitInput["item"]): Omit<Item, "id" | "taskId" | "key" | "revision" | "state" | "snoozedUntil" | "createdAt" | "updatedAt"> {
+function normalizeItem(raw: SubmitInput["item"]): Omit<Item, "id" | "taskId" | "key" | "revision" | "state" | "snoozedUntil" | "backedAt" | "createdAt" | "updatedAt"> {
   const options: Option[] = (raw.options ?? []).map((o, i) => {
     const given = typeof o === "string" ? splitOption(o) : o;
     return { id: given.id?.trim() || String.fromCharCode(97 + i), label: given.label?.trim() ?? "", consequence: given.consequence?.trim() ?? "" };
@@ -749,6 +771,7 @@ function toItem(r: Row): Item {
     blocking: Boolean(r.blocking),
     state: str(r.state) as Item["state"],
     snoozedUntil: nullable(r.snoozed_until),
+    backedAt: nullable(r.backed_at),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
   };

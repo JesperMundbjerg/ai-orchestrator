@@ -85,6 +85,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("GET", /^\/api\/items\/([\w-]+)$/, emptySchema, (_r, _b, [id]) => inbox.detail(id!)),
     route("POST", /^\/api\/items\/([\w-]+)\/replies$/, validation.answerSchema, (_r, b, [id]) => inbox.answer(id!, b)),
     route("POST", /^\/api\/items\/([\w-]+)\/snooze$/, validation.snoozeSchema, (_r, b, [id]) => inbox.snooze(id!, b.until)),
+    route("POST", /^\/api\/items\/([\w-]+)\/back-of-queue$/, emptySchema, (_r, _b, [id]) => inbox.backOfQueue(id!)),
     route("POST", /^\/api\/items\/([\w-]+)\/resolve$/, emptySchema, (_r, _b, [id]) => inbox.resolve(id!)),
     route("GET", /^\/api\/items\/([\w-]+)\/preview-check$/, emptySchema, (_r, _b, [id]) => checkPreview(inbox.item(id!).preview?.url)),
     route("GET", /^\/api\/items\/([\w-]+)\/pages\/(\d+)\/check$/, emptySchema, (r, _b, [id, n]) => checkPreview(inbox.item(id!).pages[Number(n)]?.url, `http://${r.headers.host ?? "localhost"}`)),

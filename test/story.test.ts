@@ -216,7 +216,8 @@ test("an office database already past the legacy adoption gains the story column
 
     const o = office(file);
     try {
-      assert.equal(Number(o.db.prepare("PRAGMA user_version").get()!.user_version), 8);
+      // The story columns arrived in migration 8; later migrations may follow.
+      assert.ok(Number(o.db.prepare("PRAGMA user_version").get()!.user_version) >= 8);
       const me = o.world.resolve(session);
       assert.deepEqual(o.world.setStory(session, story), { story });
       assert.equal(o.db.prepare("SELECT story_prompt FROM world_agents WHERE id = ?").get(me.id)!.story_prompt, STORY_PROMPT);

@@ -73,6 +73,7 @@ function ItemCard({ entry: { item, task, project }, selected, onSelect }: { entr
         <span className={item.blocking ? "blocking" : "muted"}>{item.blocking ? "Agent waiting on this" : "Agent continuing"}</span>
         {item.videoCount ? <span className="video-badge">▶ {item.videoCount === 1 ? "Video" : `${item.videoCount} videos`}</span> : null}
         {item.revision > 1 ? <span className="muted">rev {item.revision}</span> : null}
+        {item.backedAt ? <span className="muted">sent to the back</span> : null}
         {failed ? <span className="warn">Delivery failed</span> : null}
       </div>
     </button>

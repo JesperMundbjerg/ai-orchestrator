@@ -342,6 +342,9 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
   // adoptLegacy gained these after databases had already passed it, so they need a migration of their own.
   addColumn(db, "world_agents", "story_prompt", "INTEGER");
   addColumn(db, "world_agents", "story_asked", "INTEGER");
+}, (db) => {
+  // When the founder put an item at the back of their queue; NULL for every existing item.
+  addColumn(db, "items", "backed_at", "TEXT");
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {

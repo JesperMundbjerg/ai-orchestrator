@@ -1,5 +1,6 @@
 // Which items need the user, in what order. The order is deliberately simple and stated in
 // the UI: pinned projects first, then items an agent is blocked on, then longest waiting.
+// Items you put at the back of the queue come after all of those, in the order you backed them.
 
 import type { InboxState, ItemSummary, ItemType, Project, Task } from "../shared/types.ts";
 
@@ -11,13 +12,15 @@ export interface Entry {
   project: Project;
 }
 
-export const SORT_EXPLANATION = "Pinned projects first, then items an agent is waiting on, then the longest waiting.";
+export const SORT_EXPLANATION = "Pinned projects first, then items an agent is waiting on, then the longest waiting. Items you sent to the back come last.";
 
 export function needsYou(state: InboxState, filter: Filter, projectId: string | null): Entry[] {
   return entries(state)
     .filter(({ item, task }) => item.state === "needs_attention" && !task.parked)
     .filter(({ item, project }) => (filter === "all" || item.type === filter) && (!projectId || project.id === projectId))
     .sort((a, b) =>
+      Number(a.item.backedAt !== null) - Number(b.item.backedAt !== null) ||
+      (a.item.backedAt ?? "").localeCompare(b.item.backedAt ?? "") ||
       Number(b.project.pinned) - Number(a.project.pinned) ||
       Number(b.item.blocking) - Number(a.item.blocking) ||
       a.item.updatedAt.localeCompare(b.item.updatedAt));

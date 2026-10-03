@@ -47,7 +47,7 @@ function fixture(t: TestContext, staticUi = false) {
 const session = { harness: "manual" as const, sessionId: "contract-session" };
 const submit = { session, item: { type: "milestone" as const, title: "A checked increment" } };
 const mutations: Array<[string, string]> = [
-  ["POST", "/api/items/id/replies"], ["POST", "/api/items/id/snooze"], ["POST", "/api/items/id/resolve"],
+  ["POST", "/api/items/id/replies"], ["POST", "/api/items/id/snooze"], ["POST", "/api/items/id/back-of-queue"], ["POST", "/api/items/id/resolve"],
   ["POST", "/api/replies/id/retry"], ["PATCH", "/api/tasks/id"], ["POST", "/api/tasks/id/open"],
   ["POST", "/api/projects/id/pin"], ["POST", "/api/uploads"], ["POST", "/api/world/teams"],
   ["PATCH", "/api/world/teams/id"], ["DELETE", "/api/world/teams/id"],

@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { api } from "./api.ts";
 import { ItemDetailView } from "./components/ItemDetail.tsx";
 import { CrewGuide } from "./components/CrewGuide.tsx";
 import { DecisionSheet } from "./components/DecisionSheet.tsx";
@@ -40,6 +41,10 @@ export function App() {
       if (e.key === "n") {
         const id = nextNeeding(queue, currentId);
         if (id) navigate({ view: "needs", itemId: id });
+      }
+      // Back of queue: it keeps needing you, but the others come first. A refused request (the item moved on meanwhile) leaves the page to refresh itself.
+      if (e.key === "b" && currentId && queue.length > 1 && queue.some((q) => q.item.id === currentId)) {
+        void api.backOfQueue(currentId).then(() => navigate({ view: "needs", itemId: nextAfterResponse(queue, currentId) }), () => {});
       }
       if ((e.key === "j" || e.key === "k") && queue.length) {
         const at = queue.findIndex((q) => q.item.id === currentId);

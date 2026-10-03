@@ -22,6 +22,9 @@ export function DecisionSheet({ state, tick, projectId, selectedId, onOpen }: {
     const task = state.tasks.find((task) => task.id === item?.taskId);
     return item && task && !task.parked && ["needs_attention", "answer_queued", "delivered"].includes(item.state);
   });
+  // What you sent to the back sinks below the rest, in the order you sent it; everything else keeps its place.
+  const backedAt = (id: string) => { const item = state.items.find((item) => item.id === id); return item?.state === "needs_attention" ? item.backedAt : null; };
+  visible.sort((a, b) => Number(backedAt(a) !== null) - Number(backedAt(b) !== null) || (backedAt(a) ?? "").localeCompare(backedAt(b) ?? ""));
   const focus = (id: string) => {
     const heading = document.getElementById(`question-${id}`);
     if (!heading || !root.current?.contains(heading)) return;
@@ -44,7 +47,7 @@ export function DecisionSheet({ state, tick, projectId, selectedId, onOpen }: {
           <h1>Questions for you</h1>
           <p ref={completion} tabIndex={-1} role="status">{waiting.length ? `${waiting.length} remaining` : "All caught up"}</p>
         </header>
-        {visible.map((id) => <SheetCard key={id} id={id} tick={tick} selected={id === selectedId} onReady={() => focus(id)} onNext={() => advance(id)} />)}
+        {visible.map((id) => <SheetCard key={id} id={id} tick={tick} selected={id === selectedId} onReady={() => focus(id)} onNext={() => advance(id)} othersWaiting={waiting.length + other.length > 1} />)}
         {other.length ? <section className="decision-other"><h2>Also waiting for you</h2>{other.map(({ item }) => (
           <button className="ghost" key={item.id} onClick={() => onOpen(item.id)}><span className={`type ${item.type}`}>{item.type === "try" ? "Try it" : "Milestone"}</span>{item.title}</button>
         ))}</section> : null}
@@ -53,7 +56,7 @@ export function DecisionSheet({ state, tick, projectId, selectedId, onOpen }: {
   );
 }
 
-function SheetCard({ id, tick, selected, onReady, onNext }: { id: string; tick: number; selected: boolean; onReady: () => void; onNext: () => void }) {
+function SheetCard({ id, tick, selected, onReady, onNext, othersWaiting }: { id: string; tick: number; selected: boolean; onReady: () => void; onNext: () => void; othersWaiting: boolean }) {
   const [refresh, setRefresh] = useState(0);
   const detail = useItemDetail(id, tick + refresh);
   const advance = useRef(false);
@@ -63,5 +66,5 @@ function SheetCard({ id, tick, selected, onReady, onNext }: { id: string; tick: 
     if (!selected) focused.current = false;
     if (advance.current && detail && decisionAnswer(detail) !== null) { advance.current = false; onNext(); }
   });
-  return detail ? <ItemDetailView detail={detail} onNext={onNext} onAnswered={() => { advance.current = true; setRefresh((r) => r + 1); }} /> : <p className="muted">Loading question…</p>;
+  return detail ? <ItemDetailView detail={detail} onNext={onNext} othersWaiting={othersWaiting} onAnswered={() => { advance.current = true; setRefresh((r) => r + 1); }} /> : <p className="muted">Loading question…</p>;
 }

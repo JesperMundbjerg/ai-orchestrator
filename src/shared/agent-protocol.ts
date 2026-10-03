@@ -173,7 +173,7 @@ export const itemResponse: Schema<Item> = object({
   id: text, taskId: text, key: text, type: oneOf(ITEM_TYPES), revision: positiveInteger,
   title: text, request: text, context: text, recommendation: text, options: list(optionSchema), check: text,
   preview: nullable(previewSchema), pages: list(pageSchema), blocking: boolean, state: oneOf(ITEM_STATES),
-  snoozedUntil: nullText, createdAt: text, updatedAt: text, presentedHead: optional(nullText),
+  snoozedUntil: nullText, backedAt: nullText, createdAt: text, updatedAt: text, presentedHead: optional(nullText),
 });
 export const replyResponse: Schema<Reply> = object({
   id: text, itemId: text, revision: positiveInteger, action: oneOf(REPLY_ACTIONS), choice: nullText, text,

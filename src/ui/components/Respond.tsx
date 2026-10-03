@@ -11,7 +11,7 @@ import { recommendedOption } from "./decision.ts";
  * choice never prevents writing more. Each send carries a fresh delivery id, so a retried
  * request cannot become a second answer.
  */
-export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered }: { detail: ItemDetail; onNext: (() => void) | null; onDone?: () => void; onOpenPreview: () => void; onAnswered?: () => void }) {
+export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, othersWaiting = onNext !== null }: { detail: ItemDetail; onNext: (() => void) | null; onDone?: () => void; onOpenPreview: () => void; onAnswered?: () => void; othersWaiting?: boolean }) {
   const { item, replies } = detail;
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"answer" | "discuss">("answer");
@@ -99,6 +99,7 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered }: {
   const secondary = (
     <span className="secondary">
       <button className="ghost" onClick={() => setMode("discuss")}>{item.type === "decide" && item.options.length ? "Other / discuss" : "Discuss"}</button>
+      {othersWaiting ? <button className="ghost" onClick={() => void putAside(api.backOfQueue(item.id))} title="Keep waiting on you, but show the others first. Nothing is sent to the agent.">Back of queue <kbd>b</kbd></button> : null}
       <span className="later">
         <button className="ghost" onClick={() => setShowLater(!showLater)} aria-expanded={showLater}>Later ▾</button>
         {showLater ? (

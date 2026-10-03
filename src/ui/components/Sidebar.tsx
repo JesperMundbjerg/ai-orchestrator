@@ -73,7 +73,7 @@ export function Sidebar({ state, route, navigate }: { state: InboxState; route: 
       <div className="sidebar-foot">
         <span className={`dot ${state.herdr === "connected" ? "idle" : "offline"}`} />
         {state.herdr === "connected" ? "herdr connected" : "herdr not running: no live status"}
-        <div className="keys"><kbd>n</kbd> next needing you · <kbd>j</kbd>/<kbd>k</kbd> move</div>
+        <div className="keys"><kbd>n</kbd> next needing you · <kbd>j</kbd>/<kbd>k</kbd> move · <kbd>b</kbd> back of queue</div>
       </div>
     </nav>
   );

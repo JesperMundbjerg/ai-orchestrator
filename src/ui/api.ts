@@ -19,6 +19,7 @@ export const api = {
   detail: (itemId: string) => request<ItemDetail>("GET", `/api/items/${itemId}`),
   answer: (itemId: string, body: { id: string; revision: number; action: ReplyAction; choice?: string; text?: string; images?: string[] }) =>
     request<Reply>("POST", `/api/items/${itemId}/replies`, body),
+  backOfQueue: (itemId: string) => request<Item>("POST", `/api/items/${itemId}/back-of-queue`, {}),
   snooze: (itemId: string, until: Date) => request<Item>("POST", `/api/items/${itemId}/snooze`, { until: until.toISOString() }),
   resolve: (itemId: string) => request<Item>("POST", `/api/items/${itemId}/resolve`, {}),
   checkPage: (itemId: string, index: number) => request<PageCheck>("GET", `/api/items/${itemId}/pages/${index}/check`),
