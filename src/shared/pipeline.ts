@@ -212,6 +212,9 @@ export interface PipelineRun {
   rationale: string;
   steps: PipelineStep[];
   state: "open" | "delivered" | "abandoned";
+  /** A dev run's delivery, observed rather than claimed: its exact candidate was on this published
+   * branch ref (`refs/remotes/origin/dev`, or the local branch in a repository with no remotes) at `tip`. */
+  landed?: { ref: string; tip: string; at: string };
   /** Terminal closure, without deleting the candidate, graph or evidence. */
   abandonment?: { notes: string; byAgentId: string; at: string };
   /** Append-only re-base history, retained with evidence even after closure. */

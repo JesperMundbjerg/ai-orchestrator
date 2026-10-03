@@ -10,7 +10,7 @@ import { dataDir, requestFingerprint } from "../db.ts";
 import { Adapters } from "../adapter.ts";
 import { activation, pathProblems, policyHash, selected, topological, validateGraph, validateLayout } from "./model.ts";
 import { BUILTINS, discover, within } from "./discovery.ts";
-import { capture, repository, requirePublishedBase, sameCandidate, laneCheckout } from "./candidate.ts";
+import { capture, committedFingerprint, isAncestor, laneCheckout, publishedBranch, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
 import { founderDecision, presentedBy } from "./approval.ts";
 
 const short = (sha = "") => sha.slice(0, 10);
@@ -110,8 +110,52 @@ export class Pipelines {
     if (this.world().teams.some(t => t.id === run.teamId)) run.leadId = this.context(run.teamId).lead?.id ?? null;
     else run.archived ??= { reason: "missing", teamName: run.teamId, at: run.updatedAt };
     if (run.state === "abandoned") return run;
+    const landed = this.landing(run);
+    if (landed) {
+      // The published commit holds exactly the pinned bytes, so the evidence is judged as fresh even though the checkout moved on.
+      this.project(run, true);
+      const open = run.steps.filter(s => s.state !== "inactive" && s.state !== "done" && run.graph.nodes.find(n => n.id === s.nodeId)?.kind !== "delivery");
+      if (!open.length && !selected(run.graph, run.selections).length && !pathProblems(run.graph, run.selections, run.candidate.changedPaths).length) return this.deliver(run, landed);
+    }
+    this.project(run, run.state === "delivered" || Boolean(run.archived) || sameCandidate(run.candidate));
+    const dev = landed && run.steps.find(s => run.graph.nodes.find(n => n.id === s.nodeId)?.delivery === "dev" && s.state !== "inactive");
+    if (dev) dev.problems = [`candidate ${short(run.candidate.head)} is already on ${landed.ref.replace(/^refs\/(remotes|heads)\//, "")}, but this run's steps are not all done for it: it got there another way (a waiver or another run), or its evidence changed since. Abandon this run, saying which.`];
+    return run;
+  }
+  /**
+   * Where this open dev run's exact candidate already is on its published protected branch, or null:
+   * its commit, holding exactly the pinned intended bytes, reachable from that branch. A gate allow or an
+   * agent's word is never proof, since the push can still fail; only the published ref is.
+   */
+  private landing(run: PipelineRun): { ref: string; tip: string } | null {
+    if (run.state !== "open" || run.archived) return null;
+    const { active } = activation(run.graph, run.selections);
+    if (!run.graph.nodes.some(n => n.kind === "delivery" && n.delivery === "dev" && active.has(n.id))) return null;
+    const { repoRoot, base, head, fingerprint } = run.candidate;
+    try {
+      const branch = this.adapters.read(repoRoot, basename(repoRoot)).adapter?.integrationBranch ?? "dev";
+      const target = ["main", "master"].includes(branch) ? null : publishedBranch(repoRoot, branch, run.candidate.checkout);
+      // A candidate with nothing past its base (a run pinned before its work) has delivered nothing.
+      if (!target || isAncestor(repoRoot, head, base) || !isAncestor(repoRoot, head, target.tip)) return null;
+      return committedFingerprint(repoRoot, run.candidate) === fingerprint ? target : null;
+    } catch { return null; }
+  }
+  /** Closes a run whose candidate landed, unless it changed since it was read. */
+  private deliver(seen: PipelineRun, landed: { ref: string; tip: string }): PipelineRun {
+    this.atomic(() => {
+      const run = this.raw(seen.id);
+      if (run.state !== "open" || run.archived || run.revision !== seen.revision) return;
+      const at = this.now().toISOString();
+      run.state = "delivered"; run.landed = { ...landed, at }; run.revision++; run.updatedAt = at;
+      this.db.prepare("UPDATE pipeline_runs SET snapshot = ? WHERE id = ?").run(JSON.stringify(run), run.id);
+      this.db.prepare("INSERT INTO events (at, actor, task_id, item_id, kind, detail) VALUES (?, 'office', NULL, NULL, 'pipeline.landed', ?)")
+        .run(at, JSON.stringify({ runId: run.id, round: run.round, candidate: run.candidate.head, ...landed }));
+    });
+    return this.get(seen.id);
+  }
+  /** Step states from the one evidence evaluator; `fresh` says whether candidate-bound evidence still describes the candidate. */
+  private project(run: PipelineRun, fresh: boolean): void {
     const { active, edges } = activation(run.graph, run.selections);
-    const fresh = run.state === "delivered" || Boolean(run.archived) || sameCandidate(run.candidate);
     for (const key of topological(run.graph)) {
       const step = run.steps.find(s => s.nodeId === key)!; const node = run.graph.nodes.find(n => n.id === key)!;
       if (!active.has(key)) { step.state = "inactive"; continue; }
@@ -135,7 +179,6 @@ export class Pipelines {
       else if (node.kind === "delivery") step.state = run.state === "delivered" ? "done" : "ready";
       else step.state = currentEvidence ? "reported" : "ready";
     }
-    return run;
   }
   /** A team's own runs, and those of teams merged into it (archived, under their own team). */
   list(teamId: string): PipelineRun[] {
@@ -208,6 +251,8 @@ export class Pipelines {
     });
   }
   private editable(actor: WorldAgent, runId: string, expectedRevision: number | undefined, lead = true): PipelineRun {
+    // A landed candidate closes its run before any edit could reopen or re-pin it.
+    if (this.landing(this.raw(runId))) this.get(runId);
     const run = this.unarchived(this.raw(runId));
     if (lead) this.lead(actor, run.teamId);
     else if (actor.teamId !== run.teamId) throw new InboxError(403, "only this team's crew may report pipeline evidence");
@@ -498,7 +543,7 @@ export class Pipelines {
     const run = given === undefined ? view.runs.find(r => r.state === "open" && !r.archived) ?? null : given;
     const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : "Do your assigned step and use inbox pipeline report; only your first mate may complete steps or deliver.";
     return [`Pipeline: ${view.graph?.label ?? "unavailable"} (${view.source}, policy ${view.policyHash?.slice(0, 12) ?? "missing"}). ${role}`,
-      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}${s.baselineFailures?.length ? `; fails as on base, not a pass: ${s.baselineFailures.join("; ")}` : ""}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
+      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.landed ? `: on ${run.landed.ref.replace(/^refs\/(remotes|heads)\//, "")} at ${short(run.landed.tip)}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}${s.baselineFailures?.length ? `; fails as on base, not a pass: ${s.baselineFailures.join("; ")}` : ""}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
       "Commands: inbox pipeline start|branch|abandon|assign|done|report|status|gate. No model is called; a gate allow is preflight, never a publication receipt."].join("\n");
   }
   private atomic<T>(fn: () => T): T {

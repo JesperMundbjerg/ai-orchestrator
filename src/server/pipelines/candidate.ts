@@ -29,12 +29,7 @@ export function capture(checkout: string, base = "HEAD", candidate = "HEAD", fin
   const paths = git(repo.top, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", baseSha, "--"]).split("\0").filter(Boolean);
   const untracked = git(repo.top, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(Boolean);
   const changedPaths = [...new Set([...paths, ...untracked])].sort();
-  const tree = new Map<string, [string, string]>();
-  for (const entry of git(repo.top, ["ls-tree", "-r", "-z", baseSha]).split("\0").filter(Boolean)) {
-    const m = /^(\d+) (\w+) (\w+)\t([\s\S]*)$/.exec(entry);
-    if (!m) throw new InboxError(409, "candidate tree could not be read");
-    tree.set(m[4]!, [m[1]!, m[3]!]);
-  }
+  const tree = treeEntries(repo.top, baseSha);
   const format = git(repo.top, ["rev-parse", "--show-object-format"]);
   let bytes = 0;
   for (const path of changedPaths) {
@@ -54,18 +49,55 @@ export function capture(checkout: string, base = "HEAD", candidate = "HEAD", fin
   // commit. No temporary Git index, object write, textconv, hooks or project code execution.
   // Hash only this wave's scope. Unchanged upstream paths must not invalidate its
   // receipts after a protected re-base; additions, deletions and modes still count.
-  const intended = fingerprintVersion === 1 ? [...tree].sort(([a], [b]) => a.localeCompare(b)) : changedPaths.map(path => [path, tree.get(path) ?? null]);
-  const fingerprint = createHash("sha256").update(JSON.stringify(intended)).digest("hex");
+  const fingerprint = intendedBytes(tree, changedPaths, fingerprintVersion);
   return { checkout: repo.top, repoRoot: repo.root, base: baseSha, head, tree: git(repo.top, ["rev-parse", `${head}^{tree}`]), fingerprint, changedPaths,
     ...(fingerprintVersion === 2 ? { fingerprintVersion: 2 as const } : {}) };
+}
+function intendedBytes(tree: Map<string, [string, string]>, changedPaths: string[], fingerprintVersion: 1 | 2): string {
+  const intended = fingerprintVersion === 1 ? [...tree].sort(([a], [b]) => a.localeCompare(b)) : changedPaths.map(path => [path, tree.get(path) ?? null]);
+  return createHash("sha256").update(JSON.stringify(intended)).digest("hex");
+}
+function treeEntries(cwd: string, commit: string): Map<string, [string, string]> {
+  const tree = new Map<string, [string, string]>();
+  for (const entry of git(cwd, ["ls-tree", "-r", "-z", commit]).split("\0").filter(Boolean)) {
+    const m = /^(\d+) (\w+) (\w+)\t([\s\S]*)$/.exec(entry);
+    if (!m) throw new InboxError(409, "candidate tree could not be read");
+    tree.set(m[4]!, [m[1]!, m[3]!]);
+  }
+  return tree;
+}
+/**
+ * The candidate's intended bytes as its commit holds them, read from Git objects alone: what capture()
+ * gives on a clean checkout at that commit. A delivered candidate is recognised after its checkout moved on,
+ * and a pin that included bytes the commit lacks never matches.
+ */
+export function committedFingerprint(cwd: string, candidate: PipelineCandidate): string {
+  const changedPaths = git(cwd, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", candidate.base, candidate.head, "--"]).split("\0").filter(Boolean).sort();
+  const tree = treeEntries(cwd, candidate.base); const committed = treeEntries(cwd, candidate.head);
+  for (const path of changedPaths) { const entry = committed.get(path); if (entry) tree.set(path, entry); else tree.delete(path); }
+  return intendedBytes(tree, changedPaths, candidate.fingerprintVersion ?? 1);
+}
+export function isAncestor(cwd: string, ancestor: string, descendant: string): boolean {
+  try { git(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]); return true; } catch { return false; }
+}
+/**
+ * Where a protected branch is published: `origin/<branch>` in a repository with remotes (a push updates
+ * it only on success; a local branch there may be unpushed), the local branch only when there are none,
+ * and not while `checkout` has it checked out: commits there are that checkout's work, not a delivery.
+ */
+export function publishedBranch(cwd: string, branch: string, checkout: string): { ref: string; tip: string } | null {
+  let ref = `refs/remotes/origin/${branch}`;
+  if (!git(cwd, ["remote"])) {
+    ref = `refs/heads/${branch}`;
+    try { if (git(checkout, ["symbolic-ref", "-q", "HEAD"]) === ref) return null; } catch { /* detached, or the checkout is gone */ }
+  }
+  try { return { ref, tip: git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]) }; } catch { return null; }
 }
 /** No fetch or local-branch shortcut: publication is witnessed by remote-tracking refs. */
 export function requirePublishedBase(candidate: PipelineCandidate, integrationBranch: string): void {
   const refs = git(candidate.checkout, ["for-each-ref", "--format=%(refname)", "refs/remotes/"]).split("\n")
     .filter(name => name.replace(/^refs\/remotes\/[^/]+\//, "") === integrationBranch);
-  const ancestor = (base: string, tip: string): boolean => {
-    try { git(candidate.checkout, ["merge-base", "--is-ancestor", base, tip]); return true; } catch { return false; }
-  };
+  const ancestor = (base: string, tip: string): boolean => isAncestor(candidate.checkout, base, tip);
   if (!refs.some(ref => ancestor(candidate.base, ref))) throw new InboxError(409, `new base is not published on a remote-tracking ${integrationBranch} branch; fetch the integration branch first`, "pipeline_base_unpublished");
   if (!ancestor(candidate.base, candidate.head)) throw new InboxError(409, "new base must be an ancestor of the candidate", "pipeline_base_not_ancestor");
 }

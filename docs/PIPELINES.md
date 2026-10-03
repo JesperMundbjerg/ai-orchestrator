@@ -71,6 +71,22 @@ Operations distinguish `push`, `pr`, `merge`, `land` and `publish`; the office m
 
 The pre-push hook checks **every protected remote ref in Git's actual stdin**, using that update's included candidate SHA (not merely `HEAD`). Protected deletion is refused. If canonical landing produces a different commit SHA, the nested push is deliberately refused until the run's owned candidate checkout is pinned to that actual landed SHA and refreshed with `inbox pipeline branch RUN --candidate SHA --notes "…"`. Unchanged intended bytes preserve existing receipts; expanded/changed bytes require revalidation. Retry publication-pending with `worktree-sync publish`, never by re-landing the wave. There is no blanket mapped-SHA exception. Feature-only pushes do not contact the office. Tool hooks are read-only preflight; the Git hook rechecks at publication. An allow response is **not delivery evidence** and does not record landing/publication success: canonical delivery tooling must check before modifying the integration branch and record successful publication afterward. This installer does not rewrite repository delivery scripts.
 
+### When a dev run is delivered
+
+A dev run closes by itself when its exact candidate is **published**, observed on the next read of the run (Runs, status, the gate, any edit); there is no watcher, and neither a gate allow nor an agent's report counts, since the push can still fail. On each read of an open, unarchived run with an active dev boundary, the office asks Git, read-only, in the run's repository:
+
+- Is the candidate commit reachable from the published integration branch (`dev`, or the adapter's `integrationBranch`)? That is `refs/remotes/origin/dev`, which a push updates only on success; a local `dev` with unpushed merges does not count. In a repository with no remotes at all, the local `dev` is the published branch, except while the candidate's own checkout has `dev` checked out: commits there are its work, not a delivery.
+- Does that commit hold exactly the pinned intended bytes? The fingerprint is recomputed from the commit's Git objects, so a pin that included uncommitted bytes never matches, and the check holds after the candidate checkout has moved on.
+- Is everything the dev boundary requires done for that candidate (branch selections, path scope and every active step, judged by the same evidence evaluator as the gate, with the evidence counted as fresh because the published commit is the pinned one)?
+
+Then the run becomes `delivered`, records `landed: { ref, tip, at }` (the ref and its tip when observed), the dev step reads done, and a `pipeline.landed` event is written. It is terminal, like a handoff delivery: no edit, re-pin, abandonment or second gate allow. Choices for the edge cases:
+
+- **Only the current candidate counts.** A commit from an earlier round reaching dev does not close a re-pinned run, and a run pinned before its work (candidate not past its base) delivered nothing.
+- **Reached dev another way** (a waiver, another run, a bypass) while this run's steps are not all done: the run stays open, and its dev step says the candidate is already on dev. The first mate abandons it with the reason; the office never turns an unfinished run into a delivery. If the run's own steps were all done for those exact bytes, it is delivered whoever pushed them.
+- **Archived or abandoned runs** are kept as recorded and never close this way.
+
+Tests: `test/pipeline-landing.test.ts`.
+
 ## Lane delivery outside runs
 
 First-mate-only delivery applies inside office pipeline runs. A repository's standing fix-comments lanes keep landing their own small fixes outside runs. The main checkout's adapter names which lanes may do that, by name from its `lanes[]`:
