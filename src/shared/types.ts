@@ -511,6 +511,66 @@ export interface AdapterLane {
   model: string | null;
   /** "router" for the one that routes comments (Mission Control); otherwise a worker. */
   role: string | null;
+  /**
+   * The project's own command for its standing session, as argv: the office runs it with
+   * `--status --json` to check the lane and `--recover ...` only on an explicit Recover
+   * (docs/ORCHESTRATION.md). Null when the lane declares none.
+   */
+  attach: string[] | null;
+}
+
+/** What a lane's attach command answered, by its exit code and its last line of JSON. */
+export interface AttachReport {
+  state: "connected" | "disconnected" | "busy" | "unavailable" | "refused" | "failed";
+  reason: string;
+  /** The session the project registered for the lane. */
+  registered: { session: string; pane: string | null } | null;
+  companion: { pid: number; fresh: boolean; log: string | null } | null;
+  /** The registered session's last completed turn, as the project reports it: not proof of any particular work. */
+  progressAt: string | null;
+  /** On recover: whether anything was written or started. */
+  changed: boolean;
+}
+
+/** The founder's last explicit recovery of a lane, held only while the service runs. */
+export interface LaneRecovery {
+  /** `attached`: a status run started after the attach shows that session connected, in that pane and checkout, with a fresh heartbeat. */
+  state: "running" | "attached" | "busy" | "unavailable" | "refused" | "failed";
+  agentId: string;
+  agentName: string;
+  session: string;
+  pane: string;
+  at: string;
+  reason: string | null;
+  /** The companion's log, when the command named one for a failure. */
+  log: string | null;
+}
+
+/** GET /api/lanes: a standing lane with an attach command, as the project and the office both see it. */
+export interface StandingLane {
+  project: string;
+  lane: string;
+  repository: string;
+  worktree: string;
+  /** `connected` only when the project says so and the office sees that exact session running; `unknown` is never treated as gone. */
+  state: "checking" | "connected" | "disconnected" | "busy" | "unknown";
+  reason: string | null;
+  checkedAt: string | null;
+  registered: {
+    session: string;
+    pane: string | null;
+    agentId: string | null;
+    agentName: string | null;
+    teamName: string | null;
+    role: AgentRole | null;
+    running: boolean;
+  } | null;
+  companionPid: number | null;
+  /** The registered session's last completed turn, when the project reports one; informational only. */
+  lastTurnAt: string | null;
+  /** Running agents in the lane's worktree a recovery may name, leads first. Nobody is made lead by it. */
+  candidates: { agentId: string; name: string; teamName: string | null; role: AgentRole; harness: Harness }[];
+  recovery: LaneRecovery | null;
 }
 
 export const DELIVERY_STATES = ["queued", "sending", "delivered", "failed"] as const;

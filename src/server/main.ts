@@ -8,6 +8,7 @@ import { MIXED } from "../shared/crewtree.ts";
 import { dataDir, openDatabase } from "./db.ts";
 import { Herdr } from "./herdr.ts";
 import { createInboxServer } from "./http.ts";
+import { StandingLanes } from "./standing.ts";
 import { CrewTreeStore } from "./crewtree.ts";
 import { Inbox } from "./inbox.ts";
 import { AutoApprove } from "./autoapprove.ts";
@@ -47,6 +48,10 @@ inbox.presentationPath = (session) => {
     return team ? (team.standing ? null : team.path) : session.cwd;
   } catch { return session.cwd; }
 };
+// Standing lanes whose project declares an attach command: checked when read, recovered only when you ask.
+const standing = new StandingLanes(() => world.state(), herdr);
+world.messages.laneRegistration = standing.registered;
+world.standingHolds = standing.holding;
 const switches = new Switches(db, world, herdr, dir);
 // When disabled there is no process watcher or process-control HTTP surface at all.
 const machine = config.browserCleanup ? new Machine(() => world.state()) : undefined;
@@ -66,7 +71,7 @@ setInterval(() => {
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();
 
-createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches, usage, autoApprove }).listen(port, "127.0.0.1", () => {
+createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches, usage, autoApprove, standing }).listen(port, "127.0.0.1", () => {
   autoApprove.sweep();
   console.log(`Review inbox on http://localhost:${port}  (data: ${dir})`);
 });

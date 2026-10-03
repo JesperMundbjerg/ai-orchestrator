@@ -227,6 +227,9 @@ export class Switches {
   private refusal(agent: WorldAgent, to: Harness): string | null {
     if (!SWITCHABLE.includes(agent.harness)) return `${agent.name} runs on ${label(agent.harness)}; only ${SWITCHABLE.map(label).join(" and ")} agents can be switched`;
     if (agent.harness === to) return `${agent.name} already runs on ${label(to)}`;
+    // Its old pane closes, which would cut a project's standing lane off.
+    const held = this.world.standingGuard(agent);
+    if (held) return held;
     const mode = this.crewTree()?.mode ?? MIXED;
     if (mode !== MIXED && mode !== to) return `the founder has switched ${label(to)} off in the crew guide`;
     if (!agent.cwd) return `${agent.name} has no checkout for a new session to start in`;

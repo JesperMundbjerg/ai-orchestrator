@@ -1,5 +1,5 @@
 import type { CrewTreeUpdate, CrewTreeState } from "../shared/crewtree.ts";
-import type { AgentSwitch, AllLeadsResult, InboxState, Item, ItemDetail, MachineState, PageCheck, Project, Reply, ReplyAction, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
+import type { AgentSwitch, AllLeadsResult, InboxState, Item, ItemDetail, MachineState, PageCheck, Project, Reply, ReplyAction, StandingLane, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -45,6 +45,8 @@ export const api = {
   tellAgent: (agentId: string, text: string, images: string[] = []) => request<Message>("POST", `/api/world/agents/${agentId}/messages`, { text, images, clientId: crypto.randomUUID() }),
   crewTree: () => request<CrewTreeState>("GET", "/api/world/crew-tree"),
   saveCrewTree: (tree: CrewTreeUpdate) => request<CrewTreeState>("PUT", "/api/world/crew-tree", tree),
+  lanes: () => request<StandingLane[]>("GET", "/api/lanes"),
+  recoverLane: (project: string, lane: string, agentId: string) => request<StandingLane>("POST", `/api/p/${project}/lanes/${lane}/recover`, { agentId }),
   machine: () => request<MachineState>("GET", "/api/machine"),
   closeBrowser: (pid: number) => request<{ ok: true; closed: number }>("POST", `/api/machine/browsers/${pid}/close`, {}),
   /** An image you pasted or dropped, sent as base64; answers and messages then name it by id. */

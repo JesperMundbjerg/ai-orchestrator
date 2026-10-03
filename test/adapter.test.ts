@@ -33,8 +33,8 @@ test("a project's orchestrator.json is read with its lanes' worktrees resolved a
   assert.equal(adapter?.integrationBranch, "dev");
   assert.equal(adapter?.comments?.leaseMinutes, 45);
   assert.deepEqual(adapter?.lanes, [
-    { name: "einstein", worktree: "/work/lantern/.claude/worktrees/einstein", agent: null, harness: "pi", model: "openai-codex/gpt-6-astra", role: null },
-    { name: "mission-control", worktree: null, agent: "dispatch-mission-control", harness: null, model: null, role: "router" },
+    { name: "einstein", worktree: "/work/lantern/.claude/worktrees/einstein", agent: null, harness: "pi", model: "openai-codex/gpt-6-astra", role: null, attach: null },
+    { name: "mission-control", worktree: null, agent: "dispatch-mission-control", harness: null, model: null, role: "router", attach: null },
   ]);
 });
 

@@ -14,7 +14,7 @@ import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
 import { projectRoot } from "../shared/project.ts";
 import { STORY_INTRO } from "../shared/story.ts";
-import type { AgentSwitch, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
+import type { AgentSwitch, StandingLane, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
 
@@ -98,6 +98,10 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
                                   move an agent to the other harness: it writes a handoff, a new session takes over its
                                   name, team, role and messages, and its old pane closes; the model follows the crew guide
   inbox switch --all-from pi      the same for every running agent on that harness, one by one
+  inbox lane [PROJECT LANE]       a project's standing lanes with an attach command: connected, disconnected, busy or unknown, and who holds them
+  inbox lane recover PROJECT LANE --to NAME
+                                  attach the lane to NAME's running session through the project's own attach command; it never
+                                  renames anyone or changes a lead, and says exactly what a fresh check confirmed or why it was refused
   inbox pane [--cwd DIR]          open a pane in your herdr tab (a grid: 2x2 first, then it grows) and print its id: P=$(inbox pane)
 
 The session comes from CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or HERDR_PANE_ID, or --harness/--session.
@@ -264,6 +268,37 @@ async function switchAgents(name: string | undefined): Promise<void> {
   if (failed) throw new Error(`${failed} of ${ids.length} not switched`);
 }
 
+/** One lane, as the founder reads it: its state, who holds it, and the last recovery. */
+function laneLine(l: StandingLane): string {
+  const who = l.registered ? `registered session ${l.registered.session}${l.registered.agentName ? ` (${l.registered.agentName}${l.registered.role === "lead" ? `, lead of ${l.registered.teamName}` : l.registered.teamName ? `, ${l.registered.teamName}` : ""})` : ""}` : "no registered session";
+  const lines = [`${l.project}/${l.lane}: ${l.state}${l.reason ? ` — ${l.reason}` : ""}`, `  ${who}${l.companionPid ? `; companion pid ${l.companionPid}` : ""}${l.lastTurnAt ? `; last completed turn ${l.lastTurnAt}` : ""}`];
+  if (l.recovery) {
+    const r = l.recovery;
+    const what = r.state === "attached" ? `attached at ${r.at}: a check since shows session ${r.session} connected in pane ${r.pane} with a fresh heartbeat` : r.state;
+    lines.push(`  recovery onto ${r.agentName}: ${what}${r.reason ? ` — ${r.reason}` : ""}${r.log ? ` (log: ${r.log})` : ""}`);
+  }
+  if (l.state !== "connected") lines.push(l.candidates.length ? `  can be recovered onto: ${l.candidates.map((c) => `${c.name} (lead of ${c.teamName})`).join(", ")}` : "  no team lead runs in its checkout to recover it onto; who leads is the founder's choice");
+  return lines.join("\n");
+}
+
+/** `inbox lane [PROJECT LANE]` and `inbox lane recover PROJECT LANE --to NAME`. */
+async function laneCommand(args: string[]): Promise<void> {
+  if (args[0] === "recover") {
+    const [, project, lane] = args;
+    if (!project || !lane || !flags.to) throw new Error("inbox lane recover needs the project, the lane and who to attach it to: inbox lane recover PROJECT LANE --to NAME");
+    const now = await call<StandingLane>(`/api/p/${project}/lanes/${lane}/check`, {}, 30_000);
+    const target = now.candidates.find((c) => c.name.toLowerCase() === flags.to!.toLowerCase());
+    if (!target) throw new Error(`${flags.to} is not a team lead running in ${now.worktree}${now.candidates.length ? `; who is: ${now.candidates.map((c) => c.name).join(", ")}` : ""}`);
+    const after = await call<StandingLane>(`/api/p/${project}/lanes/${lane}/recover`, { agentId: target.agentId }, 180_000);
+    console.log(laneLine(after));
+    if (after.recovery?.state !== "attached") process.exitCode = 1;
+    return;
+  }
+  const [project, lane] = args;
+  const lanes = project && lane ? [await call<StandingLane>(`/api/p/${project}/lanes/${lane}/check`, {}, 30_000)] : (await get<StandingLane[]>("/api/lanes")).filter((l) => !project || l.project === project);
+  console.log(lanes.length ? lanes.map(laneLine).join("\n") : "No standing lane declares an attach command.");
+}
+
 /** Claude Code hook: hands queued replies to the session at its turn boundaries, and tells the office a new session's model. */
 async function claudeHook(): Promise<void> {
   const input = JSON.parse(readFileSync(0, "utf8") || "{}") as { hook_event_name?: string; session_id?: string; cwd?: string };
@@ -373,6 +408,8 @@ async function main(argv: string[]): Promise<void> {
     }
     case "switch":
       return switchAgents(arg);
+    case "lane":
+      return laneCommand(parsed.positionals.slice(1));
     case "pane": {
       const paneId = await openPane(resolve(flags.cwd ?? process.cwd()));
       // The agent that starts there joins the caller's team even outside its worktree. Opening the pane has worked, so this only warns.

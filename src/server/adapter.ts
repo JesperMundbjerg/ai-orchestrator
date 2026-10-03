@@ -1,7 +1,7 @@
 // A project's own description of itself: `orchestrator.json` in its main checkout names its
 // checks, reviewers, landing rules, where its pages are served and its standing lanes. The service
-// reads it and never runs anything from it. A missing file is fine; an invalid one is reported
-// rather than half-used, and the file is read again whenever it changes.
+// reads it and runs nothing from it but a lane's own `attach` argv (standing.ts). A missing file
+// is fine; an invalid one is reported rather than half-used, and the file is read again whenever it changes.
 
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -45,6 +45,14 @@ class Check {
     this.errors.push(`${at} must be a list of strings`);
     return [];
   }
+}
+
+/** A lane's attach command: argv, never a shell line, so the office runs exactly what is written. */
+function attachArgv(c: Check, v: unknown, at: string): string[] | null {
+  if (v === undefined || v === null) return null;
+  const argv = c.strings(v, at);
+  if (Array.isArray(v) && !v.length) c.errors.push(`${at} must name a command`);
+  return argv.length ? argv : null;
 }
 
 /**
@@ -102,6 +110,7 @@ export function parseAdapter(text: string, repoRoot: string, repoName: string): 
       harness: harness as Harness | null,
       model: c.string(lane.model, `lanes[${i}].model`),
       role: c.string(lane.role, `lanes[${i}].role`),
+      attach: attachArgv(c, lane.attach, `lanes[${i}].attach`),
     });
   }
 

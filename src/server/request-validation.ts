@@ -34,6 +34,7 @@ export const allLeadsSchema = object({
 });
 export const agentPatchSchema = object({ name: maybeText, teamId: optional(nullable(text)), role: optional(oneOf(["lead", "member"])), takeName: optional(boolean) });
 export const setEffortSchema = object({ level: nonempty });
+export const laneRecoverSchema = object({ agentId: nonempty });
 
 const choice = object({ harness: nonempty, model: nonempty, effort: nonempty });
 // Bound recursion before walking hostile JSON, even when a nested rule's fields are well typed.

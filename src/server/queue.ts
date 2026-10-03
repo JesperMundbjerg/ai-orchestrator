@@ -6,6 +6,14 @@ import { resolve } from "node:path";
 import type { AdapterLane, Lane, ProjectQueue, Repository, WorldAgent, WorldState } from "../shared/types.ts";
 import { InboxError } from "./inbox.ts";
 
+/**
+ * The agent a lane's project registered for it, verified by session (standing.ts): null when the
+ * lane has no attach command or its status is not known yet; `agentId` null when nobody, or more
+ * than one agent, runs that session.
+ */
+export type LaneRegistration = (repoRoot: string, lane: AdapterLane, state: WorldState) => { agentId: string | null; why: string } | null;
+const unregistered: LaneRegistration = () => null;
+
 /** The name herdr knows an agent by, kept at the end of its identity: `claude:/repo@dispatch-einstein`. */
 export function herdrName(identity: string): string | null {
   return identity.match(/@([a-z][a-z0-9_-]*)(?:#\d+)?$/)?.[1] ?? null;
@@ -17,7 +25,9 @@ export function herdrName(identity: string): string | null {
  * A lane with neither is the agent herdr or the office calls by the lane's name. Someone running
  * wins over a desk left empty. Nobody matching is nobody: another agent in the same folder never stands in.
  */
-export function laneAgent(lane: AdapterLane, agents: WorldAgent[]): WorldAgent | null {
+export function laneAgent(lane: AdapterLane, agents: WorldAgent[], registered: ReturnType<LaneRegistration> = null): WorldAgent | null {
+  // The session the project itself registered wins over any name: attaching never needs a rename.
+  if (registered) return agents.find((a) => a.id === registered.agentId) ?? null;
   const lower = lane.name.toLowerCase();
   const matches = agents.filter((a) => {
     if (lane.worktree && (!a.cwd || resolve(a.cwd) !== resolve(lane.worktree))) return false;
@@ -30,13 +40,14 @@ export function laneAgent(lane: AdapterLane, agents: WorldAgent[]): WorldAgent |
 }
 
 /** Why nobody stands behind a lane, for a lane whose agent was not found. */
-function nobody(lane: AdapterLane): string {
+function nobody(lane: AdapterLane, registered: ReturnType<LaneRegistration> = null): string {
+  if (registered) return registered.why;
   const where = lane.worktree ? ` in ${lane.worktree}` : "";
   return lane.agent ? `nobody runs${where} whose herdr name or Pi session name is ${lane.agent}` : `nobody runs${where}`;
 }
 
-function laneOf(lane: AdapterLane, state: WorldState): Lane {
-  const agent = laneAgent(lane, state.agents);
+function laneOf(lane: AdapterLane, state: WorldState, registered: ReturnType<LaneRegistration>): Lane {
+  const agent = laneAgent(lane, state.agents, registered);
   const where = lane.worktree ? ` in ${lane.worktree}` : "";
   const status = agent?.status ?? "offline";
   return {
@@ -51,7 +62,7 @@ function laneOf(lane: AdapterLane, state: WorldState): Lane {
     // Git's word for the checkout the agent stands in, which is the lane's worktree when it has one: a standing team has no path to look it up by.
     branch: agent?.branch ?? null,
     carrying: [],
-    why: !agent ? nobody(lane) : status === "offline" ? `${agent.name} is not running${where}` : status === "blocked" ? `${agent.name} is stuck at a prompt` : null,
+    why: !agent ? nobody(lane, registered) : status === "offline" ? `${agent.name} is not running${where}` : status === "blocked" ? `${agent.name} is stuck at a prompt` : null,
   };
 }
 
@@ -64,11 +75,11 @@ export function repositoryFor(state: WorldState, project: string): Repository & 
   throw new InboxError(404, `no project "${project}": a project is a repository someone works in whose main checkout has an orchestrator.json naming it`);
 }
 
-export function projectQueue(state: WorldState, project: string): ProjectQueue {
+export function projectQueue(state: WorldState, project: string, registered: LaneRegistration = unregistered): ProjectQueue {
   const repo = repositoryFor(state, project);
   return {
     project,
-    lanes: repo.adapter.lanes.map((lane) => laneOf(lane, state)),
+    lanes: repo.adapter.lanes.map((lane) => laneOf(lane, state, registered(repo.root, lane, state))),
     counts: { waiting: 0, assigned: 0, working: 0, held: 0, fixed: 0 },
     held: [],
     paused: false,
@@ -80,13 +91,14 @@ export function projectQueue(state: WorldState, project: string): ProjectQueue {
  * lanes by the names they already use (`inbox say einstein`). A name that is a lane in several
  * projects means the sender's own; null when no project has a lane by that name.
  */
-export function laneRecipient(state: WorldState, from: WorldAgent, name: string): WorldAgent | null {
+export function laneRecipient(state: WorldState, from: WorldAgent, name: string, registered: LaneRegistration = unregistered): WorldAgent | null {
   const lower = name.toLowerCase();
   const found = state.repositories.flatMap((r) => (r.adapter?.lanes ?? []).filter((l) => l.name.toLowerCase() === lower).map((lane) => ({ repo: r, lane })));
   if (!found.length) return null;
   const pick = found.length === 1 ? found[0]! : found.find((f) => f.repo.name === from.project);
   if (!pick) throw new InboxError(409, `${name} is a lane in ${found.map((f) => f.repo.adapter!.project).join(" and ")}; say it from inside that project`);
-  const agent = laneAgent(pick.lane, state.agents);
-  if (!agent) throw new InboxError(404, `${pick.lane.name} is a lane of ${pick.repo.adapter!.project}, but ${nobody(pick.lane)}`);
+  const joined = registered(pick.repo.root, pick.lane, state);
+  const agent = laneAgent(pick.lane, state.agents, joined);
+  if (!agent) throw new InboxError(404, `${pick.lane.name} is a lane of ${pick.repo.adapter!.project}, but ${nobody(pick.lane, joined)}`);
   return agent;
 }

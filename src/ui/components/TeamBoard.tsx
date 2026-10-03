@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type DragEvent } from "react";
 import { HARNESS_INFO } from "../../shared/harnesses.ts";
-import type { InboxState, SwitchesView, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
+import type { InboxState, StandingLane, SwitchesView, WorldAgent, WorldState, WorldTeam } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "../world/status.ts";
 import { HiddenLine, MessageRow, TellTeam, ThreadToggle, useThreadView, withMe, WorkRow } from "../world/Talk.tsx";
@@ -8,6 +8,7 @@ import { TellAllLeads } from "./TellAllLeads.tsx";
 import { SwitchHarness } from "./SwitchHarness.tsx";
 import { MachineWarning } from "./MachineWarning.tsx";
 import { StalledNote, StalledTeams } from "./StalledTeams.tsx";
+import { heldLanes, StandingLanes } from "./StandingLanes.tsx";
 import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
 
 import { PipelineButton } from "../pipelines/PipelineButton.tsx";
@@ -34,6 +35,15 @@ export function TeamBoard({ state, tick, onOffice, onCrewGuide }: { state: Inbox
     api.world().then((w) => live && (setWorld(w), setLoadError(null)), (e: Error) => live && setLoadError(e.message));
     return () => void (live = false);
   }, [tick]);
+  // Reading the lanes is what checks them (at most every 30 s each); a recovery reads them again.
+  const [lanes, setLanes] = useState<StandingLane[]>([]);
+  const [lanesRead, setLanesRead] = useState(0);
+  useEffect(() => {
+    let live = true;
+    api.lanes().then((l) => live && setLanes(l), () => {});
+    return () => void (live = false);
+  }, [tick, lanesRead]);
+  const held = useMemo(() => heldLanes(lanes), [lanes]);
 
   const [view] = useThreadView();
   const agents = useMemo(() => new Map((world?.agents ?? []).map((a) => [a.id, a])), [world]);
@@ -71,6 +81,7 @@ export function TeamBoard({ state, tick, onOffice, onCrewGuide }: { state: Inbox
         <button className="primary small" onClick={() => (setError(null), setAdding(!adding))}>{adding ? "Cancel" : "+ New project"}</button>
       </header>
       <StalledTeams teams={world.teams} />
+      <StandingLanes lanes={lanes} onChanged={() => setLanesRead((n) => n + 1)} />
       <MachineWarning tick={tick} note />
       {error ? <p className="warn warn-dismiss">{error} <button className="ghost small" onClick={() => setError(null)}>OK</button></p> : loadError ? <p className="warn">The office did not answer ({loadError}).</p> : null}
       {note ? <p className="board-note">{note} <button className="ghost small" onClick={() => setNote(null)}>OK</button></p> : null}
@@ -91,7 +102,7 @@ export function TeamBoard({ state, tick, onOffice, onCrewGuide }: { state: Inbox
 
       <div className="team-columns">
         {world.teams.map((t) => (
-          <TeamColumn key={t.id} team={t} world={world} agents={agents} state={state} over={over === t.id} target={target(t.id)} run={run} clearError={() => setError(null)} onFinish={() => finish(t)} onNote={setNote} />
+          <TeamColumn key={t.id} team={t} world={world} agents={agents} state={state} over={over === t.id} target={target(t.id)} run={run} clearError={() => setError(null)} onFinish={() => finish(t)} onNote={setNote} held={held} />
         ))}
         <section className={`team-column lounge ${over === LOUNGE ? "over" : ""}`} {...target(LOUNGE)}>
           <div className="team-column-head">
@@ -99,7 +110,7 @@ export function TeamBoard({ state, tick, onOffice, onCrewGuide }: { state: Inbox
             <span className="muted small-note">Not on a project · {lounge.length}</span>
           </div>
           <ul className="member-list">
-            {lounge.map((a) => <MemberCard key={a.id} agent={a} team={null} state={state} run={run} switches={world.switches} />)}
+            {lounge.map((a) => <MemberCard key={a.id} agent={a} team={null} state={state} run={run} switches={world.switches} holds={held.get(a.id)} />)}
           </ul>
         </section>
       </div>
@@ -129,8 +140,9 @@ export function TeamBoard({ state, tick, onOffice, onCrewGuide }: { state: Inbox
   );
 }
 
-function TeamColumn({ team, world, agents, state, over, target, run, clearError, onFinish, onNote }: {
+function TeamColumn({ team, world, agents, state, over, target, run, clearError, onFinish, onNote, held }: {
   team: WorldTeam;
+  held: Map<string, string[]>;
   world: WorldState;
   agents: Map<string, WorldAgent>;
   state: InboxState;
@@ -187,7 +199,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
         </div>
       )}
       <ul className="member-list">
-        {members.map((a) => <MemberCard key={a.id} agent={a} team={team} state={state} run={run} switches={world.switches} />)}
+        {members.map((a) => <MemberCard key={a.id} agent={a} team={team} state={state} run={run} switches={world.switches} holds={held.get(a.id)} />)}
         {!members.length ? <li className="muted small-note drop-hint">{team.standing ? "Drag someone here." : "Nobody working in it. Drag someone here, or start an agent in its worktree."}</li> : null}
       </ul>
       <TellTeam team={team} members={members} />
@@ -195,7 +207,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
   );
 }
 
-function MemberCard({ agent, team, state, run, switches }: { agent: WorldAgent; team: WorldTeam | null; state: InboxState; run: (p: Promise<unknown>) => void; switches: SwitchesView | undefined }) {
+function MemberCard({ agent, team, state, run, switches, holds }: { agent: WorldAgent; team: WorldTeam | null; state: InboxState; run: (p: Promise<unknown>) => void; switches: SwitchesView | undefined; holds?: string[] }) {
   const doing = agent.doing ?? state.tasks.find((t) => agent.taskIds.includes(t.id) && t.activity)?.activity ?? agent.title ?? LAMP[agent.status].label;
   return (
     <li className="member card-member" draggable onDragStart={(e) => e.dataTransfer.setData("text/agent", agent.id)} title="Drag to another team">
@@ -203,6 +215,7 @@ function MemberCard({ agent, team, state, run, switches }: { agent: WorldAgent; 
       <span className="member-name">
         {agent.name}
         {agent.waitingOnYou ? <span className="type decide"> waits for you</span> : null}
+        {holds?.length ? <span className="warn small-note" title="Done means its turn ended, not that it can go: closing it stops the project's standing lane until it is recovered onto a replacement"> standing {holds.join(", ")} session</span> : null}
       </span>
       {!team ? <span /> : agent.role === "lead" ? (
         <span className="lead-toggle on" title="Hears your instructions and runs the others">{leadTitle(team)}</span>

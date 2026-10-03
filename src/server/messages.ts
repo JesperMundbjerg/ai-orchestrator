@@ -14,7 +14,7 @@ import { formatReply, imageLines } from "../shared/agent-client.ts";
 import { STORY_INTRO, STORY_PROMPT } from "../shared/story.ts";
 import { imageIds, InboxError, type Inbox } from "./inbox.ts";
 import type { Uploads } from "./uploads.ts";
-import { laneRecipient } from "./queue.ts";
+import { laneRecipient, type LaneRegistration } from "./queue.ts";
 import { WaitingMessages } from "./waiting.ts";
 import { offlineRecipient, withOffline } from "../shared/waiting.ts";
 import { MessageLoops } from "./loops.ts";
@@ -66,6 +66,8 @@ export class Messages {
   replies: Pick<Inbox, "typeable" | "claimTyping" | "typed"> | null = null;
   /** Where images you attach are stored, when the service wires them in; without it a message carries none. */
   uploads: Uploads | null = null;
+  /** A lane's verified registered session, when the service wires standing lanes in: `inbox say mission-control` reaches it without a herdr rename. */
+  laneRegistration: LaneRegistration = () => null;
   /** Domain gate, wired by World. Checks and delivery ledger share this store's transaction. */
   pipelines: Pipelines | null = null;
   /** Agents being switched to another harness: what waits for them is held until the new session has its brief. */
@@ -81,6 +83,11 @@ export class Messages {
   /** The regular reaction observes waits and publishes committed office-to-founder notices. */
   watch(state: WorldState): boolean {
     return this.undelivered.tick(state, this.now().getTime(), this.founderNotices);
+  }
+
+  /** Messages given to `agentId` that it has not taken up yet (queued, or being typed). */
+  waitingFor(agentId: string): number {
+    return (this.db.prepare("SELECT count(*) AS n FROM message_deliveries WHERE agent_id = ? AND state IN ('queued', 'sending')").get(agentId) as { n: number }).n;
   }
 
   /** Only queued recipients need immediate screen sampling; never scan unrelated panes. */
@@ -233,7 +240,7 @@ export class Messages {
     const team = state.teams.find((t) => t.name.toLowerCase() === name);
     if (team) return told(this.store("message", from.id, team.id, body, null, recipients(state, team, from.id), replay));
     // A project's lane by the name its own tools use: `inbox say einstein`.
-    const lane = laneRecipient(state, from, name);
+    const lane = laneRecipient(state, from, name, this.laneRegistration);
     if (!lane) throw new InboxError(404, `nobody called ${input.to} in the office: see who is there with \`inbox team\``);
     if (lane.id === from.id) throw new InboxError(400, "that is you");
     return told(this.store("message", from.id, null, body, null, [lane.id], replay));

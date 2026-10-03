@@ -19,6 +19,7 @@ import { UPLOAD_BODY_LIMIT } from "./uploads.ts";
 import type { AutoApprove } from "./autoapprove.ts";
 import type { Herdr } from "./herdr.ts";
 import type { Machine } from "./machine.ts";
+import type { StandingLanes } from "./standing.ts";
 import type { Switches } from "./switch.ts";
 import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
@@ -37,7 +38,7 @@ function route<T>(method: string, pattern: RegExp, schema: Schema<T>, handler: (
   return [method, pattern, (req, body, params) => handler(req, schema.parse(body), params)];
 }
 
-export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove }): Server {
+export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove; standing?: StandingLanes }): Server {
   const clients = new Set<ServerResponse>();
   const broadcast = (reason: string) => {
     for (const res of clients) res.write(`event: changed\ndata: ${JSON.stringify({ reason })}\n\n`);
@@ -59,6 +60,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   // Browsers coming, going or needing a look change only what is drawn; so does a usage meter.
   if (opts.machine) opts.machine.onChange = () => broadcast("machine");
   if (opts.usage) opts.usage.onChange = () => broadcast("usage");
+  if (opts.standing) opts.standing.onChange = () => broadcast("lanes");
   if (herdr) {
     herdr.onChange = () => {
       broadcast("presence");
@@ -104,7 +106,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     // The office world
     route("GET", /^\/api\/world$/, emptySchema, () => needWorld().state()),
     route("POST", /^\/api\/agent\/story$/, protocol.story.request, (_r, b) => needWorld().setStory(b.session, b.text)),
-    route("GET", /^\/api\/p\/([a-z][a-z0-9-]*)\/queue$/, emptySchema, (_r, _b, [project]) => projectQueue(needWorld().state(), project!)),
+    route("GET", /^\/api\/p\/([a-z][a-z0-9-]*)\/queue$/, emptySchema, (_r, _b, [project]) => projectQueue(needWorld().state(), project!, opts.standing?.registered)),
+    // Standing lanes whose project declares an attach command: checked when read, recovered only when asked.
+    route("GET", /^\/api\/lanes$/, emptySchema, () => needStanding().list()),
+    route("POST", /^\/api\/p\/([a-z][a-z0-9-]*)\/lanes\/([\w-]+)\/check$/, emptySchema, (_r, _b, [project, lane]) => needStanding().check(project!, lane!)),
+    route("POST", /^\/api\/p\/([a-z][a-z0-9-]*)\/lanes\/([\w-]+)\/recover$/, validation.laneRecoverSchema, (_r, b, [project, lane]) => needStanding().recover(project!, lane!, b.agentId)),
     route("POST", /^\/api\/world\/teams$/, validation.teamCreateSchema, (_r, b) => needWorld().createTeam(b)),
     route("PATCH", /^\/api\/world\/teams\/([\w-]+)$/, validation.teamPatchSchema, (_r, b, [id]) => needWorld().updateTeam(id!, b)),
     route("DELETE", /^\/api\/world\/teams\/([\w-]+)$/, emptySchema, (_r, _b, [id]) => needWorld().deleteTeam(id!)),
@@ -193,6 +199,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   function needSwitches(): Switches {
     if (!opts.switches) throw new InboxError(404, "this service cannot switch agents between harnesses");
     return opts.switches;
+  }
+
+  function needStanding(): StandingLanes {
+    if (!opts.standing) throw new InboxError(404, "this service does not check standing lanes");
+    return opts.standing;
   }
 
   function needMachine(): Machine {

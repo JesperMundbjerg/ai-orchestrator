@@ -152,6 +152,9 @@ These routes use `src/server/request-validation.ts` and domain DTOs in `src/shar
 | `POST /api/uploads` | `{data: base64-image-data-URL}` → `{id,url,size}` |
 | `GET /api/world` | Office projection (includes reconciliation; not a pure read) |
 | `GET /api/p/:project/queue` | Adapter lane projection; [ORCHESTRATION.md](ORCHESTRATION.md) |
+| `GET /api/lanes` | Every adapter lane that declares `attach`, as `StandingLane`: `state` (`checking`, `connected`, `disconnected`, `busy`, `unknown`), `reason`, the registered session and its office agent, recovery `candidates`, and the last `recovery`. Reading runs the lane's status command when its last check is over 30 s old |
+| `POST /api/p/:project/lanes/:lane/check` | `{}`; runs the lane's status command now and returns the `StandingLane` |
+| `POST /api/p/:project/lanes/:lane/recover` | `{agentId}`; the founder's explicit recovery onto a running agent in the lane's checkout. 409 while one runs for that lane or when the agent does not run there. Returns the `StandingLane` with `recovery.state` `attached`, `busy`, `unavailable`, `refused` or `failed` and the command's reason |
 | `POST /api/world/teams` | `name`, optional `purpose`, nullable `handsTo`, `repository`, boolean `standing` |
 | `PATCH /api/world/teams/:id`; `DELETE /api/world/teams/:id` | Update optional `name`, `purpose`, nullable `handsTo`; finish/delete with safety checks |
 | `GET /api/world/teams/:id/worktrees` | Additional owned worktree records |

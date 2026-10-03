@@ -9,7 +9,7 @@ Put strict JSON (no comments or trailing commas) in `orchestrator.json` at the r
 - Missing/unreadable-by-stat file: no adapter, no problems.
 - Invalid JSON or known-field validation errors: the entire adapter is withheld; `Repository.adapter` is `null` and `adapterProblems` lists the problems.
 - Unknown **top-level** keys: reported and ignored, without rejecting an otherwise valid adapter. Unknown nested keys are ignored without that warning.
-- No environment interpolation, `envFile` loading, shell execution or project code import occurs.
+- No environment interpolation, `envFile` loading, shell execution or project code import occurs. The one command the service runs is a lane's `attach` argv (below), never through a shell.
 
 A fictional example:
 
@@ -51,9 +51,26 @@ Optional scalar fields generally accept omission or `null`; provided strings mus
 | `checks` | Object mapping arbitrary names to non-empty command strings | Metadata only; commands never run |
 | `reviewers.perSlice`, `reviewers.cap` | String list; string | Metadata only; does not start or enforce reviewers |
 | `land.mode`, `land.publish`, `land.setup` | Strings | Metadata only; commands never run |
-| `lanes` | List of lane objects, default `[]` | Joins declared lanes to observed office agents and supports lane-name messaging |
+| `lanes` | List of lane objects, default `[]` | Joins declared lanes to observed office agents and supports lane-name messaging; a lane's `attach` argv is run for status and explicit recovery (below) |
 
-An empty `preview` object yields `null`. A lane requires `name`, unique case-insensitively. Its optional `worktree`, `agent`, `model`, `role` and `harness` are non-empty strings; `harness` must be `pi`, `claude`, `codex` or `manual`. Relative worktree paths resolve against the main checkout root; absolute paths stay absolute. These paths are descriptions, not requests to create or claim worktrees. `harness` and `model` supply offline display fallbacks, not launch instructions or match filters.
+An empty `preview` object yields `null`. A lane requires `name`, unique case-insensitively. Its optional `worktree`, `agent`, `model`, `role` and `harness` are non-empty strings; `harness` must be `pi`, `claude`, `codex` or `manual`. Relative worktree paths resolve against the main checkout root; absolute paths stay absolute. These paths are descriptions, not requests to create or claim worktrees. `harness` and `model` supply offline display fallbacks, not launch instructions or match filters. Optional `attach` is a non-empty list of non-empty strings (argv, not a shell line).
+
+## A standing lane's attach command
+
+A lane may name its project's own command for its standing session as argv:
+
+```json
+{ "name": "dispatcher", "worktree": ".", "attach": ["node", "scripts/attach-lane.mjs", "dispatcher"] }
+```
+
+The service runs it with the lane's worktree (or the main checkout) as the working directory, `node` as the node running the service, and one of two suffixes:
+
+| Mode | Appended | When | The command must not |
+|---|---|---|---|
+| status | `--status --json` | when the lane is read, at most every 30 s (timeout 20 s) | write, rename, signal or unclaim anything |
+| recover | `--recover --pane PANE --session SESSION --json` | only on the founder's explicit Recover (timeout 120 s) | rename the agent or its pane, signal a process it has not verified as its own companion, or take work from a session still executing it |
+
+Its **last stdout line** is one JSON object: `state`, `reason`, `registered: {session, pane} | null`, `companion: {pid, fresh, log} | null`, `progressAt` (the registered session's last completed turn, or null; shown as such, never as proof of work) and `changed` (recover: whether anything was written or started). The exit code must match `state`: `0` connected, `3` disconnected (the registered session is confirmed gone), `4` busy (the old session is working or blocked, or another recovery holds the lane), `5` unavailable (a transport error; nothing changed), `6` refused (wrong session, harness, checkout or lane, ambiguity, or a live owner it cannot verify; nothing changed), `7` failed (the companion did not become ready; the registration is left recoverable). Anything else, or JSON that disagrees with its exit code, is a transport error. Retrying a recovery that already succeeded must return `0` with `changed: false` and start nothing. With `attach`, the lane joins the office agent running the registered session, not `agent`; see [DESIGN](DESIGN.md) for what the office shows.
 
 ## Lane matching
 

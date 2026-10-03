@@ -115,7 +115,7 @@ const FIRST_MATE = [
   "Crew share this checkout, so give each one files of its own.",
   'Tell each crew member to report to you with `inbox say <your office name> "…"` when done or stuck, and not to ask the founder; their reports arrive in your terminal.',
   "Do not answer acknowledgments or thanks, and tell your crew not to either; continue the work instead.",
-  "Close a member's pane when its work is done: `herdr pane close <pane id>`.",
+  "Close a member's pane when its work is done: `herdr pane close <pane id>`. Done in herdr means a turn ended, not that it can go: never close one `inbox team` marks as a standing lane's session (recover the lane onto its replacement first, `inbox lane`), and see what still waits for it.",
   "Tell crew to close every browser they open: close its pages, `browser.close()` in a `finally`, one shared browser per task, and never leave a dev server's probe browser running; the office closes a headless browser left running (its script gone, or unused for 10 minutes) and tells you, and lists the ones still in use when they load the machine.",
   "Tell crew never to open a visible browser window: it makes the founder's screen jump to it. They use headless browsers (Playwright headless, which can still use the GPU with `--use-angle=metal`), and to show the founder a page they add it to the review inbox with `--page \"Label=URL\"`, never `open URL`; if a real window is unavoidable, `open -g URL` (macOS: in the background, without taking focus).",
   "Bring the founder only real decisions (`inbox decide`) and finished, checked increments they can look at (`inbox milestone`): present every visible step as soon as it is done, even if the project is not finished, with a milestone per visible step. Attach screenshots (`--screenshot`), pages to step through (`--page \"Label=URL\"`), or a video (`--video`). The office reminds you about commits you have not shown; if they are not ready, tell the founder why in one line with `inbox say founder`.",
@@ -174,6 +174,8 @@ export class World {
   /** Teams with no lead online while others wait on them; the founder is asked to make someone lead. */
   readonly leadWatch: LeadWatch;
   onChange: (reason: string) => void = () => {};
+  /** The standing lanes ("project/lane") an agent is the registered running session of; the service wires it (standing.ts). */
+  standingHolds: (agent: WorldAgent) => string[] = () => [];
   /** Panes the office does not see yet or any more: an agent being switched to another harness (switch.ts) sets them. */
   hiddenPanes: () => ReadonlySet<string> = () => NONE;
   /** Agents being switched to another harness, and what each can be switched to; switch.ts sets it. */
@@ -595,7 +597,12 @@ export class World {
     const agents = new Map(state.agents.map((a) => [a.id, a]));
     const teams = new Map(state.teams.map((t) => [t.id, t]));
     const team = me.teamId ? teams.get(me.teamId) ?? null : null;
-    const status = (a: WorldAgent) => `${a.name}${a.role === "lead" ? " (lead)" : ""}: ${a.status}${a.doing ? `, ${a.doing}` : ""}`;
+    const status = (a: WorldAgent) => {
+      const holds = this.standingHolds(a);
+      const waiting = holds.length ? this.messages.waitingFor(a.id) : 0;
+      const standing = holds.length ? `, the standing ${holds.join(" and ")} session: do not close it${waiting ? `; ${waiting} ${waiting === 1 ? "message waits" : "messages wait"} for it` : ""}` : "";
+      return `${a.name}${a.role === "lead" ? " (lead)" : ""}: ${a.status}${a.doing ? `, ${a.doing}` : ""}${standing}`;
+    };
     const lines = [`You are ${me.name} (${me.harness}${me.cwd ? `, ${me.cwd}` : ""}).`];
     if (me.story) lines.push(storyLine(me.story));
     if (me.storyAsk) lines.push(STORY_INTRO);
@@ -972,6 +979,10 @@ export class World {
     if (changes) throw new InboxError(409, `${changes} uncommitted ${changes === 1 ? "change" : "changes"} in ${checkout.top}: commit or discard ${changes === 1 ? "it" : "them"} first`);
     if (!this.source?.available()) throw new InboxError(409, "herdr closes the project's agents and removes its worktree, and herdr is not running");
     const inside = (cwd: string | null) => cwd === checkout.top || !!cwd?.startsWith(`${checkout.top}/`);
+    for (const a of this.state().agents.filter((x) => inside(x.cwd) && x.paneId)) {
+      const why = this.standingGuard(a);
+      if (why) throw new InboxError(409, `${team.name} cannot be finished: ${why}`);
+    }
     let stopped: string[] = [];
     try {
       for (const a of this.source.live().filter((l) => inside(l.cwd))) await this.source.closePane(a.paneId);
@@ -1065,6 +1076,8 @@ export class World {
    */
   removeAgent(id: string): void {
     const agent = this.agent(id);
+    const held = this.standingGuard(agent);
+    if (held) throw new InboxError(409, held);
     if (agent.paneId || agent.status !== "offline") {
       throw new InboxError(409, `${agent.name} is running in herdr. Close it there first; only someone nothing runs behind can be removed.`);
     }
@@ -1073,6 +1086,17 @@ export class World {
       this.db.prepare("UPDATE world_agents SET removed = 1, team_id = NULL, role = 'member' WHERE id = ?").run(id);
     });
     this.onChange("world");
+  }
+
+  /**
+   * Why closing, removing or switching `agent` would cut a project's standing lane off, naming
+   * what still waits for it; null when it holds none (a lane recovered onto a replacement is not its).
+   */
+  standingGuard(agent: WorldAgent): string | null {
+    const holds = this.standingHolds(agent);
+    if (!holds.length) return null;
+    const waiting = this.messages.waitingFor(agent.id);
+    return `${agent.name} is the standing ${holds.join(" and ")} session${waiting ? ` and ${waiting} ${waiting === 1 ? "message waits" : "messages wait"} for it` : ""}; recover the lane onto its replacement first (inbox lane recover)`;
   }
 
   agent(id: string): WorldAgent {
