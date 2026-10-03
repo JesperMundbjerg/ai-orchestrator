@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { PipelineAbandonInput, PipelineArchive, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateReason, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineProvenance, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
+import type { PipelineAbandonInput, PipelineArchive, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateReason, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineProvenance, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView, PipelineTelemetryReport } from "../../shared/pipeline.ts";
 import { archivedText, nodeBinding } from "../../shared/pipeline.ts";
 import type { Team, WorldAgent, WorldState } from "../../shared/types.ts";
 import { InboxError } from "../inbox.ts";
@@ -543,6 +543,17 @@ export class Pipelines {
       if (target !== branch || target === "main" || target === "master") refuse("ref_not_protected", "ref is not the run repository's protected dev delivery branch");
     }
     return { allowed: !reasons.length, runId: run.id, round: run.round, candidate: run.candidate.head, reasons: [...new Set(reasons)], ...(baselineFailures.length ? { baselineFailures } : {}) };
+  }
+  /**
+   * An externally reported capture lease or attempt, recorded beside the reporting agent. A named
+   * run must exist (its team is the row's team). No gate or edit ever reads these.
+   */
+  reportTelemetry(actor: WorldAgent, input: PipelineTelemetryReport & { session?: unknown }): { recorded: PipelineTelemetryReport["kind"] } {
+    const { session: _session, kind, run, at, ...fields } = input;
+    const teamId = run ? this.raw(run).teamId : null;
+    this.telemetry.note(kind, run ?? null, teamId, { ...fields, ...(at ? { reportedAt: new Date(at).toISOString() } : {}), agentId: actor.id, agentTeamId: actor.teamId ?? null });
+    this.telemetry.flush();
+    return { recorded: kind };
   }
   /** Called INSIDE Messages' transaction. Ungoverned teams retain their existing behavior. */
   requireDelivery(actor: WorldAgent, delivery: "handoff" | "review", input?: PipelineGateInput): PipelineRun | null {

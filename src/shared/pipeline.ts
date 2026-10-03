@@ -324,12 +324,13 @@ export interface PipelineGateReason { code: string; node?: string }
 /**
  * Read-only delivery telemetry. Kinds: `gate` (every pipeline gate result, refusals included),
  * `integration` (re-base, candidate re-pin, scope re-branch) and `publication` (a dev push/land/publish
- * allowed but not yet observed on the published branch, and how that resolved). Never authorizes anything.
+ * allowed but not yet observed on the published branch, and how that resolved), and externally reported
+ * capture `lease` and `attempt` events. Never authorizes anything.
  */
 export interface PipelineTelemetryEvent {
   id: number;
   at: string;
-  kind: "gate" | "integration" | "publication";
+  kind: "gate" | "integration" | "publication" | "lease" | "attempt";
   runId: string | null;
   teamId: string | null;
   detail: Record<string, unknown>;
@@ -351,4 +352,23 @@ export interface PipelineDecisionWait {
   waitMs: number | null;
 }
 export interface PipelineTelemetryQuery { runId?: string; teamId?: string; kind?: PipelineTelemetryEvent["kind"]; since?: string; limit?: number }
-export interface PipelineTelemetryView { events: PipelineTelemetryEvent[]; decisionWaits: PipelineDecisionWait[]; dropped: number }
+export interface PipelineTelemetryView {
+  /**
+   * When this office first recorded telemetry (the `pipeline.telemetry.started` marker), or null if not
+   * yet written. Logged kinds before it are not measured, never zero; decision waits are derived from
+   * history and hold before it too.
+   */
+  coverageStartedAt: string | null;
+  /** The schema version the marker was written with. */
+  coverageSchemaVersion: number | null;
+  /** The detail fields' version this office writes now. */
+  schemaVersion: number;
+  events: PipelineTelemetryEvent[];
+  decisionWaits: PipelineDecisionWait[];
+  dropped: number;
+}
+/** An externally reported capture lease event (`inbox pipeline telemetry log --kind lease`). */
+export interface PipelineLeaseReport { kind: "lease"; action: "grant" | "release" | "expire"; lease: string; holder: string; run?: string; resource?: string; at?: string }
+/** An externally reported capture attempt event (`inbox pipeline telemetry log --kind attempt`). */
+export interface PipelineAttemptReport { kind: "attempt"; attempt: string; lease?: string; run?: string; outcome: "started" | "succeeded" | "failed" | "abandoned"; reason?: string; at?: string }
+export type PipelineTelemetryReport = PipelineLeaseReport | PipelineAttemptReport;

@@ -189,7 +189,8 @@ Pipeline routes use domain decoders in `src/server/pipelines/protocol.ts` and DT
 | `POST /api/agent/pipeline/waiver` | `{session, clientId, repo, ref, candidate, reason}` → `PipelineWaiver` (`src/shared/waiver.ts`); the lead, or anyone while the team has no lead online; one founder inbox decision per waiting commit/branch/base |
 | `POST /api/agent/pipeline/waiver/gate` | `{session, repo, ref, candidate, operation?}` → `{allowed, waiverId, candidate, reasons}`; a delivery that names no run, allowed only by a founder-granted waiver |
 | `GET /api/world/teams/:id/pipeline/waivers` | the team repository's `PipelineWaiver[]`, newest first |
-| `GET /api/pipeline/telemetry?run=&team=&kind=&since=&limit=` | `PipelineTelemetryView`: `{events, decisionWaits, dropped}`; read-only, no session (see below) |
+| `GET /api/pipeline/telemetry?run=&team=&kind=&since=&limit=` | `PipelineTelemetryView`: `{coverageStartedAt, coverageSchemaVersion, schemaVersion, events, decisionWaits, dropped}`; read-only, no session (see below) |
+| `POST /api/agent/pipeline/telemetry/log` | `{session, kind: "lease"\|"attempt", ...}` → `{recorded: kind}`; an externally reported capture lease or attempt, strictly validated (see below) |
 
 `branch` requires the run team's current first mate, including on replay retrieval. Ordinary selection/re-pin edits require `expectedRevision`; a re-base with `base` may omit it so CLI retries do not acquire a newer revision. `selections` is an object (use `{}` to retain current choices), and non-empty `rationale` is required. `candidate` defaults to the owned checkout's HEAD when re-basing. The new base must be reachable from a remote-tracking `dev` (or adapter `integrationBranch`) ref and ancestral to the candidate; a local branch is insufficient. Failure returns 409 `pipeline_base_unpublished` or `pipeline_base_not_ancestor`. No network fetch or Git writes occur.
 
@@ -203,15 +204,52 @@ Closure, audit event and replay receipt are one transaction. Exact retries retur
 
 #### Pipeline telemetry (read-only)
 
-`GET /api/pipeline/telemetry` (CLI: `inbox pipeline telemetry [RUN] [--team TEAM --kind K --since ISO --limit N]`, which prints the JSON) reads what the office records about delivery. It authorizes nothing and is never consulted by a gate. All query parameters are optional: `run` (run id), `team` (the run's team id), `kind` (`gate`, `integration` or `publication`), `since` (ISO time, inclusive) and `limit` (1–1000, default 200). Any other value is a 400. `events` is newest first. Each event is `{id, at, kind, runId, teamId, detail}`:
+`GET /api/pipeline/telemetry` (CLI: `inbox pipeline telemetry [RUN] [--team TEAM --kind K --since ISO --limit N]`, which prints the JSON) reads what the office records about delivery. It authorizes nothing and is never consulted by a gate. All query parameters are optional: `run` (run id), `team` (the run's team id), `kind` (`gate`, `integration`, `publication`, `lease` or `attempt`), `since` (ISO time, inclusive) and `limit` (1–1000, default 200). Any other value is a 400.
 
-- **`gate`**: one row per pipeline gate result, allowed or refused, whether from `POST /api/agent/pipeline/gate` (hooks, CLI) or from a protected handoff/review (`requireDelivery`). `detail`: `{agentId, delivery, node, operation, ref, round, candidate, outcome: "allowed"|"refused", reasons: [{code, node?}], text?: string[], repeats, lastAt?}`. Reason codes: `run_archived`, `run_closed`, `stale_round`, `stale_candidate`, `uncommitted_candidate`, `candidate_unavailable`, `pipeline_unavailable`, `selection_missing`, `path_scope`, `not_review_step`, `no_boundary`, `step_<state>` (with `node`; for example `step_ready`, `step_stale`), `work_round_mismatch`, `operation_incomplete`, `operation_unsupported`, `operation_repo_mismatch`, `operation_repo_unavailable`, `ref_not_protected`, and for refusals thrown before or during evaluation `gate_required`, `other_team_run`, the error's code (for example `pipeline_lead_required`, `pipeline_stale_round`) or `http_<status>`. `text` holds the refusal messages (at most 12, each at most 300 characters). The same result for the same run, agent and request within 10 minutes increments `repeats` and sets `lastAt` on its row instead of adding one.
-- **`integration`**: one row per committed `branch` edit (a replayed request records nothing). `detail`: `{agentId, changes: ("rebase"|"repin"|"rebranch"|"unchanged")[], round, roundBumped, scopeRevision, oldBase, newBase, oldHead, newHead, fields}`. `rebranch` means the selections changed (`scopeRevision` incremented); `fields` names the changed selections.
-- **`publication`**: `{state: "pending", round, candidate, operation, ref}` when a gate first allows a dev `push`, `land` or `publish` for that run's candidate; then `{state: "resolved", how: "landed"|"superseded"|"abandoned", candidate, pendingId, pendingSince, waitMs, ref?, tip?}` when the office sees the candidate on the published branch, the run is re-pinned to another commit, or the run is abandoned. Pending means only "allowed, not yet seen published": the office does not see a push fail.
+Response: `PipelineTelemetryView` = `{coverageStartedAt, coverageSchemaVersion, schemaVersion, events, decisionWaits, dropped}`. `events` is newest first, each `{id, at, kind, runId, teamId, detail}`. Rows are `events` table rows with kind `pipeline.telemetry.<kind>`; `runId` and `teamId` are stored in `detail` and lifted out on read. Every record kind and its fields (schema version 1):
 
-`decisionWaits` (omitted, `[]`, when `kind` is given) is derived on read, not logged: for each founder approval item revision a run presented (`pipeline_item_bindings`), `{runId, itemId, revision, type, blocking, stepId, waitingSince, answeredAt, action, automatic, waitMs}`. It counts from that revision's creation to the founder's first Accept or Needs changes on it. A discussion message is not an answer, and `automatic` marks an approve-all answer. `stepId` is the step whose evidence endorses the approval, or null; `waitMs` is null while it is still waiting. Snoozed time is not subtracted.
+| Record | Stored as | Fields |
+|---|---|---|
+| **Coverage start** | `pipeline.telemetry.started`, once per data directory, never pruned; returned as `coverageStartedAt` / `coverageSchemaVersion`, not in `events` | `{schemaVersion}` and the row time; null until written. Before `coverageStartedAt` the logged kinds (gate, integration, publication, lease, attempt) were not measured: read earlier time as *not measured*, never as zero. Decision waits are derived from history and are valid before it too. |
+| **Gate result** (allowed and refused) | `pipeline.telemetry.gate` | `agentId`, `delivery` (`dev`/`handoff`/`review`), `node` (internal review step or null), `operation` (`push`/`pr`/`merge`/`land`/`publish` or null), `ref`, `round`, `candidate`, `outcome` (`allowed`/`refused`), `reasons: [{code, node?}]` (empty when allowed), `text?: string[]` (refusal messages, at most 12 × 300 chars), `repeats` (count, at least 1), `lastAt?` (latest repeat) |
+| **Integration** | `pipeline.telemetry.integration` | `agentId`, `changes: ("rebase"/"repin"/"rebranch"/"unchanged")[]`, `round`, `roundBumped`, `scopeRevision`, `oldBase`, `newBase`, `oldHead`, `newHead`, `fields` (changed selection fields) |
+| **Publication pending** | `pipeline.telemetry.publication`, `state: "pending"` | `round`, `candidate`, `operation`, `ref` |
+| **Publication resolved** | `pipeline.telemetry.publication`, `state: "resolved"` | `how` (`landed`/`superseded`/`abandoned`), `candidate`, `pendingId`, `pendingSince`, `waitMs`, `ref?` and `tip?` (landed) |
+| **Decision wait** | not stored: derived on read into `decisionWaits` | `runId`, `itemId`, `revision`, `type`, `blocking`, `stepId` (step whose evidence endorses it, or null), `waitingSince`, `answeredAt` (or null), `action` (`accept`/`request_changes`/null), `automatic` (approve-all), `waitMs` (null while waiting) |
+| **Capture lease** (reported) | `pipeline.telemetry.lease` | `action` (`grant`/`release`/`expire`), `lease`, `holder`, `resource?`, `reportedAt?` (the reporter's `--at`, normalized to UTC), `agentId` and `agentTeamId` (the reporting agent, resolved by session), `repeats`, `lastAt?`; `runId` (`--run`, must exist) and `teamId` (that run's team) or null |
+| **Capture attempt** (reported) | `pipeline.telemetry.attempt` | `attempt`, `lease?`, `outcome` (`started`/`succeeded`/`failed`/`abandoned`), `reason?`, `reportedAt?`, `agentId`, `agentTeamId`, `repeats`, `lastAt?`; `runId`/`teamId` as for a lease |
 
-`dropped` counts telemetry notes this office process could not write (queue full, or a failed write) since it started.
+Semantics:
+
+- **Gate result**: one row per pipeline gate answer, whether from `POST /api/agent/pipeline/gate` (hooks, CLI) or from a protected handoff/review (`requireDelivery`), including refusals thrown before or during evaluation. Reason codes: `run_archived`, `run_closed`, `stale_round`, `stale_candidate`, `uncommitted_candidate`, `candidate_unavailable`, `pipeline_unavailable`, `selection_missing`, `path_scope`, `not_review_step`, `no_boundary`, `step_<state>` (with `node`; for example `step_ready`, `step_stale`), `work_round_mismatch`, `operation_incomplete`, `operation_unsupported`, `operation_repo_mismatch`, `operation_repo_unavailable`, `ref_not_protected`, `gate_required`, `other_team_run`, the thrown error's code (for example `pipeline_lead_required`, `pipeline_stale_round`) or `http_<status>`. The same result for the same run, agent and request within 10 minutes increments `repeats` on its row instead of adding one. Exact-SHA waiver gates are not included; their refusals stay `pipeline.waiver.gate_refused`.
+- **Integration**: one row per committed `branch` edit; a replayed request records nothing. `rebranch` means the selections changed (`scopeRevision` incremented).
+- **Publication**: pending when a gate first allows a dev `push`, `land` or `publish` for that run's candidate. It resolves when the office sees the candidate on the published branch (`landed`), the run is re-pinned to another commit (`superseded`) or the run is abandoned. The office does not see a push fail, so a pending row that never resolves is what that looks like.
+- **Capture lease and attempt**: the office has no capture slot of its own; these are reported from outside. Whoever grants a capture lease logs each grant and release, and the project's capture tooling logs each attempt, with `inbox pipeline telemetry log` (below). The row's `at` is when the office received it. The same report again within 10 minutes increments `repeats`. No gate, edit or delivery reads them.
+- **Decision wait**: for each founder approval item revision a run presented (`pipeline_item_bindings`), the wait from that revision's creation to the founder's first Accept or Needs changes on it. A discussion message is not an answer, and snoozed time is not subtracted. Omitted (`[]`) when `kind` is given.
+
+Reporting a capture lease or attempt:
+
+```sh
+inbox pipeline telemetry log --kind lease --action grant|release|expire --lease ID --holder NAME [--run RUN] [--resource TEXT] [--at ISO]
+inbox pipeline telemetry log --kind attempt --attempt ID --outcome started|succeeded|failed|abandoned [--lease ID] [--run RUN] [--reason CODE] [--at ISO]
+```
+
+The CLI is fire-and-forget. It gives up after 2 s and always exits 0. When the office is down, slow or refuses the event, or the flags are wrong, it prints `inbox: telemetry not recorded (continuing): …` on stderr, so a capture or delivery never waits on it or fails because of it. It sends `POST /api/agent/pipeline/telemetry/log` with the flags as fields plus `session`. Only these fields are accepted; any other field, or a value outside its rule, is a 400 `invalid_request`:
+
+| Field | Rule |
+|---|---|
+| `kind` | `lease` or `attempt` |
+| `action` (lease, required) | `grant`, `release` or `expire` |
+| `lease` (lease required; attempt optional), `attempt` (attempt, required), `run` (optional) | 1–128 of letters, digits, `_ . : @ / -` |
+| `holder` (lease, required) | non-empty, at most 200 characters |
+| `resource` (lease, optional) | non-empty, at most 500 characters |
+| `outcome` (attempt, required) | `started`, `succeeded`, `failed` or `abandoned` |
+| `reason` (attempt, optional) | lowercase code: `[a-z0-9][a-z0-9_.-]{0,63}` |
+| `at` (optional) | ISO time with date and time, for example `2026-10-03T10:00:00Z` |
+
+A `run` that does not exist is a 404. An unknown session is refused as for any agent route.
+
+`dropped` counts telemetry notes this office process could not write (queue full, or a failed write) since it started. Recording is bounded for every kind, reported ones included: a queue of at most 500 notes and the newest 20,000 rows (the coverage marker excepted).
 
 ### Change stream
 

@@ -1,6 +1,6 @@
 // Pipeline HTTP decoders stay beside the domain. Additions to existing requests remain optional.
-import { object, optional, boolean, nonempty, positiveInteger, number, list, record, refine, oneOf, sessionSchema, fail, handoffSchema, reviewSchema, submitSchema, type Schema } from "../../shared/agent-protocol.ts";
-import type { PipelineAbandonInput, PipelineAgentRequest, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidenceInput, PipelineGateInput, PipelineLayoutInput, PipelineOverrideInput, PipelineReportInput, PipelineStartInput, PipelineTelemetryQuery, PipelineStatusInput } from "../../shared/pipeline.ts";
+import { object, optional, boolean, nonempty, positiveInteger, number, list, record, refine, oneOf, sessionSchema, fail, handoffSchema, reviewSchema, submitSchema, type Schema, type SessionInput } from "../../shared/agent-protocol.ts";
+import type { PipelineAbandonInput, PipelineAgentRequest, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidenceInput, PipelineGateInput, PipelineLayoutInput, PipelineOverrideInput, PipelineReportInput, PipelineStartInput, PipelineTelemetryQuery, PipelineTelemetryReport, PipelineStatusInput } from "../../shared/pipeline.ts";
 import type { WaiverGateInput, WaiverRequestInput } from "../../shared/waiver.ts";
 import { validateGraph, validateLayout } from "./model.ts";
 
@@ -47,8 +47,29 @@ export function telemetryQuery(params: URLSearchParams): PipelineTelemetryQuery 
   const run = params.get("run"); const team = params.get("team"); const kind = params.get("kind"); const since = params.get("since"); const limit = params.get("limit");
   if (run) query.runId = run;
   if (team) query.teamId = team;
-  if (kind) { if (!["gate", "integration", "publication"].includes(kind)) fail("kind", "must be gate, integration or publication"); query.kind = kind as PipelineTelemetryQuery["kind"]; }
+  if (kind) { if (!TELEMETRY_KINDS.includes(kind)) fail("kind", `must be ${TELEMETRY_KINDS.join(", ")}`); query.kind = kind as PipelineTelemetryQuery["kind"]; }
   if (since) { if (Number.isNaN(Date.parse(since))) fail("since", "must be an ISO time"); query.since = new Date(since).toISOString(); }
   if (limit) { if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 1000) fail("limit", "must be 1–1000"); query.limit = Number(limit); }
   return query;
 }
+
+const TELEMETRY_KINDS = ["gate", "integration", "publication", "lease", "attempt"];
+const token = refine(nonempty, (v, p) => { if (!/^[\w.:@/-]{1,128}$/.test(v)) fail(p, "must be 1–128 letters, digits or _ . : @ / -"); });
+const bounded = (max: number) => refine(nonempty, (v, p) => { if (v.length > max) fail(p, `must be at most ${max} characters`); });
+const reasonCode = refine(nonempty, (v, p) => { if (!/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(v)) fail(p, "must be a lowercase code of at most 64 characters (a-z 0-9 _ . -)"); });
+const isoTime = refine(nonempty, (v, p) => { if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v) || Number.isNaN(Date.parse(v))) fail(p, "must be an ISO time such as 2026-10-03T10:00:00Z"); });
+/** Rejects any field the event does not define, so a typo is a 400, not a silently dropped field. */
+const only = <T extends object>(s: Schema<T>, fields: string[]): Schema<T> => refine(s, (v, p) => {
+  for (const key of Object.keys(v)) if (!fields.includes(key)) fail(p ? `${p}.${key}` : key, "is not a field of this event");
+});
+const leaseReport = only(object({ session: sessionSchema, kind: oneOf(["lease"]), action: oneOf(["grant", "release", "expire"]), lease: token, holder: bounded(200), run: optional(token), resource: optional(bounded(500)), at: optional(isoTime) }),
+  ["session", "kind", "action", "lease", "holder", "run", "resource", "at"]);
+const attemptReport = only(object({ session: sessionSchema, kind: oneOf(["attempt"]), attempt: token, lease: optional(token), run: optional(token), outcome: oneOf(["started", "succeeded", "failed", "abandoned"]), reason: optional(reasonCode), at: optional(isoTime) }),
+  ["session", "kind", "attempt", "lease", "run", "outcome", "reason", "at"]);
+/** One externally reported capture lease or attempt event; strictly validated, any other shape is a 400. */
+export const telemetryReportSchema: Schema<PipelineTelemetryReport & { session: SessionInput }> = { parse(input, path = "") {
+  const kind = record.parse(input, path).kind;
+  if (kind === "lease") return leaseReport.parse(input, path) as PipelineTelemetryReport & { session: SessionInput };
+  if (kind === "attempt") return attemptReport.parse(input, path) as PipelineTelemetryReport & { session: SessionInput };
+  return fail(path ? `${path}.kind` : "kind", "must be lease or attempt");
+} };

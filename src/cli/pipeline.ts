@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseArgs } from "node:util";
 import { call, get } from "../shared/agent-client.ts";
 import type { SessionInput, WorldState } from "../shared/types.ts";
 import type { PipelineGateInput, PipelineGateResult, PipelineRun, PipelineStatus, PipelineTelemetryView, PipelineValue } from "../shared/pipeline.ts";
@@ -110,4 +111,25 @@ export async function deliveryBinding(session: SessionInput, runId: string | und
   const status = await call<PipelineStatus>("/api/agent/pipeline/status", { session, runId });
   const run = status.run!;
   return { runId, delivery, round: integer(options.round, "round") ?? run.round, candidate: options.candidate ?? run.candidate.head, ...(options.node ? { nodeId: options.node } : {}) };
+}
+
+/** How long a report may take before the CLI gives up on it; a capture or delivery never waits longer. */
+export const TELEMETRY_LOG_TIMEOUT_MS = 2000;
+const LOG_OPTIONS = { kind: { type: "string" }, action: { type: "string" }, lease: { type: "string" }, holder: { type: "string" }, run: { type: "string" }, resource: { type: "string" },
+  attempt: { type: "string" }, outcome: { type: "string" }, reason: { type: "string" }, at: { type: "string" }, harness: { type: "string" }, session: { type: "string" } } as const;
+/**
+ * inbox pipeline telemetry log: fire-and-forget. Any problem (bad flags, no session, office down,
+ * slow or refusing) is a warning on stderr, never a failing exit, so the caller's capture or
+ * delivery goes on. The office validates the event strictly.
+ */
+export async function telemetryLogCommand(argv: string[], sessionFor: (harness?: string, sessionId?: string) => SessionInput): Promise<void> {
+  try {
+    const { values } = parseArgs({ args: argv, options: LOG_OPTIONS, strict: true, allowPositionals: false });
+    const { harness, session: sessionId, ...event } = values;
+    const body = Object.fromEntries(Object.entries(event).filter(([, v]) => v !== undefined));
+    const result = await call<{ recorded: string }>("/api/agent/pipeline/telemetry/log", { ...body, session: sessionFor(harness, sessionId) }, TELEMETRY_LOG_TIMEOUT_MS);
+    console.log(`recorded ${result.recorded}`);
+  } catch (err) {
+    console.error(`inbox: telemetry not recorded (continuing): ${err instanceof Error ? err.message : String(err)}`);
+  }
 }

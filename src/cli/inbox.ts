@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { openPane } from "./pane.ts";
-import { pipelineCommand, deliveryBinding } from "./pipeline.ts";
+import { pipelineCommand, deliveryBinding, telemetryLogCommand } from "./pipeline.ts";
 import { installHooksCommand } from "./pipeline-hooks.ts";
 import { acknowledge, call, fetchReplies, formatReply, get } from "../shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
@@ -94,8 +94,12 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
       with report|done ... --check "command" --exit-code N --on-base, then the candidate's run with the same N
   inbox pipeline status [RUN]
   inbox pipeline gate --operation push|pr|merge|land|publish --repo PATH --ref REF --candidate SHA --run RUN [--round N]
-  inbox pipeline telemetry [RUN] [--team TEAM --kind gate|integration|publication --since ISO --limit N]
-      read-only JSON: gate results (refusals too), re-base/re-pin/re-branch, publication pending/resolved, founder decision waits
+  inbox pipeline telemetry [RUN] [--team TEAM --kind gate|integration|publication|lease|attempt --since ISO --limit N]
+      read-only JSON: gate results (refusals too), re-base/re-pin/re-branch, publication pending/resolved, capture leases/attempts,
+      founder decision waits, and coverageStartedAt (logged kinds before it are not measured)
+  inbox pipeline telemetry log --kind lease --action grant|release|expire --lease ID --holder NAME [--run RUN --resource TEXT --at ISO]
+  inbox pipeline telemetry log --kind attempt --attempt ID --outcome started|succeeded|failed|abandoned [--lease ID --run RUN --reason CODE --at ISO]
+      report a capture lease or attempt; fire-and-forget: always exits 0 (warns on stderr), gives up after 2 s
   inbox pipeline waiver --repo PATH --ref dev --candidate SHA --reason "why"   ask the founder to allow exactly this commit to that branch once, without a run
       --json FILE supplies an operation payload (including structured evidence); --revision N is an optimistic lock
       --client-id ID makes a lost-response retry replay-safe. Gate is preflight, not a publication receipt.
@@ -369,6 +373,8 @@ async function statusline(): Promise<void> {
 
 async function main(argv: string[]): Promise<void> {
   if (argv[0] === "pipeline" && argv[1] === "install-hooks") return installHooksCommand(argv.slice(2));
+  // Fire-and-forget: parsed on its own so no flag, session or office problem ever fails the caller.
+  if (argv[0] === "pipeline" && argv[1] === "telemetry" && argv[2] === "log") return telemetryLogCommand(argv.slice(3), (harness, sessionId) => { flags = { harness, session: sessionId } as Flags; return session(); });
   const parsed = parseArgs({ args: argv, allowPositionals: true, options: OPTIONS, tokens: true });
   flags = parsed.values;
   order = parsed.tokens.flatMap((t) => (t.kind === "option" ? [{ name: t.name, value: t.value }] : []));

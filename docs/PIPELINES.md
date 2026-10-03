@@ -182,14 +182,15 @@ The team's lead asks, or any member while the team has no lead online. The found
 
 ## Telemetry: what the office records about delivery
 
-`inbox pipeline telemetry [RUN] [--team TEAM --kind gate|integration|publication --since ISO]` prints read-only JSON (`GET /api/pipeline/telemetry`; fields in [API](API.md#pipeline-telemetry-read-only)):
+`inbox pipeline telemetry [RUN] [--team TEAM --kind gate|integration|publication|lease|attempt --since ISO]` prints read-only JSON (`GET /api/pipeline/telemetry`; fields in [API](API.md#pipeline-telemetry-read-only)):
 
 - **Gate results**: every pipeline gate answer, allowed or refused, with stable reason codes and the step concerned (`step_ready` on `checks`, `stale_candidate`, `pipeline_lead_required`, …), from hooks, the CLI and protected handoffs/reviews alike. A gate repeated with the same result within 10 minutes counts up `repeats` on one row.
 - **Integration**: each committed `branch` edit, as `rebase`, `repin` and/or `rebranch` (changed selections), with old and new base/head and whether the round moved.
 - **Publication pending**: a gate allowed a dev push/land/publish for the candidate, but the office has not yet seen it on the published branch. It resolves as `landed` (with the wait), `superseded` (re-pinned) or `abandoned`. The office cannot see a failed push; an unresolved pending row is what that looks like.
+- **Coverage start**: one `pipeline.telemetry.started` marker (with the schema version), written the first time an office runs with telemetry and kept. Before it, the logged kinds are *not measured*, not zero; decision waits are derived from history and hold before it too.
 - **Decision waits**: for each founder approval a run presented, the time from that item revision to the founder's first Accept or Needs changes, and the step that endorses it.
 
-The office has **no capture leases or capture attempts**: GPU/capture slots and their retries belong to the project's own capture tooling, so the office records none. Telemetry is never a gate: it is written after the request's transaction, a failing write is only counted, and no decision reads it (see [DESIGN](DESIGN.md)).
+The office has no capture slot of its own, so **capture leases and attempts are reported**: whoever grants a capture lease logs each grant/release and the capture tooling each attempt with `inbox pipeline telemetry log --kind lease|attempt …` (flags and schema in [API](API.md#pipeline-telemetry-read-only)). The CLI is fire-and-forget: 2 s at most, always exit 0, a warning on stderr when not recorded. Telemetry is never a gate: it is written after the request's transaction, a failing write is only counted, and no decision reads it (see [DESIGN](DESIGN.md)).
 
 ## Outages and limits
 

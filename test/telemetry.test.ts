@@ -1,12 +1,15 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createServer, type AddressInfo } from "node:net";
+import { createServer as createHttpServer } from "node:http";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/server/db.ts";
 import { Pipelines } from "../src/server/pipelines/store.ts";
-import { telemetryQuery } from "../src/server/pipelines/protocol.ts";
+import { telemetryQuery, telemetryReportSchema } from "../src/server/pipelines/protocol.ts";
+import { PipelineTelemetry } from "../src/server/pipelines/telemetry.ts";
 import type { PipelineGraph, PipelineRun, PipelineTelemetryEvent } from "../src/shared/pipeline.ts";
 import type { WorldAgent, WorldState } from "../src/shared/types.ts";
 
@@ -174,17 +177,113 @@ test("decision waits run from the item revision to the founder's first Accept or
 });
 
 test("the log is bounded: a full queue drops notes instead of holding anything up", t => {
-  const o = office(t);
+  const o = office(t); o.p.telemetry.flush();
   for (let i = 0; i < 600; i++) o.p.telemetry.note("gate", null, null, { i });
   assert.equal(o.p.telemetry.dropped, 100);
   o.p.telemetry.flush();
   assert.equal(o.p.telemetry.read({ limit: 1000 }).events.length, 500);
 });
 
+test("coverage starts with one marker, written once and kept, so earlier time reads as not measured", t => {
+  const o = office(t);
+  o.tick(60_000);
+  const again = new Pipelines(o.db, () => ({ agents: [], teams: [] }) as unknown as WorldState, { now: () => new Date("2026-10-04T00:00:00Z") });
+  o.p.telemetry.flush(); again.telemetry.flush();
+  const markers = o.db.prepare("SELECT at, detail FROM events WHERE kind = 'pipeline.telemetry.started'").all();
+  assert.equal(markers.length, 1, "a restart does not move coverage start");
+  const view = again.telemetry.read({});
+  assert.equal(view.coverageStartedAt, "2026-10-03T10:00:00.000Z");
+  assert.equal(view.coverageSchemaVersion, 1); assert.equal(view.schemaVersion, 1);
+  assert.equal(view.events.length, 0, "the marker is not an event row of any kind");
+});
+
+test("pruning to the row cap keeps the coverage marker", t => {
+  const o = office(t); o.p.telemetry.flush();
+  const small = new PipelineTelemetry(o.db, () => new Date("2026-10-05T00:00:00Z"), { keep: 3 });
+  for (let i = 0; i < 10; i++) small.note("integration", null, null, { i });
+  small.flush();
+  assert.deepEqual(small.read({}).events.map(e => e.detail.i), [9, 8, 7], "only the newest rows are kept");
+  assert.equal(o.db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind = 'pipeline.telemetry.started'").get()!.n, 1);
+  assert.equal(small.read({}).coverageStartedAt, "2026-10-03T10:00:00.000Z");
+});
+
+const session = { harness: "claude" as const, sessionId: "s", cwd: "/" };
+const report = (body: Record<string, unknown>) => telemetryReportSchema.parse({ session, ...body });
+
+test("capture lease and attempt reports are strictly validated", () => {
+  assert.deepEqual(report({ kind: "lease", action: "grant", lease: "gpu-1", holder: "Jens", resource: "GPU 0", at: "2026-10-03T10:00:00Z" }),
+    { session, kind: "lease", action: "grant", lease: "gpu-1", holder: "Jens", resource: "GPU 0", at: "2026-10-03T10:00:00Z" });
+  assert.equal(report({ kind: "attempt", attempt: "a-1", lease: "gpu-1", outcome: "failed", reason: "timeout" }).kind, "attempt");
+  for (const [bad, field] of [
+    [{ kind: "lease", action: "renew", lease: "gpu-1", holder: "Jens" }, /action/],
+    [{ kind: "lease", action: "grant", lease: "gpu-1" }, /holder/],
+    [{ kind: "lease", action: "grant", lease: "gpu 1", holder: "Jens" }, /lease/],
+    [{ kind: "lease", action: "grant", lease: "gpu-1", holder: "Jens", outcome: "failed" }, /outcome.*not a field/],
+    [{ kind: "attempt", attempt: "a-1", outcome: "failed", reason: "Timed Out" }, /reason/],
+    [{ kind: "attempt", attempt: "a-1", outcome: "done" }, /outcome/],
+    [{ kind: "attempt", attempt: "a-1", outcome: "started", at: "yesterday" }, /at/],
+    [{ kind: "gate", attempt: "a-1", outcome: "started" }, /kind/],
+  ] as const) assert.throws(() => report(bad), field);
+});
+
+test("reported leases and attempts are recorded beside the reporter and never change a gate", t => {
+  const o = office(t);
+  o.commit("wave"); const run = o.done(o.start());
+  const before = o.gate(run);
+  o.p.reportTelemetry(o.crew, report({ kind: "lease", action: "grant", lease: "gpu-1", holder: "Jens", run: run.id, at: "2026-10-03T09:59:00+02:00" }) as never);
+  o.p.reportTelemetry(o.crew, report({ kind: "attempt", attempt: "a-1", lease: "gpu-1", run: run.id, outcome: "failed", reason: "gpu_busy" }) as never);
+  o.p.reportTelemetry(o.crew, report({ kind: "lease", action: "release", lease: "gpu-1", holder: "Jens" }) as never);
+  assert.deepEqual(o.gate(run), before, "the gate's answer is identical with capture events present");
+  assert.throws(() => o.p.reportTelemetry(o.crew, report({ kind: "lease", action: "grant", lease: "x", holder: "y", run: "nope" }) as never), /no pipeline run/);
+
+  const leases = o.events("lease");
+  assert.deepEqual(leases.map(l => l.detail.action), ["grant", "release"]);
+  assert.deepEqual({ ...leases[0], id: 0 }, { id: 0, at: "2026-10-03T10:00:00.000Z", kind: "lease", runId: run.id, teamId: "authors",
+    detail: { action: "grant", lease: "gpu-1", holder: "Jens", reportedAt: "2026-10-03T07:59:00.000Z", agentId: "deckhand", agentTeamId: "authors", repeats: 1 } });
+  assert.equal(leases[1]!.runId, null);
+  const [attempt] = o.events("attempt");
+  assert.deepEqual([attempt!.detail.outcome, attempt!.detail.reason, attempt!.detail.lease], ["failed", "gpu_busy", "gpu-1"]);
+});
+
+/** Runs the real CLI against `url`, returning its exit code, stderr and how long it took. */
+async function cli(url: string, args: string[]): Promise<{ code: number | null; stderr: string; ms: number }> {
+  const started = Date.now();
+  const home = mkdtempSync(join(tmpdir(), "telemetry-cli-"));
+  try {
+    return await new Promise((done, failed) => {
+      const child = spawn(process.execPath, [join(import.meta.dirname, "..", "bin", "inbox"), "pipeline", "telemetry", "log", ...args],
+        { env: { PATH: process.env.PATH, HOME: home, INBOX_URL: url, CLAUDE_CODE_SESSION_ID: "capture-tool" }, stdio: ["ignore", "ignore", "pipe"] });
+      let stderr = ""; child.stderr.on("data", d => { stderr += d; });
+      child.on("error", failed); child.on("close", code => done({ code, stderr, ms: Date.now() - started }));
+    });
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}
+
+test("the log CLI exits 0 when the office is down, hangs, refuses or the flags are wrong", async t => {
+  const lease = ["--kind", "lease", "--action", "grant", "--lease", "gpu-1", "--holder", "Jens"];
+  const closed = await new Promise<number>(r => { const s = createServer().listen(0, "127.0.0.1", () => { const port = (s.address() as AddressInfo).port; s.close(() => r(port)); }); });
+  const down = await cli(`http://127.0.0.1:${closed}`, lease);
+  assert.equal(down.code, 0); assert.match(down.stderr, /telemetry not recorded/);
+
+  const hanging = createHttpServer(() => { /* never answers */ }); t.after(() => { hanging.closeAllConnections(); hanging.close(); });
+  await new Promise<void>(r => hanging.listen(0, "127.0.0.1", r));
+  const slow = await cli(`http://127.0.0.1:${(hanging.address() as AddressInfo).port}`, lease);
+  assert.equal(slow.code, 0); assert.match(slow.stderr, /telemetry not recorded/);
+  assert.ok(slow.ms < 2000 + 3000, `gave up after ~2 s plus startup (took ${slow.ms} ms)`);
+
+  const refusing = createHttpServer((_q, res) => { res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "action: must be one of grant, release, expire" })); });
+  t.after(() => refusing.close()); await new Promise<void>(r => refusing.listen(0, "127.0.0.1", r));
+  const refused = await cli(`http://127.0.0.1:${(refusing.address() as AddressInfo).port}`, lease);
+  assert.equal(refused.code, 0); assert.match(refused.stderr, /must be one of/);
+
+  const typo = await cli(`http://127.0.0.1:${closed}`, ["--kind", "lease", "--holdr", "Jens"]);
+  assert.equal(typo.code, 0); assert.match(typo.stderr, /telemetry not recorded.*holdr/);
+});
+
 test("the read query accepts only known kinds, ISO times and bounded limits", () => {
   assert.deepEqual(telemetryQuery(new URLSearchParams("run=r&team=t&kind=gate&since=2026-10-03T10:00:00Z&limit=5")),
     { runId: "r", teamId: "t", kind: "gate", since: "2026-10-03T10:00:00.000Z", limit: 5 });
-  assert.throws(() => telemetryQuery(new URLSearchParams("kind=lease")), /kind/);
+  assert.throws(() => telemetryQuery(new URLSearchParams("kind=leases")), /kind/);
   assert.throws(() => telemetryQuery(new URLSearchParams("since=yesterday")), /since/);
   assert.throws(() => telemetryQuery(new URLSearchParams("limit=100000")), /limit/);
 });
