@@ -115,6 +115,86 @@ test("gate argv binds run, round, session, repo, ref and candidate; exit 1 also 
   assert.equal(value("--harness"), "pi"); assert.equal(value("--session"), "/scratch/session.jsonl");
 });
 
+test("the guarded command names its own run: inline and env-prefixed, process env only as fallback", (t) => {
+  const s = scratch(t);
+  const names = ["INBOX_PIPELINE_RUN", "INBOX_PIPELINE_ROUND", "SCRATCH_GATE_EXIT"];
+  const before = names.map((n) => process.env[n]);
+  t.after(() => names.forEach((n, i) => { if (before[i] === undefined) delete process.env[n]; else process.env[n] = before[i]; }));
+  names.forEach((n) => delete process.env[n]);
+  const gated = (command: string) => {
+    const before = s.readCalls().length; const reason = guardTool(s.config, { tool_input: { command } }, s.repo, "claude", "scratch-session");
+    return { reason, calls: s.readCalls().slice(before) };
+  };
+  const value = (args: string[], name: string) => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
+  const land = `node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${s.candidate}`;
+  const landing = { ...s.config, guardedCommands: [{ command: "node .claude/hooks/worktree-sync.mjs land", operation: "land" as const, ref: "dev", candidateArgument: 1 }] };
+  const landGate = (command: string) => {
+    const before = s.readCalls().length; const reason = guardTool(landing, { tool_input: { command } }, s.repo, "claude", "scratch-session");
+    return { reason, calls: s.readCalls().slice(before) };
+  };
+
+  // Inline assignment on the land command reaches the gate; so does one after `env`, with its round.
+  let r = landGate(`INBOX_PIPELINE_RUN=5cc68709 ${land}`);
+  assert.equal(r.reason, null); assert.equal(r.calls.length, 1);
+  assert.equal(value(r.calls[0]!, "--run"), "5cc68709"); assert.equal(value(r.calls[0]!, "--round"), undefined);
+  assert.equal(value(r.calls[0]!, "--operation"), "land");
+  r = landGate(`env INBOX_PIPELINE_RUN="5cc68709" INBOX_PIPELINE_ROUND=4 ${land}`);
+  assert.equal(value(r.calls[0]!, "--run"), "5cc68709"); assert.equal(value(r.calls[0]!, "--round"), "4");
+  r = gated("INBOX_PIPELINE_RUN=abc git push origin HEAD:dev");
+  assert.equal(value(r.calls[0]!, "--run"), "abc");
+
+  // Process env remains the fallback; the command's own run wins and does not borrow another run's round.
+  process.env.INBOX_PIPELINE_RUN = "from-env"; process.env.INBOX_PIPELINE_ROUND = "7";
+  r = gated("git push origin HEAD:dev");
+  assert.equal(value(r.calls[0]!, "--run"), "from-env"); assert.equal(value(r.calls[0]!, "--round"), "7");
+  r = gated("INBOX_PIPELINE_RUN=inline git push origin HEAD:dev");
+  assert.equal(value(r.calls[0]!, "--run"), "inline"); assert.equal(value(r.calls[0]!, "--round"), undefined);
+  r = gated("INBOX_PIPELINE_RUN=from-env git push origin HEAD:dev");
+  assert.equal(value(r.calls[0]!, "--round"), "7");
+  delete process.env.INBOX_PIPELINE_RUN; delete process.env.INBOX_PIPELINE_ROUND;
+
+  // A run named on one segment never applies to another segment of a compound command.
+  r = gated("INBOX_PIPELINE_RUN=first git push origin HEAD:dev && git push origin HEAD:main; INBOX_PIPELINE_RUN=third git push origin HEAD:dev");
+  assert.deepEqual(r.calls.map((c) => value(c, "--run")), ["first", undefined, "third"]);
+  assert.deepEqual(r.calls.map((c) => value(c, "--ref")), ["refs/heads/dev", "refs/heads/main", "refs/heads/dev"]);
+  r = gated("export INBOX_PIPELINE_RUN=exported; git push origin HEAD:dev");
+  assert.equal(value(r.calls[0]!, "--run"), undefined, "a separate export segment is not a binding");
+
+  // Shell expansions and empty values are refused locally, before any gate call.
+  for (const bad of ["INBOX_PIPELINE_RUN=$RUN git push origin HEAD:dev", "INBOX_PIPELINE_RUN= git push origin HEAD:dev", "INBOX_PIPELINE_RUN=r INBOX_PIPELINE_ROUND=x git push origin HEAD:dev"]) {
+    r = gated(bad); assert.match(r.reason!, /literal values/); assert.equal(r.calls.length, 0);
+  }
+  // Unprotected pushes ignore the assignment entirely.
+  r = gated("INBOX_PIPELINE_RUN=$RUN git push origin HEAD:feature"); assert.equal(r.reason, null); assert.equal(r.calls.length, 0);
+
+  // No run anywhere: the office's refusal is passed on with the supported form.
+  process.env.SCRATCH_GATE_EXIT = "1";
+  r = gated("git push origin HEAD:dev");
+  assert.equal(value(r.calls[0]!, "--run"), undefined);
+  assert.match(r.reason!, /prefix it with INBOX_PIPELINE_RUN=<run>/);
+  r = gated("INBOX_PIPELINE_RUN=named git push origin HEAD:dev");
+  assert.doesNotMatch(r.reason!, /prefix it with INBOX_PIPELINE_RUN/);
+});
+
+test("installed harness hooks read the run from the command; a Git push passes its env to pre-push", (t) => {
+  const s = scratch(t); const remote = join(s.root, "remote.git");
+  assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+  s.git("remote", "add", "origin", remote); s.install();
+  const clean: Record<string, string | undefined> = { ...process.env };
+  for (const name of ["INBOX_PIPELINE_RUN", "INBOX_PIPELINE_ROUND", "SCRATCH_GATE_EXIT"]) delete clean[name];
+  for (const mode of ["claude", "codex"]) {
+    const settings = JSON.parse(readFileSync(join(s.repo, mode === "claude" ? ".claude/settings.json" : ".codex/hooks.json"), "utf8"));
+    const before = s.readCalls().length;
+    const r = spawnSync("/bin/sh", ["-c", settings.hooks.PreToolUse[0].hooks[0].command], { cwd: s.repo, env: clean, input: JSON.stringify({ session_id: "scratch", tool_name: "Bash", tool_input: { command: "INBOX_PIPELINE_RUN=5cc68709 git push origin HEAD:dev" } }), encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr); assert.deepEqual(JSON.parse(r.stdout), {});
+    const args = s.readCalls()[before]!; assert.equal(args[args.indexOf("--run") + 1], "5cc68709");
+  }
+  const before = s.readCalls().length;
+  const push = spawnSync("git", ["-C", s.repo, "push", "origin", "HEAD:dev"], { encoding: "utf8", env: { ...clean, INBOX_PIPELINE_RUN: "from-push", INBOX_PIPELINE_ROUND: "2" } });
+  assert.equal(push.status, 0, push.stderr);
+  const args = s.readCalls()[before]!; assert.equal(args[args.indexOf("--run") + 1], "from-push"); assert.equal(args[args.indexOf("--round") + 1], "2");
+});
+
 test("Claude and Codex installed hooks emit deny/reason when CLI unavailable, ordinary tools remain untouched", (t) => {
   const s = scratch(t); s.install({ inboxCommand: ["/nonexistent/inbox"] });
   for (const mode of ["claude", "codex"]) {
@@ -237,7 +317,11 @@ test("installed guards call the real office CLI gate end to end in a scratch rep
   const done = await cli(["done", run.id, "checks", "--check", "git rev-parse HEAD", "--exit-code", "0", "--notes", "Scratch checks pass at the exact candidate"]); assert.equal(done.code, 0, done.stderr);
   const cliGate = await cli(["gate", "--operation", "push", "--repo", s.repo, "--ref", "refs/heads/dev", "--candidate", sha, "--run", run.id]); assert.equal(cliGate.code, 0, cliGate.stderr); assert.equal(JSON.parse(cliGate.stdout).allowed, true);
   assert.deepEqual(await hook("git push origin HEAD:dev"), {});
-  denial(await hook("git push origin HEAD:dev", { run: "" }), /name the pipeline run/);
+  denial(await hook("git push origin HEAD:dev", { run: "" }), /name the pipeline run[^]*prefix it with INBOX_PIPELINE_RUN=<run>/);
+  assert.deepEqual(await hook(`INBOX_PIPELINE_RUN=${run.id} git push origin HEAD:dev`, { run: "" }), {}, "inline run, no run in the harness env");
+  assert.deepEqual(await hook(`INBOX_PIPELINE_RUN=${run.id} git push origin HEAD:dev`, { run: "", round: "2" }), {}, "an env round is not paired with a different inline run");
+  denial(await hook(`INBOX_PIPELINE_RUN=${run.id} INBOX_PIPELINE_ROUND=2 git push origin HEAD:dev`, { run: "" }), /stale run round/);
+  denial(await hook(`INBOX_PIPELINE_RUN=${run.id} git push origin HEAD:main && git push origin HEAD:dev`, { run: "" }), /ref is not/);
   denial(await hook("git push origin HEAD:dev", { session: "scratch-crew" }), /first mate/);
   denial(await hook("git push origin HEAD:main"), /ref is not/);
   denial(await hook("gh pr create --base main"), /release\/PR\/merge/);
@@ -247,6 +331,7 @@ test("installed guards call the real office CLI gate end to end in a scratch rep
   denial(await hook(`git push origin ${s.candidate}:dev`), /stale candidate/);
   assert.deepEqual(await hook(`node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${sha}`), {});
   denial(await hook(`node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${sha}`, { run: "" }), /name the pipeline run/);
+  assert.deepEqual(await hook(`INBOX_PIPELINE_RUN=${run.id} node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${sha}`, { run: "" }), {}, "the Emil case: run only inline on land");
   const push = await exec("git", ["push", "origin", "HEAD:dev"], undefined, { INBOX_PIPELINE_RUN: run.id }); assert.equal(push.code, 0, push.stderr);
   assert.equal(spawnSync("git", ["--git-dir", remote, "rev-parse", "refs/heads/dev"], { encoding: "utf8" }).stdout.trim(), sha);
   assert.equal(world.pipelines.get(run.id).state, "open", "an allowed Git push is not a pipeline delivery receipt");

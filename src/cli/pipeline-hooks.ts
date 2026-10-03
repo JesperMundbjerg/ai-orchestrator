@@ -16,7 +16,7 @@ const OUTAGE = "Protected delivery blocked: the Review Inbox gate is unavailable
 type Operation = "push" | "pr" | "merge" | "land" | "publish";
 export type GuardedCommand = { command: string; operation: Operation; ref: string; candidateArgument?: number };
 export type HookConfig = { marker: string; protectedRefs: string[]; guardedCommands: GuardedCommand[]; inboxCommand: string[] };
-type Boundary = { repo: string; operation: Operation; ref: string; candidate: string };
+type Boundary = { repo: string; operation: Operation; ref: string; candidate: string; run?: string; round?: string };
 type Json = Record<string, any>;
 type Change = { path: string; content: string | null; mode?: number; renameFrom?: string };
 type Manifest = { marker: string; prePush: string; backup: string; wrapper: string; policy?: HookConfig; settings: Record<string, { existed: boolean; hooks: boolean; pre: boolean }> };
@@ -81,6 +81,16 @@ function option(words: string[], ...names: string[]): string | undefined {
   }
   return undefined;
 }
+/** Run/round named by the segment's own leading env assignments (`FOO=x env BAR=y cmd`); last one wins. */
+function inlineRun(words: string[]): { run: string | undefined; round: string | undefined } {
+  let run: string | undefined; let round: string | undefined;
+  for (const word of words) {
+    const m = /^(INBOX_PIPELINE_RUN|INBOX_PIPELINE_ROUND)=(.*)$/.exec(word);
+    if (!m) continue;
+    if (m[1] === "INBOX_PIPELINE_RUN") run = m[2]; else round = m[2];
+  }
+  return { run, round };
+}
 function sha(repo: string, rev: string): string {
   if (!rev || rev.startsWith("-")) throw new Error("Protected delivery needs a pinned candidate SHA");
   return git(repo, "rev-parse", "--verify", `${rev}^{commit}`);
@@ -90,11 +100,16 @@ function sha(repo: string, rev: string): string {
 export function commandBoundaries(command: string, cwd: string, config: HookConfig): Boundary[] {
   const boundaries: Boundary[] = []; let repo = cwd; let branch = maybeGit(repo, "symbolic-ref", "--quiet", "HEAD");
   for (let words of shellWords(command)) {
-    while (words[0] && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]) || ["env", "command", "sudo"].includes(words[0]))) words = words.slice(1);
+    // Only this segment's prefix names a run: it must not leak to other segments of a compound command.
+    const prefix = words; let skip = 0;
+    while (words[skip] && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[skip]!) || ["env", "command", "sudo"].includes(words[skip]!))) skip++;
+    const named = inlineRun(prefix.slice(0, skip)); words = words.slice(skip);
     if (!words.length) continue;
     if (words[0] === "cd" && words[1]) { repo = resolve(repo, words[1]); branch = maybeGit(repo, "symbolic-ref", "--quiet", "HEAD"); continue; }
     const add = (operation: Operation, ref: string, rev: string, at = repo) => {
-      if (protectedRef(config, ref)) boundaries.push({ repo: at, operation, ref: refName(ref), candidate: sha(at, rev) });
+      if (!protectedRef(config, ref)) return;
+      if ((named.run !== undefined && !/^[A-Za-z0-9._-]+$/.test(named.run)) || (named.round !== undefined && !/^[0-9]+$/.test(named.round))) throw new Error("INBOX_PIPELINE_RUN / INBOX_PIPELINE_ROUND in the command must be literal values (a run id and a number), not shell expansions");
+      boundaries.push({ repo: at, operation, ref: refName(ref), candidate: sha(at, rev), ...named });
     };
     if (basename(words[0]!) === "git") {
       let at = repo; let i = 1; let contextOverride = false;
@@ -165,15 +180,21 @@ export function commandBoundaries(command: string, cwd: string, config: HookConf
 
 function gate(boundary: Boundary, config: HookConfig, identity: Json): string | null {
   const args = ["pipeline", "gate", "--repo", boundary.repo, "--operation", boundary.operation, "--ref", boundary.ref, "--candidate", boundary.candidate];
-  if (process.env.INBOX_PIPELINE_RUN) args.push("--run", process.env.INBOX_PIPELINE_RUN);
-  if (process.env.INBOX_PIPELINE_ROUND) args.push("--round", process.env.INBOX_PIPELINE_ROUND);
+  // Harness tool hooks run in the harness's environment, so the guarded command's own env assignments
+  // name the run; process env is the fallback (and what a Git-run pre-push inherits from `git push`).
+  const run = boundary.run || process.env.INBOX_PIPELINE_RUN;
+  // A round belongs to its run: never pair an inline run with the process env's round for another run.
+  const round = boundary.round || (!boundary.run || boundary.run === process.env.INBOX_PIPELINE_RUN ? process.env.INBOX_PIPELINE_ROUND : undefined);
+  if (run) args.push("--run", run);
+  if (round) args.push("--round", round);
   if (identity.harness && identity.session) args.push("--harness", identity.harness, "--session", identity.session);
   const [exe, ...prefix] = config.inboxCommand;
   const result = spawnSync(exe!, [...prefix, ...args], { cwd: boundary.repo, encoding: "utf8", timeout: 10000, maxBuffer: 128 * 1024 });
   if (result.status === 0 && !result.error) return null;
   if (result.status === 1) {
     const reason = result.stderr?.trim() || result.stdout?.trim() || "Protected delivery refused by the office pipeline gate.";
-    return `${reason}\nIf the office is unavailable: Restart the office and retry; editing, tests and local commits remain available.`;
+    const hint = run ? "" : `\nName the run in the guarded command itself: prefix it with INBOX_PIPELINE_RUN=<run> (and INBOX_PIPELINE_ROUND=<n> if the gate needs a round), e.g. INBOX_PIPELINE_RUN=<run> ${boundary.operation === "push" ? "git push …" : "node …/worktree-sync.mjs land …"}. A separate export or an earlier command segment does not carry over.`;
+    return `${reason}${hint}\nIf the office is unavailable: Restart the office and retry; editing, tests and local commits remain available.`;
   }
   return `${OUTAGE}${result.stderr?.trim() ? `\n${result.stderr.trim()}` : ""}`;
 }
@@ -246,7 +267,7 @@ function mergeSettings(path: string, command: string, remove: boolean, original?
  * runner or config cannot disable custom refs/commands or block unrelated work.
  * Node's erasable-TS loader makes toString() builtin-only JavaScript here. */
 function toolEntrypoint(runner: string, configPath: string, config: HookConfig, pi: boolean): string {
-  const parser = [git, maybeGit, refName, protectedRef, quote, shellWords, option, sha, commandBoundaries].map(fn => fn.toString()).join("\n");
+  const parser = [git, maybeGit, refName, protectedRef, quote, shellWords, option, inlineRun, sha, commandBoundaries].map(fn => fn.toString()).join("\n");
   const types = pi ? `type Config = { marker: string; protectedRefs: string[]; guardedCommands: { command: string; operation: string; ref: string; candidateArgument?: number }[]; inboxCommand: string[] };
 type Input = { tool_input?: { command?: string | string[]; cmd?: string | string[]; cwd?: string; workdir?: string }; input?: Input['tool_input']; cwd?: string; session_id?: string };
 type Guard = (config: typeof POLICY, input: Input, cwd: string, harness: string, session?: string) => string | null;
