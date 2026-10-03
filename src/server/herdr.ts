@@ -26,6 +26,8 @@ interface HerdrAgent {
   agent?: string;
   agent_session?: { value?: string };
   agent_status?: Presence["status"];
+  /** Pi's full lifecycle integration bypasses native screen detection. */
+  screen_detection_skipped?: boolean;
   cwd?: string;
   name?: string;
   pane_id: string;
@@ -44,6 +46,7 @@ export class Herdr implements PresenceSource, AgentSource {
   queuedPanes: () => ReadonlySet<string> = () => new Set();
   private stale = new StaleWorking();
   private refreshing: Promise<void> | null = null;
+  private promptChecks = new Map<string, Promise<boolean>>();
   private now: () => number;
 
   /** The socket is the session the CLI talks to: `HERDR_SOCKET_PATH` inside herdr, else the default session. */
@@ -139,17 +142,44 @@ export class Herdr implements PresenceSource, AgentSource {
     } catch {
       // herdr not installed or not running: no presence, which is a valid state.
     }
-    await this.stale.sample(next, this.queuedPanes(), async (paneId) => {
-      const { stdout } = await run(this.bin, ["pane", "read", paneId, "--source", "visible", "--lines", "80", "--format", "text", "--raw"], { timeout: 2500, maxBuffer: 256_000 });
-      return stdout;
-    }, this.now);
+    await this.stale.sample(next, this.queuedPanes(), (paneId) => this.readVisible(paneId), this.now);
     this.agents = next;
     this.ok = ok;
     if (JSON.stringify([ok, next.map((a) => fingerprint(this.effective(a)))]) !== before) this.onChange();
   }
 
   private effective(a: HerdrAgent): HerdrAgent {
+    if (a.agent === "pi") {
+      if (this.stale.visibleWorking(a.pane_id)) return { ...a, agent_status: "working" };
+      if ((a.agent_status === "idle" || a.agent_status === "done") && this.stale.unreadable(a.pane_id)) return { ...a, agent_status: "unknown" };
+    }
     return a.agent_status === "working" && this.stale.isStale(a.pane_id) ? { ...a, agent_status: "idle" } : a;
+  }
+
+  private async readVisible(paneId: string): Promise<string> {
+    // The editor/status border is at the bottom. A line cap can omit it in a tall pane.
+    const { stdout } = await run(this.bin, ["pane", "read", paneId, "--source", "visible", "--format", "text", "--raw"], { timeout: 2500, maxBuffer: 256_000 });
+    return stdout;
+  }
+
+  /** Fresh pre-claim guard: --until working checks uptake AFTER typing, not permission to type.
+   * Reconcile the same presence used by the office; a cached idle snapshot is insufficient. */
+  async canPrompt(paneId: string): Promise<boolean> {
+    const pending = this.promptChecks.get(paneId);
+    if (pending) return pending;
+    const check = this.checkPrompt(paneId);
+    this.promptChecks.set(paneId, check);
+    try { return await check; } finally { this.promptChecks.delete(paneId); }
+  }
+
+  private async checkPrompt(paneId: string): Promise<boolean> {
+    await this.refresh();
+    const before = this.agents.map((a) => fingerprint(this.effective(a))).join("\n");
+    await this.stale.sample(this.agents, new Set([paneId]), (pane) => this.readVisible(pane), this.now, new Set([paneId]));
+    if (this.agents.map((a) => fingerprint(this.effective(a))).join("\n") !== before) this.onChange();
+    const agent = this.agents.find((a) => a.pane_id === paneId);
+    const status = agent ? this.effective(agent).agent_status : "unknown";
+    return status === "idle" || status === "done";
   }
 
   available(): boolean {
@@ -201,6 +231,14 @@ export class Herdr implements PresenceSource, AgentSource {
     try {
       const input = this.agents.find((a) => a.pane_id === paneId)?.agent === "claude" ? claudeOfficeInput(text) : text;
       await run(this.bin, ["agent", "prompt", paneId, input, "--wait", "--until", "working", "--until", "blocked", "--timeout", "15000"], { timeout: 20_000 });
+      // Uptake matched working OR blocked. Never keep an old free snapshot while
+      // awaiting the next provider observation; without knowing which matched, unknown
+      // is truthful and cannot release another prompt or trigger a free-agent notice.
+      const agent = this.agents.find((a) => a.pane_id === paneId);
+      if (agent && (agent.agent_status === "idle" || agent.agent_status === "done")) {
+        agent.agent_status = "unknown";
+        this.onChange();
+      }
     } catch (err) {
       const message = herdrError(err);
       throw agentIsStarting(message) ? new AgentStartingError(message) : new Error(message);

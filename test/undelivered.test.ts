@@ -95,11 +95,38 @@ test("the sender observes a queue drain even when a new message arrives during i
   world = new World(db, source, () => ({ tasks: [], projects: [], items: [] }), () => new Date(at));
   world.messages.tell(world.state().agents[0]!.id, { text: "First check." });
   at = 11 * MINUTE;
+  // Simulate a genuinely undelivered episode before allowing the sender to drain it.
+  assert.equal(world.messages.watch(world.state()), true);
   await world.react();
   assert.equal(world.messages.withFounder().filter((m) => m.fromOffice).length, 1);
   at += 11 * MINUTE;
   assert.equal(world.messages.watch(world.state()), true, "a new episode rearms without a poll of an empty queue");
   assert.equal(world.messages.withFounder().filter((m) => m.fromOffice).length, 2);
+});
+
+test("a long busy wait delivered at turn end is not an undelivered episode", async (t) => {
+  const db = openDatabase(":memory:"); t.after(() => db.close());
+  let at = 0;
+  const live: LiveAgent[] = [{ paneId: "a", harness: "pi", sessionId: "s", cwd: null, status: "working", title: null, name: null }];
+  const unused = async () => { throw new Error("unused"); };
+  let prompts = 0, notifications = 0;
+  const source: AgentSource = { available: () => true, live: () => live,
+    prompt: async () => { prompts++; live[0]!.status = "working"; },
+    notify: async () => { notifications++; }, createWorktree: unused, startAgent: unused, closePane: unused, removeWorktree: unused };
+  const world = new World(db, source, () => ({ tasks: [], projects: [], items: [] }), () => new Date(at));
+  const id = world.state().agents[0]!.id;
+  world.messages.tell(id, { text: "First note" });
+  world.messages.tell(id, { text: "Second note" });
+  at = 14 * MINUTE;
+  await world.react();
+  assert.equal(prompts, 0);
+  live[0]!.status = "done";
+  await world.react();
+  assert.equal(prompts, 1, "the usual single batched send at turn end");
+  assert.ok(world.messages.list().every((m) => m.deliveries[0]!.state === "delivered"));
+  assert.equal(world.messages.withFounder().filter((m) => m.fromOffice).length, 0);
+  assert.equal(notifications, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM undelivered_episodes").get()!.n, 0);
 });
 
 test("notice storage and durable latch are atomic", (t) => {

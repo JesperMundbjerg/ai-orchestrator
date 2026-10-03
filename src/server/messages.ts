@@ -361,7 +361,7 @@ export class Messages {
       const agent = state.agents.find((a) => a.paneId === paneId);
       if (!agent || busy.has(agent.id)) continue;
       busy.add(agent.id);
-      if (FREE.has(agent.status)) sends.push(this.typeReply(reply, agent));
+      if (FREE.has(agent.status)) sends.push(this.whenFree(agent, () => this.typeReply(reply, agent)));
     }
     for (const [agentId, rows] of queued) {
       if (busy.has(agentId)) continue;
@@ -380,11 +380,20 @@ export class Messages {
         if (failed) this.changed();
         continue;
       }
-      if (agent?.paneId && FREE.has(agent.status)) sends.push(this.send(rows.slice(0, MAX_BATCHED), agent, state));
+      if (agent?.paneId && FREE.has(agent.status)) sends.push(this.whenFree(agent, () => this.send(rows.slice(0, MAX_BATCHED), agent, state)));
     }
     await Promise.all(sends);
     // Observe a drain immediately, even if new messages arrive before the next poll.
     this.undelivered.drained();
+  }
+
+  /** Recheck presence BEFORE claiming: a stale free snapshot must leave messages queued.
+   * The guard may await I/O, so recheck per-agent reservations and switch holds afterwards. */
+  private async whenFree(agent: WorldAgent, send: () => Promise<void>): Promise<void> {
+    if (this.source?.canPrompt && !await this.source.canPrompt(agent.paneId!)) return;
+    if (this.typingTo.has(agent.id) || this.held().has(agent.id)
+      || this.db.prepare("SELECT 1 FROM message_deliveries WHERE agent_id = ? AND state = 'sending' LIMIT 1").get(agent.id)) return;
+    await send();
   }
 
   /** The founder's answer, typed as the hook would hand it over, and acknowledged only once herdr sees the agent take it up. */

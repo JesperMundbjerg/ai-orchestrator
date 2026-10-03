@@ -52,6 +52,8 @@ export interface LiveAgent {
 export interface AgentSource {
   available(): boolean;
   live(): LiveAgent[];
+  /** Reconciles fresh status before claiming a delivery; false leaves it queued. */
+  canPrompt?(paneId: string): Promise<boolean>;
   /** Types a prompt into the agent and resolves once it has started on it. */
   prompt(paneId: string, text: string): Promise<void>;
   /** Tells you something, wherever you are working. */
@@ -651,10 +653,9 @@ export class World {
    */
   async react(): Promise<void> {
     const state = this.state();
-    const watched = this.messages.watch(state);
     const changed = this.unpresented.tick(state, this.now().getTime(), (lead, text) => { this.messages.notice(lead, text); });
     const stalled = this.leadWatch.tick(state);
-    if (changed || watched || stalled) this.onChange("activity"); // redraw only; do not recursively react
+    if (changed || stalled) this.onChange("activity"); // redraw only; do not recursively react
     const first = this.announced === null;
     const before = this.announced ?? new Map<string, TeamStatus>();
     this.announced = new Map(state.teams.map((t) => [t.id, t.status]));
@@ -662,9 +663,12 @@ export class World {
     const notices = first ? [] : state.teams.filter((t) => t.status === "blocked" && before.get(t.id) !== "blocked");
     await Promise.all([
       ...notices.map((t) => this.source?.notify(`${t.name} is blocked`, `${whyStuck(t.blockedBy.flatMap((id) => agents.get(id) ?? []))}.`).catch(() => {})),
-      this.messages.founderNotices.dispatch(this.source ? (title, body) => this.source!.notify(title, body) : null),
       this.messages.deliver(state),
     ]);
+    // A long busy wait is not a stuck sender: let the first free reaction deliver before
+    // observing what is STILL queued, using presence reconciled by the delivery guard.
+    if (this.messages.watch(this.state())) this.onChange("activity");
+    await this.messages.founderNotices.dispatch(this.source ? (title, body) => this.source!.notify(title, body) : null);
   }
 
   /** Running agents and inbox tasks, joined on their session and merged per identity. */

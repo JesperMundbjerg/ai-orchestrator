@@ -69,14 +69,19 @@ test("fake herdr: no reads without a queue or a long-working agent, and long-wor
   assert.equal(o.herdr.live()[0]!.status, "blocked");
 });
 
-test("fake herdr: staleness is the same for other harnesses, with no prompt/title parsing", async (t) => {
+test("fake herdr: Pi needs positive idle UI for stale recovery; other harnesses retain their fallback", async (t) => {
   const o = setup(t); o.herdr.queuedPanes = () => new Set(["w9:p1"]);
-  for (const harness of ["pi", "codex"] as const) {
-    o.state.harness = harness; o.state.screen = "any unchanged screen"; o.save();
-    await o.herdr.refresh(); assert.equal(o.herdr.live()[0]!.status, "working");
-    o.advance(3 * MIN); await o.herdr.refresh();
-    assert.equal(o.herdr.forSession(harness, "s1")!.status, "idle");
-  }
+  o.state.harness = "pi"; o.state.screen = "any unchanged screen"; o.save();
+  await o.herdr.refresh(); o.advance(3 * MIN); await o.herdr.refresh();
+  assert.equal(o.herdr.forSession("pi", "s1")!.status, "working", "quiet output does not prove turn end");
+  const border = "─".repeat(45);
+  o.state.screen = `Finished.\n${border}\n \n${border}\ngpt-example · ctx 33% 89k/272k`;
+  o.save(); o.advance(30_000); await o.herdr.refresh();
+  o.advance(3 * MIN); await o.herdr.refresh();
+  assert.equal(o.herdr.forSession("pi", "s1")!.status, "idle", "one stale lifecycle signal cannot hold a genuinely idle agent forever");
+  o.state.harness = "codex"; o.state.screen = "any unchanged screen"; o.save();
+  await o.herdr.refresh(); o.advance(3 * MIN); await o.herdr.refresh();
+  assert.equal(o.herdr.forSession("codex", "s1")!.status, "idle");
 });
 
 test("fake herdr: failed or empty reads and replacement sessions discard evidence", async (t) => {

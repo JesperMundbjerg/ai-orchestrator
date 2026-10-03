@@ -46,7 +46,7 @@ if (args[0] === "agent" && args[1] === "list") {
     writeFileSync(config, JSON.stringify({ harness, status: value }));
   };
   status("idle");
-  const requests = (): string[][] => { try { return readFileSync(calls, "utf8").trim().split("\n").map((s) => JSON.parse(s)); } catch { return []; } };
+  const requests = (): string[][] => { try { return readFileSync(calls, "utf8").trim().split("\n").map((s) => JSON.parse(s) as string[]).filter((args) => args[0] === "agent" && args[1] === "prompt"); } catch { return []; } };
   t.after(() => { herdr.stop(); db.close(); rmSync(dir, { recursive: true, force: true }); });
   return { state, lead, crew, herdr, messages, status, requests };
 }
