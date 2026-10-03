@@ -512,3 +512,107 @@ test("installed Pi project extension returns a block, never auto-allows ordinary
   assert.equal(await handler({ toolName: "bash", input: { command: "npm test && git push origin HEAD:feature" } }, ctx), undefined);
   assert.equal(await handler({ toolName: "read", input: { path: "file" } }, ctx), undefined);
 });
+
+// A FysikLab-shaped repo: the main checkout (Mission Control, never a lane), one declared fix-comments
+// lane, one undeclared lane, and a run team's checkout. All scratch; the office is a fake gate.
+function lanes(t: { after: (fn: () => void) => void }) {
+  const s = scratch(t); const remote = join(s.root, "remote.git");
+  assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+  const wt = (name: string) => { const path = join(s.root, name); s.git("worktree", "add", "-b", name, path, "dev"); return realpathSync(path); };
+  writeFileSync(join(s.repo, "orchestrator.json"), JSON.stringify({ project: "fysiklab", integrationBranch: "dev",
+    lanes: [{ name: "einstein", worktree: "../einstein" }, { name: "galilei", worktree: "../galilei" }, { name: "mission-control", worktree: "." }],
+    pipelineHooks: { laneDelivery: { lanes: ["einstein"], policyPaths: ["guarded/**"] } } }));
+  s.git("checkout", "dev"); s.git("add", "orchestrator.json"); s.git("commit", "-m", "Declare lanes");
+  s.git("remote", "add", "origin", remote); s.git("push", "origin", "dev"); s.git("fetch", "origin");
+  const einstein = wt("einstein"); const galilei = wt("galilei"); const team = wt("team");
+  const commit = (checkout: string, path: string, text: string) => {
+    mkdirSync(join(checkout, path, ".."), { recursive: true }); writeFileSync(join(checkout, path), text);
+    const g = (...args: string[]) => { const r = spawnSync("git", ["-C", checkout, ...args], { encoding: "utf8" }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+    g("add", path); g("-c", "user.name=Scratch", "-c", "user.email=scratch@invalid", "commit", "-m", `Change ${path}`); return g("rev-parse", "HEAD");
+  };
+  const exit = process.env.SCRATCH_GATE_EXIT; process.env.SCRATCH_GATE_EXIT = "1"; // The fake office refuses everything it is asked.
+  const run = process.env.INBOX_PIPELINE_RUN; delete process.env.INBOX_PIPELINE_RUN;
+  t.after(() => { if (exit === undefined) delete process.env.SCRATCH_GATE_EXIT; else process.env.SCRATCH_GATE_EXIT = exit; if (run !== undefined) process.env.INBOX_PIPELINE_RUN = run; });
+  s.install(); const config = JSON.parse(readFileSync(join(s.repo, ".review-inbox-pipeline/config.json"), "utf8")) as HookConfig;
+  const land = (checkout: string, sha: string, prefix = "") => {
+    const before = s.readCalls().length;
+    const reason = guardTool(config, { tool_input: { command: `${prefix}node .claude/hooks/worktree-sync.mjs land '${checkout}' ${sha}` } }, s.repo, "claude", "scratch");
+    return { reason, calls: s.readCalls().slice(before) };
+  };
+  return { ...s, remote, einstein, galilei, team, commit, config, land };
+}
+
+test("a declared lane lands and publishes its own fix with no run and no office; the class comes from its checkout", (t) => {
+  const s = lanes(t); const fix = s.commit(s.einstein, "app/fix.ts", "fixed");
+  assert.deepEqual(s.config.lanes, [{ name: "einstein", checkout: s.einstein }]);
+  const down = { ...s.config, inboxCommand: ["/nonexistent/inbox"] };
+  assert.equal(guardTool(down, { tool_input: { command: `node .claude/hooks/worktree-sync.mjs land '${s.einstein}' ${fix}` } }, s.repo, "pi", "scratch"), null, "an office outage does not block a lane");
+  const landed = s.land(s.einstein, fix); assert.equal(landed.reason, null); assert.equal(landed.calls.length, 0, "a lane's own delivery never asks the office");
+  // worktree-sync fast-forwards dev in the main checkout and pushes it from there; Git's pre-push sees the record.
+  s.git("merge", "--ff-only", fix);
+  s.install({ inboxCommand: ["/nonexistent/inbox"] });
+  const pushed = spawnSync("git", ["-C", s.repo, "push", "origin", "dev:dev"], { encoding: "utf8", env: { ...process.env, INBOX_PIPELINE_RUN: "" } });
+  assert.equal(pushed.status, 0, pushed.stderr);
+  assert.equal(spawnSync("git", ["--git-dir", s.remote, "rev-parse", "refs/heads/dev"], { encoding: "utf8" }).stdout.trim(), fix);
+  // The lane may also push from its own checkout directly.
+  const second = s.commit(s.einstein, "app/second.ts", "fixed again");
+  assert.equal(guardPrePush(down, `refs/heads/einstein ${second} refs/heads/dev ${fix}\n`, s.einstein), null);
+});
+
+test("outside a declared lane checkout a missing run is never permission; a lane cannot carry a run or another's commit", (t) => {
+  const s = lanes(t); const value = (args: string[], name: string) => args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
+  // In-run crew omitting the run variable, from the team's checkout or the main checkout: the office decides, and refuses.
+  const work = s.commit(s.team, "app/work.ts", "run work");
+  for (const checkout of [s.team, s.repo]) {
+    const r = s.land(checkout, work); assert.ok(r.reason); assert.equal(r.calls.length, 1); assert.equal(value(r.calls[0]!, "--run"), undefined);
+  }
+  // A lane that is not declared for delivery is not a lane here.
+  const undeclared = s.commit(s.galilei, "app/g.ts", "fix"); assert.equal(s.land(s.galilei, undeclared).calls.length, 1);
+  // A named run is still the run gate's business, with the run passed on.
+  const named = s.land(s.team, work, "INBOX_PIPELINE_RUN=r1 "); assert.equal(value(named.calls[0]!, "--run"), "r1");
+  // A lane checkout never delivers a run, and never someone else's commit.
+  const fix = s.commit(s.einstein, "app/fix.ts", "fixed");
+  let r = s.land(s.einstein, fix, "INBOX_PIPELINE_RUN=r1 "); assert.match(r.reason!, /lane checkout/); assert.equal(r.calls.length, 0);
+  r = s.land(s.einstein, work); assert.match(r.reason!, /not checked out in lane einstein/); assert.equal(r.calls.length, 0);
+  // Unresolvable checkouts and a publish of an unrecorded commit ask the office.
+  assert.equal(s.land(join(s.root, "missing"), work).calls.length, 1);
+  assert.match(guardPrePush(s.config, `refs/heads/dev ${work} refs/heads/dev ${"0".repeat(40)}\n`, s.repo)!, /Restart the office/);
+  // A plain git push from the main checkout is Mission Control's, not a lane's.
+  s.git("merge", "--ff-only", fix);
+  assert.ok(guardTool(s.config, { tool_input: { command: "git push origin dev:dev" } }, s.repo, "claude", "scratch"));
+});
+
+test("lane fixes to the guard, the adapter or declared policy paths need a founder waiver from the office", (t) => {
+  const s = lanes(t);
+  for (const path of ["orchestrator.json", "guarded/rule.ts", ".claude/hooks/review-inbox-pipeline.mjs"]) {
+    const sha = s.commit(s.einstein, path, `edit ${Math.random()}`);
+    const r = s.land(s.einstein, sha); assert.equal(r.calls.length, 1, path); assert.ok(r.reason, path);
+    const args = r.calls[0]!; assert.equal(args.includes("--run"), false); assert.equal(args[args.indexOf("--candidate") + 1], sha);
+    s.git("-C", s.einstein, "reset", "-q", "--hard", "HEAD~1");
+  }
+  // Allowed by the office (a granted waiver for exactly this commit), the same command passes.
+  const sha = s.commit(s.einstein, "orchestrator.json", "{}"); process.env.SCRATCH_GATE_EXIT = "0";
+  assert.equal(s.land(s.einstein, sha).reason, null);
+});
+
+test("lane delivery config: the main checkout is never a lane, other repos refused, reinstall upgrades land boundaries", (t) => {
+  const s = lanes(t);
+  // Reinstall over a pre-lane install: the land boundary gains its checkout instead of being duplicated.
+  const manifestPath = join(s.repo, ".review-inbox-pipeline/manifest.json"); const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  for (const c of manifest.policy.guardedCommands) delete c.checkoutArgument;
+  writeFileSync(manifestPath, JSON.stringify(manifest)); s.install();
+  const config = JSON.parse(readFileSync(join(s.repo, ".review-inbox-pipeline/config.json"), "utf8")) as HookConfig;
+  assert.equal(config.guardedCommands.filter((c) => c.command === "node .claude/hooks/worktree-sync.mjs land").length, 1);
+  assert.equal(config.guardedCommands.find((c) => c.command === "node .claude/hooks/worktree-sync.mjs land")!.checkoutArgument, 0);
+  const adapter = JSON.parse(readFileSync(join(s.repo, "orchestrator.json"), "utf8"));
+  const write = (laneDelivery: unknown) => writeFileSync(join(s.repo, "orchestrator.json"), JSON.stringify({ ...adapter, pipelineHooks: { laneDelivery } }));
+  write({ lanes: ["mission-control"] }); assert.throws(() => s.install(), /main checkout/);
+  write({ lanes: ["curie"] }); assert.throws(() => s.install(), /not a lane/);
+  const other = join(s.root, "other"); assert.equal(spawnSync("git", ["init", "-q", other]).status, 0);
+  writeFileSync(join(s.repo, "orchestrator.json"), JSON.stringify({ ...adapter, lanes: [{ name: "einstein", worktree: "../other" }], pipelineHooks: { laneDelivery: { lanes: ["einstein"] } } }));
+  assert.throws(() => s.install(), /another repository/);
+  // Removing the declaration removes the permission on reinstall; policy paths stay.
+  write(undefined); s.install();
+  const after = JSON.parse(readFileSync(join(s.repo, ".review-inbox-pipeline/config.json"), "utf8")) as HookConfig;
+  assert.deepEqual(after.lanes, []); assert.deepEqual(after.policyPaths, ["guarded/**"]);
+});

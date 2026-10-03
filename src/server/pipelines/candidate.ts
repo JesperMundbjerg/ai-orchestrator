@@ -73,3 +73,16 @@ export function sameCandidate(saved: PipelineCandidate): boolean {
   try { const current = capture(saved.checkout, saved.base, "HEAD", saved.fingerprintVersion ?? 1); return current.head === saved.head && current.fingerprint === saved.fingerprint; }
   catch { return false; }
 }
+/** The lane whose worktree this checkout is, when `pipelineHooks.laneDelivery` lets that lane deliver outside
+ * office runs. Such a checkout never holds a run: the hooks would treat its delivery as the lane's own. */
+export function laneCheckout(repoRoot: string, checkout: string): string | null {
+  let adapter: { lanes?: { name?: unknown; worktree?: unknown }[]; pipelineHooks?: { laneDelivery?: { lanes?: unknown[] } } };
+  try { adapter = JSON.parse(readFileSync(resolve(repoRoot, "orchestrator.json"), "utf8")); } catch { return null; }
+  const names = adapter?.pipelineHooks?.laneDelivery?.lanes;
+  if (!Array.isArray(names)) return null;
+  for (const lane of Array.isArray(adapter.lanes) ? adapter.lanes : []) {
+    if (!lane || typeof lane.name !== "string" || typeof lane.worktree !== "string" || !names.includes(lane.name)) continue;
+    try { if (realpathSync(resolve(repoRoot, lane.worktree)) === realpathSync(checkout)) return lane.name; } catch { /* absent here */ }
+  }
+  return null;
+}

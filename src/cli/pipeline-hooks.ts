@@ -14,9 +14,11 @@ const LEGACY_MARK = "review-inbox-pipeline-guard-v1";
 const LOCAL = ".review-inbox-pipeline";
 const OUTAGE = "Protected delivery blocked: the Review Inbox gate is unavailable or invalid. Restart the office and retry; editing, tests and local commits remain available.";
 type Operation = "push" | "pr" | "merge" | "land" | "publish";
-export type GuardedCommand = { command: string; operation: Operation; ref: string; candidateArgument?: number };
-export type HookConfig = { marker: string; protectedRefs: string[]; guardedCommands: GuardedCommand[]; inboxCommand: string[] };
-type Boundary = { repo: string; operation: Operation; ref: string; candidate: string; run?: string; round?: string };
+export type GuardedCommand = { command: string; operation: Operation; ref: string; candidateArgument?: number; checkoutArgument?: number };
+/** A fix-comments lane that delivers its own fixes outside office runs, from exactly this checkout (a realpath). */
+export type DeliveryLane = { name: string; checkout: string };
+export type HookConfig = { marker: string; protectedRefs: string[]; guardedCommands: GuardedCommand[]; inboxCommand: string[]; lanes?: DeliveryLane[]; policyPaths?: string[] };
+type Boundary = { repo: string; operation: Operation; ref: string; candidate: string; checkout?: string; run?: string; round?: string };
 type Json = Record<string, any>;
 type Change = { path: string; content: string | null; mode?: number; renameFrom?: string };
 type Manifest = { _generated?: string; marker: string; prePush: string; backup: string; wrapper: string; policy?: HookConfig; settings: Record<string, { existed: boolean; hooks: boolean; pre: boolean }> };
@@ -130,10 +132,10 @@ export function commandBoundaries(command: string, cwd: string, config: HookConf
     const named = inlineRun(prefix.slice(0, skip)); words = words.slice(skip);
     if (!words.length) continue;
     if (words[0] === "cd" && words[1]) { repo = resolve(repo, words[1]); branch = maybeGit(repo, "symbolic-ref", "--quiet", "HEAD"); continue; }
-    const add = (operation: Operation, ref: string, rev: string, at = repo) => {
+    const add = (operation: Operation, ref: string, rev: string, at = repo, checkout = at) => {
       if (!protectedRef(config, ref)) return;
       if ((named.run !== undefined && !/^[A-Za-z0-9._-]+$/.test(named.run)) || (named.round !== undefined && !/^[0-9]+$/.test(named.round))) throw new Error("INBOX_PIPELINE_RUN / INBOX_PIPELINE_ROUND in the command must be literal values (a run id and a number), not shell expansions");
-      boundaries.push({ repo: at, operation, ref: refName(ref), candidate: sha(at, rev), ...named });
+      boundaries.push({ repo: at, operation, ref: refName(ref), candidate: sha(at, rev), checkout, ...named });
     };
     if (basename(words[0]!) === "git") {
       let at = repo; let i = 1; let contextOverride = false;
@@ -195,7 +197,9 @@ export function commandBoundaries(command: string, cwd: string, config: HookConf
       if (prefix.every((p, i) => words[i] === p || (p.includes("/") && basename(words[i] ?? "") === basename(p)))) {
         const rev = guarded.candidateArgument === undefined ? (guarded.operation === "publish" ? refName(guarded.ref) : "HEAD") : words[prefix.length + guarded.candidateArgument];
         if (!rev) throw new Error(`Guarded ${guarded.operation} needs a pinned candidate`);
-        add(guarded.operation, guarded.ref, rev);
+        const checkout = guarded.checkoutArgument === undefined ? "." : words[prefix.length + guarded.checkoutArgument];
+        if (!checkout) throw new Error(`Guarded ${guarded.operation} needs its candidate checkout`);
+        add(guarded.operation, guarded.ref, rev, repo, resolve(repo, checkout));
       }
     }
   }
@@ -222,13 +226,67 @@ function gate(boundary: Boundary, config: HookConfig, identity: Json): string | 
   }
   return `${OUTAGE}${result.stderr?.trim() ? `\n${result.stderr.trim()}` : ""}`;
 }
+// Lane delivery: a declared fix-comments lane lands its own fixes outside office runs. The class comes
+// from the candidate checkout, never from a missing run variable; everything else is run (or waiver)
+// delivery and asks the office. Advisory like the rest of these hooks: it stops mistakes, not an owner.
+/** The guard's own files and the adapter. Lanes never deliver these; a founder waiver can. */
+export const POLICY_PATHS = ["orchestrator.json", ".review-inbox-pipeline/**", ".claude/hooks/review-inbox-pipeline.mjs", ".pi/extensions/review-inbox-pipeline.ts", ".codex/hooks.json"];
+const LANE_OPERATIONS: Operation[] = ["push", "land", "publish"];
+function laneOf(config: HookConfig, checkout: string | undefined): DeliveryLane | undefined {
+  if (!checkout || !Array.isArray(config.lanes)) return undefined;
+  let real: string;
+  try { real = realpathSync(checkout); } catch { return undefined; } // Unresolvable: never a lane.
+  const top = maybeGit(real, "rev-parse", "--show-toplevel");
+  const matches = config.lanes.filter((l) => l && typeof l.checkout === "string" && l.checkout === (top ? realpathSync(top) : real));
+  return matches.length === 1 ? matches[0] : undefined; // Ambiguous configuration is not a lane.
+}
+function policyMatch(path: string, patterns: string[]): boolean {
+  return patterns.some((p) => p.endsWith("/**") ? path.startsWith(p.slice(0, -2)) : path === p);
+}
+/** Paths this candidate brings to `ref` beyond what `base` already has; null if Git cannot say (fail closed). */
+function touched(repo: string, ref: string, candidate: string, base?: string): string[] | null {
+  const branch = ref.replace(/^refs\/heads\//, "");
+  const from = base ?? (maybeGit(repo, "rev-parse", "--verify", `refs/remotes/origin/${branch}`) || maybeGit(repo, "rev-parse", "--verify", `refs/heads/${branch}`));
+  if (!from) return null;
+  try { return git(repo, "diff", "--no-renames", "--name-only", `${from}...${candidate}`).split("\n").filter(Boolean); } catch { return null; }
+}
+function policyClean(config: HookConfig, repo: string, ref: string, candidate: string, base?: string): boolean {
+  const paths = touched(repo, ref, candidate, base);
+  return paths !== null && !paths.some((p) => policyMatch(p, [...POLICY_PATHS, ...(config.policyPaths ?? [])]));
+}
+function landingRecord(repo: string, candidate: string): string | null {
+  const common = maybeGit(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  return common && /^[0-9a-f]{40,64}$/.test(candidate) ? join(common, "review-inbox-pipeline", "lane-landings", candidate) : null;
+}
+/** null: not lane delivery, ask the office. "": allowed as lane delivery. Otherwise the refusal. */
+function laneDecision(boundary: Boundary, config: HookConfig, run: string | undefined, base?: string): string | null {
+  if (!LANE_OPERATIONS.includes(boundary.operation)) return null;
+  const lane = laneOf(config, boundary.checkout);
+  const record = landingRecord(boundary.repo, boundary.candidate);
+  if (lane) {
+    if (run) return `Protected delivery blocked: ${lane.name} is a lane checkout, which delivers outside office runs. Deliver run ${run} from the team's own checkout.`;
+    if (spawnSync("git", ["-C", lane.checkout, "merge-base", "--is-ancestor", boundary.candidate, "HEAD"]).status !== 0) return `Protected delivery blocked: ${boundary.candidate} is not checked out in lane ${lane.name}'s checkout.`;
+    if (!policyClean(config, boundary.repo, boundary.ref, boundary.candidate, base)) return null; // Policy files: only a founder waiver.
+    if (record) try { mkdirSync(dirname(record), { recursive: true }); writeFileSync(record, serialized({ lane: lane.name, ref: boundary.ref, at: new Date().toISOString() })); } catch { /* Publication then needs a run or waiver. */ }
+    return "";
+  }
+  // Publication of a lane's landed commit (Git's pre-push, or a publish retry) from the main checkout.
+  if (run || !record || !existsSync(record)) return null;
+  try { if (jsonFile(record).ref !== boundary.ref) return null; } catch { return null; }
+  return policyClean(config, boundary.repo, boundary.ref, boundary.candidate, base) ? "" : null;
+}
+function decide(boundary: Boundary, config: HookConfig, identity: Json, base?: string): string | null {
+  const lane = laneDecision(boundary, config, boundary.run || process.env.INBOX_PIPELINE_RUN, base);
+  if (lane === "") return null;
+  return lane ?? gate(boundary, config, identity);
+}
 export function guardTool(config: HookConfig, input: Json, cwd: string, harness: string, session = ""): string | null {
   const toolInput = input.tool_input ?? input.input ?? {};
   const command = toolInput.command ?? toolInput.cmd;
   if (typeof command !== "string" && !Array.isArray(command)) return null;
   try {
     for (const boundary of commandBoundaries(Array.isArray(command) ? command.map(quote).join(" ") : command, toolInput.cwd || toolInput.workdir || input.cwd || cwd, config)) {
-      const reason = gate(boundary, config, { harness, session: session || input.session_id });
+      const reason = decide(boundary, config, { harness, session: session || input.session_id });
       if (reason) return reason;
     }
     return null;
@@ -246,7 +304,8 @@ export function guardPrePush(config: HookConfig, input: string, cwd: string): st
     if (fields.length !== 4 || !candidate || !ref) return "Protected delivery blocked: malformed pre-push input";
     if (!protectedRef(config, ref)) continue;
     if (/^0+$/.test(candidate)) return "Protected delivery blocked: deleting a protected ref is not delivery";
-    const reason = gate({ repo: cwd, operation: "push", ref, candidate }, config, identity());
+    const remote = fields[3]!;
+    const reason = decide({ repo: cwd, operation: "push", ref, candidate, checkout: cwd }, config, identity(), /^0+$/.test(remote) ? undefined : remote);
     if (reason) return reason;
   }
   return null;
@@ -261,13 +320,36 @@ function configured(repo: string, inboxCommand: string[]): HookConfig {
   if (!Array.isArray(commands) || !commands.every((c) => c && typeof c.command === "string" && shellWords(c.command).length === 1 && shellWords(c.command)[0]!.length > 0 && ["land", "publish", "push", "pr", "merge"].includes(c.operation) && typeof c.ref === "string" && (c.candidateArgument === undefined || (Number.isInteger(c.candidateArgument) && c.candidateArgument >= 0)))) throw new Error("Invalid pipelineHooks.guardedCommands");
   for (const c of commands) if (!refs.includes(refName(c.ref))) refs.push(refName(c.ref));
   if (adapter.land || adapter.project === "fysiklab") {
-    commands.push({ command: "node .claude/hooks/worktree-sync.mjs land", operation: "land", ref: adapter.integrationBranch || "dev", candidateArgument: 1 });
+    // `land CHECKOUT SHA`: the checkout decides whether this is a lane's own delivery.
+    commands.push({ command: "node .claude/hooks/worktree-sync.mjs land", operation: "land", ref: adapter.integrationBranch || "dev", candidateArgument: 1, checkoutArgument: 0 });
     commands.push({ command: "node .claude/hooks/worktree-sync.mjs publish", operation: "publish", ref: adapter.integrationBranch || "dev" });
     // Accept a directly executable script as well as the usual node invocation.
-    commands.push({ command: ".claude/hooks/worktree-sync.mjs land", operation: "land", ref: adapter.integrationBranch || "dev", candidateArgument: 1 });
+    commands.push({ command: ".claude/hooks/worktree-sync.mjs land", operation: "land", ref: adapter.integrationBranch || "dev", candidateArgument: 1, checkoutArgument: 0 });
     commands.push({ command: ".claude/hooks/worktree-sync.mjs publish", operation: "publish", ref: adapter.integrationBranch || "dev" });
   }
-  return { marker: MARK, protectedRefs: refs, guardedCommands: commands, inboxCommand };
+  return { marker: MARK, protectedRefs: refs, guardedCommands: commands, inboxCommand, ...laneDelivery(main, adapter, hooks.laneDelivery) };
+}
+/** `pipelineHooks.laneDelivery: { lanes: ["einstein"], policyPaths: [...] }` names which of the adapter's
+ * `lanes[]` deliver outside office runs, from their declared worktree. The main checkout never does. */
+function laneDelivery(main: string, adapter: Json, declared: unknown): { lanes: DeliveryLane[]; policyPaths: string[] } {
+  if (declared === undefined) return { lanes: [], policyPaths: [] };
+  const d = declared as Json;
+  if (!d || typeof d !== "object" || Array.isArray(d) || !Array.isArray(d.lanes ?? []) || !Array.isArray(d.policyPaths ?? [])) throw new Error("pipelineHooks.laneDelivery must be { lanes: [names], policyPaths: [paths] }");
+  const policyPaths: string[] = d.policyPaths ?? [];
+  if (!policyPaths.every((p) => typeof p === "string" && p && !p.startsWith("/") && !p.includes("..") && !p.slice(0, -3).includes("*"))) throw new Error("pipelineHooks.laneDelivery.policyPaths must be repo paths, optionally ending in /**");
+  const known: Json[] = Array.isArray(adapter.lanes) ? adapter.lanes : [];
+  const mainReal = realpathSync(main);
+  const lanes = (d.lanes as unknown[]).map((name) => {
+    const lane = known.find((l) => l && l.name === name);
+    if (typeof name !== "string" || !lane || typeof lane.worktree !== "string") throw new Error(`pipelineHooks.laneDelivery: "${String(name)}" is not a lane with a worktree in orchestrator.json`);
+    let checkout: string;
+    try { checkout = realpathSync(resolve(main, lane.worktree)); } catch { return null; } // Not on this machine: not a lane here.
+    if (checkout === mainReal) throw new Error(`pipelineHooks.laneDelivery: lane ${name} is the main checkout, which delivers only through runs or waivers`);
+    if (realpathSync(git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")) !== realpathSync(git(main, "rev-parse", "--path-format=absolute", "--git-common-dir"))) throw new Error(`pipelineHooks.laneDelivery: lane ${name}'s worktree belongs to another repository`);
+    return { name, checkout };
+  }).filter((l): l is DeliveryLane => l !== null);
+  if (new Set(lanes.map((l) => l.checkout)).size !== lanes.length) throw new Error("pipelineHooks.laneDelivery: two lanes share one worktree");
+  return { lanes, policyPaths };
 }
 function mergeSettings(path: string, command: string, remove: boolean, original: Manifest["settings"][string] | undefined, owns: (command: unknown) => boolean): string | null {
   const settings = jsonFile(path);
@@ -292,7 +374,7 @@ function mergeSettings(path: string, command: string, remove: boolean, original:
  * Node's erasable-TS loader makes toString() builtin-only JavaScript here. */
 function toolEntrypoint(runner: string, configPath: string, config: HookConfig, pi: boolean, note: string): string {
   const parser = [git, maybeGit, refName, protectedRef, quote, shellWords, option, inlineRun, sha, commandBoundaries].map(fn => fn.toString()).join("\n");
-  const types = pi ? `type Config = { marker: string; protectedRefs: string[]; guardedCommands: { command: string; operation: string; ref: string; candidateArgument?: number }[]; inboxCommand: string[] };
+  const types = pi ? `type Config = { marker: string; protectedRefs: string[]; guardedCommands: { command: string; operation: string; ref: string; candidateArgument?: number; checkoutArgument?: number }[]; inboxCommand: string[]; lanes?: { name: string; checkout: string }[]; policyPaths?: string[] };
 type Input = { tool_input?: { command?: string | string[]; cmd?: string | string[]; cwd?: string; workdir?: string }; input?: Input['tool_input']; cwd?: string; session_id?: string };
 type Guard = (config: typeof POLICY, input: Input, cwd: string, harness: string, session?: string) => string | null;
 type Context = { cwd: string; sessionManager: { getSessionFile(): string | undefined } };
@@ -398,7 +480,10 @@ export function installHooks(path: string, options: { dryRun?: boolean; uninstal
     const previous = prior.policy ?? jsonFile(configPath) as HookConfig;
     if (!Array.isArray(previous.protectedRefs) || !Array.isArray(previous.guardedCommands)) throw new Error("Installed pipeline policy missing; restore it or explicitly uninstall/reinstall");
     config.protectedRefs = [...new Set([...previous.protectedRefs, ...config.protectedRefs])];
-    config.guardedCommands = [...new Map([...previous.guardedCommands, ...config.guardedCommands].map((c) => [JSON.stringify(c), c])).values()];
+    // The same boundary may gain a checkoutArgument (lane classification); it is never dropped.
+    config.guardedCommands = [...new Map([...previous.guardedCommands, ...config.guardedCommands].map((c) => [JSON.stringify([c.command, c.operation, c.ref, c.candidateArgument]), c])).values()];
+    // Lanes are a permission: only the current adapter grants them. Policy paths only accumulate.
+    config.policyPaths = [...new Set([...(previous.policyPaths ?? []), ...(config.policyPaths ?? [])])];
   }
   const changes: Change[] = [];
   const settings: Manifest["settings"] = prior?.settings ?? {};

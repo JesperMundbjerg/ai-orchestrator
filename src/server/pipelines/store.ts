@@ -10,7 +10,7 @@ import { dataDir, requestFingerprint } from "../db.ts";
 import { Adapters } from "../adapter.ts";
 import { activation, pathProblems, policyHash, selected, topological, validateGraph, validateLayout } from "./model.ts";
 import { BUILTINS, discover, within } from "./discovery.ts";
-import { capture, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
+import { capture, repository, requirePublishedBase, sameCandidate, laneCheckout } from "./candidate.ts";
 import { founderDecision, presentedBy } from "./approval.ts";
 
 const short = (sha = "") => sha.slice(0, 10);
@@ -194,6 +194,8 @@ export class Pipelines {
       const checkout = input.checkout ?? actor.cwd ?? view.repoRoot;
       const candidate = capture(checkout, input.base ?? "HEAD", input.candidate ?? "HEAD");
       if (repository(candidate.checkout).common !== repository(view.repoRoot).common) throw new InboxError(403, "candidate belongs to another repository");
+      const lane = laneCheckout(view.repoRoot, candidate.checkout);
+      if (lane) throw new InboxError(409, `${lane}'s worktree is a lane checkout, which delivers outside office runs; start the run in the team's own checkout`, "pipeline_lane_checkout");
       const { team, state } = this.context(actor.teamId);
       const owned = [team.path, ...team.worktrees, ...state.agents.filter(a => a.teamId === actor.teamId).map(a => a.cwd)].filter((p): p is string => Boolean(p));
       if (!owned.some(p => { try { return repository(p).top === candidate.checkout; } catch { return false; } })) throw new InboxError(403, "use a checkout owned by this team");

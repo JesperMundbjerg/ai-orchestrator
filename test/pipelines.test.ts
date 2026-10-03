@@ -570,3 +570,12 @@ test("final review refuses crew and stale work rounds atomically; lead acceptanc
   f.m.handoff(f.lead, { work: handed.work.id, summary: "Second round", clientId: "round-two" });
   assert.throws(() => f.p.start(f.reviewer, { clientId: "stale-review-start", workId: handed.work.id, workRound: 1 }), { status: 409 });
 });
+
+test("a declared lane's worktree delivers outside runs, so a run can never be started in it", (t) => {
+  const f = fixture(t); const lane = join(f.dir, "einstein"); git(f.root, "worktree", "add", "-q", "-b", "einstein", lane);
+  const adapter = JSON.parse(readFileSync(join(f.root, "orchestrator.json"), "utf8"));
+  writeFileSync(join(f.root, "orchestrator.json"), JSON.stringify({ ...adapter, lanes: [{ name: "einstein", worktree: "../einstein" }, { name: "galilei", worktree: "../galilei" }], pipelineHooks: { laneDelivery: { lanes: ["einstein"] } } }));
+  git(f.root, "commit", "-qam", "Declare the lane"); git(lane, "merge", "-q", "--ff-only", "dev");
+  assert.throws(() => f.p.start(f.lead, { clientId: "in-lane", checkout: lane }), { status: 409, code: "pipeline_lane_checkout" });
+  assert.equal(f.start().state, "open", "the team's own checkout still starts runs");
+});

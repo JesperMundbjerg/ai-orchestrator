@@ -71,6 +71,26 @@ Operations distinguish `push`, `pr`, `merge`, `land` and `publish`; the office m
 
 The pre-push hook checks **every protected remote ref in Git's actual stdin**, using that update's included candidate SHA (not merely `HEAD`). Protected deletion is refused. If canonical landing produces a different commit SHA, the nested push is deliberately refused until the run's owned candidate checkout is pinned to that actual landed SHA and refreshed with `inbox pipeline branch RUN --candidate SHA --notes "…"`. Unchanged intended bytes preserve existing receipts; expanded/changed bytes require revalidation. Retry publication-pending with `worktree-sync publish`, never by re-landing the wave. There is no blanket mapped-SHA exception. Feature-only pushes do not contact the office. Tool hooks are read-only preflight; the Git hook rechecks at publication. An allow response is **not delivery evidence** and does not record landing/publication success: canonical delivery tooling must check before modifying the integration branch and record successful publication afterward. This installer does not rewrite repository delivery scripts.
 
+## Lane delivery outside runs
+
+First-mate-only delivery applies inside office pipeline runs. A repository's standing fix-comments lanes keep landing their own small fixes outside runs. The main checkout's adapter names which lanes may do that, by name from its `lanes[]`:
+
+```json
+{
+  "lanes": [{ "name": "einstein", "worktree": "../space-shuttle-einstein" }, { "name": "mission-control", "worktree": "." }],
+  "pipelineHooks": { "laneDelivery": { "lanes": ["einstein"], "policyPaths": ["space-app/scripts/workflow/**"] } }
+}
+```
+
+**The candidate checkout decides the class, never a missing run variable.** For `land CHECKOUT SHA` (FysikLab's guarded land command has `checkoutArgument: 0`), for `git push` run in a checkout, and for Git's `pre-push` there, a checkout whose top-level realpath is exactly one declared lane's worktree is **lane** delivery. If no run is named and the commit is checked out there (an ancestor of that checkout's `HEAD`), it is allowed without asking the office, so lanes keep delivering during an office outage. Every other checkout, including the main checkout, other lanes, team checkouts, unresolvable paths and ambiguous configuration, asks the office exactly as before. With no run named, that is the founder's exact-SHA waiver gate. In-run crew who leave out `INBOX_PIPELINE_RUN` are therefore still refused.
+
+- **The main checkout is never a lane.** Declaring it is an install error, so Mission Control delivers only through runs or waivers. A lane worktree in another repository, an unknown lane name and two lanes sharing one worktree are also install errors. A declared lane whose worktree does not exist on this machine is simply not a lane here.
+- **A lane checkout never carries a run.** Naming a run there is refused, and the office refuses to start a run whose candidate checkout is a declared lane's worktree (409 `pipeline_lane_checkout`).
+- **Policy paths need a waiver.** If the commit changes `orchestrator.json`, the installed guard files (`.review-inbox-pipeline/**`, `.claude/hooks/review-inbox-pipeline.mjs`, `.pi/extensions/review-inbox-pipeline.ts`, `.codex/hooks.json`) or a declared `policyPaths` entry (exact path, or a `dir/**` prefix), it is not lane delivery. The change is measured as `origin/<ref>...SHA`, or from the old remote value in `pre-push`, and when Git cannot say, the hook does not treat it as lane delivery. Such a commit goes to the office with no run named, where only a founder waiver for exactly that commit lets it through.
+- **Publication follows the landing.** An allowed lane boundary writes `<git-common-dir>/review-inbox-pipeline/lane-landings/<sha>`, recording the lane and the ref. When the main checkout then pushes exactly that commit to that ref, whether through `worktree-sync`'s own push, `publish` or a manual `git push`, and no run is named, the push is allowed after the policy check is repeated. Any other commit without a run is refused unless a waiver covers it.
+
+Reinstall takes lanes from the current adapter only, because a lane is a permission. Removing a declaration removes it, and policy paths only accumulate. A land boundary from an earlier install is replaced by the same boundary with its `checkoutArgument`, not duplicated. If the runner is missing, lanes are refused like every other protected delivery. This is advisory like the rest of these hooks ("trusted local agents only"). It stops an agent that misremembers which class it is in, not one that runs its commit from a lane's checkout or bypasses Git hooks. Tests: the lane cases in `test/pipeline-hooks.test.ts` and `test/pipelines.test.ts`.
+
 ## Re-base a wave after merging published integration work
 
 ```sh

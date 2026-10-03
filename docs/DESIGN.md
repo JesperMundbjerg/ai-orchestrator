@@ -176,6 +176,10 @@ The founder's one sanctioned way to deliver a commit without a pipeline run (`sr
 
 Another enforcement point should honour a waiver exactly when `state` is `granted` (or `used` with now before `usedUntil`), now is before `expiresAt`, the update targets `ref` in this repository with new value `candidate`, and the remote branch's old value is `base`. It must never widen that: not another commit, not a descendant, and not a force update. Recording the use belongs to the office (`POST /api/agent/pipeline/waiver/gate`), so a second enforcement point sees `used` and stops once the branch has moved.
 
+## Lane delivery outside runs
+
+First-mate-only delivery is a rule **inside** office pipeline runs. Lanes named in `pipelineHooks.laneDelivery.lanes` deliver their own fixes outside runs, and the installed hooks decide that class from the **candidate checkout**, never from a missing run variable. A commit checked out in exactly one declared lane's worktree, with no run named and no change to a policy path, is allowed without the office. Everything else asks the office: a named run goes to the run gate, otherwise the waiver gate. So a crew member who leaves out the run variable is still refused. The main checkout is never a lane, and a lane checkout never holds a run (`pipeline_lane_checkout`). Lane fixes to the adapter, the guard files or declared `policyPaths` need a founder waiver. A lane landing is recorded under the Git common dir, so the main checkout's push of exactly that commit is the lane's publication. Like every local guard this is advisory: it stops mistakes, not an agent that deliberately works from a lane's checkout. Details: [PIPELINES.md](PIPELINES.md#lane-delivery-outside-runs).
+
 ## Codex
 
 Codex posts through the CLI and receives by **pull** today. Two routes could make it boundary or live; each needs a check against the installed Codex before building on it:
