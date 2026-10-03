@@ -47,12 +47,15 @@ export function validateGraph(input: unknown, options: { allowUnreferencedFields
       return e as "report" | "check" | "artifact" | "review" | "approval";
     });
     if (new Set(evidence).size !== evidence.length) bad("duplicate evidence requirement");
+    if (n.binding !== undefined && n.binding !== "run" && n.binding !== "candidate") bad("binding must be run or candidate");
+    if (n.binding === "run" && (kind === "approval" || kind === "delivery" || evidence.some(e => ["check", "review", "approval"].includes(e)))) bad("checks, reviews, approvals and delivery must remain candidate-bound");
     if (kind === "condition" && !fieldMap.has(n.field as string)) bad("condition needs a declared field");
     if (kind === "delivery" ? !["handoff", "review", "dev"].includes(n.delivery as string) : n.delivery !== undefined) bad("only delivery nodes may name a delivery boundary");
     if ((kind === "step" || kind === "approval") && (typeof n.source !== "string" || !n.source.trim())) bad("step/approval needs a palette source");
     if (kind === "approval" && !evidence.includes("approval")) evidence.push("approval");
     if (kind === "step" && !evidence.length) bad("steps need at least one evidence requirement");
     return { id: id(n.id), label: text(n.label), kind: kind as "step" | "condition" | "approval" | "delivery", evidence,
+      ...(n.binding !== undefined ? { binding: n.binding as "run" | "candidate" } : {}),
       ...(n.source !== undefined ? { source: text(n.source) } : {}), ...(n.field !== undefined ? { field: id(n.field) } : {}),
       ...(kind === "delivery" ? { delivery: n.delivery as "handoff" | "review" | "dev" } : {}), ...(n.instructions !== undefined ? { instructions: text(n.instructions) } : {}) };
   });

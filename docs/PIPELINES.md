@@ -79,6 +79,18 @@ Changed paths and the intended-bytes fingerprint are recomputed against the new 
 
 Runs and the team briefing retain an append-only history with old/new base, reason, actor and time. Delivered or abandoned runs cannot be re-based. Keep `--client-id` before sending: exact retries return the original receipt after restart; changing caller/content conflicts. Base edits do not infer a revision from status, so retrying the same command/id is safe; an explicit `--revision` remains an optional optimistic lock. Re-base, history and replay receipt commit together, and an exact old receipt never authorizes delivery of a newer candidate.
 
+## Planning evidence binds to the run, not changing implementation bytes
+
+A graph step may set `"binding": "run"` for a planning report or scope/assignment artifact. In the editor, select the step and choose **Evidence binding → Run · planning for this round and scope**. Omitted binding remains `candidate`; names such as `plan`, human instructions, `builtin:work` and generic reports are not reliable planning types and are never guessed. Conditions already describe declared run selections and are intrinsically run concepts. For example:
+
+```json
+{ "id": "plan", "label": "First mate plans bounded wave", "kind": "step", "source": "builtin:work", "evidence": ["report"], "binding": "run" }
+```
+
+Run-bound reports may be recorded/endorsed while implementation bytes are changing, without a candidate re-pin. They are tied to the run id, current round and monotonic selection scope, so byte-only changes do not stale the plan. A new round (including a changed-bytes re-pin) or changed selections does: old planning evidence cannot be reused even if selections later toggle back. Metadata-only re-pins and unchanged-scope re-bases retain it. Assignments, evidence files, lead-only endorsement, dependencies and replay rules are unchanged.
+
+Checks, review verdicts, founder approvals and delivery remain candidate-bound; the gate still requires a fresh final candidate and every activated candidate-bound step's current evidence. Run binding is not permission to publish unfinished implementation. Runs and briefings show each step's binding. Graph changes apply to new runs, not frozen existing snapshots; configure the planning step before starting the replacement wave.
+
 ## Closing an undeliverable run
 
 The team's **current first mate** can close an open wave that will not be delivered:

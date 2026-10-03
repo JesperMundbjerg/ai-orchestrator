@@ -2,7 +2,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { PipelineAbandonInput, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelinePalette, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
+import type { PipelineAbandonInput, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
+import { nodeBinding } from "../../shared/pipeline.ts";
 import type { Team, WorldAgent, WorldState } from "../../shared/types.ts";
 import { InboxError } from "../inbox.ts";
 import { dataDir, requestFingerprint } from "../db.ts";
@@ -108,8 +109,9 @@ export class Pipelines {
     for (const key of topological(run.graph)) {
       const step = run.steps.find(s => s.nodeId === key)!; const node = run.graph.nodes.find(n => n.id === key)!;
       if (!active.has(key)) { step.state = "inactive"; continue; }
-      if (step.completedBy) { step.state = fresh && step.evidence.every(e => e.fingerprint === run.candidate.fingerprint && e.round === run.round) ? "done" : "stale"; continue; }
-      const currentEvidence = fresh && step.evidence.some(e => e.fingerprint === run.candidate.fingerprint && e.round === run.round);
+      const current = (e: PipelineEvidence) => (nodeBinding(node) === "run" || fresh) && this.currentEvidence(run, node, e);
+      if (step.completedBy) { step.state = (nodeBinding(node) === "run" || fresh) && step.evidence.every(current) ? "done" : "stale"; continue; }
+      const currentEvidence = step.evidence.some(current);
       // Retained history is not an endorsable report, even after branch() clears completion.
       if (step.evidence.length && !currentEvidence) { step.state = "stale"; continue; }
       const parents = run.graph.edges.filter(e => e.to === key && edges.has(e.id)).map(e => run.steps.find(s => s.nodeId === e.from)!);
@@ -194,7 +196,10 @@ export class Pipelines {
       }
       const paths = pathProblems(run.graph, choices, run.candidate.changedPaths);
       if (paths.length) throw new InboxError(422, paths.join("; "), "pipeline_branch_conflict");
-      if (JSON.stringify(choices) !== JSON.stringify(run.selections)) run.steps.forEach(s => { s.completedBy = null; });
+      if (requestFingerprint(choices) !== requestFingerprint(run.selections)) {
+        run.scopeRevision = (run.scopeRevision ?? 0) + 1;
+        run.steps.forEach(s => { s.completedBy = null; });
+      }
       run.selections = choices; run.rationale = input.rationale;
       return this.persist(run);
     });
@@ -232,22 +237,29 @@ export class Pipelines {
       if (!["step", "approval"].includes(node.kind)) throw new InboxError(409, "conditions are selected with branch; delivery completes only at its boundary");
       const { edges } = activation(run.graph, run.selections);
       const blocked = run.graph.edges.some(e => e.to === node.id && edges.has(e.id) && live.steps.find(s => s.nodeId === e.from)?.state !== "done");
-      if (!["ready", "reported", "stale"].includes(status.state) || blocked || !sameCandidate(run.candidate)) throw new InboxError(409, "step is inactive, blocked or candidate is stale", "pipeline_step_blocked");
+      if (!["ready", "reported", "stale"].includes(status.state) || blocked || (nodeBinding(node) === "candidate" && !sameCandidate(run.candidate))) throw new InboxError(409, "step is inactive, blocked or candidate is stale", "pipeline_step_blocked");
       if (!done && actor.id !== live.leadId && step.assignedTo !== actor.id) throw new InboxError(403, "report only your assigned step");
       if (!input.notes?.trim()) throw new InboxError(400, "record the result or lead disposition");
-      const additions = (input.evidence ?? []).map(e => this.evidence(actor, run, e, created));
+      const additions = (input.evidence ?? []).map(e => this.evidence(actor, run, e, created, node));
       if (done) {
-        const ids = input.evidenceIds ?? step.evidence.filter(e => e.round === run.round && e.fingerprint === run.candidate.fingerprint).map(e => e.id);
+        const ids = input.evidenceIds ?? step.evidence.filter(e => this.currentEvidence(run, node, e)).map(e => e.id);
         if (ids.some(id => !step.evidence.some(e => e.id === id))) throw new InboxError(422, "evidence id does not belong to this step");
         const endorsed = [...step.evidence.filter(e => ids.includes(e.id)), ...additions];
-        if ((node.evidence ?? []).some(kind => !endorsed.some(e => e.kind === kind && e.round === run.round && e.fingerprint === run.candidate.fingerprint))) throw new InboxError(409, "required evidence is missing or stale", "pipeline_evidence_required");
+        if ((node.evidence ?? []).some(kind => !endorsed.some(e => e.kind === kind && this.currentEvidence(run, node, e)))) throw new InboxError(409, "required evidence is missing or stale", "pipeline_evidence_required");
         step.evidence = endorsed; step.completedBy = actor.id;
       } else step.evidence.push(...additions);
       step.notes = input.notes; return this.persist(run);
     }); } catch (err) { for (const file of created) try { unlinkSync(file); } catch { /* transaction rolled back; cleanup only our copied files */ } throw err; }
   }
-  private evidence(actor: WorldAgent, run: PipelineRun, input: PipelineEvidenceInput, created: string[]): PipelineEvidence {
+  private evidenceFingerprint(run: PipelineRun, node?: PipelineNode): string {
+    return node && nodeBinding(node) === "run" ? requestFingerprint([run.id, run.scopeRevision ?? 0]) : run.candidate.fingerprint;
+  }
+  private currentEvidence(run: PipelineRun, node: PipelineNode, evidence: PipelineEvidence): boolean {
+    return (evidence.binding ?? "candidate") === nodeBinding(node) && evidence.round === run.round && evidence.fingerprint === this.evidenceFingerprint(run, node);
+  }
+  private evidence(actor: WorldAgent, run: PipelineRun, input: PipelineEvidenceInput, created: string[], node?: PipelineNode): PipelineEvidence {
     if (!input.summary?.trim() || !["report", "check", "artifact", "review", "approval"].includes(input.kind)) throw new InboxError(422, "evidence needs a kind and non-empty summary");
+    if (node && nodeBinding(node) === "run" && !["report", "artifact"].includes(input.kind)) throw new InboxError(422, "run-bound planning accepts reports/artifacts only; checks, reviews and approvals need candidate binding");
     if (input.kind === "check" && (!input.command?.trim() || input.exitCode !== 0)) throw new InboxError(409, "check evidence needs its command and successful exit code");
     if (input.kind === "review") {
       const r = input.review; if (!r) throw new InboxError(422, "review evidence needs work id and round");
@@ -264,7 +276,7 @@ export class Pipelines {
       if (automatic) throw new InboxError(409, "required founder approval needs an explicit founder acceptance, not approve-all automation");
       if (!item || item.revision !== a.revision || !["try", "milestone"].includes(String(item.type)) || accept?.action !== "accept" || accept.state === "stale" || !["answer_queued", "delivered"].includes(String(item.state)) || binding?.fingerprint !== run.candidate.fingerprint) throw new InboxError(409, "founder acceptance is missing, stale or not bound to this candidate");
     }
-    const evidence: PipelineEvidence = { kind: input.kind, summary: input.summary, id: randomUUID(), byAgentId: actor.id, fingerprint: run.candidate.fingerprint, round: run.round, createdAt: this.now().toISOString(),
+    const evidence: PipelineEvidence = { kind: input.kind, summary: input.summary, id: randomUUID(), byAgentId: actor.id, fingerprint: this.evidenceFingerprint(run, node), ...(node && nodeBinding(node) === "run" ? { binding: "run" as const } : {}), round: run.round, createdAt: this.now().toISOString(),
       ...(input.path ? { path: input.path } : {}), ...(input.url ? { url: input.url } : {}), ...(input.command ? { command: input.command, exitCode: input.exitCode } : {}),
       ...(input.review ? { review: input.review } : {}), ...(input.approval ? { approval: input.approval } : {}) };
     if (input.path) {
@@ -326,7 +338,8 @@ export class Pipelines {
       if (target !== branch || target === "main" || target === "master") reasons.push("ref is not the run repository's protected dev delivery branch");
     }
     for (const step of run.steps.filter(s => required.has(s.nodeId))) for (const e of step.evidence) {
-      if (e.round !== run.round || e.fingerprint !== run.candidate.fingerprint) { reasons.push(`${step.nodeId}: stale evidence`); continue; }
+      const node = run.graph.nodes.find(n => n.id === step.nodeId)!;
+      if (!this.currentEvidence(run, node, e)) { reasons.push(`${step.nodeId}: stale evidence`); continue; }
       try {
         if (e.kind === "approval" || e.kind === "review") this.evidence(actor, run, { ...e, path: undefined }, []);
         if (e.storedPath && this.evidenceFile(e.id) !== e.storedPath) reasons.push(`${step.nodeId}: attachment changed`);
@@ -380,7 +393,7 @@ export class Pipelines {
     const run = given === undefined ? view.runs.find(r => r.state === "open") ?? null : given;
     const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : "Do your assigned step and use inbox pipeline report; only your first mate may complete steps or deliver.";
     return [`Pipeline: ${view.graph?.label ?? "unavailable"} (${view.source}, policy ${view.policyHash?.slice(0, 12) ?? "missing"}). ${role}`,
-      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state}${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
+      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
       "Commands: inbox pipeline start|branch|abandon|assign|done|report|status|gate. No model is called; a gate allow is preflight, never a publication receipt."].join("\n");
   }
   private atomic<T>(fn: () => T): T {

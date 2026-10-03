@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { PipelineEvidenceKind, PipelineField, PipelineGraph, PipelineLayout, PipelineNode } from "../../shared/pipeline.ts";
 import { ports } from "./model.ts";
+import { nodeBinding } from "../../shared/pipeline.ts";
 
 const evidenceKinds: PipelineEvidenceKind[] = ["report", "check", "artifact", "review", "approval"];
 export function Inspector({ graph, node, layout, disabled, onGraph, onLayout, onConnect, onRemove }: {
@@ -39,6 +40,11 @@ export function Inspector({ graph, node, layout, disabled, onGraph, onLayout, on
       <h4>Evidence rule · all of</h4>
       {evidenceKinds.map((kind) => <label key={kind}><input type="checkbox" disabled={node.kind === "approval" && kind === "approval"} checked={node.evidence?.includes(kind) ?? false} onChange={(event) => update({ evidence: event.target.checked ? [...(node.evidence ?? []), kind] : node.evidence?.filter((k) => k !== kind) })} /> {kind}</label>)}
     </>}
+    {node.kind === "step" && <label>Evidence binding<select aria-label="Evidence binding" value={nodeBinding(node)} onChange={(event) => update({ binding: event.target.value as PipelineNode["binding"] })}>
+      <option value="candidate">Candidate · final intended bytes</option>
+      <option value="run" disabled={node.evidence?.some(k => ["check", "review", "approval"].includes(k))}>Run · planning for this round and scope</option>
+    </select></label>}
+    {node.kind === "condition" && <p className="pipeline-help">Branch selections describe the run, not candidate bytes.</p>}
     {node.kind === "delivery" && <label>Delivery boundary<select aria-label="Delivery boundary" value={node.delivery ?? "handoff"} onChange={(event) => update({ delivery: event.target.value as PipelineNode["delivery"] })}><option value="handoff">Hand off to a team</option><option value="review">Accept a team's result</option><option value="dev">Deliver to dev</option></select></label>}
     <label>Instructions / evidence guidance<textarea value={node.instructions ?? ""} onChange={(event) => update({ instructions: event.target.value || undefined })} /></label>
     <p className="pipeline-help">Guidance only. The office never executes these instructions.</p>

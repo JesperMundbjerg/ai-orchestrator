@@ -149,6 +149,80 @@ test("CLI and HTTP re-base validate base, refresh candidate and replay with clie
   const second = await h.cli(args); assert.equal(second.status, 0, second.stderr); assert.deepEqual(JSON.parse(second.stdout), run);
 });
 
+for (const changed of [false, true]) test(`legacy whole-tree open runs retain ${changed ? "stale" : "fresh"} evidence after restart without re-base`, t => {
+  const f = fixture(t, graph("dev")); writeFileSync(join(f.root, "src.ts"), "legacy intended bytes\n");
+  git(f.root, "add", "."); git(f.root, "commit", "-qm", "legacy candidate");
+  let run = f.done(f.start());
+  run.candidate = capture(f.root, run.candidate.base, "HEAD", 1);
+  for (const step of run.steps) for (const evidence of step.evidence) evidence.fingerprint = run.candidate.fingerprint;
+  assert.equal(run.candidate.fingerprintVersion, undefined);
+  f.db.prepare("UPDATE pipeline_runs SET snapshot = ? WHERE id = ?").run(JSON.stringify(run), run.id);
+  if (changed) writeFileSync(join(f.root, "src.ts"), "later unpinned bytes\n");
+  const before = f.p.get(run.id); const status = before.steps.map(s => s.state);
+  assert.equal(status[0], changed ? "stale" : "done"); const gateBefore = f.p.gate(f.lead, f.gate(run));
+  const stored = f.db.prepare("SELECT snapshot FROM pipeline_runs WHERE id = ?").get(run.id)!.snapshot;
+  f.reopen(); assert.deepEqual(f.p.get(run.id).steps.map(s => s.state), status);
+  assert.deepEqual(f.p.teamView("authors").runs[0]!.steps.map(s => s.state), status);
+  assert.deepEqual(f.p.gate(f.lead, f.gate(run)), gateBefore);
+  assert.equal(f.db.prepare("SELECT snapshot FROM pipeline_runs WHERE id = ?").get(run.id)!.snapshot, stored, "reads must not silently migrate the pin or evidence");
+  run = f.p.branch(f.lead, { runId: run.id, clientId: "legacy-repin", expectedRevision: run.revision, selections: {}, rationale: "Legacy semantics until explicit base", candidate: "HEAD" });
+  assert.equal(run.candidate.fingerprintVersion, undefined);
+  assert.equal(run.round, changed ? 2 : 1);
+});
+
+function planningGraph(): PipelineGraph {
+  const g = graph("dev"); g.entry = "plan";
+  g.nodes.unshift({ id: "plan", label: "First mate plans bounded wave", kind: "step", source: "builtin:work", evidence: ["report"], binding: "run" });
+  g.edges.unshift({ id: "planned", from: "plan", to: "checks" }); return g;
+}
+const plan = (f: ReturnType<typeof fixture>, run: PipelineRun) => f.p.done(f.lead, { runId: run.id, clientId: `plan-${run.revision}`, expectedRevision: run.revision, nodeId: "plan", notes: "Bounded scope and assignments planned", evidence: [{ kind: "report", summary: "Plan for this wave", url: "https://example.invalid/plan" }] });
+
+test("run-bound planning can be reported and endorsed during changing implementation; final checks still need fresh bytes", t => {
+  const f = fixture(t, planningGraph()); let run = f.start();
+  writeFileSync(join(f.root, "src.ts"), "implementation in progress\n");
+  run = f.p.assign(f.lead, { runId: run.id, clientId: "assign-plan", expectedRevision: run.revision, nodeId: "plan", agentId: f.crew.id });
+  run = f.p.report(f.crew, { runId: run.id, clientId: "crew-plan", expectedRevision: run.revision, nodeId: "plan", notes: "Planned scope", evidence: [{ kind: "report", summary: "Bounded plan", url: "https://example.invalid/plan" }] });
+  const evidence = run.steps[0]!.evidence[0]!; assert.equal(evidence.binding, "run"); assert.notEqual(evidence.fingerprint, run.candidate.fingerprint);
+  writeFileSync(join(f.root, "src.ts"), "implementation changed again\n"); assert.equal(f.p.get(run.id).steps[0]!.state, "reported");
+  run = f.p.done(f.lead, { runId: run.id, clientId: "endorse-plan", expectedRevision: run.revision, nodeId: "plan", notes: "Scope accepted", evidence: [], evidenceIds: [evidence.id] });
+  assert.equal(run.steps[0]!.state, "done"); assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, false);
+  assert.throws(() => f.done(run), /candidate is stale/);
+  // New bytes mean a new round: even a run-bound plan must be renewed.
+  git(f.root, "add", "."); git(f.root, "commit", "-qm", "final implementation");
+  run = f.p.branch(f.lead, { runId: run.id, clientId: "new-round", expectedRevision: run.revision, selections: {}, rationale: "Final bytes ready", candidate: "HEAD" });
+  assert.equal(run.round, 2); assert.equal(run.steps[0]!.state, "stale");
+  assert.throws(() => f.p.done(f.lead, { runId: run.id, clientId: "reuse-plan", expectedRevision: run.revision, nodeId: "plan", notes: "Reuse", evidence: [] }), { code: "pipeline_evidence_required" });
+  run = plan(f, run); run = f.done(run); assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, true);
+  writeFileSync(join(f.root, "src.ts"), "yet another edit\n");
+  assert.equal(f.p.get(run.id).steps[0]!.state, "done"); assert.equal(f.p.get(run.id).steps[1]!.state, "stale");
+  assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, false);
+});
+
+test("run-bound evidence survives metadata-only re-pin but a changed selection scope stales it permanently", t => {
+  const g = planningGraph(); g.fields = [{ id: "scope", label: "Scope", type: "boolean" }];
+  g.pathRules = [{ when: { field: "scope", equals: true }, prefixes: ["src.ts"], only: true, message: "Bounded scope" }];
+  const f = fixture(t, g); let run = f.start();
+  const branch = (value: boolean, candidate?: string) => f.p.branch(f.lead, { runId: run.id, clientId: `scope-${run.revision}`, expectedRevision: run.revision, selections: { scope: value }, rationale: "Scope choice", candidate });
+  run = branch(false); run = plan(f, run);
+  git(f.root, "commit", "--allow-empty", "-qm", "metadata only"); run = branch(false, "HEAD");
+  assert.equal(run.round, 1); assert.equal(run.steps[0]!.state, "done");
+  const old = run.steps[0]!.evidence[0]!; run = branch(true);
+  assert.equal(run.steps[0]!.state, "stale"); assert.equal(run.round, 1);
+  run = branch(false); assert.equal(run.steps[0]!.state, "stale", "returning to old choices cannot revive an old plan");
+  f.reopen(); run = f.p.get(run.id); assert.equal(run.steps[0]!.state, "stale");
+  assert.throws(() => f.p.done(f.lead, { runId: run.id, clientId: "old-scope", expectedRevision: run.revision, nodeId: "plan", notes: "Reuse", evidence: [], evidenceIds: [old.id] }), { code: "pipeline_evidence_required" });
+  run = plan(f, run); assert.equal(run.steps[0]!.state, "done"); assert.notEqual(run.steps[0]!.evidence[0]!.fingerprint, old.fingerprint);
+});
+
+test("binding is explicit for ambiguous planning reports, conditions are run concepts, checks remain candidate-bound", t => {
+  const g = planningGraph(); delete g.nodes[0]!.binding;
+  const f = fixture(t, g); const run = f.start(); writeFileSync(join(f.root, "src.ts"), "dirty\n");
+  assert.throws(() => plan(f, run), /candidate is stale/, "plan labels and builtin:work must not imply run binding");
+  const validated = validateGraph(planningGraph()); assert.equal(validated.nodes[0]!.binding, "run");
+  assert.throws(() => validateGraph({ ...g, nodes: g.nodes.map(n => n.id === "checks" ? { ...n, binding: "run" } : n) }), /must remain candidate-bound/);
+  assert.throws(() => validateGraph({ ...g, nodes: g.nodes.map(n => n.id === "plan" ? { ...n, binding: "anything" } : n) }), /binding must be/);
+});
+
 test("validation rejects cycles, missing delivery, missing condition ports and unchecked steps", () => {
   assert.equal(validateGraph(graph()).nodes.length, 2);
   assert.throws(() => validateGraph({ ...graph(), nodes: [graph().nodes[0]] }), /endpoints/);

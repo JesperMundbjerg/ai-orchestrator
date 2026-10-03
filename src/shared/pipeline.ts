@@ -29,10 +29,16 @@ export interface PipelineNode {
   field?: string;
   /** All named evidence kinds are required, not an any-of choice. */
   evidence?: PipelineEvidenceKind[];
+  /** Default candidate; conditions are intrinsically run-bound. Planning reports may opt in. */
+  binding?: "run" | "candidate";
   /** Delivery boundary; only delivery nodes may set this. */
   delivery?: "handoff" | "review" | "dev";
   /** Human guidance only: the service NEVER runs this command. */
   instructions?: string;
+}
+/** Names, prose and generic report/work sources do not identify planning unambiguously. */
+export function nodeBinding(node: PipelineNode): "run" | "candidate" {
+  return node.binding ?? (node.kind === "condition" ? "run" : "candidate");
 }
 export interface PipelineEdge {
   id: string;
@@ -158,7 +164,9 @@ export interface PipelineEvidenceInput {
 export interface PipelineEvidence extends PipelineEvidenceInput {
   id: string;
   byAgentId: string;
+  /** Candidate bytes hash, or a run/scope identity token for run-bound evidence. */
   fingerprint: string;
+  binding?: "run" | "candidate";
   round: number;
   createdAt: string;
   sha256?: string;
@@ -185,6 +193,8 @@ export interface PipelineRun {
   definitionHashes: Record<string, string | null>;
   revision: number;
   round: number;
+  /** Monotonic selection-scope revision prevents old plans reviving after toggling back. */
+  scopeRevision?: number;
   candidate: PipelineCandidate;
   selections: Record<string, PipelineValue>;
   rationale: string;
