@@ -280,11 +280,19 @@ function decide(boundary: Boundary, config: HookConfig, identity: Json, base?: s
   if (lane === "") return null;
   return lane ?? gate(boundary, config, identity);
 }
-/** FysikLab replays its .claude hooks on Pi tool calls, so this runner can be asked as claude/codex while
- * running inside Pi. The payload's session_id is then Pi's session UUID, which the office cannot resolve;
- * Pi's own session file (PI_SESSION_FILE) is what it knows. Real Claude/Codex processes carry their own id. */
-function replayedInPi(harness: string): boolean {
-  return (harness === "claude" || harness === "codex") && !!process.env.PI_SESSION_FILE && !process.env.CLAUDE_CODE_SESSION_ID && !process.env.CODEX_THREAD_ID;
+/** Who to tell the gate this call is. FysikLab's bridge replays its .claude hooks from Pi's own process, so this
+ * runner can be asked as claude/codex while Pi is the caller; the payload's session_id is then Pi's session UUID,
+ * which the office cannot resolve. A real Claude/Codex process carries its own session variable, and only then is
+ * the payload's id that harness's. Without it: Pi's session file if the environment has one (Pi's bash tool sets
+ * it); else no harness/session at all, so the inbox CLI resolves the caller by HERDR_PANE_ID. Without a pane
+ * either, the payload's id is all there is. */
+function callerOf(harness: string, session: string): Json {
+  const own = harness === "claude" ? process.env.CLAUDE_CODE_SESSION_ID : harness === "codex" ? process.env.CODEX_THREAD_ID : undefined;
+  if ((harness === "claude" || harness === "codex") && !own) {
+    if (process.env.PI_SESSION_FILE) return { harness: "pi", session: process.env.PI_SESSION_FILE };
+    if (process.env.HERDR_PANE_ID) return {};
+  }
+  return { harness, session };
 }
 export function guardTool(config: HookConfig, input: Json, cwd: string, harness: string, session = ""): string | null {
   const toolInput = input.tool_input ?? input.input ?? {};
@@ -292,7 +300,7 @@ export function guardTool(config: HookConfig, input: Json, cwd: string, harness:
   if (typeof command !== "string" && !Array.isArray(command)) return null;
   try {
     for (const boundary of commandBoundaries(Array.isArray(command) ? command.map(quote).join(" ") : command, toolInput.cwd || toolInput.workdir || input.cwd || cwd, config)) {
-      const who = replayedInPi(harness) ? { harness: "pi", session: process.env.PI_SESSION_FILE } : { harness, session: session || input.session_id };
+      const who = callerOf(harness, session || input.session_id);
       const reason = decide(boundary, config, who);
       if (reason) return reason;
     }
