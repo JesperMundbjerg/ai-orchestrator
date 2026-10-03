@@ -1,6 +1,7 @@
 // How often the office is drawn. It is drawn on demand, not at the display's rate: often enough
 // to look smooth while anyone walks or the view moves, a few times a second when all is still
-// (so lamps, crafts and the garden stay gently alive), and not at all while the tab is hidden.
+// (so lamps, crafts and the garden stay gently alive), and not at all while the tab is hidden or a
+// modal dialog covers the office.
 // Shadows are drawn again at most a few times a second, whatever the frame rate.
 
 /** While you or anyone walks, the view turns or zooms, or a flight is under way. */
@@ -28,6 +29,8 @@ export class Pacer {
   lastAmble = -Infinity;
   lastFrame = -Infinity;
   lastShadow = -Infinity;
+  /** A modal dialog (such as the pipeline editor) is open over the office, which is inert beneath it. */
+  covered = false;
 
   /** Something moved in this frame, or you just asked it to. */
   moved(now: number): void {
@@ -42,6 +45,13 @@ export class Pacer {
 
   /** Returning indoors immediately restores office pacing, even during the outdoor linger. */
   outside(value: boolean): void { this.outdoors = value; }
+
+  /** A modal opened over the office or closed. Returns whether this uncovered it, so it is drawn again at once. */
+  cover(value: boolean): boolean {
+    const uncovered = this.covered && !value;
+    this.covered = value;
+    return uncovered;
+  }
 
   /** Someone out in the garden walked in this frame: worth drawing, but no hurry. */
   ambled(now: number): void {
@@ -59,7 +69,7 @@ export class Pacer {
 
   /** How long until the next frame should be drawn, or null for none while the office cannot be seen. */
   nextFrameIn(now: number, visible: boolean): number | null {
-    if (!visible) return null;
+    if (!visible || this.covered) return null;
     const settling = now - this.lastMotion < LINGER_MS + SETTLE_MS;
     const ambling = now - this.lastAmble < AMBLE_LINGER_MS;
     const outdoorMotion = this.outdoors && now - this.lastOutdoorMotion < LINGER_MS;

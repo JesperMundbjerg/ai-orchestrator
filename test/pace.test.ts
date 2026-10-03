@@ -90,3 +90,20 @@ test("shadows are drawn again at most every SHADOW_MS, whatever the frame rate",
   const due = Array.from({ length: 20 }, (_, i) => p.shadowsDue(i * 50)).filter(Boolean).length;
   assert.equal(due, Math.ceil((20 * 50) / SHADOW_MS));
 });
+
+test("an office covered by a modal is not drawn, and is drawn again at once when uncovered", () => {
+  const p = new Pacer();
+  p.drew(0);
+  p.moved(0);
+  assert.equal(p.cover(true), false);
+  for (const now of [0, 50, 3000, 60000]) {
+    assert.equal(p.nextFrameIn(now, true), null, `covered at ${now} ms`);
+  }
+  p.moved(60000); // Something stirring underneath does not draw through the modal.
+  assert.equal(p.nextFrameIn(60000, true), null);
+  assert.equal(p.cover(true), false, "staying covered is not a change");
+  assert.equal(p.cover(false), true, "closing the modal uncovers the office");
+  assert.equal(p.nextFrameIn(60000, true), 0, "the first frame after a long cover is due now");
+  assert.equal(p.cover(false), false);
+  assert.equal(p.nextFrameIn(60000, false), null, "a hidden tab still wins");
+});

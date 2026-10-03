@@ -9,7 +9,9 @@ export const usePace = () => useContext(PaceContext);
 
 /**
  * Draws the office at the pacer's rate: the canvas renders on demand, and after each frame this
- * asks for the next one when it is due. A hidden tab asks for none until it is shown again.
+ * asks for the next one when it is due. A hidden tab asks for none until it is shown again, and
+ * neither does an office under a modal dialog (its backdrop spans the view and the office is inert),
+ * so a heavy modal such as the pipeline editor keeps the main thread to itself.
  */
 export function Pace({ pacer }: { pacer: Pacer }) {
   const invalidate = useThree((s) => s.invalidate);
@@ -30,10 +32,20 @@ export function Pace({ pacer }: { pacer: Pacer }) {
     });
     const shown = () => (document.visibilityState === "visible" ? invalidate() : clearTimeout(timer));
     document.addEventListener("visibilitychange", shown);
+    // Modal dialogs open and close by an attribute anywhere under the body; one query per change is cheap.
+    const covering = () => {
+      if (pacer.cover(document.querySelector("dialog:modal") !== null)) invalidate();
+      else if (pacer.covered) clearTimeout(timer);
+    };
+    const modals = new MutationObserver(covering);
+    modals.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["open"] });
+    covering();
     invalidate();
     return () => {
       off();
       clearTimeout(timer);
+      modals.disconnect();
+      pacer.cover(false);
       document.removeEventListener("visibilitychange", shown);
       gl.shadowMap.autoUpdate = true;
     };
