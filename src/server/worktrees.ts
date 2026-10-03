@@ -97,10 +97,36 @@ export async function stopProcesses(processes: Array<{ pid: number }>): Promise<
   for (const p of processes) if (alive(p.pid)) process.kill(p.pid, "SIGKILL");
 }
 
-/** Commits on the branch that its repository's main checkout does not have. */
-export function unmerged(repoRoot: string, branch: string): number {
+/**
+ * Where a project's work lands: the repository's integration branch when its orchestrator.json
+ * names one (on origin when that exists, else the local branch), otherwise the main checkout's
+ * branch. `ref` is what git compares with, `name` what the founder and the lead are told.
+ */
+export function landingRef(repoRoot: string, integrationBranch: string | null): { ref: string; name: string } {
+  const has = (ref: string) => {
+    try {
+      git(repoRoot, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (integrationBranch) {
+    for (const ref of [`refs/remotes/origin/${integrationBranch}`, `refs/heads/${integrationBranch}`]) if (has(ref)) return { ref, name: integrationBranch };
+  }
+  let name = "the main checkout";
   try {
-    return Number(git(repoRoot, ["rev-list", "--count", `HEAD..${branch}`]));
+    const branch = git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    if (branch && branch !== "HEAD") name = branch;
+  } catch { /* An unborn or unreadable HEAD keeps the generic name. */ }
+  return { ref: "HEAD", name };
+}
+
+/** Commits checked out in a worktree that `ref` (read in the repository's main checkout) does not have. */
+export function notLanded(repoRoot: string, top: string, ref: string): number {
+  try {
+    const target = git(repoRoot, ["rev-parse", "--verify", `${ref}^{commit}`]);
+    return Number(git(top, ["rev-list", "--count", `${target}..HEAD`]));
   } catch {
     return 0;
   }

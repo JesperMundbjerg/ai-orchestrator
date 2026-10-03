@@ -101,14 +101,41 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
 
 /**
  * Finishes a project (its agents closed, its worktree removed) or disbands a standing team,
- * after you confirm. Resolves with what happened, or null when you cancelled.
+ * after you confirm. Resolves with what happened, or null when you cancelled. A project whose work
+ * has not landed is refused, and its lead told: that refusal rejects as a `FinishRefused`.
  */
 export async function finishTeam(team: Team): Promise<string | null> {
   const ask = team.standing
     ? `Disband ${team.name}? Its members go back to the lounge.`
-    : `Finish ${team.name}?\n\nIts agents are closed and the worktree ${team.path} is removed. The branch ${team.branch ?? ""} is deleted if it is merged, otherwise kept. Nothing uncommitted is lost: it refuses while there is any.`;
+    : `Finish ${team.name}?\n\nIts agents are closed and the worktree ${team.path} is removed. The branch ${team.branch ?? ""} is deleted if it is merged, otherwise kept. It refuses while anything is uncommitted or not yet landed, and tells the project's lead to land it.`;
   if (!confirm(ask)) return null;
-  return (await api.deleteTeam(team.id)).note;
+  return deleteTeam(team, false);
+}
+
+/** Finishes past commits that have not landed: the branch is kept with them. Uncommitted changes still refuse. */
+export function finishAnyway(team: Team): Promise<string> {
+  return deleteTeam(team, true);
+}
+
+/** Finishing refused because work has not landed; `canForce` when only commits (not uncommitted changes) are missing. */
+export class FinishRefused extends Error {
+  teamId: string;
+  canForce: boolean;
+  constructor(teamId: string, message: string, canForce: boolean) {
+    super(message);
+    this.teamId = teamId;
+    this.canForce = canForce;
+  }
+}
+
+async function deleteTeam(team: Team, force: boolean): Promise<string> {
+  try {
+    return (await api.deleteTeam(team.id, force)).note;
+  } catch (err) {
+    const code = (err as { code?: string }).code;
+    if (code === "finish_unlanded" || code === "finish_uncommitted") throw new FinishRefused(team.id, (err as Error).message, code === "finish_unlanded");
+    throw err;
+  }
 }
 
 /** A worktree by its folder's name; its full path is in the title. */

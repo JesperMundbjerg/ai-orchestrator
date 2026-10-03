@@ -35,7 +35,7 @@ import { whyStuck } from "../shared/stuck.ts";
 import { Unpresented } from "./unpresented.ts";
 import { LEAD_WATCH_SESSION, LeadWatch } from "./leadwatch.ts";
 import { withOffline } from "../shared/waiting.ts";
-import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, linkedWorktrees, nameFor, placeFor, processesIn, stopProcesses, uncommitted, unmerged, type Checkout } from "./worktrees.ts";
+import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, landingRef, linkedWorktrees, nameFor, notLanded, placeFor, processesIn, stopProcesses, uncommitted, type Checkout } from "./worktrees.ts";
 
 /** An agent a terminal multiplexer reports as running. */
 export interface LiveAgent {
@@ -83,6 +83,9 @@ const SCAN_CACHE_MS = 3000;
 
 /** A first mate's model when the service has no crew tree: it plans, splits and supervises, which is the deep thinking. */
 const FIRST_MATE_CHOICE: CrewChoice = DEFAULT_LEAD.use;
+
+/** "1 commit", "2 commits"; `plural` for other forms ("1 commit is", "2 commits are"). */
+const count = (n: number, one: string, plural = `${one}s`) => `${n} ${n === 1 ? one : plural}`;
 
 /** A string as one shell word. */
 const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -962,10 +965,13 @@ export class World {
   /**
    * Finishes a project: closes the agents working in its worktree and removes the worktree, and
    * its branch once that is merged (an unmerged branch is kept, so no commit is lost). It refuses
-   * while someone is working there or anything is uncommitted. A standing team is disbanded: its
-   * members go back to the lounge. Its lanes are never removed, only let go.
+   * while someone is working there, and before closing anything while work has not landed:
+   * anything uncommitted, or commits its integration branch lacks. Then the project's lead (or,
+   * without one, whoever works in the worktree) is told to land it. `force` finishes past
+   * unlanded commits only, keeping the branch; uncommitted changes always refuse. A standing team
+   * is disbanded: its members go back to the lounge. Its lanes are never removed, only let go.
    */
-  async deleteTeam(id: string): Promise<{ ok: true; note: string }> {
+  async deleteTeam(id: string, opts: { force?: boolean } = {}): Promise<{ ok: true; note: string }> {
     const team = this.team(id);
     if (this.db.prepare("SELECT 1 FROM work WHERE to_team_id = ? AND state = 'in_review'").get(id)) {
       throw new InboxError(409, `${team.name} still has work under review`);
@@ -977,10 +983,12 @@ export class World {
     }
     const working = this.state().agents.filter((a) => a.teamId === id && a.status === "working");
     if (working.length) throw new InboxError(409, `${working.map((a) => a.name).join(" and ")} ${working.length === 1 ? "is" : "are"} still working on ${team.name}`);
-    const changes = uncommitted(checkout.top);
-    if (changes) throw new InboxError(409, `${changes} uncommitted ${changes === 1 ? "change" : "changes"} in ${checkout.top}: commit or discard ${changes === 1 ? "it" : "them"} first`);
-    if (!this.source?.available()) throw new InboxError(409, "herdr closes the project's agents and removes its worktree, and herdr is not running");
     const inside = (cwd: string | null) => cwd === checkout.top || !!cwd?.startsWith(`${checkout.top}/`);
+    const landing = landingRef(checkout.repoRoot, this.adapters.read(checkout.repoRoot, checkout.repoName).adapter?.integrationBranch ?? null);
+    const changes = uncommitted(checkout.top);
+    const ahead = notLanded(checkout.repoRoot, checkout.top, landing.ref);
+    if (changes || (ahead && !opts.force)) this.refuseUnlanded(team, checkout, inside, landing.name, changes, ahead);
+    if (!this.source?.available()) throw new InboxError(409, "herdr closes the project's agents and removes its worktree, and herdr is not running");
     for (const a of this.state().agents.filter((x) => inside(x.cwd) && x.paneId)) {
       const why = this.standingGuard(a);
       if (why) throw new InboxError(409, `${team.name} cannot be finished: ${why}`);
@@ -997,13 +1005,36 @@ export class World {
       throw new InboxError(502, `herdr could not remove ${checkout.top}: ${(err as Error).message}`);
     }
     const branch = team.branch ?? checkout.branch;
-    const kept = branch ? unmerged(checkout.repoRoot, branch) : 0;
-    const deleted = branch ? deleteMergedBranch(checkout.repoRoot, branch) : false;
+    // A branch with commits not on the integration branch stays, even when the main checkout has them.
+    const deleted = branch && !ahead ? deleteMergedBranch(checkout.repoRoot, branch) : false;
     this.forget(team, { reason: "deleted" });
-    const where = this.checkout(checkout.repoRoot)?.branch ?? "the main checkout";
-    const about = !branch ? "" : deleted ? ` Branch ${branch} was merged and is deleted.` : ` Branch ${branch} is kept: ${kept} ${kept === 1 ? "commit is" : "commits are"} not in ${where} yet.`;
+    const about = !branch ? "" : deleted ? ` Branch ${branch} was merged and is deleted.`
+      : ahead ? ` Branch ${branch} is kept: ${count(ahead, "commit is", "commits are")} not on ${landing.name} yet.` : ` Branch ${branch} is kept; its commits are on ${landing.name}.`;
     const also = stopped.length ? ` Stopped what was still running there: ${stopped.join(", ")}.` : "";
     return { ok: true, note: `${team.name} is finished and ${checkout.top} removed.${also}${about}` };
+  }
+
+  /**
+   * Refuses to finish a project whose work has not landed, after telling its lead (or, without
+   * one, whoever works in its worktree) to land it: an ordinary office message, once per attempt,
+   * and not again while the same one still waits to be delivered.
+   */
+  private refuseUnlanded(team: Team, checkout: Checkout, inside: (cwd: string | null) => boolean, landing: string, changes: number, ahead: number): never {
+    const state = this.state();
+    const lead = state.agents.find((a) => a.teamId === team.id && a.role === "lead");
+    const told = lead ? [lead] : state.agents.filter((a) => inside(a.cwd));
+    const them = changes + ahead === 1 ? "it" : "them";
+    const unlanded = [changes ? `${count(changes, "uncommitted change")} in ${checkout.top}` : "", ahead ? `${count(ahead, "commit")} not on ${landing}` : ""].filter(Boolean).join(" and ");
+    const notice = `The founder wants to finish ${team.name}, but its work has not landed: ${unlanded}. `
+      + `Commit and land ${them} on ${landing} the usual way (through the project's pipeline), then tell the founder it is ready to finish with \`inbox say founder\`.`;
+    const pending = this.db.prepare(`SELECT 1 FROM messages m JOIN message_deliveries d ON d.message_id = m.id
+      WHERE m.from_office = 1 AND m.text = ? AND d.agent_id = ? AND d.state IN ('queued', 'sending')`);
+    for (const a of told) if (!pending.get(notice, a.id)) this.messages.notice(a.id, notice);
+    const away = told.filter((a) => !a.paneId).length;
+    const who = !told.length ? " No agent is there to tell."
+      : ` ${told.map((a) => a.name).join(" and ")} ${told.length === 1 ? "was" : "were"} told to land ${them} on ${landing}${away === told.length ? " (offline: it waits for them)" : away ? " (it waits for whoever is offline)" : ""}.`;
+    const why = changes ? `${unlanded}: commit and land ${them} first.` : `${unlanded}: land ${them} first, or finish anyway and keep the branch.`;
+    throw new InboxError(409, `${team.name} is not finished: ${why}${who}`, changes ? "finish_uncommitted" : "finish_unlanded");
   }
 
   /**

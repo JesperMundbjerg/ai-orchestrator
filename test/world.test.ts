@@ -340,19 +340,21 @@ test("finishing a project closes its agents and removes the worktree, but never 
 
   setLive([lane("p1", atoms, "s1", "idle"), lane("p9", root, "s9")]);
   writeFileSync(join(atoms, "b.txt"), "b\n");
-  await assert.rejects(world.deleteTeam(team.id), /1 uncommitted change in .*: commit or discard it first/);
+  await assert.rejects(world.deleteTeam(team.id), /1 uncommitted change in .*: commit and land it first/);
 
   git(atoms, "add", ".");
   git(atoms, "commit", "-qm", "b");
   // A dev server left running there outlives its pane.
   const server = spawn("sleep", ["60"], { cwd: join(atoms), stdio: "ignore" });
   const exited = new Promise((resolve) => server.once("exit", resolve));
-  const { note } = await world.deleteTeam(team.id);
+  await assert.rejects(world.deleteTeam(team.id), /1 commit not on dev: land it first, or finish anyway/);
+  assert.deepEqual(closed, [], "nothing is closed while work has not landed");
+  const { note } = await world.deleteTeam(team.id, { force: true });
   assert.deepEqual(closed, ["p1"], "only the agents working in it are closed");
   await exited;
   assert.match(note, /Stopped what was still running there: sleep\./);
   assert.equal(existsSync(atoms), false);
-  assert.match(note, /Branch worktree-atoms-light is kept: 1 commit is not in dev yet/);
+  assert.match(note, /Branch worktree-atoms-light is kept: 1 commit is not on dev yet/);
   assert.equal(git(root, "branch", "--list", "worktree-atoms-light"), "worktree-atoms-light");
   assert.deepEqual(world.state().teams, []);
 });

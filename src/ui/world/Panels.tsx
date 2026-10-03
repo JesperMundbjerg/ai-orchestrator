@@ -8,7 +8,7 @@ import { Effort } from "../components/Effort.tsx";
 import { SwitchHarness } from "../components/SwitchHarness.tsx";
 import { TellAllLeads } from "../components/TellAllLeads.tsx";
 import { ItemDetailView } from "../components/ItemDetail.tsx";
-import { finishTeam, leadTitle, TeamForm } from "../components/TeamForm.tsx";
+import { finishAnyway, finishTeam, FinishRefused, leadTitle, TeamForm } from "../components/TeamForm.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
 import { usageLine } from "../usageLine.ts";
 import type { BuildingPlan } from "./building.ts";
@@ -37,10 +37,19 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
   const [editing, setEditing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // A finish refused because work has not landed: the lead was told, and unlanded commits can be left on the branch.
+  const [refused, setRefused] = useState<FinishRefused | null>(null);
   const lounge = world.agents.filter((a) => !a.teamId).length;
   // Project members idle a while are out in the garden too.
   const onBreak = world.agents.filter((a) => a.teamId && plan.spots.get(a.id)?.zone === "garden").length;
   const run = (p: Promise<unknown>) => p.then(() => setError(null), (e: Error) => setError(e.message));
+  const finish = (p: Promise<string | null>) => {
+    setRefused(null);
+    return p.then(
+      (said) => { setError(null); if (said) (setNote(said), setEditing(null)); },
+      (e: Error) => (e instanceof FinishRefused ? (setError(null), setRefused(e)) : setError(e.message)),
+    );
+  };
 
   return hidden ? (
     <button className="projects-panel-pill" onClick={() => setHidden(false)} aria-label="Show Projects panel">Projects</button>
@@ -65,6 +74,19 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
         </div>
       ) : null}
       {note ? <div className="board-note small-note">{note}<button className="ghost small" onClick={() => setNote(null)}>OK</button></div> : null}
+      {refused ? (
+        // Stacked rather than a note's row: the refusal is a few sentences with a path in it.
+        <div className="board-note small-note finish-refused" role="alert" style={{ display: "block" }}>
+          <div style={{ overflowWrap: "anywhere" }}>{refused.message}</div>
+          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 6 }}>
+            {refused.canForce ? (() => {
+              const team = world.teams.find((t) => t.id === refused.teamId);
+              return team ? <button className="ghost small danger" onClick={() => void finish(finishAnyway(team))} title="Close its agents and remove the worktree; the branch stays with the commits">Finish anyway: keep the branch</button> : null;
+            })() : null}
+            <button className="ghost small" onClick={() => setRefused(null)}>OK</button>
+          </div>
+        </div>
+      ) : null}
       <ul className="team-list">
         {plan.corners.map(({ team, center }) => {
           const live = world.teams.find((t) => t.id === team.id)!;
@@ -83,7 +105,7 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
                     extra={
                       <>
                         <button type="button" className="ghost small" onClick={() => (setError(null), setEditing(null))}>Cancel</button>
-                        <button type="button" className="ghost small danger" onClick={() => void run(finishTeam(live).then((said) => said && (setNote(said), setEditing(null))))}>
+                        <button type="button" className="ghost small danger" onClick={() => void finish(finishTeam(live))}>
                           {team.standing ? "Disband" : "Finish project"}
                         </button>
                       </>

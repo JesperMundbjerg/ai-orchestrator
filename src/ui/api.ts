@@ -8,7 +8,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const out = (await res.json()) as T & { error?: string };
-  if (!res.ok) throw new Error(out.error ?? `${res.status}`);
+  // The error's code (ApiErrorBody) lets a caller tell one refusal from another.
+  if (!res.ok) throw Object.assign(new Error(out.error ?? `${res.status}`), { code: (out as { code?: string }).code });
   return out;
 }
 
@@ -31,7 +32,8 @@ export const api = {
   world: () => request<WorldState>("GET", "/api/world"),
   createTeam: (body: { name: string; purpose?: string; handsTo?: string | null; repository?: string; standing?: boolean }) => request<Team>("POST", "/api/world/teams", body),
   updateTeam: (teamId: string, patch: { name?: string; purpose?: string; handsTo?: string | null }) => request<Team>("PATCH", `/api/world/teams/${teamId}`, patch),
-  deleteTeam: (teamId: string) => request<{ ok: true; note: string }>("DELETE", `/api/world/teams/${teamId}`, {}),
+  /** `force` finishes past commits not on the integration branch (the branch is kept); uncommitted changes always refuse. */
+  deleteTeam: (teamId: string, force = false) => request<{ ok: true; note: string }>("DELETE", `/api/world/teams/${teamId}`, force ? { force } : {}),
   teamWorktrees: (teamId: string) => request<{ worktrees: string[]; available: string[] }>("GET", `/api/world/teams/${teamId}/worktrees`),
   addWorktree: (teamId: string, path: string) => request<Team>("POST", `/api/world/teams/${teamId}/worktrees`, { path }),
   removeWorktree: (teamId: string, path: string) => request<Team>("POST", `/api/world/teams/${teamId}/worktrees/remove`, { path }),

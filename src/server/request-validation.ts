@@ -35,6 +35,8 @@ export const uploadSchema = object({ data: nonempty });
 export const teamCreateSchema = object({
   name: nonempty, purpose: maybeText, handsTo: optional(nullable(text)), repository: maybeText, standing: optional(boolean),
 });
+// `force` finishes past commits not yet on the integration branch; uncommitted changes always refuse.
+export const teamDeleteSchema = object({ force: optional(boolean) });
 export const teamPatchSchema = object({ name: maybeText, purpose: maybeText, handsTo: optional(nullable(text)) });
 export const worktreeSchema = object({ path: nonempty });
 export const mergeSchema = object({ into: nonempty });

@@ -161,7 +161,7 @@ These routes use `src/server/request-validation.ts` and domain DTOs in `src/shar
 | `POST /api/p/:project/lanes/:lane/check` | `{}`; runs the lane's status command now and returns the `StandingLane` |
 | `POST /api/p/:project/lanes/:lane/recover` | `{agentId}`; the founder's explicit recovery onto a running agent in the lane's checkout. 409 while one runs for that lane or when the agent does not run there. Returns the `StandingLane` with `recovery.state` `attached`, `busy`, `unavailable`, `refused` or `failed` and the command's reason |
 | `POST /api/world/teams` | `name`, optional `purpose`, nullable `handsTo`, `repository`, boolean `standing` |
-| `PATCH /api/world/teams/:id`; `DELETE /api/world/teams/:id` | Update optional `name`, `purpose`, nullable `handsTo`; finish/delete with safety checks |
+| `PATCH /api/world/teams/:id`; `DELETE /api/world/teams/:id` | Update optional `name`, `purpose`, nullable `handsTo`; finish/delete with safety checks. Finishing work that has not landed is 409 `finish_uncommitted` (anything uncommitted; always) or `finish_unlanded` (commits not on the integration branch), and tells the project's lead to land it; DELETE body `{ "force": true }` finishes past `finish_unlanded` only and keeps the branch |
 | `GET /api/world/teams/:id/worktrees` | Additional owned worktree records |
 | `POST /api/world/teams/:id/worktrees`; `POST /api/world/teams/:id/worktrees/remove` | `{path}`; record/release ownership, not disk creation/deletion |
 | `POST /api/world/teams/:id/merge` | `{into: teamId}`; fold records without touching disk/panes |

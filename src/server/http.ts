@@ -115,7 +115,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/p\/([a-z][a-z0-9-]*)\/lanes\/([\w-]+)\/recover$/, validation.laneRecoverSchema, (_r, b, [project, lane]) => needStanding().recover(project!, lane!, b.agentId)),
     route("POST", /^\/api\/world\/teams$/, validation.teamCreateSchema, (_r, b) => needWorld().createTeam(b)),
     route("PATCH", /^\/api\/world\/teams\/([\w-]+)$/, validation.teamPatchSchema, (_r, b, [id]) => needWorld().updateTeam(id!, b)),
-    route("DELETE", /^\/api\/world\/teams\/([\w-]+)$/, emptySchema, (_r, _b, [id]) => needWorld().deleteTeam(id!)),
+    route("DELETE", /^\/api\/world\/teams\/([\w-]+)$/, validation.teamDeleteSchema, (_r, b, [id]) => needWorld().deleteTeam(id!, b)),
     // A team's other worktrees (lanes), and folding a project into another; neither touches anything on disk.
     route("GET", /^\/api\/world\/teams\/([\w-]+)\/worktrees$/, emptySchema, (_r, _b, [id]) => needWorld().worktrees(id!)),
     route("POST", /^\/api\/world\/teams\/([\w-]+)\/worktrees$/, validation.worktreeSchema, (_r, b, [id]) => needWorld().addWorktree(id!, b.path)),
