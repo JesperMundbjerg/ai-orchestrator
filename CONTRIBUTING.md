@@ -27,6 +27,8 @@ CI runs typecheck, tests and build on macOS and Linux. A passing build is not pr
 
 **Never start a scratch office on port 4870, in your real HOME/data directory, or against a live herdr session.** Changing `INBOX_DATA_DIR` alone does not prevent local harness session reads. Never run `restart-office` for tests: its defaults enable account polling, presence discovery and browser cleanup.
 
+Scratch verification cleanup goes through `scripts/lib/scratch-office.ts` (tracked child group and reverified identity); never `pkill`/`killall`/`pgrep -f`.
+
 For a fictional browser smoke check, after building, use:
 
 ```sh
@@ -54,8 +56,8 @@ export INBOX_PORT=$(node --input-type=module -e '
 : "${INBOX_PORT:?No safe port selected}"
 export INBOX_URL="http://127.0.0.1:$INBOX_PORT"
 printf 'Scratch inbox: %s\nScratch directory: %s\n' "$INBOX_URL" "$SCRATCH"
-npm start
-# After Ctrl-C, and after closing any browser/server you started:
+node scripts/lib/scratch-office.ts
+# After Ctrl-C (the helper stops only its verified child group), and after closing any browser you started:
 rm -rf -- "$SCRATCH"
 ```
 

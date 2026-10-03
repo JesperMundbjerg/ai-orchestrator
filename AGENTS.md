@@ -16,4 +16,5 @@ Read [README](README.md) for onboarding, [CONTRIBUTING](CONTRIBUTING.md) for che
 - Erasable TypeScript only: Node runs sources directly. No enums, namespaces or parameter properties.
 - Respect concurrent file ownership; do not stage, revert or overwrite someone else's work.
 - **Scratch offices must be isolated:** temporary HOME and data directory, a free port (never `4870`), `HERDR_SOCKET_PATH=/nonexistent`, `HERDR_BIN_PATH=/usr/bin/false`, and all three integration opt-ins explicitly `0`. Never use the real `~/.review-inbox` or `restart-office` for tests. A different data directory alone does not isolate session reads.
+- Scratch verification cleanup goes through `scripts/lib/scratch-office.ts` (tracked child group and reverified identity); never `pkill`/`killall`/`pgrep -f`.
 - Before handoff: `npm run typecheck`, `npm test`, `npm run build`. Look at UI changes in an isolated browser; report what was actually checked. Never share real sessions, credentials or private project evidence.
