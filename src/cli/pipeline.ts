@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { call, get } from "../shared/agent-client.ts";
 import type { SessionInput, WorldState } from "../shared/types.ts";
-import type { PipelineGateInput, PipelineGateResult, PipelineRun, PipelineStatus, PipelineValue } from "../shared/pipeline.ts";
+import type { PipelineGateInput, PipelineGateResult, PipelineRun, PipelineStatus, PipelineTelemetryView, PipelineValue } from "../shared/pipeline.ts";
 import type { PipelineWaiver, WaiverGateResult } from "../shared/waiver.ts";
 
 interface Flags {
   json?: string; run?: string; base?: string; candidate?: string; checkout?: string; revision?: string; round?: string;
   select?: string[]; notes?: string; report?: string[]; screenshot?: string[]; url?: string[]; check?: string; "exit-code"?: string; "on-base"?: boolean;
   work?: string; "work-round"?: string; "client-id"?: string; operation?: string; repo?: string; ref?: string; delivery?: string; node?: string; reason?: string;
+  team?: string; kind?: string; since?: string; limit?: string;
 }
 const integer = (v: unknown, name: string): number | undefined => {
   if (v === undefined) return undefined;
@@ -19,7 +20,13 @@ const integer = (v: unknown, name: string): number | undefined => {
 };
 export async function pipelineCommand(args: string[], flags: Flags, session: SessionInput): Promise<void> {
   const [operation, positionalRun, node, agent] = args;
-  if (!["start", "branch", "abandon", "assign", "done", "report", "status", "gate", "waiver"].includes(operation ?? "")) throw new Error("inbox pipeline start|branch|abandon|assign|done|report|status|gate|waiver; --json FILE accepts a full operation payload");
+  if (!["start", "branch", "abandon", "assign", "done", "report", "status", "gate", "waiver", "telemetry"].includes(operation ?? "")) throw new Error("inbox pipeline start|branch|abandon|assign|done|report|status|gate|waiver|telemetry; --json FILE accepts a full operation payload");
+  if (operation === "telemetry") {
+    // Read-only, for any agent: it names no session and changes nothing.
+    const query = new URLSearchParams();
+    for (const [key, value] of [["run", flags.run ?? positionalRun], ["team", flags.team], ["kind", flags.kind], ["since", flags.since], ["limit", flags.limit]] as const) if (value) query.set(key, value);
+    return console.log(JSON.stringify(await get<PipelineTelemetryView>(`/api/pipeline/telemetry${query.size ? `?${query}` : ""}`), null, 2));
+  }
   const payload = flags.json ? JSON.parse(readFileSync(flags.json === "-" ? 0 : flags.json, "utf8")) as Record<string, unknown> : {};
   const runId = flags.run ?? positionalRun ?? payload.runId as string | undefined;
   if (operation === "waiver") {

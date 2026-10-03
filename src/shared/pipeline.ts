@@ -318,3 +318,37 @@ export interface PipelineDoneInput extends PipelineReportInput {
 export type PipelineAgentRequest<T> = T & { session: SessionInput };
 export interface PipelineStatusInput { runId?: string }
 export interface PipelineStatus { team: PipelineTeamView; run: PipelineRun | null; text: string }
+
+/** One gate refusal reason, as a stable code; `node` names the step it concerns, if any. */
+export interface PipelineGateReason { code: string; node?: string }
+/**
+ * Read-only delivery telemetry. Kinds: `gate` (every pipeline gate result, refusals included),
+ * `integration` (re-base, candidate re-pin, scope re-branch) and `publication` (a dev push/land/publish
+ * allowed but not yet observed on the published branch, and how that resolved). Never authorizes anything.
+ */
+export interface PipelineTelemetryEvent {
+  id: number;
+  at: string;
+  kind: "gate" | "integration" | "publication";
+  runId: string | null;
+  teamId: string | null;
+  detail: Record<string, unknown>;
+}
+/** How long one founder approval item bound to a run waited for the founder's Accept or Needs changes. */
+export interface PipelineDecisionWait {
+  runId: string;
+  itemId: string;
+  revision: number;
+  type: string;
+  blocking: boolean;
+  /** The step whose evidence endorses this approval, or null while none does. */
+  stepId: string | null;
+  waitingSince: string;
+  answeredAt: string | null;
+  action: "accept" | "request_changes" | null;
+  automatic: boolean;
+  /** answeredAt − waitingSince; null while still waiting. */
+  waitMs: number | null;
+}
+export interface PipelineTelemetryQuery { runId?: string; teamId?: string; kind?: PipelineTelemetryEvent["kind"]; since?: string; limit?: number }
+export interface PipelineTelemetryView { events: PipelineTelemetryEvent[]; decisionWaits: PipelineDecisionWait[]; dropped: number }

@@ -23,7 +23,7 @@ import type { StandingLanes } from "./standing.ts";
 import type { Switches } from "./switch.ts";
 import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
-import { pipelineSchemas, waiverSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema } from "./pipelines/protocol.ts";
+import { pipelineSchemas, waiverSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema, telemetryQuery } from "./pipelines/protocol.ts";
 
 const TYPES: Record<string, string> = {
   ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
@@ -131,6 +131,8 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/agent\/pipeline\/report$/, pipelineSchemas.report, (_r, b) => needWorld().pipelines.report(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/pipeline\/done$/, pipelineSchemas.done, (_r, b) => needWorld().pipelines.done(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/pipeline\/status$/, pipelineSchemas.status, (_r, b) => needWorld().pipelines.status(needWorld().resolve(b.session), b.runId)),
+    // Read-only delivery telemetry (gate results, integration, publication, decision waits); never authorizes.
+    route("GET", /^\/api\/pipeline\/telemetry$/, emptySchema, (r) => needWorld().pipelines.telemetry.read(telemetryQuery(new URL(r.url ?? "/", "http://localhost").searchParams))),
     route("POST", /^\/api\/agent\/pipeline\/gate$/, pipelineSchemas.gate, (_r, b) => needWorld().pipelines.gate(needWorld().resolve(b.session), b)),
     // Founder-only exact-SHA repair waivers: the request becomes one inbox decision; the gate answers a delivery that names no run.
     route("POST", /^\/api\/agent\/pipeline\/waiver$/, waiverSchemas.request, (_r, b) => needWorld().waivers.request(needWorld().resolve(b.session), b)),

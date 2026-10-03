@@ -94,6 +94,8 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
       with report|done ... --check "command" --exit-code N --on-base, then the candidate's run with the same N
   inbox pipeline status [RUN]
   inbox pipeline gate --operation push|pr|merge|land|publish --repo PATH --ref REF --candidate SHA --run RUN [--round N]
+  inbox pipeline telemetry [RUN] [--team TEAM --kind gate|integration|publication --since ISO --limit N]
+      read-only JSON: gate results (refusals too), re-base/re-pin/re-branch, publication pending/resolved, founder decision waits
   inbox pipeline waiver --repo PATH --ref dev --candidate SHA --reason "why"   ask the founder to allow exactly this commit to that branch once, without a run
       --json FILE supplies an operation payload (including structured evidence); --revision N is an optimistic lock
       --client-id ID makes a lost-response retry replay-safe. Gate is preflight, not a publication receipt.
@@ -153,7 +155,7 @@ const OPTIONS = {
   revision: { type: "string" }, round: { type: "string" }, select: { type: "string", multiple: true },
   report: { type: "string", multiple: true }, "exit-code": { type: "string" }, "on-base": { type: "boolean" }, "work-round": { type: "string" },
   "client-id": { type: "string" }, operation: { type: "string" }, repo: { type: "string" }, ref: { type: "string" },
-  delivery: { type: "string" }, node: { type: "string" }, reason: { type: "string" },
+  delivery: { type: "string" }, node: { type: "string" }, reason: { type: "string" }, team: { type: "string" }, kind: { type: "string" }, since: { type: "string" },
   to: { type: "string" },
   work: { type: "string" },
   cwd: { type: "string" },

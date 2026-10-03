@@ -180,6 +180,17 @@ inbox pipeline waiver --repo CHECKOUT --ref dev --candidate SHA --reason "The Pi
 
 The team's lead asks, or any member while the team has no lead online. The founder gets one inbox decision with the repository, branch, full commit id, its diff stat and diff against where `dev` points now (`origin/dev` when it exists, else the local `dev`), and your reason. Only their own **Allow this commit once** grants it: approve-all never answers it, and messages change nothing. Then deliver **without naming a run**: the hooks' `inbox pipeline gate` with no `--run` asks the waiver gate. It allows exactly that commit to exactly that branch in that repository, for one delivery, while `dev` has not moved since the diff was taken, and within 24 hours of the founder's choice. The first allowed boundary consumes it, and the rest of that same delivery (preflight then pre-push, or land then publish) passes for 15 minutes. If `dev` moves first, ask again. Runs lists waivers as waiting, granted, used, expired or refused. The rules and the data contract are in [DESIGN.md](DESIGN.md#exact-sha-repair-waiver).
 
+## Telemetry: what the office records about delivery
+
+`inbox pipeline telemetry [RUN] [--team TEAM --kind gate|integration|publication --since ISO]` prints read-only JSON (`GET /api/pipeline/telemetry`; fields in [API](API.md#pipeline-telemetry-read-only)):
+
+- **Gate results**: every pipeline gate answer, allowed or refused, with stable reason codes and the step concerned (`step_ready` on `checks`, `stale_candidate`, `pipeline_lead_required`, …), from hooks, the CLI and protected handoffs/reviews alike. A gate repeated with the same result within 10 minutes counts up `repeats` on one row.
+- **Integration**: each committed `branch` edit, as `rebase`, `repin` and/or `rebranch` (changed selections), with old and new base/head and whether the round moved.
+- **Publication pending**: a gate allowed a dev push/land/publish for the candidate, but the office has not yet seen it on the published branch. It resolves as `landed` (with the wait), `superseded` (re-pinned) or `abandoned`. The office cannot see a failed push; an unresolved pending row is what that looks like.
+- **Decision waits**: for each founder approval a run presented, the time from that item revision to the founder's first Accept or Needs changes, and the step that endorses it.
+
+The office has **no capture leases or capture attempts**: GPU/capture slots and their retries belong to the project's own capture tooling, so the office records none. Telemetry is never a gate: it is written after the request's transaction, a failing write is only counted, and no decision reads it (see [DESIGN](DESIGN.md)).
+
 ## Outages and limits
 
 If the office/gate is unavailable, protected delivery fails closed with **“Restart the office and retry; editing, tests and local commits remain available.”** There is no cached green response, broad environment bypass, model call, or reasoning intermediary.

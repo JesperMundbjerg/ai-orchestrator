@@ -1,6 +1,6 @@
 // Pipeline HTTP decoders stay beside the domain. Additions to existing requests remain optional.
 import { object, optional, boolean, nonempty, positiveInteger, number, list, record, refine, oneOf, sessionSchema, fail, handoffSchema, reviewSchema, submitSchema, type Schema } from "../../shared/agent-protocol.ts";
-import type { PipelineAbandonInput, PipelineAgentRequest, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidenceInput, PipelineGateInput, PipelineLayoutInput, PipelineOverrideInput, PipelineReportInput, PipelineStartInput, PipelineStatusInput } from "../../shared/pipeline.ts";
+import type { PipelineAbandonInput, PipelineAgentRequest, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidenceInput, PipelineGateInput, PipelineLayoutInput, PipelineOverrideInput, PipelineReportInput, PipelineStartInput, PipelineTelemetryQuery, PipelineStatusInput } from "../../shared/pipeline.ts";
 import type { WaiverGateInput, WaiverRequestInput } from "../../shared/waiver.ts";
 import { validateGraph, validateLayout } from "./model.ts";
 
@@ -41,3 +41,14 @@ export const deliveryReviewSchema = { parse(input: unknown, path?: string) { ret
 export const pipelineSubmitSchema = { parse(input: unknown, path?: string) {
   return { ...submitSchema.parse(input, path), ...object({ pipeline: optional(object({ runId: nonempty })) }).parse(input, path) };
 } };
+/** The read-only telemetry query, from a GET's search parameters. */
+export function telemetryQuery(params: URLSearchParams): PipelineTelemetryQuery {
+  const query: PipelineTelemetryQuery = {};
+  const run = params.get("run"); const team = params.get("team"); const kind = params.get("kind"); const since = params.get("since"); const limit = params.get("limit");
+  if (run) query.runId = run;
+  if (team) query.teamId = team;
+  if (kind) { if (!["gate", "integration", "publication"].includes(kind)) fail("kind", "must be gate, integration or publication"); query.kind = kind as PipelineTelemetryQuery["kind"]; }
+  if (since) { if (Number.isNaN(Date.parse(since))) fail("since", "must be an ISO time"); query.since = new Date(since).toISOString(); }
+  if (limit) { if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 1000) fail("limit", "must be 1–1000"); query.limit = Number(limit); }
+  return query;
+}

@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { PipelineAbandonInput, PipelineArchive, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineProvenance, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
+import type { PipelineAbandonInput, PipelineArchive, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateReason, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineProvenance, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
 import { archivedText, nodeBinding } from "../../shared/pipeline.ts";
 import type { Team, WorldAgent, WorldState } from "../../shared/types.ts";
 import { InboxError } from "../inbox.ts";
@@ -12,8 +12,11 @@ import { activation, pathProblems, policyHash, selected, topological, validateGr
 import { BUILTINS, discover, within } from "./discovery.ts";
 import { capture, committedFingerprint, isAncestor, laneCheckout, publishedBranch, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
 import { founderDecision, presentedBy } from "./approval.ts";
+import { PipelineTelemetry } from "./telemetry.ts";
 
 const short = (sha = "") => sha.slice(0, 10);
+/** A refusal thrown rather than returned, as a telemetry reason code. */
+const thrownCode = (err: unknown): string => err instanceof InboxError ? err.code ?? `http_${err.status}` : "error";
 type Config = { team_id: string; repo_root: string | null; graph: string | null; layout: string; revision: number; layout_revision: number; protected: number; observed_hash: string | null };
 export class Pipelines {
   private db: DatabaseSync;
@@ -22,9 +25,12 @@ export class Pipelines {
   private now: () => Date;
   private changed: () => void;
   private adapters = new Adapters();
+  /** Read-only delivery telemetry; never consulted by any decision here. */
+  readonly telemetry: PipelineTelemetry;
   constructor(db: DatabaseSync, world: () => WorldState, options: { evidenceDir?: string; now?: () => Date; changed?: () => void } = {}) {
     this.db = db; this.world = world; this.evidenceDir = options.evidenceDir ?? join(dataDir(), "pipeline-evidence");
     this.now = options.now ?? (() => new Date()); this.changed = options.changed ?? (() => {});
+    this.telemetry = new PipelineTelemetry(db, this.now);
   }
   private context(teamId: string): { team: Team; state: WorldState; lead: WorldAgent | null } {
     const state = this.world(); const team = state.teams.find(t => t.id === teamId);
@@ -142,15 +148,17 @@ export class Pipelines {
   }
   /** Closes a run whose candidate landed, unless it changed since it was read. */
   private deliver(seen: PipelineRun, landed: { ref: string; tip: string }): PipelineRun {
-    this.atomic(() => {
+    const closed = this.atomic(() => {
       const run = this.raw(seen.id);
-      if (run.state !== "open" || run.archived || run.revision !== seen.revision) return;
+      if (run.state !== "open" || run.archived || run.revision !== seen.revision) return false;
       const at = this.now().toISOString();
       run.state = "delivered"; run.landed = { ...landed, at }; run.revision++; run.updatedAt = at;
       this.db.prepare("UPDATE pipeline_runs SET snapshot = ? WHERE id = ?").run(JSON.stringify(run), run.id);
       this.db.prepare("INSERT INTO events (at, actor, task_id, item_id, kind, detail) VALUES (?, 'office', NULL, NULL, 'pipeline.landed', ?)")
         .run(at, JSON.stringify({ runId: run.id, round: run.round, candidate: run.candidate.head, ...landed }));
+      return true;
     });
+    if (closed) this.telemetry.note("publication", seen.id, seen.teamId, { how: "landed", candidate: seen.candidate.head, ref: landed.ref, tip: landed.tip });
     return this.get(seen.id);
   }
   /** Step states from the one evidence evaluator; `fresh` says whether candidate-bound evidence still describes the candidate. */
@@ -266,7 +274,8 @@ export class Pipelines {
   branch(actor: WorldAgent, input: PipelineBranchInput): PipelineRun {
     // A former first mate may not retrieve an earlier re-base receipt.
     this.lead(actor, this.unarchived(this.raw(input.runId)).teamId);
-    return this.replay(actor, "branch", input, () => {
+    let changed: { before: PipelineRun; after: PipelineRun } | null = null;
+    const result = this.replay(actor, "branch", input, () => {
       if (!input.base && input.expectedRevision === undefined) throw new InboxError(400, "branch edit needs expectedRevision");
       const run = this.editable(actor, input.runId, input.expectedRevision);
       if (!input.rationale.trim()) throw new InboxError(400, "record why these branches apply");
@@ -292,22 +301,39 @@ export class Pipelines {
         run.scopeRevision = (run.scopeRevision ?? 0) + 1;
         run.steps.forEach(s => { s.completedBy = null; });
       }
+      const before = this.raw(run.id);
       run.selections = choices; run.rationale = input.rationale;
-      return this.persist(run);
+      const after = this.persist(run); changed = { before, after }; return after;
     });
+    // Noted once the edit committed; a replayed request changed nothing and notes nothing.
+    if (changed) this.integration(actor, changed);
+    return result;
+  }
+  private integration(actor: WorldAgent, { before, after }: { before: PipelineRun; after: PipelineRun }): void {
+    try {
+      const changes = [...(after.candidate.base !== before.candidate.base ? ["rebase"] : []), ...(after.candidate.head !== before.candidate.head || after.candidate.fingerprint !== before.candidate.fingerprint ? ["repin"] : []),
+        ...((after.scopeRevision ?? 0) !== (before.scopeRevision ?? 0) ? ["rebranch"] : [])];
+      this.telemetry.note("integration", after.id, after.teamId, { agentId: actor.id, changes: changes.length ? changes : ["unchanged"], round: after.round, roundBumped: after.round !== before.round,
+        scopeRevision: after.scopeRevision ?? 0, oldBase: before.candidate.base, newBase: after.candidate.base, oldHead: before.candidate.head, newHead: after.candidate.head,
+        fields: Object.keys(after.selections).filter(k => after.selections[k] !== before.selections[k]) });
+      if (after.candidate.head !== before.candidate.head) this.telemetry.note("publication", after.id, after.teamId, { how: "superseded", candidate: before.candidate.head });
+    } catch { /* telemetry never fails an edit */ }
   }
   abandon(actor: WorldAgent, input: PipelineAbandonInput): PipelineRun {
     // Even receipt retrieval is restricted to the team's current first mate.
     this.lead(actor, this.unarchived(this.raw(input.runId)).teamId);
-    return this.replay(actor, "abandon", input, () => {
+    let closed = false;
+    const result = this.replay(actor, "abandon", input, () => {
       const run = this.get(input.runId);
       this.lead(actor, run.teamId);
       if (run.state !== "open") throw new InboxError(409, `pipeline run is already ${run.state}`);
       if (!input.notes?.trim()) throw new InboxError(400, "record why this run will not be delivered");
       run.state = "abandoned";
       run.abandonment = { notes: input.notes.trim(), byAgentId: actor.id, at: this.now().toISOString() };
-      return this.persist(run);
+      closed = true; return this.persist(run);
     });
+    if (closed) this.telemetry.note("publication", result.id, result.teamId, { how: "abandoned" });
+    return result;
   }
   assign(actor: WorldAgent, input: PipelineAssignInput): PipelineRun {
     return this.replay(actor, "assign", input, () => {
@@ -454,44 +480,67 @@ export class Pipelines {
     const binding = this.db.prepare("SELECT fingerprint FROM pipeline_work_bindings WHERE work_id = ? AND round = ?").get(id, round!);
     if (binding && fingerprint && binding.fingerprint !== fingerprint) throw new InboxError(409, "review candidate differs from the handed-over candidate", "pipeline_stale_candidate");
   }
+  /** Every result is noted as telemetry, refusals included; the note never changes, delays or fails the result. */
   gate(actor: WorldAgent, input: PipelineGateInput): PipelineGateResult {
+    const codes: PipelineGateReason[] = [];
+    try {
+      const result = this.evaluate(actor, input, codes);
+      this.noteGate(actor, input, result.allowed ? "allowed" : "refused", codes, result.reasons);
+      return result;
+    } catch (err) {
+      this.noteGate(actor, input, "refused", [...codes, { code: thrownCode(err) }], [err instanceof Error ? err.message : String(err)]);
+      throw err;
+    }
+  }
+  private noteGate(actor: WorldAgent, input: Partial<PipelineGateInput>, outcome: "allowed" | "refused", codes: PipelineGateReason[], reasons: string[]): void {
+    try {
+      let teamId = actor.teamId ?? null;
+      try { if (input.runId) teamId = this.raw(input.runId).teamId; } catch { /* an unknown run is still a refusal worth counting */ }
+      const unique = [...new Map(codes.map(c => [JSON.stringify(c), c])).values()];
+      this.telemetry.note("gate", input.runId ?? null, teamId, { agentId: actor.id, delivery: input.delivery ?? null, node: input.nodeId ?? null, operation: input.operation ?? null, ref: input.ref ?? null,
+        round: input.round ?? null, candidate: input.candidate ?? null, outcome, reasons: unique, ...(outcome === "refused" ? { text: reasons.slice(0, 12).map(r => r.slice(0, 300)) } : {}) });
+    } catch { /* telemetry never fails a gate */ }
+  }
+  private evaluate(actor: WorldAgent, input: PipelineGateInput, codes: PipelineGateReason[]): PipelineGateResult {
     const run = this.get(input.runId); const reasons: string[] = [];
-    if (run.archived) return { allowed: false, runId: run.id, round: run.round, candidate: run.candidate.head, reasons: [`run is archived: ${archivedText(run.archived)}`] };
+    const refuse = (code: string, text: string, node?: string) => { reasons.push(text); codes.push(node ? { code, node } : { code }); };
+    if (run.archived) { refuse("run_archived", `run is archived: ${archivedText(run.archived)}`); return { allowed: false, runId: run.id, round: run.round, candidate: run.candidate.head, reasons }; }
     this.lead(actor, run.teamId);
-    if (run.state !== "open") reasons.push(`run is already ${run.state}`);
-    if (run.round !== input.round) reasons.push("stale run round");
-    if (run.candidate.head !== input.candidate || !sameCandidate(run.candidate)) reasons.push("stale candidate");
+    if (run.state !== "open") refuse("run_closed", `run is already ${run.state}`);
+    if (run.round !== input.round) refuse("stale_round", "stale run round");
+    if (run.candidate.head !== input.candidate || !sameCandidate(run.candidate)) refuse("stale_candidate", "stale candidate");
     if (input.delivery === "dev") try {
-      if (capture(run.candidate.checkout, run.candidate.head, run.candidate.head).changedPaths.length) reasons.push("commit intended bytes and refresh the candidate pin before dev delivery; never sweep unrelated dirt");
-    } catch { reasons.push("committed dev candidate is unavailable"); }
+      if (capture(run.candidate.checkout, run.candidate.head, run.candidate.head).changedPaths.length) refuse("uncommitted_candidate", "commit intended bytes and refresh the candidate pin before dev delivery; never sweep unrelated dirt");
+    } catch { refuse("candidate_unavailable", "committed dev candidate is unavailable"); }
     const view = this.teamView(run.teamId);
-    if (!view.graph || !view.repoRoot) reasons.push("protected pipeline or repository is unavailable");
-    reasons.push(...selected(run.graph, run.selections), ...pathProblems(run.graph, run.selections, run.candidate.changedPaths));
+    if (!view.graph || !view.repoRoot) refuse("pipeline_unavailable", "protected pipeline or repository is unavailable");
+    for (const p of selected(run.graph, run.selections)) refuse("selection_missing", p);
+    for (const p of pathProblems(run.graph, run.selections, run.candidate.changedPaths)) refuse("path_scope", p);
     const { active, edges } = activation(run.graph, run.selections);
     let required = new Set([...active].filter(id => run.graph.nodes.find(n => n.id === id)?.kind !== "delivery"));
     if (input.nodeId) {
       const node = run.graph.nodes.find(n => n.id === input.nodeId);
-      if (!node || !active.has(node.id) || !node.evidence?.includes("review") || input.delivery !== "handoff") reasons.push("not an active internal review step");
+      if (!node || !active.has(node.id) || !node.evidence?.includes("review") || input.delivery !== "handoff") refuse("not_review_step", "not an active internal review step", input.nodeId);
       required = new Set<string>();
       const visit = (id: string) => { for (const e of run.graph.edges.filter(e => e.to === id && edges.has(e.id))) if (!required.has(e.from)) { required.add(e.from); visit(e.from); } };
       if (node) visit(node.id);
-    } else if (!run.graph.nodes.some(n => n.kind === "delivery" && n.delivery === input.delivery && active.has(n.id))) reasons.push(`no active ${input.delivery} boundary`);
+    } else if (!run.graph.nodes.some(n => n.kind === "delivery" && n.delivery === input.delivery && active.has(n.id))) refuse("no_boundary", `no active ${input.delivery} boundary`);
     // Step states come from get()'s evidence evaluator, the same one Runs shows; its reasons travel with the refusal.
-    for (const step of run.steps) if (required.has(step.nodeId) && step.state !== "done") reasons.push(`${step.nodeId}: ${step.state}${step.problems?.length ? ` (${step.problems.join("; ")})` : ""}`);
+    for (const step of run.steps) if (required.has(step.nodeId) && step.state !== "done") refuse(`step_${step.state}`, `${step.nodeId}: ${step.state}${step.problems?.length ? ` (${step.problems.join("; ")})` : ""}`, step.nodeId);
     const baselineFailures = run.steps.filter(s => required.has(s.nodeId) && s.state === "done" && s.baselineFailures?.length).map(s => `${s.nodeId}: fails as on base: ${s.baselineFailures!.join("; ")}`);
     // The graph and source versions are the contract captured at start. Updating a skill for
     // future runs must not invalidate completed work; candidate evidence is still checked above.
     if (input.delivery === "review") {
-      if (!input.workId || run.workId !== input.workId || run.workRound !== input.workRound) reasons.push("review run is bound to another work round");
+      if (!input.workId || run.workId !== input.workId || run.workRound !== input.workRound) refuse("work_round_mismatch", "review run is bound to another work round");
       else this.checkWork(input.workId, input.workRound, run.teamId, run.candidate.fingerprint);
     }
     if (input.operation) {
-      if (input.delivery !== "dev" || !input.repo || !input.ref) reasons.push("protected Git operation needs dev boundary, repository and ref");
-      if (["pr", "merge"].includes(input.operation)) reasons.push("v1 has no authorized release/PR/merge boundary");
-      if (input.repo) try { if (repository(input.repo).common !== repository(run.candidate.repoRoot).common) reasons.push("operation repository does not match run"); } catch { reasons.push("operation repository unavailable"); }
+      if (input.delivery !== "dev" || !input.repo || !input.ref) refuse("operation_incomplete", "protected Git operation needs dev boundary, repository and ref");
+      if (["pr", "merge"].includes(input.operation)) refuse("operation_unsupported", "v1 has no authorized release/PR/merge boundary");
+      if (input.repo) try { if (repository(input.repo).common !== repository(run.candidate.repoRoot).common) refuse("operation_repo_mismatch", "operation repository does not match run"); } catch { refuse("operation_repo_unavailable", "operation repository unavailable"); }
       const branch = view.repoRoot ? this.adapters.read(view.repoRoot, basename(view.repoRoot)).adapter?.integrationBranch ?? "dev" : "dev";
       const target = input.ref?.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
-      if (target !== branch || target === "main" || target === "master") reasons.push("ref is not the run repository's protected dev delivery branch");
+      if (target !== branch || target === "main" || target === "master") refuse("ref_not_protected", "ref is not the run repository's protected dev delivery branch");
     }
     return { allowed: !reasons.length, runId: run.id, round: run.round, candidate: run.candidate.head, reasons: [...new Set(reasons)], ...(baselineFailures.length ? { baselineFailures } : {}) };
   }
@@ -500,10 +549,13 @@ export class Pipelines {
     if (!actor.teamId) return null;
     const view = this.teamView(actor.teamId);
     if (!view.protected) return null;
-    this.lead(actor, actor.teamId);
-    if (!input || input.delivery !== delivery) throw new InboxError(409, "protected delivery needs a pipeline run, candidate and round", "pipeline_gate_required");
-    const run = this.raw(input.runId);
-    if (run.teamId !== actor.teamId) throw new InboxError(403, "this is another team's run");
+    // Refusals before the gate runs are gate results too; the gate notes its own.
+    const before = (code: string, err: InboxError) => { this.noteGate(actor, { ...input, delivery }, "refused", [{ code }], [err.message]); return err; };
+    try { this.lead(actor, actor.teamId); } catch (err) { throw err instanceof InboxError ? before(thrownCode(err), err) : err; }
+    if (!input || input.delivery !== delivery) throw before("gate_required", new InboxError(409, "protected delivery needs a pipeline run, candidate and round", "pipeline_gate_required"));
+    let run: PipelineRun;
+    try { run = this.raw(input.runId); } catch (err) { throw err instanceof InboxError ? before(thrownCode(err), err) : err; }
+    if (run.teamId !== actor.teamId) throw before("other_team_run", new InboxError(403, "this is another team's run"));
     const result = this.gate(actor, input);
     if (!result.allowed) throw new InboxError(409, `delivery refused: ${result.reasons.join("; ")}`, "pipeline_gate_blocked");
     return run;
