@@ -60,6 +60,12 @@
 .pipeline-editor a { color: var(--accent); }
 .pipeline-run-step code, .pipeline-source { display: block; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 11px; }
 .pipeline-run-step p { margin: 8px 0; }
+.pipeline-run-ledger { display: grid; gap: 6px; margin-bottom: 16px; }
+.pipeline-run-entry { text-align: left; overflow-wrap: anywhere; }
+.pipeline-run-entry small { display: block; margin-top: 4px; }
+.pipeline-abandoned { color: var(--muted); }
+.pipeline-abandoned .pipeline-state { color: var(--muted); background: var(--panel-2); }
+.pipeline-abandoned .pipeline-run-step { background: var(--panel); }
 .pipeline-evidence-by { display: block; margin-top: 4px; }
 .pipeline-empty { padding: 30px; color: var(--muted); }
 .pipeline-coordinates { display: flex; gap: 8px; }

@@ -116,6 +116,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("PUT", /^\/api\/world\/teams\/([\w-]+)\/pipeline\/layout$/, layoutSchema, (_r, b, [id]) => needWorld().pipelines.saveLayout(id!, b)),
     route("POST", /^\/api\/agent\/pipeline\/start$/, pipelineSchemas.start, (_r, b) => needWorld().pipelines.start(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/pipeline\/branch$/, pipelineSchemas.branch, (_r, b) => needWorld().pipelines.branch(needWorld().resolve(b.session), b)),
+    route("POST", /^\/api\/agent\/pipeline\/abandon$/, pipelineSchemas.abandon, (_r, b) => needWorld().pipelines.abandon(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/pipeline\/assign$/, pipelineSchemas.assign, (_r, b) => needWorld().pipelines.assign(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/pipeline\/report$/, pipelineSchemas.report, (_r, b) => needWorld().pipelines.report(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/pipeline\/done$/, pipelineSchemas.done, (_r, b) => needWorld().pipelines.done(needWorld().resolve(b.session), b)),

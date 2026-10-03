@@ -1,6 +1,6 @@
 // Pipeline HTTP decoders stay beside the domain. Additions to existing requests remain optional.
 import { object, optional, nonempty, positiveInteger, number, list, record, refine, oneOf, sessionSchema, fail, handoffSchema, reviewSchema, submitSchema, type Schema } from "../../shared/agent-protocol.ts";
-import type { PipelineAgentRequest, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidenceInput, PipelineGateInput, PipelineLayoutInput, PipelineOverrideInput, PipelineReportInput, PipelineStartInput, PipelineStatusInput } from "../../shared/pipeline.ts";
+import type { PipelineAbandonInput, PipelineAgentRequest, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidenceInput, PipelineGateInput, PipelineLayoutInput, PipelineOverrideInput, PipelineReportInput, PipelineStartInput, PipelineStatusInput } from "../../shared/pipeline.ts";
 import { validateGraph, validateLayout } from "./model.ts";
 
 const revision = refine(number, (n, p) => { if (!Number.isSafeInteger(n) || n < 0) fail(p, "must be a non-negative integer"); });
@@ -17,6 +17,7 @@ const edit = { session: sessionSchema, runId: nonempty, clientId: nonempty, expe
 export const pipelineSchemas = {
   start: object({ session: sessionSchema, clientId: nonempty, checkout: optional(nonempty), base: optional(nonempty), candidate: optional(nonempty), workId: optional(nonempty), workRound: optional(positiveInteger) }) as Schema<PipelineAgentRequest<PipelineStartInput>>,
   branch: object({ ...edit, selections: values, rationale: nonempty, candidate: optional(nonempty) }) as Schema<PipelineAgentRequest<PipelineBranchInput>>,
+  abandon: object({ session: sessionSchema, runId: nonempty, clientId: nonempty, notes: nonempty }) as Schema<PipelineAgentRequest<PipelineAbandonInput>>,
   assign: object({ ...edit, nodeId: nonempty, agentId: nonempty }) as Schema<PipelineAgentRequest<PipelineAssignInput>>,
   report: object({ ...edit, nodeId: nonempty, evidence: list(evidence), notes: nonempty }) as Schema<PipelineAgentRequest<PipelineReportInput>>,
   done: object({ ...edit, nodeId: nonempty, evidence: list(evidence), notes: nonempty, evidenceIds: optional(list(nonempty)) }) as Schema<PipelineAgentRequest<PipelineDoneInput>>,

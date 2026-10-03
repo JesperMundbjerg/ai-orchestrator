@@ -187,7 +187,9 @@ export interface PipelineRun {
   selections: Record<string, PipelineValue>;
   rationale: string;
   steps: PipelineStep[];
-  state: "open" | "delivered";
+  state: "open" | "delivered" | "abandoned";
+  /** Terminal closure, without deleting the candidate, graph or evidence. */
+  abandonment?: { notes: string; byAgentId: string; at: string };
   workId: string | null;
   workRound: number | null;
   createdAt: string;
@@ -233,6 +235,9 @@ export interface PipelineBranchInput {
   /** Explicitly refresh intended bytes after implementation; old completions become stale. */
   candidate?: string;
 }
+export interface PipelineAbandonInput {
+  runId: string; clientId: string; notes: string;
+}
 export interface PipelineAssignInput {
   runId: string; clientId: string; expectedRevision: number; nodeId: string; agentId: string;
 }
@@ -244,7 +249,7 @@ export interface PipelineDoneInput extends PipelineReportInput {
   /** Existing crew reports to endorse; supplied evidence is added atomically. */
   evidenceIds?: string[];
 }
-/** POST /api/agent/pipeline/:start|branch|assign|done|report|status|gate */
+/** POST /api/agent/pipeline/:start|branch|abandon|assign|done|report|status|gate */
 export type PipelineAgentRequest<T> = T & { session: SessionInput };
 export interface PipelineStatusInput { runId?: string }
 export interface PipelineStatus { team: PipelineTeamView; run: PipelineRun | null; text: string }

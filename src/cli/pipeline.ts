@@ -18,7 +18,7 @@ const integer = (v: unknown, name: string): number | undefined => {
 };
 export async function pipelineCommand(args: string[], flags: Flags, session: SessionInput): Promise<void> {
   const [operation, positionalRun, node, agent] = args;
-  if (!["start", "branch", "assign", "done", "report", "status", "gate"].includes(operation ?? "")) throw new Error("inbox pipeline start|branch|assign|done|report|status|gate; --json FILE accepts a full operation payload");
+  if (!["start", "branch", "abandon", "assign", "done", "report", "status", "gate"].includes(operation ?? "")) throw new Error("inbox pipeline start|branch|abandon|assign|done|report|status|gate; --json FILE accepts a full operation payload");
   const payload = flags.json ? JSON.parse(readFileSync(flags.json === "-" ? 0 : flags.json, "utf8")) as Record<string, unknown> : {};
   const runId = flags.run ?? positionalRun ?? payload.runId as string | undefined;
   if (operation !== "start" && operation !== "status" && !runId) throw new Error("name the pipeline run with RUN or --run RUN");
@@ -46,6 +46,10 @@ export async function pipelineCommand(args: string[], flags: Flags, session: Ses
     body.checkout = flags.checkout ? resolve(flags.checkout) : payload.checkout;
     body.base = flags.base ?? payload.base; body.candidate = flags.candidate ?? payload.candidate;
     body.workId = flags.work ?? payload.workId; body.workRound = integer(flags["work-round"] ?? payload.workRound, "work-round");
+  } else if (operation === "abandon") {
+    // Do not derive a revision from status: retries must send the same payload
+    // after closure, including when the original response was lost.
+    body.notes = flags.notes ?? payload.notes;
   } else {
     body.expectedRevision = integer(flags.revision ?? payload.expectedRevision, "revision") ?? run!.revision;
     body.nodeId = flags.node ?? node ?? payload.nodeId;

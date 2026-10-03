@@ -228,6 +228,69 @@ test("crew cannot start, complete, branch, preflight or hand off; failed gate wr
   assert.deepEqual(f.counts(), before); assert.equal(f.p.get(run.id).state, "open");
 });
 
+test("abandon is current-lead-only, terminal, replay-safe and preserves evidence after restart", t => {
+  const g = graph(); g.nodes[0]!.evidence = ["report"];
+  const f = fixture(t, g); let run = f.start();
+  const report = join(f.dir, "retained.md"); writeFileSync(report, "Evidence retained for the record");
+  run = f.p.done(f.lead, { runId: run.id, clientId: "retained-report", expectedRevision: run.revision, nodeId: "checks", notes: "Reviewed", evidence: [{ kind: "report", summary: "Scoped review", path: report }] });
+  assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, true);
+  const input = { runId: run.id, clientId: "close-wave", notes: "Superseded by another approach" };
+  const before = f.counts();
+  assert.throws(() => f.p.abandon(f.crew, input), { status: 403 });
+  assert.throws(() => f.p.abandon(f.reviewer, input), { status: 403 });
+  assert.throws(() => f.p.abandon(f.lead, { ...input, notes: " " }), { status: 400 });
+  assert.deepEqual(f.counts(), before);
+  f.lead.role = "member"; f.crew.role = "lead";
+  assert.throws(() => f.p.abandon(f.lead, input), { status: 403 });
+  const abandoned = f.p.abandon(f.crew, input);
+  assert.equal(abandoned.state, "abandoned"); assert.equal(abandoned.revision, run.revision + 1);
+  assert.equal(abandoned.abandonment!.notes, input.notes); assert.equal(abandoned.abandonment!.byAgentId, f.crew.id);
+  assert.deepEqual(abandoned.steps, run.steps); assert.deepEqual(abandoned.candidate, run.candidate); assert.deepEqual(abandoned.graph, run.graph);
+  const counts = f.counts();
+  assert.deepEqual(f.p.abandon(f.crew, input), abandoned); assert.deepEqual(f.counts(), counts);
+  assert.throws(() => f.p.abandon(f.crew, { ...input, notes: "different reason" }), { status: 409, code: "replay_conflict" });
+  assert.throws(() => f.p.abandon(f.crew, { ...input, clientId: "second-close" }), /already abandoned/);
+  const gate = f.p.gate(f.crew, f.gate(run)); assert.equal(gate.allowed, false); assert.ok(gate.reasons.includes("run is already abandoned"));
+  assert.throws(() => f.m.handoff(f.crew, { title: "Closed wave", summary: "No delivery", pipeline: f.gate(run) }), { status: 409, code: "pipeline_gate_blocked" });
+  assert.throws(() => f.p.branch(f.crew, { runId: run.id, clientId: "reopen", expectedRevision: abandoned.revision, selections: {}, rationale: "Try again" }), /already abandoned/);
+  assert.throws(() => f.p.presentation(f.crew, run.id), /closed candidate/);
+  assert.doesNotMatch(f.p.brief("authors", f.crew.id), new RegExp(run.id));
+  assert.equal(f.p.status(f.crew).run, null); assert.match(f.p.status(f.crew).text, /Start a bounded wave/);
+  assert.match(f.p.status(f.crew, run.id).text, /abandoned: Superseded/);
+  writeFileSync(join(f.root, "src.ts"), "Later implementation\n"); f.reopen();
+  assert.deepEqual(f.p.abandon(f.crew, input), abandoned); assert.deepEqual(f.p.get(run.id).steps, abandoned.steps);
+  const evidence = abandoned.steps[0]!.evidence[0]!;
+  assert.equal(readFileSync(f.p.evidenceFile(evidence.id), "utf8"), "Evidence retained for the record");
+  const next = f.p.start(f.crew, { clientId: "replacement-wave" });
+  assert.equal(f.p.status(f.crew).run!.id, next.id);
+  assert.match(f.p.brief("authors", f.crew.id), new RegExp(next.id));
+  assert.doesNotMatch(f.p.brief("authors", f.crew.id), new RegExp(run.id));
+});
+
+test("delivered runs cannot be abandoned", t => {
+  const f = fixture(t); const run = f.done(f.start());
+  f.m.handoff(f.lead, { title: "Delivered", summary: "Complete", pipeline: f.gate(run) });
+  const before = f.counts();
+  assert.throws(() => f.p.abandon(f.lead, { runId: run.id, clientId: "too-late", notes: "Not needed" }), /already delivered/);
+  assert.equal(f.p.get(run.id).state, "delivered"); assert.deepEqual(f.counts(), before);
+});
+
+test("HTTP and CLI abandon validate reasons, refuse crew and replay with client-id alone", async t => {
+  const f = fixture(t, graph("dev")); const h = await httpFixture(t, f); const run = f.done(f.start());
+  const input = { session: h.session(), runId: run.id, clientId: "http-abandon" };
+  for (const notes of [undefined, "", " ", 12]) assert.equal((await h.request("POST", "/api/agent/pipeline/abandon", { ...input, notes })).status, 400);
+  assert.equal((await h.request("POST", "/api/agent/pipeline/abandon", { ...input, session: h.session(f.crew.id), notes: "Skip" })).status, 403);
+  assert.equal((await h.request("GET", "/api/agent/pipeline/abandon")).status, 405);
+  const args = ["pipeline", "abandon", run.id, "--notes", "Replaced wave", "--client-id", "cli-abandon", "--harness", "manual", "--session", f.lead.id];
+  const first = await h.cli(args); assert.equal(first.status, 0, first.stderr);
+  const abandoned = JSON.parse(first.stdout); assert.equal(abandoned.state, "abandoned");
+  const second = await h.cli(args); assert.equal(second.status, 0, second.stderr); assert.deepEqual(JSON.parse(second.stdout), abandoned);
+  const mismatch = await h.request("POST", "/api/agent/pipeline/abandon", { ...input, clientId: "cli-abandon", notes: "Changed reason" });
+  assert.equal(mismatch.status, 409); assert.equal(mismatch.body.code, "replay_conflict");
+  const refused = await h.cli(["pipeline", "gate", "--run", run.id, "--harness", "manual", "--session", f.lead.id]);
+  assert.notEqual(refused.status, 0); assert.match(refused.stderr, /already abandoned/);
+});
+
 test("declared branches cannot bypass path guards or skip an activated required step", t => {
   const g = graph(); g.fields = [{ id: "kind", label: "Kind", type: "enum", options: ["code", "docs"] }];
   g.nodes.splice(1, 0, { id: "kind", label: "Kind", kind: "condition", field: "kind" }, { id: "code", label: "Code review", kind: "step", source: "builtin:check", evidence: ["check"] });

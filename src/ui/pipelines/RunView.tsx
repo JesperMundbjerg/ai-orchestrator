@@ -18,17 +18,23 @@ function Evidence({ evidence }: { evidence: PipelineEvidence }) {
 export function RunView({ runs, selectedId, onSelect, refresh, busy }: {
   runs: PipelineRun[]; selectedId: string; onSelect: (id: string) => void; refresh: () => void; busy: boolean;
 }) {
-  const run = runs.find((r) => r.id === selectedId) ?? runs[0];
+  const ordered = [...runs].sort((a, b) => Number(a.state !== "open") - Number(b.state !== "open"));
+  const run = ordered.find((r) => r.id === selectedId) ?? ordered[0];
   return <div className="pipeline-runs">
     <div className="row"><h3>Run ledger</h3><button className="ghost small" disabled={busy} onClick={refresh}>Refresh evidence</button></div>
     <p className="pipeline-help">Each run keeps its own graph and candidate. Editing the team default does not rewrite this evidence. Only the current first mate may complete steps.</p>
     {!run ? <p>No runs yet. The first mate starts a delivery wave with <code>inbox pipeline start</code>.</p> : <>
-      <label>Run<select value={run.id} onChange={(event) => onSelect(event.target.value)}>{runs.map((r) => <option key={r.id} value={r.id}>{r.id} · {runSummary(r)}</option>)}</select></label>
+      <nav className="pipeline-run-ledger" aria-label="Runs">{ordered.map((r) => <button key={r.id} className={`ghost pipeline-run-entry${r.state === "abandoned" ? " pipeline-abandoned" : ""}`} aria-pressed={r.id === run.id} onClick={() => onSelect(r.id)}>
+        <span>{r.id} · {r.state} · {runSummary(r)}</span>
+        {r.abandonment && <small>Abandoned: {r.abandonment.notes}</small>}
+      </button>)}</nav>
+      <section className={run.state === "abandoned" ? "pipeline-abandoned" : undefined} aria-label="Selected run">
       <p><strong>{run.graph.label}</strong> · {runSummary(run)} · {run.state}</p>
+      {run.abandonment && <p>Abandoned: {run.abandonment.notes} · recorded by {run.abandonment.byAgentId}</p>}
       <code>Candidate {run.candidate.head}<br />Round {run.round} · ledger revision {run.revision}<br />First mate {run.leadId ?? "not assigned"}</code>
       <p>{run.rationale || "No branch rationale recorded."}</p>
       <p className="pipeline-help">{Object.entries(run.selections).map(([field, value]) => `${run.graph.fields.find((f) => f.id === field)?.label ?? field}: ${String(value)}`).join(" · ")}</p>
-      {run.state !== "delivered" && <p className="pipeline-notice">Not delivered. All active required steps need current evidence; a green ledger is not proof of publication.</p>}
+      {run.state === "open" && <p className="pipeline-notice">Not delivered. All active required steps need current evidence; a green ledger is not proof of publication.</p>}
       <ol>{run.graph.nodes.map((node) => {
         const step = run.steps.find((s) => s.nodeId === node.id);
         const status = stepState(step);
@@ -39,6 +45,7 @@ export function RunView({ runs, selectedId, onSelect, refresh, busy }: {
           {step?.evidence.length ? <ul>{step.evidence.map((evidence) => <Evidence key={evidence.id} evidence={evidence} />)}</ul> : <span className="muted">No evidence recorded.</span>}
         </li>;
       })}</ol>
+      </section>
     </>}
   </div>;
 }

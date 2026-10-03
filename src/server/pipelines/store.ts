@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelinePalette, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
+import type { PipelineAbandonInput, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelinePalette, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
 import type { Team, WorldAgent, WorldState } from "../../shared/types.ts";
 import { InboxError } from "../inbox.ts";
 import { dataDir, requestFingerprint } from "../db.ts";
@@ -29,7 +29,7 @@ export class Pipelines {
     return { team, state, lead: state.agents.find(a => a.teamId === teamId && a.role === "lead") ?? null };
   }
   private lead(actor: WorldAgent, teamId: string): void {
-    if (this.context(teamId).lead?.id !== actor.id) throw new InboxError(403, "Only the current first mate can select branches, complete steps or deliver; report to your lead.", "pipeline_lead_required");
+    if (this.context(teamId).lead?.id !== actor.id) throw new InboxError(403, "Only the current first mate can select branches, complete steps, abandon runs or deliver; report to your lead.", "pipeline_lead_required");
   }
   private config(teamId: string): Config {
     this.db.prepare("INSERT OR IGNORE INTO team_pipelines (team_id) VALUES (?)").run(teamId);
@@ -102,6 +102,7 @@ export class Pipelines {
   }
   get(id: string): PipelineRun {
     const run = this.raw(id); run.leadId = this.context(run.teamId).lead?.id ?? null;
+    if (run.state === "abandoned") return run;
     const { active, edges } = activation(run.graph, run.selections);
     const fresh = run.state === "delivered" || sameCandidate(run.candidate);
     for (const key of topological(run.graph)) {
@@ -167,7 +168,7 @@ export class Pipelines {
     const run = this.raw(runId);
     if (lead) this.lead(actor, run.teamId);
     else if (actor.teamId !== run.teamId) throw new InboxError(403, "only this team's crew may report pipeline evidence");
-    if (run.state !== "open") throw new InboxError(409, "pipeline run is already delivered");
+    if (run.state !== "open") throw new InboxError(409, `pipeline run is already ${run.state}`);
     if (run.revision !== expectedRevision) throw new InboxError(409, "run changed; refresh status before editing", "pipeline_revision_conflict");
     return run;
   }
@@ -186,6 +187,19 @@ export class Pipelines {
       if (paths.length) throw new InboxError(422, paths.join("; "), "pipeline_branch_conflict");
       if (JSON.stringify(choices) !== JSON.stringify(run.selections)) run.steps.forEach(s => { s.completedBy = null; });
       run.selections = choices; run.rationale = input.rationale;
+      return this.persist(run);
+    });
+  }
+  abandon(actor: WorldAgent, input: PipelineAbandonInput): PipelineRun {
+    // Even receipt retrieval is restricted to the team's current first mate.
+    this.lead(actor, this.raw(input.runId).teamId);
+    return this.replay(actor, "abandon", input, () => {
+      const run = this.get(input.runId);
+      this.lead(actor, run.teamId);
+      if (run.state !== "open") throw new InboxError(409, `pipeline run is already ${run.state}`);
+      if (!input.notes?.trim()) throw new InboxError(400, "record why this run will not be delivered");
+      run.state = "abandoned";
+      run.abandonment = { notes: input.notes.trim(), byAgentId: actor.id, at: this.now().toISOString() };
       return this.persist(run);
     });
   }
@@ -266,7 +280,7 @@ export class Pipelines {
   gate(actor: WorldAgent, input: PipelineGateInput): PipelineGateResult {
     const run = this.get(input.runId); const reasons: string[] = [];
     this.lead(actor, run.teamId);
-    if (run.state !== "open") reasons.push("run is already delivered");
+    if (run.state !== "open") reasons.push(`run is already ${run.state}`);
     if (run.round !== input.round) reasons.push("stale run round");
     if (run.candidate.head !== input.candidate || !sameCandidate(run.candidate)) reasons.push("stale candidate");
     if (input.delivery === "dev") try {
@@ -330,7 +344,7 @@ export class Pipelines {
   }
   presentation(actor: WorldAgent, runId: string): string {
     const run = this.get(runId); this.lead(actor, run.teamId);
-    if (run.state !== "open" || !sameCandidate(run.candidate)) throw new InboxError(409, "cannot present a stale or delivered candidate");
+    if (run.state !== "open" || !sameCandidate(run.candidate)) throw new InboxError(409, "cannot present a stale or closed candidate");
     return `Pipeline snapshot: run ${run.id}, round ${run.round}, candidate ${run.candidate.head}, intended bytes ${run.candidate.fingerprint}.`;
   }
   evidenceFile(id: string): string {
@@ -347,7 +361,7 @@ export class Pipelines {
   }
   status(actor: WorldAgent, runId?: string): PipelineStatus {
     if (!actor.teamId) throw new InboxError(409, "join a team to view its pipeline");
-    const team = this.teamView(actor.teamId); const run = runId ? this.get(runId) : team.runs.find(r => r.state === "open") ?? team.runs[0] ?? null;
+    const team = this.teamView(actor.teamId); const run = runId ? this.get(runId) : team.runs.find(r => r.state === "open") ?? null;
     if (run && run.teamId !== actor.teamId) throw new InboxError(403, "this run belongs to another team");
     return { team, run, text: this.brief(actor.teamId, actor.id, run) };
   }
@@ -357,8 +371,8 @@ export class Pipelines {
     const run = given === undefined ? view.runs.find(r => r.state === "open") ?? null : given;
     const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : "Do your assigned step and use inbox pipeline report; only your first mate may complete steps or deliver.";
     return [`Pipeline: ${view.graph?.label ?? "unavailable"} (${view.source}, policy ${view.policyHash?.slice(0, 12) ?? "missing"}). ${role}`,
-      ...view.problems, ...(run ? [`Run ${run.id}, revision ${run.revision}, round ${run.round}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state}${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
-      "Commands: inbox pipeline start|branch|assign|done|report|status|gate. No model is called; a gate allow is preflight, never a publication receipt."].join("\n");
+      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}), revision ${run.revision}, round ${run.round}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state}${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
+      "Commands: inbox pipeline start|branch|abandon|assign|done|report|status|gate. No model is called; a gate allow is preflight, never a publication receipt."].join("\n");
   }
   private atomic<T>(fn: () => T): T {
     const own = !this.db.isTransaction;

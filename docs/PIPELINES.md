@@ -65,6 +65,20 @@ Operations distinguish `push`, `pr`, `merge`, `land` and `publish`; the office m
 
 The pre-push hook checks **every protected remote ref in Git's actual stdin**, using that update's included candidate SHA (not merely `HEAD`). Protected deletion is refused. If canonical landing produces a different commit SHA, the nested push is deliberately refused until the run's owned candidate checkout is pinned to that actual landed SHA and refreshed with `inbox pipeline branch RUN --candidate SHA --notes "…"`. Unchanged intended bytes preserve existing receipts; expanded/changed bytes require revalidation. Retry publication-pending with `worktree-sync publish`, never by re-landing the wave. There is no blanket mapped-SHA exception. Feature-only pushes do not contact the office. Tool hooks are read-only preflight; the Git hook rechecks at publication. An allow response is **not delivery evidence** and does not record landing/publication success: canonical delivery tooling must check before modifying the integration branch and record successful publication afterward. This installer does not rewrite repository delivery scripts.
 
+## Closing an undeliverable run
+
+The team's **current first mate** can close an open wave that will not be delivered:
+
+```sh
+inbox pipeline abandon RUN --notes "Superseded by the replacement wave" --client-id close-wave-1
+```
+
+Notes are required. Crew and other teams' leads are refused, as is a delivered run. Closure is terminal: the run becomes `abandoned`, cannot be edited or presented, and every delivery gate refuses it even if its evidence was complete. Start a new run for replacement work; abandonment never authorizes delivery or removes pipeline protection.
+
+The graph, candidate, branch rationale, assignments, step dispositions and copied evidence remain available for the record. Runs shows abandoned entries muted with their reason below open runs; automatic team briefings and status select only open runs. Use `inbox pipeline status RUN` to inspect a closed run explicitly.
+
+Retain `--client-id` before sending. An exact retry with the same caller, run, notes and id returns the original closure receipt, including after restart; changed content or caller is a replay conflict. Abandonment has no revision precondition, so retrying with just the same command/id does not pick up a changed ledger revision. A new id cannot re-close or reopen an abandoned run. The run transition, audit event and replay receipt commit atomically; no Git or delivery action is performed.
+
 ## Outages and limits
 
 If the office/gate is unavailable, protected delivery fails closed with **“Restart the office and retry; editing, tests and local commits remain available.”** There is no cached green response, broad environment bypass, model call, or reasoning intermediary.

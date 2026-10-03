@@ -166,6 +166,21 @@ These routes use `src/server/request-validation.ts` and domain DTOs in `src/shar
 | `GET /api/machine`; `POST /api/machine/browsers/:pid/close` | Machine projection; `{}` to close verified listed headless main process (404 when cleanup integration disabled) |
 | `POST /api/hooks/claude` | Extensible native hook input; validates consumed fields; returns `{}`, never a harness allow/deny decision |
 
+### Pipeline runs
+
+Pipeline routes use domain decoders in `src/server/pipelines/protocol.ts` and DTOs in `src/shared/pipeline.ts`, not the version-1 `agentOperations` registry. They share the HTTP guards and error policy above.
+
+| Method/path | Request / response |
+|---|---|
+| `GET /api/world/teams/:id/pipeline` | `PipelineTeamView`, including retained runs |
+| `POST /api/agent/pipeline/status` | `{session, runId?}` → `{team, run, text}`; omitted runId selects an open run only, or null |
+| `POST /api/agent/pipeline/abandon` | `{session, runId, clientId, notes}` → `PipelineRun` |
+| `POST /api/agent/pipeline/gate` | `{session, runId, delivery, round, candidate, ...}` → `{allowed, runId, round, candidate, reasons}` |
+
+`abandon` requires non-empty notes and a replay id, and only the run team's **current first mate** may call it (403 `pipeline_lead_required` otherwise). An open run becomes terminal `abandoned`; delivered or already-abandoned runs reject new closure requests with 409. The returned run adds `abandonment: {notes, byAgentId, at}` alongside `state: "abandoned"`. Existing graph, candidate, selections, step dispositions, evidence and bindings are retained; this does not delete files, deliver work or turn off protection. The gate returns `allowed: false` for abandoned runs, and editing/presentation is refused. Automatic briefings no longer offer the run; explicit status retains its reason and evidence.
+
+Closure, audit event and replay receipt are one transaction. Exact retries return the stored result after restart; mismatched id reuse returns 409 `replay_conflict`. There is no `expectedRevision` for abandon: it closes the currently open run, so the same CLI command with `--client-id` can be replayed without deriving a new revision. Current-lead authorization is rechecked even on receipt retrieval. See [PIPELINES.md](PIPELINES.md) for CLI usage and delivery-hook boundaries.
+
 ### Change stream
 
 `GET /api/events` is a global invalidation stream, not an event log:
