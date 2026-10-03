@@ -8,7 +8,7 @@ import type { PipelineWaiver, WaiverGateResult } from "../shared/waiver.ts";
 
 interface Flags {
   json?: string; run?: string; base?: string; candidate?: string; checkout?: string; revision?: string; round?: string;
-  select?: string[]; notes?: string; report?: string[]; screenshot?: string[]; url?: string[]; check?: string; "exit-code"?: string;
+  select?: string[]; notes?: string; report?: string[]; screenshot?: string[]; url?: string[]; check?: string; "exit-code"?: string; "on-base"?: boolean;
   work?: string; "work-round"?: string; "client-id"?: string; operation?: string; repo?: string; ref?: string; delivery?: string; node?: string; reason?: string;
 }
 const integer = (v: unknown, name: string): number | undefined => {
@@ -92,7 +92,7 @@ export async function pipelineCommand(args: string[], flags: Flags, session: Ses
       const summary = String(body.notes ?? "");
       body.evidence = [...(payload.evidence as unknown[] ?? []), ...(flags.report ?? []).map(path => ({ kind: "report", summary, path: resolve(path) })),
         ...(flags.screenshot ?? []).map(path => ({ kind: "artifact", summary, path: resolve(path) })), ...(flags.url ?? []).map(url => ({ kind: "artifact", summary, url })),
-        ...(flags.check ? [{ kind: "check", summary, command: flags.check, exitCode: flags["exit-code"] === undefined ? undefined : Number(flags["exit-code"]) }] : [])];
+        ...(flags.check ? [{ kind: "check", summary, command: flags.check, exitCode: flags["exit-code"] === undefined ? undefined : Number(flags["exit-code"]), ...(flags["on-base"] ? { onBase: true } : {}) }] : [])];
     }
   }
   const result = await call<PipelineRun>(`/api/agent/pipeline/${operation}`, body);

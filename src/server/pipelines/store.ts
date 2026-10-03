@@ -13,6 +13,7 @@ import { BUILTINS, discover, within } from "./discovery.ts";
 import { capture, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
 import { founderDecision, presentedBy } from "./approval.ts";
 
+const short = (sha = "") => sha.slice(0, 10);
 type Config = { team_id: string; repo_root: string | null; graph: string | null; layout: string; revision: number; layout_revision: number; protected: number; observed_hash: string | null };
 export class Pipelines {
   private db: DatabaseSync;
@@ -117,7 +118,10 @@ export class Pipelines {
       // The gate and done() judge evidence with this same evaluator, so Runs never shows done when delivery would refuse.
       const problem = (e: PipelineEvidence) => this.evidenceProblem(run, node, e, fresh);
       const unpinned = nodeBinding(node) === "candidate" && !fresh ? ["the checkout no longer matches the pinned candidate; refresh the pin"] : [];
-      delete step.problems;
+      delete step.problems; delete step.baselineFailures;
+      const failures = step.evidence.filter(e => e.kind === "check" && !e.onBase && e.exitCode !== 0 && !problem(e))
+        .map(e => `\`${e.command?.trim()}\` exit ${e.exitCode} (base ${short(run.candidate.base)})`);
+      if (failures.length) step.baselineFailures = [...new Set(failures)];
       if (step.completedBy) {
         const problems = [...new Set([...unpinned, ...step.evidence.map(problem).filter((p): p is string => p !== null)])];
         step.state = problems.length ? "stale" : "done"; if (problems.length) step.problems = problems; continue;
@@ -277,16 +281,29 @@ export class Pipelines {
       if (!input.notes?.trim()) throw new InboxError(400, "record the result or lead disposition");
       const additions = (input.evidence ?? []).map(e => this.evidence(actor, run, e, created, node));
       if (done) {
-        const ids = input.evidenceIds ?? step.evidence.filter(e => !this.evidenceProblem(run, node, e, true)).map(e => e.id);
+        const offered = [...step.evidence, ...additions];
+        const ids = input.evidenceIds ?? step.evidence.filter(e => !this.evidenceProblem(run, node, e, true, offered)).map(e => e.id);
         if (ids.some(id => !step.evidence.some(e => e.id === id))) throw new InboxError(422, "evidence id does not belong to this step");
         const endorsed = [...step.evidence.filter(e => ids.includes(e.id)), ...additions];
-        const invalid = endorsed.map(e => this.evidenceProblem(run, node, e, true)).find(p => p !== null);
+        const invalid = endorsed.map(e => this.evidenceProblem(run, node, e, true, endorsed)).find(p => p !== null);
         if (invalid) throw new InboxError(409, `cannot endorse evidence that no longer counts: ${invalid}`, "pipeline_evidence_required");
-        if ((node.evidence ?? []).some(kind => !endorsed.some(e => e.kind === kind))) throw new InboxError(409, "required evidence is missing or stale", "pipeline_evidence_required");
+        // A base record only explains a candidate failure; the candidate itself must be checked.
+        if ((node.evidence ?? []).some(kind => !endorsed.some(e => e.kind === kind && !e.onBase))) throw new InboxError(409, "required evidence is missing or stale", "pipeline_evidence_required");
         step.evidence = endorsed; step.completedBy = actor.id;
       } else step.evidence.push(...additions);
       step.notes = input.notes; return this.persist(run);
     }); } catch (err) { for (const file of created) try { unlinkSync(file); } catch { /* transaction rolled back; cleanup only our copied files */ } throw err; }
+  }
+  private siblings(run: PipelineRun, node: PipelineNode): PipelineEvidence[] {
+    return run.steps.find(s => s.nodeId === node.id)?.evidence ?? [];
+  }
+  /**
+   * The base record a failing candidate check matches: mechanical, never judged. The same trimmed
+   * command, the same exit code, recorded on exactly this run's base in this step and round.
+   */
+  private baseline(run: PipelineRun, node: PipelineNode, check: PipelineEvidence, siblings: PipelineEvidence[]): PipelineEvidence | undefined {
+    return siblings.find(b => b.kind === "check" && b.onBase && b.ranOn === run.candidate.base && b.command?.trim() === check.command?.trim()
+      && b.exitCode === check.exitCode && this.currentEvidence(run, node, b));
   }
   private evidenceFingerprint(run: PipelineRun, node?: PipelineNode): string {
     return node && nodeBinding(node) === "run" ? requestFingerprint([run.id, run.scopeRevision ?? 0]) : run.candidate.fingerprint;
@@ -299,9 +316,12 @@ export class Pipelines {
    * and the gate all ask it. A closed run is history, so only an open run re-checks the founder's
    * decision, a review's provenance and attachments.
    */
-  private evidenceProblem(run: PipelineRun, node: PipelineNode, evidence: PipelineEvidence, fresh: boolean): string | null {
+  private evidenceProblem(run: PipelineRun, node: PipelineNode, evidence: PipelineEvidence, fresh: boolean, siblings = this.siblings(run, node)): string | null {
     if (nodeBinding(node) === "candidate" && !fresh) return "the checkout no longer matches the pinned candidate; refresh the pin";
     if (!this.currentEvidence(run, node, evidence)) return "recorded for an earlier round, selection scope or intended bytes";
+    if (evidence.onBase && evidence.ranOn !== run.candidate.base) return `\`${evidence.command}\` was recorded on base ${short(evidence.ranOn)}, not this run's base ${short(run.candidate.base)}`;
+    if (evidence.kind === "check" && !evidence.onBase && evidence.exitCode !== 0 && !this.baseline(run, node, evidence, siblings))
+      return `\`${evidence.command}\` exited ${evidence.exitCode} on the candidate; a failing check counts only when the same command failed with exit ${evidence.exitCode} on base ${short(run.candidate.base)}`;
     if (run.state !== "open") return null;
     const provenance = this.provenanceProblem(run, evidence);
     if (provenance) return provenance;
@@ -352,13 +372,15 @@ export class Pipelines {
   private evidence(actor: WorldAgent, run: PipelineRun, input: PipelineEvidenceInput, created: string[], node?: PipelineNode): PipelineEvidence {
     if (!input.summary?.trim() || !["report", "check", "artifact", "review", "approval"].includes(input.kind)) throw new InboxError(422, "evidence needs a kind and non-empty summary");
     if (node && nodeBinding(node) === "run" && !["report", "artifact"].includes(input.kind)) throw new InboxError(422, "run-bound planning accepts reports/artifacts only; checks, reviews and approvals need candidate binding");
-    if (input.kind === "check" && (!input.command?.trim() || input.exitCode !== 0)) throw new InboxError(409, "check evidence needs its command and successful exit code");
+    // A nonzero exit is recorded as-is; it counts only beside a base record of the same failure (evidenceProblem).
+    if (input.kind === "check" && (!input.command?.trim() || !Number.isSafeInteger(input.exitCode))) throw new InboxError(409, "check evidence needs its command and exit code");
+    if (input.onBase && input.kind !== "check") throw new InboxError(422, "only check evidence can be recorded on the base");
     if (input.kind === "review" && !input.review) throw new InboxError(422, "review evidence needs work id and round");
     if (input.kind === "approval" && !input.approval) throw new InboxError(422, "approval needs item id and revision");
     const provenance = this.provenanceProblem(run, input);
     if (provenance) throw new InboxError(409, provenance, "pipeline_evidence_provenance");
     const evidence: PipelineEvidence = { kind: input.kind, summary: input.summary, id: randomUUID(), byAgentId: actor.id, fingerprint: this.evidenceFingerprint(run, node), ...(node && nodeBinding(node) === "run" ? { binding: "run" as const } : {}), round: run.round, createdAt: this.now().toISOString(),
-      ...(input.path ? { path: input.path } : {}), ...(input.url ? { url: input.url } : {}), ...(input.command ? { command: input.command, exitCode: input.exitCode } : {}),
+      ...(input.path ? { path: input.path } : {}), ...(input.url ? { url: input.url } : {}), ...(input.command ? { command: input.command, exitCode: input.exitCode } : {}), ...(input.onBase ? { onBase: true, ranOn: run.candidate.base } : {}),
       ...(input.review ? { review: input.review } : {}), ...(input.approval ? { approval: input.approval } : {}) };
     if (input.path) {
       const original = input.path; const file = realpathSync(original); const s = lstatSync(original);
@@ -403,6 +425,7 @@ export class Pipelines {
     } else if (!run.graph.nodes.some(n => n.kind === "delivery" && n.delivery === input.delivery && active.has(n.id))) reasons.push(`no active ${input.delivery} boundary`);
     // Step states come from get()'s evidence evaluator, the same one Runs shows; its reasons travel with the refusal.
     for (const step of run.steps) if (required.has(step.nodeId) && step.state !== "done") reasons.push(`${step.nodeId}: ${step.state}${step.problems?.length ? ` (${step.problems.join("; ")})` : ""}`);
+    const baselineFailures = run.steps.filter(s => required.has(s.nodeId) && s.state === "done" && s.baselineFailures?.length).map(s => `${s.nodeId}: fails as on base: ${s.baselineFailures!.join("; ")}`);
     const palette = this.palette(run.teamId);
     for (const n of run.graph.nodes.filter(n => required.has(n.id) && n.source)) {
       const source = palette.entries.find(d => d.id === n.source);
@@ -420,7 +443,7 @@ export class Pipelines {
       const target = input.ref?.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
       if (target !== branch || target === "main" || target === "master") reasons.push("ref is not the run repository's protected dev delivery branch");
     }
-    return { allowed: !reasons.length, runId: run.id, round: run.round, candidate: run.candidate.head, reasons: [...new Set(reasons)] };
+    return { allowed: !reasons.length, runId: run.id, round: run.round, candidate: run.candidate.head, reasons: [...new Set(reasons)], ...(baselineFailures.length ? { baselineFailures } : {}) };
   }
   /** Called INSIDE Messages' transaction. Ungoverned teams retain their existing behavior. */
   requireDelivery(actor: WorldAgent, delivery: "handoff" | "review", input?: PipelineGateInput): PipelineRun | null {
@@ -473,7 +496,7 @@ export class Pipelines {
     const run = given === undefined ? view.runs.find(r => r.state === "open" && !r.archived) ?? null : given;
     const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : "Do your assigned step and use inbox pipeline report; only your first mate may complete steps or deliver.";
     return [`Pipeline: ${view.graph?.label ?? "unavailable"} (${view.source}, policy ${view.policyHash?.slice(0, 12) ?? "missing"}). ${role}`,
-      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
+      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}${s.baselineFailures?.length ? `; fails as on base, not a pass: ${s.baselineFailures.join("; ")}` : ""}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
       "Commands: inbox pipeline start|branch|abandon|assign|done|report|status|gate. No model is called; a gate allow is preflight, never a publication receipt."].join("\n");
   }
   private atomic<T>(fn: () => T): T {

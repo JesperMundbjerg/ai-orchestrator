@@ -2,7 +2,7 @@ import type { PipelineEvidence, PipelineRun } from "../../shared/pipeline.ts";
 import { archivedText, nodeBinding } from "../../shared/pipeline.ts";
 import { runSummary, safeEvidenceUrl, stepState } from "./model.ts";
 
-function Evidence({ evidence }: { evidence: PipelineEvidence }) {
+function Evidence({ evidence, failsAsOnBase }: { evidence: PipelineEvidence; failsAsOnBase: boolean }) {
   const fileUrl = "fileUrl" in evidence && typeof evidence.fileUrl === "string" ? evidence.fileUrl : undefined;
   const url = safeEvidenceUrl(fileUrl) ?? safeEvidenceUrl(evidence.url);
   return <li>
@@ -12,6 +12,8 @@ function Evidence({ evidence }: { evidence: PipelineEvidence }) {
     {evidence.review && <> · <a href="/#/teams" target="_blank" rel="noopener noreferrer">Review {evidence.review.workId} · round {evidence.review.round}</a></>}
     {evidence.path && <code>{evidence.path}</code>}
     {evidence.command && <code>{evidence.command} · exit {evidence.exitCode ?? "not recorded"}</code>}
+    {evidence.onBase && <> · <span className="pipeline-baseline">Base record · ran on base {evidence.ranOn?.slice(0, 10) ?? "unknown"}</span></>}
+    {!evidence.onBase && evidence.kind === "check" && evidence.exitCode !== 0 && <> · <span className="pipeline-baseline">{failsAsOnBase ? `fails as on base · exit ${evidence.exitCode}` : `failed · exit ${evidence.exitCode}`}</span></>}
     {" "}<small className="pipeline-evidence-by muted">Recorded by {evidence.byAgentId} · round {evidence.round} · {evidence.binding ?? "candidate"}-bound</small>
   </li>;
 }
@@ -45,11 +47,11 @@ export function RunView({ runs, selectedId, onSelect, refresh, busy }: {
         const step = run.steps.find((s) => s.nodeId === node.id);
         const status = stepState(step, run);
         return <li className="pipeline-run-step" key={node.id}>
-          <header><strong>{node.label}</strong><span className={`pipeline-state ${status}`}>{status === "skipped" ? "not on branch" : status}</span></header>
+          <header><strong>{node.label}</strong><span className={`pipeline-state ${status}${step?.baselineFailures?.length ? " baseline" : ""}`}>{status === "skipped" ? "not on branch" : status}{step?.baselineFailures?.length && (status === "done" || (status === "waiting" && step.state === "reported")) ? " · fails as on base" : ""}</span></header>
           <small className="muted">{nodeBinding(node) === "run" ? "Run-bound · this round and selected scope" : "Candidate-bound · final intended bytes"}</small>
           <p className="pipeline-help">{step?.state === "inactive" ? "Not on the selected branch" : status === "abandoned" ? "Never done: the run was abandoned" : status === "archived" ? "Never done: the run was archived with its team" : step?.state === "blocked" ? "Waiting for prerequisites" : step?.state === "reported" ? "Report received; waiting for the first mate" : step?.state === "ready" ? "Ready for evidence" : status === "stale" ? (step?.problems?.length ? `Not counted (the delivery gate refuses it too): ${step.problems.join("; ")}` : "Candidate or run changed; evidence must be revalidated") : status === "done" ? "Completion recorded by the first mate" : "Waiting for the first mate"}{step?.assignedTo ? ` · assigned to ${step.assignedTo}` : ""}</p>
           {step?.notes && <p>{step.notes}</p>}
-          {step?.evidence.length ? <ul>{step.evidence.map((evidence) => <Evidence key={evidence.id} evidence={evidence} />)}</ul> : <span className="muted">No evidence recorded.</span>}
+          {step?.evidence.length ? <ul>{step.evidence.map((evidence) => <Evidence key={evidence.id} evidence={evidence} failsAsOnBase={Boolean(step.baselineFailures?.some(f => f.startsWith(`\`${evidence.command?.trim()}\` exit ${evidence.exitCode} `)))} />)}</ul> : <span className="muted">No evidence recorded.</span>}
         </li>;
       })}</ol>
       </section>

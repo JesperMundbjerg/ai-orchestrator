@@ -160,6 +160,12 @@ export interface PipelineEvidenceInput {
   /** Check evidence must include the command and exit status. */
   command?: string;
   exitCode?: number;
+  /**
+   * A check run on the run's base, not the candidate. It records how the base behaves, so a
+   * candidate check that fails the same way (same command, same exit code) can count as
+   * "fails as on base". It never satisfies a required check by itself.
+   */
+  onBase?: boolean;
 }
 export interface PipelineEvidence extends PipelineEvidenceInput {
   id: string;
@@ -174,6 +180,8 @@ export interface PipelineEvidence extends PipelineEvidenceInput {
   fileUrl?: string;
   /** Stored attachment path outside worktrees; the original path is not read again. */
   storedPath?: string;
+  /** For an onBase check: the base commit it was recorded against. */
+  ranOn?: string;
 }
 export interface PipelineStep {
   nodeId: string;
@@ -184,6 +192,8 @@ export interface PipelineStep {
   notes: string;
   /** Why current evidence does not count, from the same evaluator the delivery gate uses. */
   problems?: string[];
+  /** Counted checks that fail exactly as recorded on the base; shown as "fails as on base", never as a pass. */
+  baselineFailures?: string[];
 }
 export interface PipelineRun {
   id: string;
@@ -261,6 +271,8 @@ export interface PipelineGateResult {
   round: number;
   candidate: string;
   reasons: string[];
+  /** Required steps that count only because a check fails as on base; present even when allowed. */
+  baselineFailures?: string[];
 }
 export interface PipelineStartInput {
   clientId: string;

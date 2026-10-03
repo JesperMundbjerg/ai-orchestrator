@@ -103,6 +103,17 @@ The approval is the founder's latest **decision** on that revision (Accept or Ne
 
 Runs, `inbox pipeline done` and the gate use one evidence evaluator. A completed step whose evidence no longer counts is shown **stale** with the reason (the same text the gate refusal carries) and can be completed again in place with valid evidence; there is no green step that the gate refuses.
 
+## Checks that fail as on base
+
+A check normally counts with exit 0. When the run's base already fails a check, the candidate may count with the same failure, shown as **fails as on base** and never as a pass. Record the base first, in the same step and round, then the candidate:
+
+```bash
+inbox pipeline report RUN checks --check "npm test" --exit-code 1 --on-base --notes "npm test fails on base too"
+inbox pipeline done RUN checks --check "npm test" --exit-code 1 --notes "Fails exactly as on base"
+```
+
+The office compares only what was recorded: the same trimmed command, the same exit code and a base record taken against exactly the run's `candidate.base`. It runs nothing. A base that passes while the candidate fails stays refused, and so does another command or exit code. A re-base or a changed-bytes re-pin starts a new round, so the base must be recorded again. A base record alone never completes a step that requires a check. Runs marks the step and the check “fails as on base”, the briefing lists it, and the gate result carries `baselineFailures` even when it allows delivery.
+
 ## Closing an undeliverable run
 
 The team's **current first mate** can close an open wave that will not be delivered:
