@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, chmodSync, statSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, chmodSync, statSync, symlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -118,7 +118,8 @@ test("gate argv binds run, round, session, repo, ref and candidate; exit 1 also 
 test("Claude and Codex installed hooks emit deny/reason when CLI unavailable, ordinary tools remain untouched", (t) => {
   const s = scratch(t); s.install({ inboxCommand: ["/nonexistent/inbox"] });
   for (const mode of ["claude", "codex"]) {
-    const invoke = (command: string) => spawnSync(process.execPath, [join(s.repo, ".review-inbox-pipeline/pipeline-hooks.ts"), mode, join(s.repo, ".review-inbox-pipeline/config.json")], { cwd: s.repo, input: JSON.stringify({ session_id: "scratch", tool_name: "Bash", tool_input: { command } }), encoding: "utf8" });
+    const settings = JSON.parse(readFileSync(join(s.repo, mode === "claude" ? ".claude/settings.json" : ".codex/hooks.json"), "utf8"));
+    const invoke = (command: string) => spawnSync("/bin/sh", ["-c", settings.hooks.PreToolUse[0].hooks[0].command], { cwd: s.repo, input: JSON.stringify({ session_id: "scratch", tool_name: "Bash", tool_input: { command } }), encoding: "utf8" });
     const r = invoke("git push origin HEAD:dev"); assert.equal(r.status, 0, r.stderr);
     const output = JSON.parse(r.stdout); assert.equal(output.hookSpecificOutput.permissionDecision, "deny"); assert.match(output.hookSpecificOutput.permissionDecisionReason, /Restart the office/);
     assert.deepEqual(JSON.parse(invoke("npm test && git commit -m local").stdout), {});
@@ -264,14 +265,110 @@ test("installed guards call the real office CLI gate end to end in a scratch rep
   assert.equal(spawnSync("git", ["--git-dir", remote, "rev-parse", "refs/heads/dev"], { encoding: "utf8" }).stdout.trim(), sha);
 });
 
+// FysikLab's .pi/tsconfig.json settings: deliberately no allowImportingTsExtensions.
+const fysiklabPiTsconfig = {
+  compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: false, noEmit: true, allowJs: true, checkJs: false, skipLibCheck: true, types: ["node"], typeRoots: ["../space-app/node_modules/@types"], paths: {
+    "@earendil-works/pi-coding-agent": ["../space-app/node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"],
+    typebox: ["../space-app/node_modules/typebox/build/index.d.mts"]
+  } }, include: ["extensions/*.ts", "../space-app/lib/dev/internal/node-sqlite.d.ts"]
+};
+
+test("generated Pi extension typechecks with FysikLab settings and loads with metadata entirely absent", async (t) => {
+  const s = scratch(t); s.install();
+  rmSync(join(s.repo, ".review-inbox-pipeline"), { recursive: true });
+  mkdirSync(join(s.repo, "space-app")); symlinkSync(resolve("node_modules"), join(s.repo, "space-app/node_modules"));
+  writeFileSync(join(s.repo, ".pi/tsconfig.json"), JSON.stringify(fysiklabPiTsconfig));
+  const result = spawnSync(process.execPath, [resolve("node_modules/typescript/bin/tsc"), "-p", join(s.repo, ".pi/tsconfig.json")], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const extension = await import(join(s.repo, ".pi/extensions/review-inbox-pipeline.ts"));
+  let handler: any; extension.default({ on(_: string, callback: any) { handler = callback; } });
+  const ctx = { cwd: s.repo, sessionManager: { getSessionFile: () => undefined } };
+  const denied = await handler({ input: { command: "git push origin HEAD:dev" } }, ctx);
+  assert.equal(denied.block, true); assert.match(denied.reason, /pipeline guard runner missing at .*; reinstall/);
+  assert.equal(await handler({ input: { command: "git push origin HEAD:feature" } }, ctx), undefined);
+});
+
+for (const failure of ["runner missing", "runner invalid", "config missing", "config malformed", "config invalid"]) {
+  test(`all installed harnesses fail closed only at installed boundaries: ${failure}`, async (t) => {
+    const s = scratch(t);
+    writeFileSync(join(s.repo, "orchestrator.json"), JSON.stringify({ project: "fysiklab", pipelineHooks: { protectedRefs: ["release"], guardedCommands: [{ command: "./deliver ship", operation: "publish", ref: "release" }] } }));
+    s.install({ inboxCommand: ["/nonexistent/inbox"] });
+    const runner = join(s.repo, ".review-inbox-pipeline/pipeline-hooks.ts");
+    const config = join(s.repo, ".review-inbox-pipeline/config.json");
+    if (failure === "runner missing") rmSync(runner);
+    if (failure === "runner invalid") writeFileSync(runner, "throw new Error('broken runner');\n");
+    if (failure === "config missing") rmSync(config);
+    if (failure === "config malformed") writeFileSync(config, "{");
+    if (failure === "config invalid") writeFileSync(config, JSON.stringify({ marker: "review-inbox-pipeline-guard-v2", protectedRefs: [], guardedCommands: "broken", inboxCommand: [] }));
+    const extension = await import(join(s.repo, ".pi/extensions/review-inbox-pipeline.ts"));
+    let handler: any; extension.default({ on(_: string, callback: any) { handler = callback; } });
+    const ctx = { cwd: s.repo, sessionManager: { getSessionFile: () => undefined } };
+    const protectedCommands = ["git push origin HEAD:dev", "git push origin HEAD:release", "git switch dev && git merge feature", "gh pr create --base main", "node .claude/hooks/worktree-sync.mjs publish", "./deliver ship"];
+    const ordinaryCommands = ["git push origin HEAD:feature", "npm test && git commit -m local", "git merge dev", "gh pr create --base feature", "node .claude/hooks/worktree-sync.mjs status"];
+    for (const mode of ["pi", "claude", "codex"]) {
+      const invoke = async (input: any) => {
+        if (mode === "pi") return handler(input, ctx);
+        const settings = JSON.parse(readFileSync(join(s.repo, mode === "codex" ? ".codex/hooks.json" : ".claude/settings.json"), "utf8"));
+        const command = settings.hooks.PreToolUse[0].hooks[0].command;
+        const result = spawnSync("/bin/sh", ["-c", command], { cwd: s.repo, input: JSON.stringify(input), encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr); return JSON.parse(result.stdout);
+      };
+      for (const command of protectedCommands) {
+        const response = await invoke({ input: { command } });
+        assert.equal(mode === "pi" ? response.block : response.hookSpecificOutput.permissionDecision, mode === "pi" ? true : "deny");
+        assert.match(mode === "pi" ? response.reason : response.hookSpecificOutput.permissionDecisionReason, /pipeline guard runner missing at .*; reinstall/);
+      }
+      for (const command of ordinaryCommands) assert.deepEqual(await invoke({ input: { command } }), mode === "pi" ? undefined : {});
+      assert.deepEqual(await invoke({ input: { path: "file" } }), mode === "pi" ? undefined : {});
+    }
+    const prePush = (ref: string) => spawnSync(join(s.repo, ".git/hooks/pre-push"), [], { cwd: s.repo, input: `x ${s.candidate} refs/heads/${ref} ${s.candidate}\n`, encoding: "utf8" });
+    assert.equal(prePush("feature").status, 0);
+    const denied = prePush("release"); assert.equal(denied.status, 1); assert.match(denied.stderr, /pipeline guard runner missing at .*; reinstall/);
+    // Reinstall repairs runtime metadata while retaining the snapshot's custom policy,
+    // even if the adapter no longer advertises that protection.
+    rmSync(join(s.repo, "orchestrator.json")); s.install();
+    const repaired = JSON.parse(readFileSync(config, "utf8"));
+    assert.ok(repaired.protectedRefs.includes("refs/heads/release"));
+    assert.ok(repaired.guardedCommands.some((c: any) => c.command === "./deliver ship"));
+  });
+}
+
+test("v1 reinstall replaces owned extension and commands cleanly, keeps boundaries and original Git hook", (t) => {
+  const s = scratch(t); const hook = join(s.repo, ".git/hooks/pre-push");
+  writeFileSync(hook, "#!/bin/sh\nexit 7\n"); chmodSync(hook, 0o755);
+  s.install();
+  const local = join(s.repo, ".review-inbox-pipeline");
+  const manifestPath = join(local, "manifest.json"); const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  delete manifest.policy;
+  manifest.marker = "review-inbox-pipeline-guard-v1"; manifest.wrapper = manifest.wrapper.replaceAll("guard-v2", "guard-v1");
+  writeFileSync(manifestPath, JSON.stringify(manifest)); writeFileSync(hook, manifest.wrapper);
+  const config = JSON.parse(readFileSync(join(local, "config.json"), "utf8")); config.marker = manifest.marker; config.protectedRefs.push("refs/heads/release");
+  writeFileSync(join(local, "config.json"), JSON.stringify(config));
+  writeFileSync(join(s.repo, ".pi/extensions/review-inbox-pipeline.ts"), `// ${manifest.marker}\nimport { guardTool } from ${JSON.stringify(join(local, "pipeline-hooks.ts"))};\n`);
+  rmSync(join(s.repo, ".claude/hooks/review-inbox-pipeline.mjs"));
+  for (const mode of ["claude", "codex"]) {
+    const path = join(s.repo, mode === "claude" ? ".claude/settings.json" : ".codex/hooks.json");
+    writeFileSync(path, JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: `'${process.execPath}' '${join(realpathSync(local), "pipeline-hooks.ts")}' ${mode} '${join(realpathSync(local), "config.json")}'` }, { type: "command", command: "keep-me" }] }] } }));
+  }
+  s.install(); s.install();
+  assert.match(readFileSync(join(s.repo, ".pi/extensions/review-inbox-pipeline.ts"), "utf8"), /^\/\/ review-inbox-pipeline-guard-v2\n/);
+  assert.ok(JSON.parse(readFileSync(join(local, "config.json"), "utf8")).protectedRefs.includes("refs/heads/release"));
+  for (const path of [".claude/settings.json", ".codex/hooks.json"]) {
+    const hooks = JSON.parse(readFileSync(join(s.repo, path), "utf8")).hooks.PreToolUse.flatMap((group: any) => group.hooks);
+    assert.equal(hooks.length, 2); assert.equal(hooks[0].command, "keep-me"); assert.match(hooks[1].command, /review-inbox-pipeline\.mjs/);
+  }
+  s.install({ uninstall: true }); assert.equal(readFileSync(hook, "utf8"), "#!/bin/sh\nexit 7\n");
+  assert.equal(existsSync(join(s.repo, ".claude/hooks/review-inbox-pipeline.mjs")), false);
+});
+
 test("installed Pi project extension returns a block, never auto-allows ordinary tools", async (t) => {
   const s = scratch(t); s.install({ inboxCommand: ["/nonexistent/inbox"] });
   const extension = await import(join(s.repo, ".pi/extensions/review-inbox-pipeline.ts"));
   let handler: any;
   extension.default({ on(event: string, callback: any) { assert.equal(event, "tool_call"); handler = callback; } });
   const ctx = { cwd: s.repo, sessionManager: { getSessionFile: () => "/scratch/session.jsonl" } };
-  const denial = handler({ toolName: "bash", input: { command: "git push origin HEAD:main" } }, ctx);
+  const denial = await handler({ toolName: "bash", input: { command: "git push origin HEAD:main" } }, ctx);
   assert.equal(denial.block, true); assert.match(denial.reason, /Restart the office/);
-  assert.equal(handler({ toolName: "bash", input: { command: "npm test && git push origin HEAD:feature" } }, ctx), undefined);
-  assert.equal(handler({ toolName: "read", input: { path: "file" } }, ctx), undefined);
+  assert.equal(await handler({ toolName: "bash", input: { command: "npm test && git push origin HEAD:feature" } }, ctx), undefined);
+  assert.equal(await handler({ toolName: "read", input: { path: "file" } }, ctx), undefined);
 });

@@ -9,7 +9,8 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-const MARK = "review-inbox-pipeline-guard-v1";
+const MARK = "review-inbox-pipeline-guard-v2";
+const LEGACY_MARK = "review-inbox-pipeline-guard-v1";
 const LOCAL = ".review-inbox-pipeline";
 const OUTAGE = "Protected delivery blocked: the Review Inbox gate is unavailable or invalid. Restart the office and retry; editing, tests and local commits remain available.";
 type Operation = "push" | "pr" | "merge" | "land" | "publish";
@@ -18,7 +19,7 @@ export type HookConfig = { marker: string; protectedRefs: string[]; guardedComma
 type Boundary = { repo: string; operation: Operation; ref: string; candidate: string };
 type Json = Record<string, any>;
 type Change = { path: string; content: string | null; mode?: number; renameFrom?: string };
-type Manifest = { marker: string; prePush: string; backup: string; wrapper: string; settings: Record<string, { existed: boolean; hooks: boolean; pre: boolean }> };
+type Manifest = { marker: string; prePush: string; backup: string; wrapper: string; policy?: HookConfig; settings: Record<string, { existed: boolean; hooks: boolean; pre: boolean }> };
 
 function git(repo: string, ...args: string[]): string {
   const result = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8", timeout: 5000 });
@@ -223,7 +224,7 @@ function configured(repo: string, inboxCommand: string[]): HookConfig {
   }
   return { marker: MARK, protectedRefs: refs, guardedCommands: commands, inboxCommand };
 }
-function mergeSettings(path: string, command: string, remove: boolean, original?: Manifest["settings"][string]): string | null {
+function mergeSettings(path: string, command: string, remove: boolean, original?: Manifest["settings"][string], obsolete = ""): string | null {
   const settings = jsonFile(path);
   if (settings.hooks !== undefined && (!settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks))) throw new Error(`${path}: hooks must be an object`);
   const hooks = settings.hooks ?? {};
@@ -231,7 +232,7 @@ function mergeSettings(path: string, command: string, remove: boolean, original?
   const pre: Json[] = [];
   for (const group of hooks.PreToolUse ?? []) {
     if (!group || !Array.isArray(group.hooks)) throw new Error(`${path}: invalid PreToolUse hook group`);
-    const remaining = group.hooks.filter((h: Json) => h.command !== command);
+    const remaining = group.hooks.filter((h: Json) => h.command !== command && h.command !== obsolete);
     if (remaining.length || !group.hooks.length) pre.push({ ...group, hooks: remaining });
   }
   if (!remove) pre.push({ matcher: ".*", hooks: [{ type: "command", command, timeout: 15 }] });
@@ -240,56 +241,136 @@ function mergeSettings(path: string, command: string, remove: boolean, original?
   return remove && !original?.existed && !Object.keys(settings).length ? null : serialized(settings);
 }
 
+/** Standalone committed entrypoints: only the runtime string import reaches ignored metadata.
+ * Embed the same read-only boundary parser plus the installed policy, so a broken/missing
+ * runner or config cannot disable custom refs/commands or block unrelated work.
+ * Node's erasable-TS loader makes toString() builtin-only JavaScript here. */
+function toolEntrypoint(runner: string, configPath: string, config: HookConfig, pi: boolean): string {
+  const parser = [git, maybeGit, refName, protectedRef, quote, shellWords, option, sha, commandBoundaries].map(fn => fn.toString()).join("\n");
+  const types = pi ? `type Config = { marker: string; protectedRefs: string[]; guardedCommands: { command: string; operation: string; ref: string; candidateArgument?: number }[]; inboxCommand: string[] };
+type Input = { tool_input?: { command?: string | string[]; cmd?: string | string[]; cwd?: string; workdir?: string }; input?: Input['tool_input']; cwd?: string; session_id?: string };
+type Guard = (config: typeof POLICY, input: Input, cwd: string, harness: string, session?: string) => string | null;
+type Context = { cwd: string; sessionManager: { getSessionFile(): string | undefined } };
+type Pi = { on(event: 'tool_call', handler: (event: Input, ctx: Context) => Promise<{ block: true; reason: string } | undefined>): void };
+` : "";
+  return `// ${MARK}
+import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { basename, resolve } from 'node:path';
+const RUNNER_PATH = ${JSON.stringify(runner)};
+const CONFIG_PATH = ${JSON.stringify(configPath)};
+const POLICY${pi ? ": Config" : ""} = ${JSON.stringify(config)};
+${types}${parser}
+const MISSING = 'Protected delivery blocked: pipeline guard runner missing at ' + RUNNER_PATH + '; reinstall pipeline hooks (runner or config missing or failed to load). Editing, tests and local commits remain available.';
+function loadConfig() {
+  if (!existsSync(RUNNER_PATH)) throw new Error('missing runner');
+  const config = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
+  if (![POLICY.marker, ${JSON.stringify(LEGACY_MARK)}].includes(config.marker) || !Array.isArray(config.protectedRefs) || !config.protectedRefs.every((ref${pi ? ": unknown" : ""}) => typeof ref === 'string') || !Array.isArray(config.guardedCommands) || !config.guardedCommands.every((c${pi ? ": typeof POLICY.guardedCommands[number]" : ""}) => c && typeof c.command === 'string' && typeof c.ref === 'string' && ['push', 'pr', 'merge', 'land', 'publish'].includes(c.operation) && (c.candidateArgument === undefined || (Number.isInteger(c.candidateArgument) && c.candidateArgument >= 0))) || !Array.isArray(config.inboxCommand) || !config.inboxCommand.length || !config.inboxCommand.every((arg${pi ? ": unknown" : ""}) => typeof arg === 'string')) throw new Error('invalid pipeline guard config');
+  return config;
+}
+async function reasonFor(input${pi ? ": Input" : ""}, cwd${pi ? ": string" : ""}, harness${pi ? ": string" : ""}, session = '')${pi ? ": Promise<string | null>" : ""} {
+  try {
+    const config = loadConfig();
+    const runner = RUNNER_PATH;
+    const { guardTool }${pi ? ": { guardTool: Guard }" : ""} = await import(runner);
+    if (typeof guardTool !== 'function') throw new Error('invalid pipeline guard runner');
+    return guardTool(config, input, cwd, harness, session);
+  } catch {
+    const toolInput = input.tool_input ?? input.input ?? {};
+    const command = toolInput.command ?? toolInput.cmd;
+    if (typeof command !== 'string' && !Array.isArray(command)) return null;
+    const reason = MISSING;
+    try {
+      const boundaries = commandBoundaries(Array.isArray(command) ? command.map(quote).join(' ') : command, toolInput.cwd || toolInput.workdir || input.cwd || cwd, POLICY);
+      return boundaries.length ? reason : null;
+    } catch { return reason; }
+  }
+}
+${pi ? `export default function (pi: Pi) {
+  pi.on('tool_call', async (event, ctx) => {
+    const reason = await reasonFor(event, ctx.cwd, 'pi', ctx.sessionManager.getSessionFile() || '');
+    if (reason) return { block: true, reason };
+  });
+}` : `const raw = readFileSync(0, 'utf8');
+if (process.argv[2] === 'pre-push') {
+  let reason;
+  try {
+    const config = loadConfig();
+    const runner = RUNNER_PATH;
+    const { guardPrePush } = await import(runner);
+    if (typeof guardPrePush !== 'function') throw new Error('invalid pipeline guard runner');
+    reason = guardPrePush(config, raw, process.cwd());
+  } catch {
+    reason = raw.trim().split('\\n').filter(Boolean).some(line => {
+      const fields = line.trim().split(/\\s+/);
+      return fields.length !== 4 || protectedRef(POLICY, fields[2]);
+    }) ? MISSING : null;
+  }
+  if (reason) { console.error(reason); process.exitCode = 1; }
+} else {
+const input = JSON.parse(raw);
+const reason = await reasonFor(input, process.cwd(), process.argv[2] === 'codex' ? 'codex' : 'claude');
+// {} preserves the harness's ordinary approval policy; never auto-allow.
+console.log(JSON.stringify(reason ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } } : {}));
+}`}
+`;
+}
+
 /** Validate a complete plan before touching disk. Existing unrelated settings are retained. */
 export function installHooks(path: string, options: { dryRun?: boolean; uninstall?: boolean; inboxCommand?: string[] } = {}): Change[] {
   const repo = realpathSync(git(resolve(path), "rev-parse", "--show-toplevel")); rejectGlobal(repo);
   const local = join(repo, LOCAL); const manifestPath = join(local, "manifest.json");
   const prior = existsSync(manifestPath) ? jsonFile(manifestPath) as Manifest : undefined;
-  if (prior && prior.marker !== MARK) throw new Error("Unrecognised hook manifest; refusing to overwrite");
+  if (prior && ![MARK, LEGACY_MARK].includes(prior.marker)) throw new Error("Unrecognised hook manifest; refusing to overwrite");
   if (!prior && existsSync(local)) throw new Error(`${local} exists without our manifest; refusing to overwrite`);
   const runner = join(local, "pipeline-hooks.ts"); const configPath = join(local, "config.json");
   const settingsPaths = [join(repo, ".claude/settings.json"), join(repo, ".codex/hooks.json")];
   const pi = join(repo, ".pi/extensions/review-inbox-pipeline.ts");
+  const toolHook = join(repo, ".claude/hooks/review-inbox-pipeline.mjs");
   let prePush = prior?.prePush || resolve(repo, git(repo, "rev-parse", "--git-path", "hooks/pre-push"));
   prePush = resolve(prePush); rejectGlobal(prePush);
   // A hooksPath outside the checkout is explicit git configuration; honour it, but not symlinks.
   const common = realpathSync(resolve(repo, git(repo, "rev-parse", "--git-common-dir")));
-  for (const p of [runner, manifestPath, configPath, ...settingsPaths, pi]) safePath(repo, p);
+  for (const p of [runner, manifestPath, configPath, ...settingsPaths, pi, toolHook]) safePath(repo, p);
   if (existsSync(prePush) && lstatSync(prePush).isSymbolicLink()) throw new Error(`Refusing symlinked pre-push hook: ${prePush}`);
   const backup = prior?.backup || `${prePush}.review-inbox-original-${createHash("sha256").update(repo).digest("hex").slice(0, 12)}`;
   const commandFor = (mode: string) => `${quote(process.execPath)} ${quote(runner)} ${mode} ${quote(configPath)}`;
+  const config = options.uninstall ? undefined : configured(repo, options.inboxCommand ?? [process.execPath, fileURLToPath(new URL("../../bin/inbox", import.meta.url))]);
+  // Re-install may add protection, never silently remove an installed boundary.
+  if (prior && config) {
+    // v2 retains policy in the manifest too, so reinstall can repair absent/corrupt
+    // runtime config without silently dropping custom protection.
+    const previous = prior.policy ?? jsonFile(configPath) as HookConfig;
+    if (!Array.isArray(previous.protectedRefs) || !Array.isArray(previous.guardedCommands)) throw new Error("Installed pipeline policy missing; restore it or explicitly uninstall/reinstall");
+    config.protectedRefs = [...new Set([...previous.protectedRefs, ...config.protectedRefs])];
+    config.guardedCommands = [...new Map([...previous.guardedCommands, ...config.guardedCommands].map((c) => [JSON.stringify(c), c])).values()];
+  }
   const changes: Change[] = [];
   const settings: Manifest["settings"] = prior?.settings ?? {};
   for (const [i, p] of settingsPaths.entries()) {
     const s = jsonFile(p);
     settings[p] ??= { existed: existsSync(p), hooks: s.hooks !== undefined, pre: s.hooks?.PreToolUse !== undefined };
-    if (!options.uninstall || existsSync(p)) changes.push({ path: p, content: mergeSettings(p, commandFor(i ? "codex" : "claude"), !!options.uninstall, settings[p]) });
+    if (!options.uninstall || existsSync(p)) changes.push({ path: p, content: mergeSettings(p, `${quote(process.execPath)} ${quote(toolHook)} ${i ? "codex" : "claude"}`, !!options.uninstall, settings[p], commandFor(i ? "codex" : "claude")) });
   }
-  const extension = `// ${MARK}\nimport { readFileSync } from 'node:fs';\nimport { guardTool } from ${JSON.stringify(runner)};\nexport default function (pi: any) {\n  pi.on('tool_call', (event: any, ctx: any) => {\n    const config = JSON.parse(readFileSync(${JSON.stringify(configPath)}, 'utf8'));\n    const reason = guardTool(config, event, ctx.cwd, 'pi', ctx.sessionManager.getSessionFile() || '');\n    if (reason) return { block: true, reason };\n  });\n}\n`;
-  if (existsSync(pi) && !readFileSync(pi, "utf8").startsWith(`// ${MARK}\n`)) throw new Error(`Refusing to replace another Pi extension: ${pi}`);
+  for (const p of [pi, toolHook]) {
+    if (existsSync(p) && ![MARK, LEGACY_MARK].some(mark => readFileSync(p, "utf8").startsWith(`// ${mark}\n`))) throw new Error(`Refusing to replace another pipeline entrypoint: ${p}`);
+  }
   const originalExecutable = existsSync(backup) ? !!(statSync(backup).mode & 0o111) : !prior && existsSync(prePush) && !!(statSync(prePush).mode & 0o111);
-  const wrapper = `#!/bin/sh\n# ${MARK}\ninput=$(mktemp) || exit 1\ntrap 'rm -f "$input"' EXIT HUP INT TERM\ncat > "$input"\n${commandFor("pre-push")} < "$input" || exit $?\n${originalExecutable ? `${quote(backup)} "$@" < "$input"\nexit $?` : "exit 0"}\n`;
+  const wrapper = `#!/bin/sh\n# ${MARK}\ninput=$(mktemp) || exit 1\ntrap 'rm -f "$input"' EXIT HUP INT TERM\ncat > "$input"\n${quote(process.execPath)} ${quote(toolHook)} pre-push < "$input" || exit $?\n${originalExecutable ? `${quote(backup)} "$@" < "$input"\nexit $?` : "exit 0"}\n`;
   const current = existsSync(prePush) ? readFileSync(prePush, "utf8") : "";
   if (prior && current !== prior.wrapper) throw new Error(`Pre-push changed since installation; keep it and resolve manually: ${prePush}`);
   if (!prior && existsSync(backup)) throw new Error(`A pipeline backup already owns ${backup}; resolve it before installing`);
   if (options.uninstall) {
     if (!prior) return [];
-    changes.push({ path: pi, content: null });
+    changes.push({ path: pi, content: null }, { path: toolHook, content: null });
     changes.push(existsSync(backup) ? { path: prePush, content: null, renameFrom: backup } : { path: prePush, content: null });
     for (const p of [runner, configPath, manifestPath]) changes.push({ path: p, content: null });
   } else {
-    const config = configured(repo, options.inboxCommand ?? [process.execPath, fileURLToPath(new URL("../../bin/inbox", import.meta.url))]);
-    // Re-install may add protection, never silently remove an already installed boundary.
-    if (prior) {
-      const previous = jsonFile(configPath) as HookConfig;
-      config.protectedRefs = [...new Set([...previous.protectedRefs, ...config.protectedRefs])];
-      config.guardedCommands = [...new Map([...previous.guardedCommands, ...config.guardedCommands].map((c) => [JSON.stringify(c), c])).values()];
-    }
     changes.push({ path: runner, content: readFileSync(fileURLToPath(import.meta.url), "utf8") });
-    changes.push({ path: configPath, content: serialized(config) }, { path: pi, content: extension });
+    changes.push({ path: configPath, content: serialized(config) }, { path: pi, content: toolEntrypoint(runner, configPath, config!, true) }, { path: toolHook, content: toolEntrypoint(runner, configPath, config!, false) });
     if (!prior && existsSync(prePush)) changes.push({ path: backup, content: null, renameFrom: prePush });
     changes.push({ path: prePush, content: wrapper, mode: 0o755 });
-    changes.push({ path: manifestPath, content: serialized({ marker: MARK, prePush, backup, wrapper, settings } satisfies Manifest) });
+    changes.push({ path: manifestPath, content: serialized({ marker: MARK, prePush, backup, wrapper, policy: config, settings } satisfies Manifest) });
   }
   // git common dirs (linked worktrees) and configured hooksPath may be outside repo;
   // no writes to any global harness config are permitted even through parent symlinks.
@@ -333,7 +414,7 @@ function hookMain(): void {
   const [mode, configPath] = process.argv.slice(2);
   if (!configPath) throw new Error(OUTAGE);
   const config = jsonFile(configPath) as HookConfig;
-  if (config.marker !== MARK || !Array.isArray(config.protectedRefs) || !config.inboxCommand?.length) throw new Error(OUTAGE);
+  if (![MARK, LEGACY_MARK].includes(config.marker) || !Array.isArray(config.protectedRefs) || !config.inboxCommand?.length) throw new Error(OUTAGE);
   const raw = readFileSync(0, "utf8");
   if (mode === "pre-push") {
     const reason = guardPrePush(config, raw, process.cwd());
