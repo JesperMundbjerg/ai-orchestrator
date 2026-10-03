@@ -81,11 +81,7 @@ export function pingSpot(plan: Pick<BuildingPlan, "rooms" | "outline" | "hall">,
  * id takes the free one. Fewer than two: nobody plays.
  */
 export function choosePingPong(plan: BuildingPlan, agents: WorldAgent[], since: ReadonlyMap<string, number>, now: number, before: PingPong = new Map(), busy: ReadonlySet<string> = new Set()): PingPong {
-  const out = outForABreak(agents, since, now, plan.queue);
-  const eligible = agents
-    .filter((a) => a.status === "idle" && !a.waitingOnYou && !plan.queue.includes(a.id) && (!a.teamId || out.has(a.id)) && !busy.has(a.id))
-    .map((a) => a.id)
-    .sort((a, b) => hash(`pingpong:${a}`) - hash(`pingpong:${b}`) || a.localeCompare(b));
+  const eligible = pingEligible(plan, agents, since, now, busy);
   if (eligible.length < 2) return new Map();
   const ends: Array<string | null> = [null, null];
   for (const [id, spot] of before) if (spot.pingpong !== undefined && eligible.includes(id) && !ends[spot.pingpong]) ends[spot.pingpong] = id;
@@ -95,6 +91,15 @@ export function choosePingPong(plan: BuildingPlan, agents: WorldAgent[], since: 
     ends[ends[0] ? 1 : 0] = id;
   }
   return new Map(ends.map((id, end) => [id!, pingSpot(plan, end as End)]));
+}
+
+/** Who could play, in the order they are paired: idle, out for a break, not busy elsewhere. */
+export function pingEligible(plan: BuildingPlan, agents: WorldAgent[], since: ReadonlyMap<string, number>, now: number, busy: ReadonlySet<string> = new Set()): string[] {
+  const out = outForABreak(agents, since, now, plan.queue);
+  return agents
+    .filter((a) => a.status === "idle" && !a.waitingOnYou && !plan.queue.includes(a.id) && (!a.teamId || out.has(a.id)) && !busy.has(a.id))
+    .map((a) => a.id)
+    .sort((a, b) => hash(`pingpong:${a}`) - hash(`pingpong:${b}`) || a.localeCompare(b));
 }
 
 /** When the rally started: once both players are at their ends, never on the way; one walking off stops it. */

@@ -20,6 +20,8 @@ import { chooseGym, GymPlayback, type Gym } from "./gym.ts";
 import { GymContext, GymScene } from "./Gym.tsx";
 import { choosePingPong, PingPlayback, pingTable, type PingPong } from "./pingpong.ts";
 import { PingContext, PingScene } from "./PingPong.tsx";
+import { partnerLone, placeRegulars } from "./regulars.ts";
+import { RegularCard, RegularsScene, type RegularCardInfo } from "./Regulars.tsx";
 import { readingNooks } from "./building.ts";
 import { meetingPlan, reviewing, type Meetings } from "./meeting.ts";
 import { CallerCard, CallerNote } from "./Caller.tsx";
@@ -62,6 +64,8 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
   const [handled, setHandled] = useState<string[]>([]);
   const [fly, setFly] = useState<FlyTarget | null>(null);
   const [controlsOpen, setControlsOpen] = useState(false);
+  // A regular clicked: who they are, and nothing more.
+  const [regular, setRegular] = useState<RegularCardInfo | null>(null);
   const controls = useRef<HTMLDivElement>(null);
   const pacer = useMemo(() => new Pacer(), []);
   const detail = useItemDetail(answering, tick);
@@ -124,6 +128,7 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
   };
 
   const select = (id: string) => {
+    setRegular(null);
     setSelected(id);
     const w = waiting.get(id);
     if (w) setAnswering(w.itemIds[0]!);
@@ -142,6 +147,7 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || (e.target as HTMLElement).closest("input, textarea, select")) return;
       if (controlsOpen) setControlsOpen(false);
+      else if (regular) setRegular(null);
       else if (answering) closeChat();
       else if (selected) setSelected(null);
       else if (openTeam) setOpenTeam(null);
@@ -149,7 +155,7 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [controlsOpen, answering, selected, openTeam, caller, sendBack, closeChat]);
+  }, [controlsOpen, regular, answering, selected, openTeam, caller, sendBack, closeChat]);
 
   useEffect(() => {
     if (!controlsOpen) return;
@@ -167,10 +173,10 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
   return (
     <div className="world">
       {/* Drawn on demand at the pacer's rate, and at no more than 1.5 device pixels a pixel. */}
-      <Canvas shadows frameloop="demand" dpr={[1, 1.5]} camera={{ fov: 62, near: 0.1, far: 160 }} onPointerMissed={() => setSelected(null)}>
+      <Canvas shadows frameloop="demand" dpr={[1, 1.5]} camera={{ fov: 62, near: 0.1, far: 160 }} onPointerMissed={() => (setSelected(null), setRegular(null))}>
         <Pace pacer={pacer} />
         <PaceContext value={pacer}>
-          <Scene office={office!} plan={plan} world={world} agents={agents} teams={teams} waiting={waiting} arrivals={arrivals} talk={talk} calling={calling} selected={selected} onSelect={select} fly={fly} />
+          <Scene office={office!} plan={plan} world={world} agents={agents} teams={teams} waiting={waiting} arrivals={arrivals} talk={talk} calling={calling} selected={selected} onSelect={select} onRegular={(r) => (setSelected(null), setRegular(r))} fly={fly} />
         </PaceContext>
       </Canvas>
 
@@ -260,6 +266,7 @@ export function WorldView({ state, tick, onLeave, onCrewGuide }: { state: InboxS
         />
       ) : null}
       {!caller && walking[0] ? <CallerNote call={walking[0]} agents={agents} /> : null}
+      {regular && !caller && !walking[0] ? <RegularCard card={regular} onClose={() => setRegular(null)} /> : null}
       {answering ? (
         <AnswerModal
           detail={detail}
@@ -362,12 +369,18 @@ function usePark(world: WorldState | null, office: BuildingPlan | null): Buildin
     const next = parkPlan(office, out, now, idleSince, park.current);
     park.current = next.park;
     const available = world.agents.filter(a => !reviewing(world.agents, world.work).has(a.id));
-    games.current = chooseGames(office, available, idleSince, Date.now(), games.current);
+    // Someone idle on their own plays ping pong with a regular, rather than darts by themselves.
+    const alone = partnerLone(office, available, idleSince, Date.now(), ping.current);
+    const free = available.filter((a) => !alone.has(a.id));
+    games.current = chooseGames(office, free, idleSince, Date.now(), games.current);
     const spots = new Map(next.plan.spots);
     for (const [id, spot] of games.current) spots.set(id, spot);
-    gym.current = chooseGym(office, available, idleSince, Date.now(), gym.current, new Set(games.current.keys()));
+    gym.current = chooseGym(office, free, idleSince, Date.now(), gym.current, new Set(games.current.keys()));
     for (const [id, spot] of gym.current) spots.set(id, spot);
-    ping.current = choosePingPong(office, available, idleSince, Date.now(), ping.current, new Set([...games.current.keys(), ...gym.current.keys()]));
+    const busy = new Set([...games.current.keys(), ...gym.current.keys()]);
+    // One left over after the games and the gym plays a regular too.
+    const pair = alone.size ? alone : choosePingPong(office, available, idleSince, Date.now(), ping.current, busy);
+    ping.current = pair.size ? pair : partnerLone(office, available, idleSince, Date.now(), ping.current, busy);
     for (const [id, spot] of ping.current) spots.set(id, spot);
     const seats = [...seatsInLounge(office), ...readingNooks(office).flatMap(n => n.seats)];
     const spectators = available.filter(a => !games.current.has(a.id) && !gym.current.has(a.id) && !ping.current.has(a.id) && a.status === "idle" && !a.waitingOnYou && !office.queue.includes(a.id) && (!a.teamId || out.has(a.id)));
@@ -425,7 +438,7 @@ function tagColor(teamId: string): string {
   return `#${new Color(lookFor(teamId).shirt).lerp(new Color("#ffffff"), 0.35).getHexString()}`;
 }
 
-function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, calling, selected, onSelect, fly }: {
+function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, calling, selected, onSelect, onRegular, fly }: {
   /** The office as drawn; `plan` has where everyone is in it. */
   office: BuildingPlan;
   plan: BuildingPlan;
@@ -438,16 +451,21 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
   calling: Call[];
   selected: string | null;
   onSelect: (id: string) => void;
+  onRegular: (card: RegularCardInfo) => void;
   fly: FlyTarget | null;
 }) {
   const { minX, maxX, minZ, maxZ } = plan.bounds;
   const gamePlan = { ...plan, spots: new Map([...plan.spots].filter(([id]) => !calling.some(c => c.leadId === id) && !talk.visits.some(v => v.fromId === id))) };
   const players = new Map([...gamePlan.spots].flatMap(([id, s]) => s.game ? [[id, s.game] as const] : []));
   const games = useMemo(() => new GamePlayback(players), [JSON.stringify([...players])]);
+  // The regulars at whatever no agent uses. Only the gym's bars and the table see them beside the
+  // agents; they are never in the plan's spots, so nothing that lists or counts agents does.
+  const regulars = useMemo(() => placeRegulars(plan, plan.spots), [plan]);
+  const stage = { ...gamePlan, spots: new Map([...gamePlan.spots, ...[...regulars].map(([id, p]) => [id, p.spot] as const)]) };
   // When each lifter got to their station; kept for the office's life, as lifters come and go.
   const gym = useMemo(() => new GymPlayback(), []);
   // The two at the ping pong table, by end; their rally starts once both are there.
-  const pair = [...gamePlan.spots].filter(([, s]) => s.pingpong !== undefined).sort(([, a], [, b]) => a.pingpong! - b.pingpong!).map(([id]) => id);
+  const pair = [...stage.spots].filter(([, s]) => s.pingpong !== undefined).sort(([, a], [, b]) => a.pingpong! - b.pingpong!).map(([id]) => id);
   const ping = useMemo(() => ({ playback: new PingPlayback(pair), table: pingTable(plan) }), [JSON.stringify(pair), plan.outline, plan.hall]);
   const walk = useMemo(() => routeIn(plan), [plan]);
   // What each member makes at their station in their team's room.
@@ -478,8 +496,9 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
       <OfficeEdge bounds={office.bounds}>
       <BuildingOffice plan={plan} agents={agents} teams={teams} work={world.work} queueLength={plan.queue.length} meters={world.usage?.meters ?? NO_METERS} />
       <GamesScene plan={gamePlan} />
-      <GymScene plan={gamePlan} />
-      <PingScene plan={gamePlan} />
+      <GymScene plan={stage} />
+      <PingScene plan={stage} />
+      <RegularsScene plan={plan} regulars={regulars} walk={walk} onSelect={onRegular} />
       <Jars corners={office.corners} usage={world.usage} />
       {world.agents.map((a) => {
         const w = waiting.get(a.id);

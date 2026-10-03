@@ -12,9 +12,9 @@ import { craftPose, HandTool } from "./Crafts.tsx";
 import { usePace } from "./Pace.tsx";
 import { useGames } from "./Games.tsx";
 import { useGym } from "./Gym.tsx";
-import { armReach, handTarget, newPose, newReach, stationPose } from "./gym.ts";
+import { armReach, handTarget, newPose, newReach, stationPose, type LiftPose, type Reach } from "./gym.ts";
 import { Paddle, usePing } from "./PingPong.tsx";
-import { newPlayer, playerPose } from "./pingpong.ts";
+import { newPlayer, playerPose, type Player as PingPlayer } from "./pingpong.ts";
 
 const WALK_SPEED = 1.9;
 /** Strolling round the garden, taking it easy. */
@@ -87,6 +87,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const ping = usePing();
   // Scratch for the gym's lifts and ping pong, so a frame allocates nothing.
   const lifting = useMemo(() => ({ pose: newPose(), reach: newReach(), hand: [0, 0, 0] as [number, number, number], player: newPlayer() }), []);
+  const joints: Joints = useMemo(() => ({ body, upper, head, legs, knees, ankles, arms, elbows }), []);
 
   // A new spot sends the avatar walking there from wherever it is now.
   useEffect(() => {
@@ -244,47 +245,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     }
     // Walking bob, and a gentle breath at rest.
     g.position.y = sitting ? SEAT_H - HIP * look.height : picking ? -STEP_DROP * look.height : walking ? Math.abs(Math.sin(t * 9)) * 0.035 : Math.sin(t * 1.6) * 0.006;
-    const [kl, kr] = knees.current;
-    const [nl, nr] = ankles.current;
-    const [el, er] = elbows.current;
-    if (lift && ll && lr && al && ar && kl && kr && nl && nr && el && er && body.current) {
-      const h = look.height;
-      g.position.set(m.pos[0] + Math.sin(m.yaw) * lift.rootZ * h, lift.rootY * h, m.pos[1] + Math.cos(m.yaw) * lift.rootZ * h);
-      body.current.rotation.x = lift.lie ? -Math.PI / 2 : 0;
-      body.current.position.set(0, lift.lie ? lift.lieY * h : 0, lift.lie ? lift.lieZ * h : 0);
-      ll.rotation.x = lr.rotation.x = lift.thigh;
-      kl.rotation.x = kr.rotation.x = lift.knee;
-      nl.rotation.x = nr.rotation.x = lift.ankle;
-      if (upper.current) upper.current.rotation.x = lift.bend;
-      if (head.current) head.current.rotation.set(lift.lift === "pullup" ? -0.25 : 0, 0, 0);
-      for (let i = 0; i < 2; i++) {
-        const side = i ? 1 : -1;
-        const hand = handTarget(lift, look.build, side, lifting.hand);
-        const r = armReach(hand[0], hand[1], hand[2], side * lift.poleX, lift.poleY, lift.poleZ, lifting.reach);
-        (i ? ar : al).rotation.set(r.x, r.y, r.z);
-        (i ? er : el).rotation.x = r.elbow;
-      }
-    } else if (playing && ll && lr && al && ar && kl && kr && nl && nr && el && er && body.current) {
-      const h = look.height;
-      g.position.set(m.pos[0] + Math.cos(m.yaw) * playing.rootX, playing.rootY * h, m.pos[1] - Math.sin(m.yaw) * playing.rootX);
-      body.current.rotation.x = 0;
-      body.current.position.set(0, 0, 0);
-      ll.rotation.x = lr.rotation.x = playing.thigh;
-      kl.rotation.x = kr.rotation.x = playing.knee;
-      nl.rotation.x = nr.rotation.x = playing.ankle;
-      if (upper.current) upper.current.rotation.x = playing.bend;
-      if (head.current) head.current.rotation.set(0, playing.head, 0);
-      ar.rotation.set(playing.right.x, playing.right.y, playing.right.z);
-      er.rotation.x = playing.right.elbow;
-      al.rotation.set(playing.left.x, playing.left.y, playing.left.z);
-      el.rotation.x = playing.left.elbow;
-    } else if (body.current) {
-      body.current.rotation.x = 0;
-      body.current.position.set(0, 0, 0);
-      if (kl && kr && nl && nr) kl.rotation.x = kr.rotation.x = nl.rotation.x = nr.rotation.x = 0;
-      if (el && er) el.rotation.x = er.rotation.x = 0;
-      if (al && ar) al.rotation.y = ar.rotation.y = 0;
-    }
+    if (!(lift && liftRig(joints, g, m.pos, m.yaw, lift, look, lifting)) && !(playing && playRig(joints, g, m.pos, m.yaw, playing, look))) restRig(joints);
 
     const status = LAMP[agent.status];
     const pulse = agent.status === "working" ? 0.75 + 0.25 * Math.sin(t * 4) : agent.status === "blocked" ? (Math.sin(t * 6) > 0 ? 1 : 0.35) : 1;
@@ -344,7 +305,73 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   );
 }
 
-function turn(from: number, to: number, max: number): number {
+/** The rig's joints, for the poses the gym and the ping pong table set. */
+export interface Joints {
+  body: RefObject<Group | null>;
+  upper: RefObject<Group | null>;
+  head: RefObject<Group | null>;
+  legs: RefObject<[Group | null, Group | null]>;
+  knees: RefObject<[Group | null, Group | null]>;
+  ankles: RefObject<[Group | null, Group | null]>;
+  arms: RefObject<[Group | null, Group | null]>;
+  elbows: RefObject<[Group | null, Group | null]>;
+}
+
+/** A lift's pose on the rig standing at `pos`, the hands on the bar; false until the rig is there. */
+export function liftRig(j: Joints, g: Group, pos: Vec2, yaw: number, lift: LiftPose, look: Look, scratch: { reach: Reach; hand: [number, number, number] }): boolean {
+  const [ll, lr] = j.legs.current, [kl, kr] = j.knees.current, [nl, nr] = j.ankles.current, [al, ar] = j.arms.current, [el, er] = j.elbows.current;
+  if (!(ll && lr && al && ar && kl && kr && nl && nr && el && er && j.body.current)) return false;
+  const h = look.height;
+  g.position.set(pos[0] + Math.sin(yaw) * lift.rootZ * h, lift.rootY * h, pos[1] + Math.cos(yaw) * lift.rootZ * h);
+  j.body.current.rotation.x = lift.lie ? -Math.PI / 2 : 0;
+  j.body.current.position.set(0, lift.lie ? lift.lieY * h : 0, lift.lie ? lift.lieZ * h : 0);
+  ll.rotation.x = lr.rotation.x = lift.thigh;
+  kl.rotation.x = kr.rotation.x = lift.knee;
+  nl.rotation.x = nr.rotation.x = lift.ankle;
+  if (j.upper.current) j.upper.current.rotation.x = lift.bend;
+  if (j.head.current) j.head.current.rotation.set(lift.lift === "pullup" ? -0.25 : 0, 0, 0);
+  for (let i = 0; i < 2; i++) {
+    const side = i ? 1 : -1;
+    const hand = handTarget(lift, look.build, side, scratch.hand);
+    const r = armReach(hand[0], hand[1], hand[2], side * lift.poleX, lift.poleY, lift.poleZ, scratch.reach);
+    (i ? ar : al).rotation.set(r.x, r.y, r.z);
+    (i ? er : el).rotation.x = r.elbow;
+  }
+  return true;
+}
+
+/** A ping pong player's stance and swing on the rig standing at `pos`; false until the rig is there. */
+export function playRig(j: Joints, g: Group, pos: Vec2, yaw: number, playing: PingPlayer, look: Look): boolean {
+  const [ll, lr] = j.legs.current, [kl, kr] = j.knees.current, [nl, nr] = j.ankles.current, [al, ar] = j.arms.current, [el, er] = j.elbows.current;
+  if (!(ll && lr && al && ar && kl && kr && nl && nr && el && er && j.body.current)) return false;
+  const h = look.height;
+  g.position.set(pos[0] + Math.cos(yaw) * playing.rootX, playing.rootY * h, pos[1] - Math.sin(yaw) * playing.rootX);
+  j.body.current.rotation.x = 0;
+  j.body.current.position.set(0, 0, 0);
+  ll.rotation.x = lr.rotation.x = playing.thigh;
+  kl.rotation.x = kr.rotation.x = playing.knee;
+  nl.rotation.x = nr.rotation.x = playing.ankle;
+  if (j.upper.current) j.upper.current.rotation.x = playing.bend;
+  if (j.head.current) j.head.current.rotation.set(0, playing.head, 0);
+  ar.rotation.set(playing.right.x, playing.right.y, playing.right.z);
+  er.rotation.x = playing.right.elbow;
+  al.rotation.set(playing.left.x, playing.left.y, playing.left.z);
+  el.rotation.x = playing.left.elbow;
+  return true;
+}
+
+/** Back to standing straight: the body upright, the knees, ankles and elbows unbent, the arms not turned. */
+export function restRig(j: Joints): void {
+  if (!j.body.current) return;
+  j.body.current.rotation.x = 0;
+  j.body.current.position.set(0, 0, 0);
+  const [kl, kr] = j.knees.current, [nl, nr] = j.ankles.current, [el, er] = j.elbows.current, [al, ar] = j.arms.current;
+  if (kl && kr && nl && nr) kl.rotation.x = kr.rotation.x = nl.rotation.x = nr.rotation.x = 0;
+  if (el && er) el.rotation.x = er.rotation.x = 0;
+  if (al && ar) al.rotation.y = ar.rotation.y = 0;
+}
+
+export function turn(from: number, to: number, max: number): number {
   let d = to - from;
   while (d > Math.PI) d -= Math.PI * 2;
   while (d < -Math.PI) d += Math.PI * 2;
