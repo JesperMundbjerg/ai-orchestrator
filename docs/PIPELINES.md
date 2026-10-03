@@ -109,6 +109,10 @@ The graph, candidate, branch rationale, assignments, step dispositions and copie
 
 Retain `--client-id` before sending. An exact retry with the same caller, run, notes and id returns the original closure receipt, including after restart; changed content or caller is a replay conflict. Abandonment has no revision precondition, so retrying with just the same command/id does not pick up a changed ledger revision. A new id cannot re-close or reopen an abandoned run. The run transition, audit event and replay receipt commit atomically; no Git or delivery action is performed.
 
+## Run history outlives its team
+
+Finishing or disbanding a team, merging it into another, or the office seeing its worktree gone never deletes a run, its copied evidence files or its item/work bindings (migration 10 removed the cascade from teams). The team's runs are marked **archived** with the reason, the team's name and the time, and are kept exactly as last recorded, whatever their state (open, delivered or abandoned): no freshness is recomputed against a checkout that may not exist. An archived run is readable (`inbox pipeline status RUN` from any team, its attachments by URL) but is never edited, re-based, abandoned, presented or delivered: mutations and presentation answer `409 pipeline_run_archived`, and the gate refuses it. Exact replays still return their original receipts, and the run they name still resolves. A merge keeps each run under its original team as provenance and lists it in the target's Runs; it is never the target's open wave, so the target's lead starts a new run. Runs shows archived entries muted with the reason, and an abandoned or archived run's unfinished steps read "abandoned"/"archived", not "waiting". Tests: `test/pipeline-history.test.ts`.
+
 ## Outages and limits
 
 If the office/gate is unavailable, protected delivery fails closed with **“Restart the office and retry; editing, tests and local commits remain available.”** There is no cached green response, broad environment bypass, model call, or reasoning intermediary.

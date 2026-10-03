@@ -67,9 +67,13 @@ export function positionsFor(graph: PipelineGraph, layout: PipelineLayout): Pipe
   return Object.fromEntries(graph.nodes.map((n, i) => [n.id, layout[n.id] ?? graph.positions?.[n.id] ?? { x: (i % 3) * 280, y: Math.floor(i / 3) * 180 }]));
 }
 
-export function stepState(step?: PipelineStep): "waiting" | "done" | "stale" | "skipped" {
+/** A closed run's unfinished steps are not waiting for anyone: they say why they never will. */
+export function stepState(step?: PipelineStep, run?: Pick<PipelineRun, "state" | "archived">): "waiting" | "done" | "stale" | "skipped" | "abandoned" | "archived" {
   if (step?.state === "inactive") return "skipped";
-  return step?.state === "done" ? "done" : step?.state === "stale" ? "stale" : "waiting";
+  if (step?.state === "done") return "done";
+  if (run?.state === "abandoned") return "abandoned";
+  if (run?.archived && run.state !== "delivered") return "archived";
+  return step?.state === "stale" ? "stale" : "waiting";
 }
 
 /** Links are evidence, never executable protocols or arbitrary local paths. */

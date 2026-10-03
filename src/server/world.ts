@@ -732,7 +732,7 @@ export class World {
       createdAt: str(r.created_at),
     }));
     const gone = teams.filter((t) => t.path && !existsSync(t.path));
-    for (const t of gone) this.forget(t.id);
+    for (const t of gone) this.forget(t, { reason: "missing" });
     return teams.filter((t) => !gone.includes(t));
   }
 
@@ -918,6 +918,8 @@ export class World {
       this.db.prepare("UPDATE work SET to_team_id = ? WHERE to_team_id = ?").run(target.id, id);
       this.db.prepare("UPDATE teams SET hands_to = NULL WHERE hands_to = ? AND id = ?").run(id, target.id);
       this.db.prepare("UPDATE teams SET hands_to = ? WHERE hands_to = ?").run(target.id, id);
+      // Its runs stay its own, archived and listed in the target's Runs: never the target's to deliver.
+      this.pipelines.archiveTeam(id, { reason: "merged", teamName: source.name, mergedInto: { teamId: target.id, teamName: target.name } });
       this.db.prepare("DELETE FROM teams WHERE id = ?").run(id);
     });
     this.onChange("world");
@@ -956,7 +958,7 @@ export class World {
     }
     const checkout = team.path ? checkoutOf(team.path) : null;
     if (!checkout) {
-      this.forget(id);
+      this.forget(team, { reason: "deleted" });
       return { ok: true, note: team.standing ? `${team.name} is disbanded.` : `${team.name} is finished; its worktree was already gone.` };
     }
     const working = this.state().agents.filter((a) => a.teamId === id && a.status === "working");
@@ -979,17 +981,25 @@ export class World {
     const branch = team.branch ?? checkout.branch;
     const kept = branch ? unmerged(checkout.repoRoot, branch) : 0;
     const deleted = branch ? deleteMergedBranch(checkout.repoRoot, branch) : false;
-    this.forget(id);
+    this.forget(team, { reason: "deleted" });
     const where = this.checkout(checkout.repoRoot)?.branch ?? "the main checkout";
     const about = !branch ? "" : deleted ? ` Branch ${branch} was merged and is deleted.` : ` Branch ${branch} is kept: ${kept} ${kept === 1 ? "commit is" : "commits are"} not in ${where} yet.`;
     const also = stopped.length ? ` Stopped what was still running there: ${stopped.join(", ")}.` : "";
     return { ok: true, note: `${team.name} is finished and ${checkout.top} removed.${also}${about}` };
   }
 
-  /** Removes a team; anyone still on it goes back to the lounge with their name and face. */
-  private forget(id: string): void {
-    this.db.prepare("UPDATE world_agents SET team_id = NULL, role = 'member' WHERE team_id = ?").run(id);
-    this.db.prepare("DELETE FROM teams WHERE id = ?").run(id);
+  /**
+   * Removes a team; anyone still on it goes back to the lounge with their name and face. Its
+   * pipeline runs stay, archived: a team going (even a checkout seen missing) never erases history.
+   */
+  private forget(team: Team, why: { reason: "deleted" | "missing" }): void {
+    const forget = () => {
+      this.pipelines.archiveTeam(team.id, { reason: why.reason, teamName: team.name });
+      this.db.prepare("UPDATE world_agents SET team_id = NULL, role = 'member' WHERE team_id = ?").run(team.id);
+      this.db.prepare("DELETE FROM teams WHERE id = ?").run(team.id);
+    };
+    // teams() can be read inside another transaction.
+    if (this.db.isTransaction) forget(); else this.tx(forget);
     this.onChange("world");
   }
 

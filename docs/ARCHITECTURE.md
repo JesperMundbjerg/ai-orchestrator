@@ -70,7 +70,7 @@ Commands/receipts need different treatment from observations/caches. The table r
 | State | Authority/lifetime | Restart/recovery |
 |---|---|---|
 | Repositories, session tasks, items/revisions, replies, history/evidence metadata | Durable SQLite | Reopen preserves ids/revisions and stale checks; files are separate evidence assets |
-| Agent identity, office names/stories, placements, teams/worktree ownership, pane-team records | Durable SQLite | Reconciled against new observations; missing checkouts can release records. Pane-team association expires after consumption or one day |
+| Agent identity, office names/stories, placements, teams/worktree ownership, pane-team records | Durable SQLite | Reconciled against new observations; missing checkouts can release records, but never pipeline runs, which are archived with their team. Pane-team association expires after consumption or one day |
 | Messages, fixed recipients, work rounds/verdicts and replay receipts/results | Durable SQLite; atomic use-case commits | Recipients do not change on retry. Work mutation and actionable message roll back together; exact replay returns original work-round result |
 | Reply claim transport/owner | Durable before dispatch | Interrupted pane/legacy claims become failed/may-have-arrived, never automatically handed to an integration. Integration claims remain re-pollable with deliveryId deduplication |
 | Message `sending` claim | Durable conditional claim | Marked failed/may-have-arrived at Messages construction; explicit Retry can duplicate receipt. Definite pre-submission inactive-agent refusal alone gets bounded startup requeue |

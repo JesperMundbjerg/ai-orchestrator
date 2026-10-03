@@ -204,10 +204,25 @@ export interface PipelineRun {
   abandonment?: { notes: string; byAgentId: string; at: string };
   /** Append-only re-base history, retained with evidence even after closure. */
   rebases?: { oldBase: string; newBase: string; notes: string; byAgentId: string; at: string }[];
+  /** Its team is gone: finished/disbanded, merged into another, or its checkout went missing.
+   * The run is kept as recorded and readable, but never edited, presented or delivered. */
+  archived?: PipelineArchive;
   workId: string | null;
   workRound: number | null;
   createdAt: string;
   updatedAt: string;
+}
+export interface PipelineArchive {
+  reason: "deleted" | "merged" | "missing";
+  /** The team's name when it went, since its record is gone. */
+  teamName: string;
+  mergedInto?: { teamId: string; teamName: string };
+  at: string;
+}
+/** Why a run is archived, for the briefing, gate refusals and Runs alike. */
+export function archivedText(archive: PipelineArchive): string {
+  return archive.reason === "merged" ? `${archive.teamName} was merged into ${archive.mergedInto?.teamName ?? "another team"}`
+    : archive.reason === "deleted" ? `${archive.teamName} was finished or disbanded` : `${archive.teamName} is gone (its checkout went missing)`;
 }
 export interface PipelineGateInput {
   runId: string;

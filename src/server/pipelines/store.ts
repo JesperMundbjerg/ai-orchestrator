@@ -2,8 +2,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { PipelineAbandonInput, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
-import { nodeBinding } from "../../shared/pipeline.ts";
+import type { PipelineAbandonInput, PipelineArchive, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView } from "../../shared/pipeline.ts";
+import { archivedText, nodeBinding } from "../../shared/pipeline.ts";
 import type { Team, WorldAgent, WorldState } from "../../shared/types.ts";
 import { InboxError } from "../inbox.ts";
 import { dataDir, requestFingerprint } from "../db.ts";
@@ -102,10 +102,14 @@ export class Pipelines {
     return JSON.parse(String(row.snapshot)) as PipelineRun;
   }
   get(id: string): PipelineRun {
-    const run = this.raw(id); run.leadId = this.context(run.teamId).lead?.id ?? null;
+    const run = this.raw(id);
+    // A run whose team is gone is history: it keeps its last first mate and is projected from its
+    // recorded evidence alone, as a delivered run is, since its checkout may be gone too.
+    if (this.world().teams.some(t => t.id === run.teamId)) run.leadId = this.context(run.teamId).lead?.id ?? null;
+    else run.archived ??= { reason: "missing", teamName: run.teamId, at: run.updatedAt };
     if (run.state === "abandoned") return run;
     const { active, edges } = activation(run.graph, run.selections);
-    const fresh = run.state === "delivered" || sameCandidate(run.candidate);
+    const fresh = run.state === "delivered" || Boolean(run.archived) || sameCandidate(run.candidate);
     for (const key of topological(run.graph)) {
       const step = run.steps.find(s => s.nodeId === key)!; const node = run.graph.nodes.find(n => n.id === key)!;
       if (!active.has(key)) { step.state = "inactive"; continue; }
@@ -122,14 +126,38 @@ export class Pipelines {
     }
     return run;
   }
+  /** A team's own runs, and those of teams merged into it (archived, under their own team). */
   list(teamId: string): PipelineRun[] {
-    return this.db.prepare("SELECT id FROM pipeline_runs WHERE team_id = ? ORDER BY created_at DESC LIMIT 30").all(teamId).map(r => this.get(String(r.id)));
+    return this.db.prepare("SELECT id FROM pipeline_runs WHERE ledger_team_id = ? ORDER BY created_at DESC LIMIT 30").all(teamId).map(r => this.get(String(r.id)));
   }
   private persist(run: PipelineRun): PipelineRun {
     run.updatedAt = this.now().toISOString(); run.revision++;
-    this.db.prepare("INSERT INTO pipeline_runs (id, team_id, snapshot, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot")
-      .run(run.id, run.teamId, JSON.stringify(run), run.createdAt);
+    this.db.prepare("INSERT INTO pipeline_runs (id, team_id, ledger_team_id, snapshot, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET snapshot = excluded.snapshot")
+      .run(run.id, run.teamId, run.teamId, JSON.stringify(run), run.createdAt);
     return this.get(run.id);
+  }
+  /**
+   * Called as a team goes, before its record is deleted. Its runs, files and bindings stay, marked
+   * archived: readable, never authorizing. A merge lists them in the target's Runs, under their
+   * original team, and never makes them the target's to continue.
+   */
+  archiveTeam(teamId: string, archive: Omit<PipelineArchive, "at">): void {
+    const at = this.now().toISOString();
+    this.atomic(() => {
+      for (const row of this.db.prepare("SELECT id, snapshot FROM pipeline_runs WHERE team_id = ?").all(teamId)) {
+        const run = JSON.parse(String(row.snapshot)) as PipelineRun;
+        if (run.archived) continue;
+        run.archived = { ...archive, at }; run.revision++; run.updatedAt = at;
+        this.db.prepare("UPDATE pipeline_runs SET snapshot = ? WHERE id = ?").run(JSON.stringify(run), String(row.id));
+      }
+      if (archive.mergedInto) this.db.prepare("UPDATE pipeline_runs SET ledger_team_id = ? WHERE ledger_team_id = ?").run(archive.mergedInto.teamId, teamId);
+    });
+  }
+  /** Refuses any change, presentation or delivery of a run whose team is gone. */
+  private unarchived(run: PipelineRun): PipelineRun {
+    const archived = run.archived ?? (this.world().teams.some(t => t.id === run.teamId) ? undefined : { reason: "missing" as const, teamName: run.teamId, at: run.updatedAt });
+    if (archived) throw new InboxError(409, `pipeline run is archived: ${archivedText(archived)}. It stays readable but is never edited, presented or delivered; start a new run.`, "pipeline_run_archived");
+    return run;
   }
   private replay<T>(actor: WorldAgent, operation: string, input: { clientId: string }, fn: () => T): T {
     if (!input.clientId?.trim()) throw new InboxError(400, "pipeline mutation needs a clientId");
@@ -167,7 +195,7 @@ export class Pipelines {
     });
   }
   private editable(actor: WorldAgent, runId: string, expectedRevision: number | undefined, lead = true): PipelineRun {
-    const run = this.raw(runId);
+    const run = this.unarchived(this.raw(runId));
     if (lead) this.lead(actor, run.teamId);
     else if (actor.teamId !== run.teamId) throw new InboxError(403, "only this team's crew may report pipeline evidence");
     if (run.state !== "open") throw new InboxError(409, `pipeline run is already ${run.state}`);
@@ -176,7 +204,7 @@ export class Pipelines {
   }
   branch(actor: WorldAgent, input: PipelineBranchInput): PipelineRun {
     // A former first mate may not retrieve an earlier re-base receipt.
-    this.lead(actor, this.raw(input.runId).teamId);
+    this.lead(actor, this.unarchived(this.raw(input.runId)).teamId);
     return this.replay(actor, "branch", input, () => {
       if (!input.base && input.expectedRevision === undefined) throw new InboxError(400, "branch edit needs expectedRevision");
       const run = this.editable(actor, input.runId, input.expectedRevision);
@@ -206,7 +234,7 @@ export class Pipelines {
   }
   abandon(actor: WorldAgent, input: PipelineAbandonInput): PipelineRun {
     // Even receipt retrieval is restricted to the team's current first mate.
-    this.lead(actor, this.raw(input.runId).teamId);
+    this.lead(actor, this.unarchived(this.raw(input.runId)).teamId);
     return this.replay(actor, "abandon", input, () => {
       const run = this.get(input.runId);
       this.lead(actor, run.teamId);
@@ -300,6 +328,7 @@ export class Pipelines {
   }
   gate(actor: WorldAgent, input: PipelineGateInput): PipelineGateResult {
     const run = this.get(input.runId); const reasons: string[] = [];
+    if (run.archived) return { allowed: false, runId: run.id, round: run.round, candidate: run.candidate.head, reasons: [`run is archived: ${archivedText(run.archived)}`] };
     this.lead(actor, run.teamId);
     if (run.state !== "open") reasons.push(`run is already ${run.state}`);
     if (run.round !== input.round) reasons.push("stale run round");
@@ -365,7 +394,7 @@ export class Pipelines {
     if (!internal) { run.state = "delivered"; run.workId = workId; run.workRound = workRound; this.persist(run); }
   }
   presentation(actor: WorldAgent, runId: string): string {
-    const run = this.get(runId); this.lead(actor, run.teamId);
+    const run = this.unarchived(this.get(runId)); this.lead(actor, run.teamId);
     if (run.state !== "open" || !sameCandidate(run.candidate)) throw new InboxError(409, "cannot present a stale or closed candidate");
     return `Pipeline snapshot: run ${run.id}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}, intended bytes ${run.candidate.fingerprint}.`;
   }
@@ -377,23 +406,24 @@ export class Pipelines {
     return file;
   }
   bindItem(actor: WorldAgent, runId: string, itemId: string, revision: number): void {
-    const run = this.get(runId); this.lead(actor, run.teamId);
+    const run = this.unarchived(this.get(runId)); this.lead(actor, run.teamId);
     if (!sameCandidate(run.candidate)) throw new InboxError(409, "cannot present a stale candidate");
     this.db.prepare("INSERT INTO pipeline_item_bindings (item_id, revision, run_id, fingerprint) VALUES (?, ?, ?, ?) ON CONFLICT(item_id,revision) DO NOTHING").run(itemId, revision, run.id, run.candidate.fingerprint);
   }
   status(actor: WorldAgent, runId?: string): PipelineStatus {
     if (!actor.teamId) throw new InboxError(409, "join a team to view its pipeline");
-    const team = this.teamView(actor.teamId); const run = runId ? this.get(runId) : team.runs.find(r => r.state === "open") ?? null;
-    if (run && run.teamId !== actor.teamId) throw new InboxError(403, "this run belongs to another team");
+    const team = this.teamView(actor.teamId); const run = runId ? this.get(runId) : team.runs.find(r => r.state === "open" && !r.archived) ?? null;
+    // An archived run belongs to no team any more; its record is readable, never actionable.
+    if (run && run.teamId !== actor.teamId && !run.archived) throw new InboxError(403, "this run belongs to another team");
     return { team, run, text: this.brief(actor.teamId, actor.id, run) };
   }
   brief(teamId: string, actorId?: string, given?: PipelineRun | null): string {
     const view = this.teamView(teamId);
     if (!view.protected) return "Pipeline: no default or team override yet.";
-    const run = given === undefined ? view.runs.find(r => r.state === "open") ?? null : given;
+    const run = given === undefined ? view.runs.find(r => r.state === "open" && !r.archived) ?? null : given;
     const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : "Do your assigned step and use inbox pipeline report; only your first mate may complete steps or deliver.";
     return [`Pipeline: ${view.graph?.label ?? "unavailable"} (${view.source}, policy ${view.policyHash?.slice(0, 12) ?? "missing"}). ${role}`,
-      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
+      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
       "Commands: inbox pipeline start|branch|abandon|assign|done|report|status|gate. No model is called; a gate allow is preflight, never a publication receipt."].join("\n");
   }
   private atomic<T>(fn: () => T): T {

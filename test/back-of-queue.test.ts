@@ -178,7 +178,7 @@ test("a version 8 database gains backed_at, keeps its items and can then send on
 
   const db = openDatabase(file);
   try {
-    assert.equal(db.prepare("PRAGMA user_version").get()!.user_version, 9);
+    assert.ok(Number(db.prepare("PRAGMA user_version").get()!.user_version) >= 9);
     assert.ok(db.prepare("PRAGMA table_info(items)").all().some((c) => c.name === "backed_at"));
     const inbox = new Inbox(db, join(dir, "files"), noPresence);
     assert.equal(inbox.item(a.itemId).backedAt, null);
