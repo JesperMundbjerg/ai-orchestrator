@@ -5,7 +5,7 @@ import { pipelineApi, PipelineRequestError } from "./api.ts";
 import { Canvas } from "./Canvas.tsx";
 import { Inspector } from "./Inspector.tsx";
 import { RunView } from "./RunView.tsx";
-import { builtins, connect, graphWarnings, nodeFromDefinition, positionsFor, pruneFields, removeNode } from "./model.ts";
+import { builtins, connect, graphWarnings, nodeFromDefinition, positionsFor, removeNode } from "./model.ts";
 import { tidyLayout } from "./layout.ts";
 import { useChangeSignal } from "../hooks.ts";
 import "./pipelines.css";
@@ -92,8 +92,8 @@ export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: 
     if (!view) return;
     setBusy(true); setError(null);
     try {
-      const next = await pipelineApi.save(teamId, { expectedRevision: view.revision, graph: pruneFields(graph) });
-      setView({ ...next, layoutRevision: view.layoutRevision }); setGraph(next.graph ?? pruneFields(graph)); setGraphDirty(false); setConflict(false);
+      const next = await pipelineApi.save(teamId, { expectedRevision: view.revision, graph });
+      setView({ ...next, layoutRevision: view.layoutRevision }); setGraph(next.graph ?? graph); setGraphDirty(false); setConflict(false);
       setNotice("Team override saved. Existing runs keep their snapshots.");
     } catch (reason) { fail(reason); } finally { setBusy(false); }
   };
@@ -123,7 +123,7 @@ export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: 
     catch (reason) { fail(reason); } finally { setBusy(false); }
   };
   const exportProposal = () => {
-    const blob = new Blob([JSON.stringify({ pipeline: pruneFields(graph) }, null, 2) + "\n"], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ pipeline: graph }, null, 2) + "\n"], { type: "application/json" });
     const url = URL.createObjectURL(blob); const anchor = document.createElement("a");
     anchor.href = url; anchor.download = "pipeline-proposal.json"; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     setNotice("Exported a proposed orchestrator.json pipeline field. The repository was not changed.");

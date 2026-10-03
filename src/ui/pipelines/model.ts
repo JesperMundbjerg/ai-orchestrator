@@ -44,18 +44,23 @@ export function connect(graph: PipelineGraph, from: string, to: string, port?: s
   return { ...graph, edges: [...graph.edges, edge] };
 }
 
-/** A field without a selecting node must not become an invisible run obligation.
- * Guards are deliberately preserved: dangling guard references must fail validation,
- * not silently weaken the policy when a condition is removed. */
-export function pruneFields(graph: PipelineGraph): PipelineGraph {
-  const referenced = new Set(graph.nodes.map((node) => node.field).filter(Boolean));
-  return { ...graph, fields: graph.fields.filter((field) => referenced.has(field.id)) };
+/** Conditions and deterministic guards can all read a field. */
+function readsField(graph: PipelineGraph, field: string): boolean {
+  return graph.nodes.some((node) => node.field === field)
+    || graph.edges.some((edge) => edge.when?.field === field)
+    || (graph.pathRules ?? []).some((rule) => rule.when?.field === field || rule.require?.field === field);
 }
 
-/** Remove incident edges, positions and fields no surviving node selects. */
+/** Remove incident edges/positions and only the deleted condition's unused field.
+ * Other declared fields are untouched: the office owns policy validation. */
 export function removeNode(graph: PipelineGraph, id: string): PipelineGraph {
-  return pruneFields({ ...graph, nodes: graph.nodes.filter((n) => n.id !== id), edges: graph.edges.filter((e) => e.from !== id && e.to !== id), entry: graph.entry === id ? "" : graph.entry,
-    ...(graph.positions ? { positions: Object.fromEntries(Object.entries(graph.positions).filter(([key]) => key !== id)) } : {}) });
+  const deleted = graph.nodes.find((node) => node.id === id);
+  const next = { ...graph, nodes: graph.nodes.filter((n) => n.id !== id), edges: graph.edges.filter((e) => e.from !== id && e.to !== id), entry: graph.entry === id ? "" : graph.entry,
+    ...(graph.positions ? { positions: Object.fromEntries(Object.entries(graph.positions).filter(([key]) => key !== id)) } : {}) };
+  if (deleted?.kind === "condition" && deleted.field && !readsField(next, deleted.field)) {
+    next.fields = next.fields.filter((field) => field.id !== deleted.field);
+  }
+  return next;
 }
 
 export function positionsFor(graph: PipelineGraph, layout: PipelineLayout): PipelineLayout {

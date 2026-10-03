@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PipelineGraph } from "../src/shared/pipeline.ts";
-import { pruneFields, removeNode } from "../src/ui/pipelines/model.ts";
+import { removeNode } from "../src/ui/pipelines/model.ts";
 import { cardSize, tidyLayout } from "../src/ui/pipelines/layout.ts";
 import { graphFixture } from "./pipeline-ui.fixture.ts";
 
@@ -28,17 +28,20 @@ test("deleting a condition drops its field unless another node still selects it"
   assert.equal(JSON.stringify(graphFixture), before);
 });
 
-test("saving/exporting prunes pre-existing orphan fields, never silently removes policy guards", () => {
-  const graph: PipelineGraph = { ...graphFixture,
-    fields: [...graphFixture.fields, { id: "orphan", label: "Invisible", type: "boolean" }],
-    pathRules: [{ prefixes: ["docs/"], require: { field: "orphan", equals: true }, message: "Preserve guard for server validation" }],
-    edges: [...graphFixture.edges, { id: "guard", from: "review", to: "check", when: { field: "orphan", equals: true } }],
-  };
-  const clean = pruneFields(graph);
-  assert.deepEqual(clean.fields, graphFixture.fields);
-  assert.deepEqual(clean.edges, graph.edges);
-  assert.deepEqual(clean.pathRules, graph.pathRules);
-  assert.equal(graph.fields.length, 2);
+test("deleting a condition preserves fields read by edge/activation and path guards", () => {
+  for (const guard of [
+    { edges: [...graphFixture.edges, { id: "guard", from: "review", to: "check", when: { field: "science", equals: true } }] },
+    { pathRules: [{ prefixes: ["docs/"], when: { field: "science", equals: true }, message: "Conditional path guard" }] },
+    { pathRules: [{ prefixes: ["docs/"], require: { field: "science", equals: true }, message: "Required path guard" }] },
+  ]) {
+    const graph: PipelineGraph = { ...graphFixture, ...guard };
+    const removed = removeNode(graph, "kind");
+    assert.deepEqual(removed.fields, graphFixture.fields);
+    assert.deepEqual(removed.pathRules, graph.pathRules);
+  }
+  const graph: PipelineGraph = { ...graphFixture, fields: [...graphFixture.fields, { id: "other", label: "Other declaration", type: "boolean" }] };
+  assert.deepEqual(removeNode(graph, "kind").fields, [graph.fields[1]!], "unrelated declarations remain for office validation");
+  assert.deepEqual(removeNode(graph, "review").fields, graph.fields);
 });
 
 test("tidy layout uses top-down longest-path layers, stable ordering and no overlapping cards", () => {
