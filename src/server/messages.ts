@@ -11,7 +11,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AllLeadsResult, Delivery, DeliveryState, Message, MessageKind, PendingReply, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
 import { formatReply, imageLines } from "../shared/agent-client.ts";
-import { STORY_INTRO, STORY_PROMPT } from "../shared/story.ts";
+import { STORY_PROMPT, storyIntro } from "../shared/story.ts";
 import { imageIds, InboxError, type Inbox } from "./inbox.ts";
 import type { Uploads } from "./uploads.ts";
 import { laneRecipient, type LaneRegistration } from "./queue.ts";
@@ -54,7 +54,7 @@ const BATCH_FULL_CHARS = 6000;
 /** How much of an older message its one line keeps. */
 const BATCH_LINE_CHARS = 160;
 const FOOTER = "(From the office. `inbox team` shows your project and who else is here.)";
-const footer = (agent: WorldAgent) => !agent.storyAsk ? FOOTER : `Your office name is ${agent.name}. ${STORY_INTRO}\n${FOOTER}`;
+const footer = (agent: WorldAgent) => !agent.storyAsk ? FOOTER : `Your office name is ${agent.name}. ${storyIntro(agent.id, Boolean(agent.story))}\n${FOOTER}`;
 
 export class Messages {
   private db: DatabaseSync;

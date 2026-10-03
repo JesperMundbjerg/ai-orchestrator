@@ -11,7 +11,7 @@ import { openDatabase } from "../src/server/db.ts";
 import { createInboxServer } from "../src/server/http.ts";
 import { Inbox } from "../src/server/inbox.ts";
 import { World, type AgentSource } from "../src/server/world.ts";
-import { STORY_INTRO, STORY_PROMPT } from "../src/shared/story.ts";
+import { STORY_PROMPT, framedStory, storyIntro, storySeeds } from "../src/shared/story.ts";
 
 function office(file = ":memory:") {
   const db = openDatabase(file);
@@ -30,6 +30,8 @@ function office(file = ":memory:") {
   return { db, inbox, world, typed, pane, close: () => { db.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 const session = { harness: "pi" as const, sessionId: "one", paneId: "one" };
+/** Every form of the ask, first or retold, seeded or not, says this. */
+const asks = (text: string) => text.includes("tell your personal life story");
 const story = "When I was seven I built a raft from fence boards and it sank in the pond, and my grandmother laughed until she cried. I still fear deep water, and I still love building things that might not float.";
 
 test("an agent stores its own story on its identity and it survives an office restart", () => {
@@ -89,17 +91,17 @@ test("the additive story migration preserves existing agents without inventing a
 test("intro and first-message instructions ask the agent itself, then omit the request once saved", async () => {
   const o = office();
   try {
-    assert.ok(o.world.brief(session).text.includes(STORY_INTRO));
+    assert.ok(asks(o.world.brief(session).text));
     const me = o.world.resolve(session);
     o.world.messages.tell(me.id, { text: "Start your task.", clientId: "first" });
     await o.world.react();
-    assert.ok(o.typed[0]!.includes(STORY_INTRO));
+    assert.ok(asks(o.typed[0]!));
     assert.ok(o.typed[0]!.includes(`Your office name is ${me.name}.`));
     o.world.setStory(session, story);
-    assert.ok(!o.world.brief(session).text.includes(STORY_INTRO));
+    assert.ok(!asks(o.world.brief(session).text));
     o.world.messages.tell(me.id, { text: "Next task.", clientId: "second" });
     await o.world.react();
-    assert.ok(!o.typed[1]!.includes(STORY_INTRO));
+    assert.ok(!asks(o.typed[1]!));
   } finally { o.close(); }
 });
 
@@ -142,8 +144,8 @@ test("inbox story saves plain text through the API and /api/world exposes only t
 });
 
 test("the intro asks for a personal life story, not a job backstory", () => {
-  for (const asked of ["childhood memory", "crisis", "love or fear", "not your job"]) assert.ok(STORY_INTRO.includes(asked), asked);
-  assert.ok(!/why you came to work here|playful backstory/.test(STORY_INTRO));
+  for (const asked of ["childhood memory", "crisis", "love or fear", "not your job"]) assert.ok(storyIntro("agent").includes(asked), asked);
+  assert.ok(!/why you came to work here|playful backstory/.test(storyIntro("agent")));
 });
 
 test("the briefing shows the agent its own story and invites it into its work, never another agent's", () => {
@@ -174,16 +176,16 @@ test("a story under the old job prompt is re-asked exactly once and kept until r
       return [o.typed.at(-2)!, o.typed.at(-1)!];
     };
     const first = await say("First task.");
-    assert.equal(first.filter((t) => t.includes(STORY_INTRO)).length, 1, "only the old-prompt story is re-asked");
+    assert.equal(first.filter(asks).length, 1, "only the old-prompt story is re-asked");
     assert.equal(o.world.resolve(session).story, old, "the old story stays shown until replaced");
     assert.ok(o.world.brief(session).text.includes(`Your story: ${old}`));
     const second = await say("Second task.");
-    assert.ok(second.every((t) => !t.includes(STORY_INTRO)), "never asked again");
-    assert.ok(!o.world.brief(session).text.includes(STORY_INTRO));
+    assert.ok(second.every((t) => !asks(t)), "never asked again");
+    assert.ok(!asks(o.world.brief(session).text));
     o.world.setStory(session, story);
     assert.equal(o.db.prepare("SELECT story_prompt FROM world_agents WHERE id = ?").get(me.id)!.story_prompt, STORY_PROMPT);
     const third = await say("Third task.");
-    assert.ok(third.every((t) => !t.includes(STORY_INTRO)));
+    assert.ok(third.every((t) => !asks(t)));
   } finally { o.close(); }
 });
 
@@ -199,7 +201,7 @@ test("a failed delivery does not use up the one re-ask", async () => {
     o.pane.down = false;
     o.world.messages.tell(me.id, { text: "Found.", clientId: "found" });
     await o.world.react();
-    assert.ok(o.typed.at(-1)!.includes(STORY_INTRO));
+    assert.ok(asks(o.typed.at(-1)!));
   } finally { o.close(); }
 });
 
@@ -243,5 +245,108 @@ test("a failing story_asked update never fails or retries a delivery", async () 
     await o.world.react();
     assert.equal(o.typed.filter((t) => t.includes("Once.")).length, 1, "typed exactly once");
     assert.equal(o.db.prepare("SELECT state FROM message_deliveries WHERE agent_id = ?").get(me.id)!.state, "delivered");
+  } finally { o.close(); }
+});
+
+test("story seeds are the same for an agent every time and differ across agents", () => {
+  const ids = Array.from({ length: 40 }, (_, i) => `agent-${i}`);
+  for (const id of ids) {
+    assert.deepEqual(storySeeds(id), storySeeds(id));
+    assert.equal(storyIntro(id), storyIntro(id));
+    for (const seed of Object.values(storySeeds(id))) assert.ok(storyIntro(id).includes(seed), seed);
+  }
+  for (const field of ["place", "decade", "trade", "object", "joy", "fear"] as const) {
+    assert.ok(new Set(ids.map((id) => storySeeds(id)[field])).size >= 5, `${field} varies`);
+  }
+  assert.equal(new Set(ids.map((id) => storyIntro(id))).size, ids.length, "no two agents get the same seeds");
+  assert.ok(ids.every((id) => !/\b(unsaid|silen(ce|t)|rivers?|fjords?|boats?|workshops?)\b/i.test(Object.values(storySeeds(id)).join(" "))), "no overused theme is seeded");
+  assert.match(storyIntro("agent"), /no label, framing or disclaimer/);
+  assert.match(storyIntro("agent"), /left unsaid/, "the overused themes are named to avoid");
+});
+
+const framed = [
+  "Fictional office backstory for Yuri: I grew up above a bakery.",
+  "Fictional office backstory for Sami, not an AI autobiography: I grew up in Lagos.",
+  "In my imagined life, I was born in Lisbon.",
+  "In my office story I was a ferry pilot's daughter.",
+  "I don't have a childhood, but if I did it would be in Oslo.",
+  "I DON’T have a real childhood… still, here goes.",
+  "As an AI, I never scraped a knee.",
+  "Backstory: born in Lima in 1971.",
+  "My story: I was born in Accra.",
+  "Here's my bio. I was born in Pune.",
+  "This is a fictional account of my life.",
+  "I'm Pim, a Claude model, so I have nothing to remember.",
+  "I'm Alina, an AI. I begin fresh each session.",
+];
+const plain = [
+  story,
+  "My imaginary friend lived in our fridge in Busan, and I fed him cold rice until I was nine.",
+  "My father invented a better mousetrap in Detroit in 1964 and never sold one.",
+  "Stories were my mother's trade: she typed them at a newspaper in Tunis.",
+  "I grew up in Valparaíso. Years later I imagined life without the hills and hated it.",
+];
+
+test("a story that opens with a frame or disclaimer is refused; a plain one is saved", () => {
+  const o = office();
+  try {
+    for (const text of framed) {
+      assert.ok(framedStory(text), text);
+      assert.throws(() => o.world.setStory(session, text), (err: Error & { status?: number }) => err.status === 400 && /plainly as your own life/.test(err.message), text);
+    }
+    assert.equal(o.world.resolve(session).story, null, "nothing framed was saved");
+    for (const text of plain) {
+      assert.ok(!framedStory(text), text);
+      assert.equal(o.world.setStory(session, text).story, text);
+    }
+  } finally { o.close(); }
+});
+
+test("the story route answers a framed story with a clear 400", async () => {
+  const o = office();
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  const server = createInboxServer(o.inbox, null, { port, staticDir: null, world: o.world });
+  await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/agent/story`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session, text: framed[0] }),
+    });
+    assert.equal(response.status, 400);
+    assert.match(JSON.stringify(await response.json()), /plainly as your own life/);
+    assert.equal(o.world.resolve(session).story, null);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    o.close();
+  }
+});
+
+test("a story told under the second prompt is asked once to be retold under the third, with the agent's own seeds", async () => {
+  const o = office();
+  try {
+    const me = o.world.resolve(session);
+    const other = o.world.resolve({ harness: "pi", sessionId: "two", paneId: "two" });
+    const old = "Fictional office backstory for Yuri: a river, a boat and things left unsaid.";
+    // As the second prompt left it: saved under 2, and maybe already re-asked under 2.
+    o.db.prepare("UPDATE world_agents SET story = ?, story_prompt = 2, story_asked = 2 WHERE id = ?").run(old, me.id);
+    o.world.setStory({ harness: "pi", sessionId: "two", paneId: "two" }, story);
+    const say = async (text: string) => {
+      for (const id of [me.id, other.id]) o.world.messages.tell(id, { text, clientId: `${text}-${id}` });
+      await o.world.react();
+      return [o.typed.at(-2)!, o.typed.at(-1)!];
+    };
+    assert.ok(o.world.brief(session).text.includes(storyIntro(me.id, true)));
+    const first = await say("First task.");
+    assert.equal(first.filter(asks).length, 1, "only the second-prompt story is re-asked");
+    assert.ok(first.some((t) => t.includes(storyIntro(me.id, true))), "with the retell wording and this agent's seeds");
+    assert.equal(o.world.resolve(session).story, old, "kept until retold");
+    const second = await say("Second task.");
+    assert.ok(second.every((t) => !asks(t)), "asked once");
+    assert.ok(!asks(o.world.brief(session).text));
+    o.world.setStory(session, plain[1]!);
+    assert.equal(o.db.prepare("SELECT story_prompt FROM world_agents WHERE id = ?").get(me.id)!.story_prompt, 3);
   } finally { o.close(); }
 });

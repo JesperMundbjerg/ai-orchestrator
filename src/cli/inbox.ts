@@ -15,7 +15,7 @@ import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
 import { projectRoot } from "../shared/project.ts";
 import { QA_GUIDE } from "../shared/qa.ts";
-import { STORY_INTRO } from "../shared/story.ts";
+import { storyIntro } from "../shared/story.ts";
 import { changedFiles, parseWrites, strayFiles } from "../shared/surface.ts";
 import type { AgentSwitch, StandingLane, EvidenceInput, FounderAnswer, Item, ItemType, Message, Page, QaNext, QaPrediction, Reply, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
 
@@ -74,7 +74,7 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   The office (a project per worktree, run by its first mate; standing teams like Mission Control):
   inbox team                      who you are, your project, your part in it, what waits for you
   inbox story "…"                 save your own short personal story (plain text, capped at 800 characters)
-  ${STORY_INTRO}
+  ${storyIntro()}
   inbox crew                      the active crew preset and guide: which harness and model to start, under the founder's switch
   inbox say NAME "text"           message an agent, project, team or a project's lane by name; it arrives when they are free
   inbox say founder "text"        answer the founder in a sentence or two; shown beside you in the office
