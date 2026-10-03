@@ -6,6 +6,7 @@ import { chooseGym, gymSpot, LIFTS, PROGRAMS, stationPose, STATIONS, newPose } f
 import { choosePingPong, pingSpot, PingPlayback, RALLY } from "../src/ui/world/pingpong.ts";
 import { CAST, cheerAt, coolerAt, highFiveAt, isRegular, partnerLone, placeRegulars, regularLook, sipAt, asideSpot } from "../src/ui/world/regulars.ts";
 import type { Spot } from "../src/ui/world/spatial.ts";
+import { NAMES } from "../src/server/names.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({ id, identity: id, name: id, harness: "manual", cwd: null, project: null, branch: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra });
 const team = (id: string): Team => ({ id, name: id, purpose: "", handsTo: null, path: null, branch: null, standing: true, worktrees: [], createdAt: "" });
@@ -23,6 +24,9 @@ test("a small fixed cast, their own names and looks, the same every time and nev
     assert.deepEqual(regularLook(r), regularLook(r));
   }
   assert.ok(!crew(20).some((a) => isRegular(a.id)));
+  // No agent can ever be named like a regular: none of their names is in the office's name pool.
+  const pool = new Set(NAMES.map((n) => n.toLowerCase()));
+  assert.deepEqual(CAST.filter((r) => pool.has(r.name.toLowerCase())).map((r) => r.name), []);
   // Every station and both ends have a regular whose home it is.
   assert.deepEqual(new Set(CAST.flatMap((r) => ("gym" in r.home ? [r.home.gym] : []))), new Set(STATIONS));
   assert.deepEqual(CAST.flatMap((r) => ("pingpong" in r.home ? [r.home.pingpong] : [])).sort(), [0, 1]);
@@ -45,7 +49,7 @@ test("an agent arriving takes the station or the table, and that regular steps a
   const plan = office();
   const agents = new Map<string, Spot>([["a", gymSpot(plan, "rack")], ["b", pingSpot(plan, 0)], ["c", pingSpot(plan, 1)]]);
   const placed = placeRegulars(plan, agents);
-  assert.deepEqual(acts(placed), { freja: "lift", kofi: "stretch", ines: "lift", sami: "lift", yara: "watch", theo: "watch" });
+  assert.deepEqual(acts(placed), { ottilie: "lift", kwabena: "stretch", marisol: "lift", thandiwe: "lift", brigitta: "watch", ignatius: "watch" });
   // Never two at one station or end.
   for (const p of placed.values()) {
     assert.ok(!(p.spot.gym === "rack"), "nobody else at the agent's station");
@@ -61,11 +65,11 @@ test("an agent arriving takes the station or the table, and that regular steps a
   for (const s of spots) for (const o of busy.values()) assert.ok(far(s.pos, o.pos, 1), "aside places clear of the stations and ends");
   for (const s of spots) assert.ok(far(s.pos, coolerAt(plan).pos, 0.35));
   // The two at the cooler high five each other only while both are there.
-  assert.equal(aside.get("regular:ines")!.partner, "regular:sami");
+  assert.equal(aside.get("regular:marisol")!.partner, "regular:thandiwe");
   const oneAside = placeRegulars(plan, new Map([["a", gymSpot(plan, "bench")]]));
-  assert.equal(oneAside.get("regular:ines")!.partner, null);
+  assert.equal(oneAside.get("regular:marisol")!.partner, null);
   // When the agent goes, the regular is back at their station.
-  assert.equal(placeRegulars(plan, new Map()).get("regular:kofi")!.act, "lift");
+  assert.equal(placeRegulars(plan, new Map()).get("regular:kwabena")!.act, "lift");
 });
 
 test("stepping aside and back is a walk inside the corner, along its lane, never out on the walkway", () => {
@@ -94,10 +98,10 @@ test("a lone idle agent plays a regular; two or more agents pair up as before", 
   assert.equal(choosePingPong(plan, one, since, 60_000).size, 0, "agents alone still never pair with nobody");
   // The regular whose end is free plays them; the other watches.
   const placed = placeRegulars(plan, lone);
-  assert.deepEqual([acts(placed).yara, acts(placed).theo], ["watch", "play"]);
-  const play = new PingPlayback([one[0]!.id, "regular:theo"]);
+  assert.deepEqual([acts(placed).brigitta, acts(placed).ignatius], ["watch", "play"]);
+  const play = new PingPlayback([one[0]!.id, "regular:ignatius"]);
   play.arrive(one[0]!.id, true, 0);
-  play.arrive("regular:theo", true, 500);
+  play.arrive("regular:ignatius", true, 500);
   assert.equal(play.seconds(1500), 1, "the rally runs on the same clock as two agents'");
   // They keep the end they had.
   assert.equal(partnerLone(plan, one, since, 61_000, new Map([[one[0]!.id, pingSpot(plan, 1)]])).get(one[0]!.id)!.pingpong, 1);

@@ -149,9 +149,9 @@ await withOffice(3, true, async ({ open }) => {
   await look(page, "pingpong");
   await page.screenshot({ path: join(shots, "1-nobody-idle-table.png") });
   await look(page, "gym", { distance: 4.5, side: -1.8, pitch: -0.35 });
-  const click = await clickRegular(page, "Kofi");
+  const click = await clickRegular(page, "Kwabena");
   await page.screenshot({ path: join(shots, "1-click-regular.png") });
-  assert.match(click.card ?? "", /Kofi · Regular at the gym/);
+  assert.match(click.card ?? "", /Kwabena · Regular at the gym/);
   assert.equal(click.panel, false, "no agent panel for a regular");
   assert.deepEqual(desk.errors, []);
   // At phone width too.

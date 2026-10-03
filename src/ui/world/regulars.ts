@@ -36,12 +36,12 @@ export interface Regular {
 export const REGULAR_PREFIX = "regular:";
 
 export const CAST: readonly Regular[] = [
-  { id: `${REGULAR_PREFIX}freja`, name: "Freja", home: { gym: "platform" }, aside: "stretch", wear: { shirt: "#e4572e", pants: "#1f1f24", shoes: "#f2f2f2", hairStyle: "bun", accessory: "none" } },
-  { id: `${REGULAR_PREFIX}kofi`, name: "Kofi", home: { gym: "rack" }, aside: "stretch", wear: { shirt: "#00a6a6", pants: "#2b3240", shoes: "#1b1b1f", hairStyle: "short", accessory: "none" } },
-  { id: `${REGULAR_PREFIX}ines`, name: "Ines", home: { gym: "bench" }, aside: "cooler", wear: { shirt: "#9b5de5", pants: "#1f1f24", shoes: "#f2f2f2", hairStyle: "long", accessory: "none" } },
-  { id: `${REGULAR_PREFIX}sami`, name: "Sami", home: { gym: "pullup" }, aside: "cooler", wear: { shirt: "#f2c14e", pants: "#3d4a5c", shoes: "#b23a48", hairStyle: "curly", accessory: "beanie" } },
-  { id: `${REGULAR_PREFIX}yara`, name: "Yara", home: { pingpong: 0 }, aside: "watch", wear: { shirt: "#f15bb5", pants: "#324d3a", shoes: "#f2f2f2", hairStyle: "bob", accessory: "none" } },
-  { id: `${REGULAR_PREFIX}theo`, name: "Theo", home: { pingpong: 1 }, aside: "watch", wear: { shirt: "#4c956c", pants: "#5a4636", shoes: "#1b1b1f", hairStyle: "spiky", accessory: "cap" } },
+  { id: `${REGULAR_PREFIX}ottilie`, name: "Ottilie", home: { gym: "platform" }, aside: "stretch", wear: { shirt: "#e4572e", pants: "#1f1f24", shoes: "#f2f2f2", hairStyle: "bun", accessory: "none" } },
+  { id: `${REGULAR_PREFIX}kwabena`, name: "Kwabena", home: { gym: "rack" }, aside: "stretch", wear: { shirt: "#00a6a6", pants: "#2b3240", shoes: "#1b1b1f", hairStyle: "short", accessory: "none" } },
+  { id: `${REGULAR_PREFIX}marisol`, name: "Marisol", home: { gym: "bench" }, aside: "cooler", wear: { shirt: "#9b5de5", pants: "#1f1f24", shoes: "#f2f2f2", hairStyle: "long", accessory: "none" } },
+  { id: `${REGULAR_PREFIX}thandiwe`, name: "Thandiwe", home: { gym: "pullup" }, aside: "cooler", wear: { shirt: "#f2c14e", pants: "#3d4a5c", shoes: "#b23a48", hairStyle: "curly", accessory: "beanie" } },
+  { id: `${REGULAR_PREFIX}brigitta`, name: "Brigitta", home: { pingpong: 0 }, aside: "watch", wear: { shirt: "#f15bb5", pants: "#324d3a", shoes: "#f2f2f2", hairStyle: "bob", accessory: "none" } },
+  { id: `${REGULAR_PREFIX}ignatius`, name: "Ignatius", home: { pingpong: 1 }, aside: "watch", wear: { shirt: "#4c956c", pants: "#5a4636", shoes: "#1b1b1f", hairStyle: "spiky", accessory: "cap" } },
 ];
 
 export const isRegular = (id: string) => id.startsWith(REGULAR_PREFIX);
@@ -67,14 +67,14 @@ type Plan = Pick<BuildingPlan, "rooms" | "outline" | "hall">;
 /** Each place aside, in its corner's frame (x across, `dz` out from the back wall), and what they face. */
 const ASIDE: Record<string, { x: number; dz: number; face: [number, number] }> = {
   // Two mats in front of the gym, the stretchers facing the stations.
-  freja: { x: -0.6, dz: 3.05, face: [0, -1] },
-  kofi: { x: 0.6, dz: 3.05, face: [0, -1] },
+  ottilie: { x: -0.6, dz: 3.05, face: [0, -1] },
+  kwabena: { x: 0.6, dz: 3.05, face: [0, -1] },
   // The water cooler between them, the two either side facing each other.
-  ines: { x: 2.3, dz: 3.0, face: [1, 0] },
-  sami: { x: 3.2, dz: 3.0, face: [-1, 0] },
+  marisol: { x: 2.3, dz: 3.0, face: [1, 0] },
+  thandiwe: { x: 3.2, dz: 3.0, face: [-1, 0] },
   // Watching from across the lane, either side of the middle so the game stays in view, turned in to the table.
-  yara: { x: TABLE_X - 1.0, dz: 3.25, face: [0.25, -1] },
-  theo: { x: TABLE_X + 1.0, dz: 3.25, face: [-0.25, -1] },
+  brigitta: { x: TABLE_X - 1.0, dz: 3.25, face: [0.25, -1] },
+  ignatius: { x: TABLE_X + 1.0, dz: 3.25, face: [-0.25, -1] },
 };
 /** The water cooler, behind the two who meet there. */
 export const COOLER = { x: 2.75, dz: 3.45 };
