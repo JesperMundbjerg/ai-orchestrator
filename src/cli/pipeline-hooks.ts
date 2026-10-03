@@ -280,13 +280,20 @@ function decide(boundary: Boundary, config: HookConfig, identity: Json, base?: s
   if (lane === "") return null;
   return lane ?? gate(boundary, config, identity);
 }
+/** FysikLab replays its .claude hooks on Pi tool calls, so this runner can be asked as claude/codex while
+ * running inside Pi. The payload's session_id is then Pi's session UUID, which the office cannot resolve;
+ * Pi's own session file (PI_SESSION_FILE) is what it knows. Real Claude/Codex processes carry their own id. */
+function replayedInPi(harness: string): boolean {
+  return (harness === "claude" || harness === "codex") && !!process.env.PI_SESSION_FILE && !process.env.CLAUDE_CODE_SESSION_ID && !process.env.CODEX_THREAD_ID;
+}
 export function guardTool(config: HookConfig, input: Json, cwd: string, harness: string, session = ""): string | null {
   const toolInput = input.tool_input ?? input.input ?? {};
   const command = toolInput.command ?? toolInput.cmd;
   if (typeof command !== "string" && !Array.isArray(command)) return null;
   try {
     for (const boundary of commandBoundaries(Array.isArray(command) ? command.map(quote).join(" ") : command, toolInput.cwd || toolInput.workdir || input.cwd || cwd, config)) {
-      const reason = decide(boundary, config, { harness, session: session || input.session_id });
+      const who = replayedInPi(harness) ? { harness: "pi", session: process.env.PI_SESSION_FILE } : { harness, session: session || input.session_id };
+      const reason = decide(boundary, config, who);
       if (reason) return reason;
     }
     return null;
