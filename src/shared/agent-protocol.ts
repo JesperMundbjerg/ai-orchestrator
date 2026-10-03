@@ -6,7 +6,7 @@ import {
   DELIVERY_STATES, WORK_STATES,
   type SessionInput, type SubmitInput, type ActivityInput, type ActivityEvent,
   type EffortReport, type SubmitResult, type PendingReply, type Task, type Item,
-  type Reply, type Message, type Work, type TeamBrief, type AgentSwitch,
+  type Reply, type Message, type Work, type TeamBrief, type AgentSwitch, type FounderAnswer, type QaNext,
 } from "./types.ts";
 import type { LimitReading } from "./usage.ts";
 import { parsePage } from "./pages.ts";
@@ -152,6 +152,14 @@ export const switchOptions = { to: optional(oneOf(["claude", "pi"])), model: opt
 export const switchSchema = object({ agent: nonempty, ...switchOptions });
 export const switchAllSchema = object({ from: oneOf(["claude", "pi"]), ...switchOptions });
 export const emptySchema = object({});
+// The QA agent's side of QA answers: the next question, its decision, and the founder's answers it learns from.
+export const qaAnswerSchema = object({
+  session: sessionSchema, item: nonempty, revision: positiveInteger,
+  action: oneOf(["choose", "answer", "accept", "request_changes"]), choice: optional(nonempty), text: maybeText,
+  reason: nonempty, learnings: optional(list(nonempty)),
+});
+export const qaAnswersSchema = object({ session: sessionSchema, limit: optional(positiveInteger) });
+export const qaLearnedSchema = object({ session: sessionSchema, through: number });
 
 export type RepliesRequest = Infer<typeof repliesSchema>;
 export type AcknowledgeRequest = Infer<typeof ackSchema>;
@@ -178,10 +186,12 @@ export const itemResponse: Schema<Item> = object({
 export const replyResponse: Schema<Reply> = object({
   id: text, itemId: text, revision: positiveInteger, action: oneOf(REPLY_ACTIONS), choice: nullText, text,
   images: strings, state: oneOf(REPLY_STATES), error: nullText, createdAt: text, deliveredAt: nullText,
+  answeredBy: optional(oneOf(["founder", "approve_all", "qa_agent"])), overridesQa: optional(boolean),
 });
 const pendingReplyResponse: Schema<PendingReply> = object({
   deliveryId: text, itemId: text, itemKey: text, itemTitle: text, itemType: oneOf(ITEM_TYPES), revision: positiveInteger,
   action: oneOf(REPLY_ACTIONS), choice: nullText, choiceLabel: nullText, text, images: strings, createdAt: text,
+  answeredBy: optional(oneOf(["founder", "approve_all", "qa_agent"])), overridesQa: optional(boolean),
 });
 export const taskResponse: Schema<Task> = object({
   id: text, projectId: text, title: text, objective: text, activity: text, nextMilestone: text,
@@ -207,6 +217,11 @@ const switchResponse: Schema<AgentSwitch> = object({
   says: text, handoff: nullText, error: nullText,
   batchId: nullText, startedAt: text, updatedAt: text,
 });
+const founderAnswerResponse: Schema<FounderAnswer> = object({
+  seq: number, at: text, itemId: text, revision: positiveInteger, project: text, itemType: oneOf(ITEM_TYPES), title: text, request: text,
+  recommendation: text, options: list(optionSchema), action: oneOf(REPLY_ACTIONS), choice: nullText, choiceLabel: nullText, text,
+  overrode: nullable(object({ action: oneOf(REPLY_ACTIONS), choice: nullText, learnings: strings })),
+});
 const okResponse = object({ ok: boolean });
 const workResult = object({ work: workResponse, message: messageResponse });
 export interface Operation<I, O> { method: "POST" | "GET"; path: string; request: Schema<I>; response: Schema<O> }
@@ -228,6 +243,13 @@ export const agentOperations = {
   review: post("/api/agent/review", reviewSchema, workResult),
   withdraw: post("/api/agent/withdraw", closeItemSchema, itemResponse),
   resolve: post("/api/agent/resolve", closeItemSchema, itemResponse),
+  qaNext: post("/api/agent/qa/next", sessionRequestSchema, object({
+    item: nullable(refine(record, (v, p) => { itemResponse.parse(v, p); object({ project: text, taskTitle: text }).parse(v, p); })),
+    waiting: number, toLearn: number, learnings: text,
+  }) as Schema<QaNext>),
+  qaAnswer: post("/api/agent/qa/answer", qaAnswerSchema, replyResponse),
+  qaAnswers: post("/api/agent/qa/answers", qaAnswersSchema, object({ answers: list(founderAnswerResponse), remaining: number, learnedThrough: number })),
+  qaLearned: post("/api/agent/qa/learned", qaLearnedSchema, object({ learnedThrough: number })),
   switchAgent: post("/api/world/switches", switchSchema, switchResponse),
   switchAll: post("/api/world/switches/all-from", switchAllSchema, object({ batchId: text, switches: list(switchResponse), skipped: list(object({ name: text, why: text })) })),
 };

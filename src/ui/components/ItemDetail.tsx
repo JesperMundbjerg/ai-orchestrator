@@ -35,11 +35,13 @@ export function ItemDetailView({ detail, onNext, onDone, onAnswered, othersWaiti
   if (item.type === "decide") {
     const answer = decisionAnswer(detail);
     const collapsed = answer !== null && !expandedAnswer;
+    // A QA agent's answer never reads as the founder's own, even collapsed.
+    const byQa = detail.replies.findLast((r) => r.revision === item.revision && r.state !== "stale" && r.state !== "failed")?.answeredBy === "qa_agent";
     return (
       <article data-decision-id={item.id} className={`item decision-card${collapsed ? " collapsed" : ""}`} aria-label={collapsed ? item.title : undefined} aria-labelledby={collapsed ? undefined : `question-${item.id}`}>
         {collapsed ? (
           <button className="decision-receipt" onClick={() => setExpandedAnswer(true)} title={item.title}>
-            <span className="receipt-question">{item.title}</span><span className="receipt-answer">Answered: {answer}</span><span aria-hidden>⌄</span>
+            <span className="receipt-question">{item.title}</span><span className="receipt-answer">{byQa ? "QA agent answered" : "Answered"}: {answer}</span><span aria-hidden>⌄</span>
           </button>
         ) : (
           <>
@@ -95,6 +97,7 @@ export function ItemDetailView({ detail, onNext, onDone, onAnswered, othersWaiti
           {item.state === "needs_attention" ? (
             <span className={item.blocking ? "blocking" : "muted"}>{item.blocking ? "The agent is waiting on this" : "The agent carries on meanwhile"}</span>
           ) : null}
+          {detail.withQa ? <span className="with-qa" title="The QA agent decides this for you; answer it yourself any time and yours counts.">With QA agent</span> : null}
           <span className="muted">revision {item.revision} · {ago(item.updatedAt)}</span>
         </div>
         <h2>{item.title}</h2>
@@ -226,6 +229,14 @@ function EvidenceTab({ evidence, revision }: { evidence: Evidence[]; revision: n
   );
 }
 
+/** Never "You" for an answer someone else gave on your behalf. */
+function answeredBy(detail: Record<string, unknown>): string {
+  const qa = detail.qaAgent as { name?: string } | undefined;
+  if (qa) return `QA agent · ${qa.name ?? "unknown"}`;
+  if (detail.autoApproved) return "Approve all";
+  return detail.overridesQa ? "You · overriding the QA agent" : "You";
+}
+
 function ConversationTab({ detail: { item, history, replies } }: { detail: ItemDetail }) {
   const byId = new Map(replies.map((r) => [r.id, r]));
   return (
@@ -235,7 +246,7 @@ function ConversationTab({ detail: { item, history, replies } }: { detail: ItemD
         if (h.kind === "reply.queued" && reply) {
           return (
             <li key={h.id} className="msg user">
-              <div className="msg-head">{h.detail.autoApproved ? "Approve all" : "You"} · {actionLabel(reply.action, item.type)} · {clock(h.at)} · revision {reply.revision}</div>
+              <div className="msg-head">{answeredBy(h.detail)} · {actionLabel(reply.action, item.type)} · {clock(h.at)} · revision {reply.revision}</div>
               {reply.choice ? <div className="msg-choice">Option {reply.choice.toUpperCase()}</div> : null}
               {reply.text ? <Prose text={reply.text} /> : null}
               <Images ids={reply.images} />

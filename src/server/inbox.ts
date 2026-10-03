@@ -8,7 +8,7 @@ import { closeSync, copyFileSync, lstatSync, mkdirSync, openSync, readSync } fro
 import { basename, extname, join } from "node:path";
 import {
   HARNESSES, ITEM_TYPES, REPLY_ACTIONS,
-  type ActivityInput, type Binding, type Capabilities, type Evidence, type EvidenceInput, type Harness,
+  type ActivityInput, type AnsweredBy, type Binding, type Capabilities, type Evidence, type EvidenceInput, type Harness,
   type HistoryEvent, type InboxState, type Item, type ItemDetail, type ItemSummary, type Option,
   type PendingReply, type Presence, type Page, type Preview, type Project, type Reply, type ReplyAction,
   type SessionInput, type SubmitInput, type SubmitResult, type Task,
@@ -80,6 +80,8 @@ export class Inbox {
   onChange: (reason: string) => void = () => {};
   /** Server-side inbox automation, run after a submission commits (including replays). */
   onSubmitted: (itemId: string) => void = () => {};
+  /** Run after an answer commits; the QA agent learns from the founder's. */
+  onAnswered: (itemId: string, by: AnsweredBy) => void = () => {};
 
   constructor(db: DatabaseSync, filesDir: string, presence: PresenceSource, now: () => Date = () => new Date()) {
     this.db = db;
@@ -415,7 +417,7 @@ export class Inbox {
 
   // ── User actions ──────────────────────────────────────────────────────────────────────
 
-  answer(itemId: string, input: { id?: string; revision: number; action: ReplyAction; choice?: string | null; text?: string; images?: string[] }, source?: "approve_all"): Reply {
+  answer(itemId: string, input: { id?: string; revision: number; action: ReplyAction; choice?: string | null; text?: string; images?: string[] }, source?: "approve_all" | "qa_agent", provenance: Record<string, unknown> = {}): Reply {
     const deliveryId = input.id ?? randomUUID();
     // An answer id belongs to its caller/scope, operation, target and exact revision.
     // Automation must not replay a founder answer (or vice versa), even with identical content.
@@ -451,17 +453,23 @@ export class Inbox {
     if ((input.action === "discuss" || input.action === "request_changes") && !text && !images.length) throw new InboxError(400, "write what you want to say");
 
     const task = this.task(item.taskId);
+    // The founder answering a revision the QA agent already answered overrides it; both reach the agent, marked.
+    const overridesQa = !source && Boolean(this.db.prepare("SELECT 1 FROM replies WHERE item_id = ? AND revision = ? AND answered_by = 'qa_agent'").get(itemId, item.revision));
     this.tx(() => {
       const now = this.iso();
       this.db
-        .prepare("INSERT INTO replies (id, item_id, revision, action, choice, text, images, state, created_at, replay_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)")
-        .run(deliveryId, itemId, item.revision, input.action, choice, text, images.length ? JSON.stringify(images) : null, now, fingerprint);
+        .prepare("INSERT INTO replies (id, item_id, revision, action, choice, text, images, state, created_at, replay_fingerprint, answered_by) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)")
+        .run(deliveryId, itemId, item.revision, input.action, choice, text, images.length ? JSON.stringify(images) : null, now, fingerprint, source ?? (overridesQa ? "qa_override" : null));
       this.db.prepare("UPDATE items SET state = 'answer_queued', snoozed_until = NULL, backed_at = NULL, updated_at = ? WHERE id = ?").run(now, itemId);
       if (option) this.db.prepare("UPDATE tasks SET last_decision = ? WHERE id = ?").run(`${option.label} (${item.title})`, task.id);
       if (input.action === "accept" && item.type === "milestone") this.db.prepare("UPDATE tasks SET last_accepted_milestone = ? WHERE id = ?").run(item.title, task.id);
-      this.log(source ? "system" : "user", "reply.queued", { taskId: task.id, itemId }, { deliveryId, action: input.action, choice, ...(source ? { autoApproved: true } : {}) });
+      this.log(source ? "system" : "user", "reply.queued", { taskId: task.id, itemId }, {
+        deliveryId, action: input.action, choice, ...provenance,
+        ...(source === "approve_all" ? { autoApproved: true } : {}), ...(overridesQa ? { overridesQa: true } : {}),
+      });
     });
     this.onChange("reply");
+    this.onAnswered(itemId, source ?? "founder");
     return this.reply(deliveryId);
   }
 
@@ -666,8 +674,15 @@ export class Inbox {
       error: uncertain ? r.claim_transport === "pane" ? "pane delivery was not confirmed; it may have arrived" : "picked up by the session but not confirmed" : nullable(r.error),
       createdAt: str(r.created_at),
       deliveredAt: nullable(r.delivered_at),
+      answeredBy: answeredBy(r),
+      overridesQa: r.answered_by === "qa_override",
     };
   }
+}
+
+/** Approve-all answers made before the column existed are known by their reserved id prefix. */
+function answeredBy(r: Row): AnsweredBy {
+  return r.answered_by === "qa_agent" ? "qa_agent" : r.answered_by === "approve_all" || str(r.id).startsWith("approve-all:") ? "approve_all" : "founder";
 }
 
 /** The reply route in use is learned from how the session has collected replies. */
@@ -700,6 +715,8 @@ function toPending(r: Row, uploads: Uploads): PendingReply {
     text: str(r.text),
     images: imageIds(r.images).map((id) => join(uploads.dir, id)),
     createdAt: str(r.created_at),
+    answeredBy: answeredBy(r),
+    overridesQa: r.answered_by === "qa_override",
   };
 }
 

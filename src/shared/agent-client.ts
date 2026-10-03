@@ -160,12 +160,16 @@ export function imageLines(paths: string[]): string {
 /** A reply as the owning agent reads it: which request it answers, what was chosen, what was said. */
 export function formatReply(r: PendingReply): string {
   const lines = [`[Review inbox] Reply to your ${r.itemType} request "${r.itemTitle}" (key ${r.itemKey}, revision ${r.revision}).`];
+  if (r.answeredBy === "qa_agent") lines.push("Answered by the office's QA agent on the founder's behalf, not by the founder.");
+  if (r.overridesQa) lines.push("The founder overrides the QA agent's earlier answer to this revision: follow this one.");
   const lead = (r.itemType === "try" ? TRY_LEAD[r.action] : undefined) ?? ACTION_LEAD[r.action];
   if (r.action === "choose") lines.push(`${lead}: ${r.choiceLabel ?? r.choice}`);
   else if (r.action === "answer") lines.push(`${lead}: ${r.text}`);
   else lines.push(`${lead}.`);
   if (r.text && r.action !== "answer") lines.push("", r.text);
   if (r.images?.length) lines.push("", imageLines(r.images));
-  lines.push("", "This is the user's answer. It authorizes only what it says; act on it, then submit a new review item when there is something new to look at.");
+  lines.push("", r.answeredBy === "qa_agent"
+    ? "Act on it as the founder's answer: it authorizes only what it says. The founder may still override it. Submit a new review item when there is something new to look at."
+    : "This is the user's answer. It authorizes only what it says; act on it, then submit a new review item when there is something new to look at.");
   return lines.join("\n");
 }

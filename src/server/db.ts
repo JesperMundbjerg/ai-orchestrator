@@ -346,7 +346,16 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
 }, (db) => {
   // When the founder put an item at the back of their queue; NULL for every existing item.
   addColumn(db, "items", "backed_at", "TEXT");
-}, retainPipelineHistory, migrateWaivers];
+}, retainPipelineHistory, migrateWaivers, (db) => {
+  // Inbox automation became a choice of Off, Approve all or QA answers; an Approve all that is on stays Approve all.
+  addColumn(db, "auto_approve", "mode", "TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off', 'approve_all', 'qa'))");
+  addColumn(db, "auto_approve", "qa_agent_id", "TEXT");
+  // The last founder answer (event id) the QA agent has learned from.
+  addColumn(db, "auto_approve", "qa_learned_through", "INTEGER NOT NULL DEFAULT 0");
+  db.exec("UPDATE auto_approve SET mode = CASE WHEN enabled = 1 THEN 'approve_all' ELSE 'off' END");
+  // Who answered: NULL is the founder; the QA agent's answers and the founder's overrides of them are marked.
+  addColumn(db, "replies", "answered_by", "TEXT CHECK (answered_by IN ('approve_all', 'qa_agent', 'qa_override'))");
+}];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) {

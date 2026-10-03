@@ -16,7 +16,8 @@ export const SORT_EXPLANATION = "Pinned projects first, then items an agent is w
 
 export function needsYou(state: InboxState, filter: Filter, projectId: string | null): Entry[] {
   return entries(state)
-    .filter(({ item, task }) => item.state === "needs_attention" && !task.parked)
+    // What the QA agent has now is not yours until it is offline or QA answers are off; the header counts it.
+    .filter(({ item, task }) => item.state === "needs_attention" && !task.parked && !item.withQa)
     .filter(({ item, project }) => (filter === "all" || item.type === filter) && (!projectId || project.id === projectId))
     .sort((a, b) =>
       Number(a.item.backedAt !== null) - Number(b.item.backedAt !== null) ||

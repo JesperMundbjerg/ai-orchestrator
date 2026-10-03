@@ -1,12 +1,12 @@
 // npm run build && PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node test/autoapprove.browser.mjs
 // Own free port, temporary HOME/data and no machine integrations. Optional SCREENSHOT_DIR.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { spawnScratchOffice } from "../scripts/lib/scratch-office.ts";
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "playwright");
 const home = await mkdtemp(join(tmpdir(), "approve-all-browser-"));
@@ -20,7 +20,7 @@ const shots = process.env.SCREENSHOT_DIR ?? join(home, "screenshots");
 await mkdir(shots, { recursive: true });
 let office, browser;
 const start = async () => {
-  office = spawn(process.execPath, ["src/server/main.ts"], {
+  office = await spawnScratchOffice(process.execPath, ["src/server/main.ts"], {
     env: { ...process.env, HOME: home, INBOX_DATA_DIR: join(home, "data"), INBOX_PORT: String(port),
       HERDR_SOCKET_PATH: "/nonexistent", HERDR_BIN_PATH: "/usr/bin/false",
       INBOX_CODEX_ACCOUNT_POLLING: "0", INBOX_PRESENCE_DISCOVERY: "0", INBOX_BROWSER_CLEANUP: "0" }, stdio: "ignore",
@@ -31,12 +31,8 @@ const start = async () => {
     await delay(100);
   }
 };
-const stop = async () => {
-  if (office && office.exitCode === null) {
-    const exited = new Promise((resolve) => office.once("exit", resolve));
-    office.kill("SIGTERM"); await exited;
-  }
-};
+// Cleanup goes through the scratch launcher: its tracked group, reverified before any signal.
+const stop = async () => { await office?.stop(); office = undefined; };
 const get = async (path) => (await (await fetch(url + path)).json());
 const post = async (path, body) => {
   const response = await fetch(url + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -58,12 +54,13 @@ try {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(url);
-  const toggle = page.getByRole("switch", { name: /Approve all/ });
+  const toggle = page.getByRole("radio", { name: "Approve all" });
   await toggle.waitFor();
   assert.equal(await toggle.getAttribute("aria-checked"), "false");
   await page.screenshot({ path: join(shots, "01-off.png") });
   await toggle.click();
-  await page.getByRole("switch", { name: /Approve all · On.*3 auto-answered/ }).waitFor();
+  await page.getByText("3 auto-answered").waitFor();
+  assert.equal(await toggle.getAttribute("aria-checked"), "true");
   assert.equal((await get(`/api/items/${milestone}`)).replies[0].action, "accept");
   assert.equal((await get(`/api/items/${preview}`)).replies[0].action, "accept");
   assert.equal((await get(`/api/items/${decide}`)).replies[0].choice, "a");
@@ -76,7 +73,7 @@ try {
   await page.screenshot({ path: join(shots, "03-history.png") });
   await page.goto(`${url}/#/world`);
   await page.locator(".world-top").waitFor();
-  await page.getByRole("switch", { name: /Approve all · On.*3 auto-answered/ }).waitFor();
+  await page.getByText("3 auto-answered").waitFor();
   await page.screenshot({ path: join(shots, "04-office.png") });
   await page.goto(url);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -90,14 +87,14 @@ try {
   assert.deepEqual(detail.replies.map((r) => r.state), ["stale", "queued"]);
   await stop();
   await start();
-  assert.deepEqual(await get("/api/auto-approve"), { enabled: true, count: 4 });
+  assert.deepEqual(await get("/api/auto-approve"), { enabled: true, count: 4, mode: "approve_all", qa: null });
   const after = await submit("after-restart", { type: "milestone", title: "Ready after restart" });
   assert.equal((await get(`/api/items/${after}`)).replies[0].state, "queued");
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.goto(url);
-  await page.getByRole("switch", { name: /Approve all · On.*5 auto-answered/ }).waitFor();
-  await page.getByRole("switch", { name: /Approve all/ }).click();
-  await page.getByRole("switch", { name: /Approve all · Off/ }).waitFor();
+  await page.getByText("5 auto-answered").waitFor();
+  await page.getByRole("radio", { name: "Off" }).click();
+  await page.locator('[role="radio"][aria-checked="true"]', { hasText: "Off" }).waitFor();
   const off = await submit("after-off", { type: "milestone", title: "Wait for the founder" });
   assert.equal((await get(`/api/items/${off}`)).replies.length, 0);
   const replies = await post("/api/agent/replies", { session, mode: "pull" });

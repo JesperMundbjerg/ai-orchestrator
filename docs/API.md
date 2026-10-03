@@ -76,6 +76,10 @@ Every row is checked by `test/api-reference.test.ts` against `agentOperations`. 
 | `review` | `POST` | `/api/agent/review` | `session`, `work`, `verdict: accept \| changes`, `notes?`, `clientId?`, `round?` | `{work: Work, message: Message}` |
 | `withdraw` | `POST` | `/api/agent/withdraw` | `session`, `item` (id or key owned by session) | `Item` |
 | `resolve` | `POST` | `/api/agent/resolve` | `session`, `item` (id or key owned by session) | `Item` |
+| `qaNext` | `POST` | `/api/agent/qa/next` | `session` (only the chosen QA agent, QA answers on) | `{item: Item & {project, taskTitle} \| null, waiting, toLearn, learnings}` |
+| `qaAnswer` | `POST` | `/api/agent/qa/answer` | `session`, `item`, `revision`, `action: choose \| answer \| accept \| request_changes`, `choice?`, `text?`, `reason`, `learnings?` | `Reply` (`answeredBy: qa_agent`) |
+| `qaAnswers` | `POST` | `/api/agent/qa/answers` | `session`, `limit?` (only the chosen QA agent) | `{answers: FounderAnswer[], remaining, learnedThrough}` |
+| `qaLearned` | `POST` | `/api/agent/qa/learned` | `session`, `through` (a `seq`; the cursor only moves forward) | `{learnedThrough}` |
 | `switchAgent` | `POST` | `/api/world/switches` | `agent` (id/name), `to?: claude \| pi`, `model?`, `effort?` (no session) | `AgentSwitch` |
 | `switchAll` | `POST` | `/api/world/switches/all-from` | `from: claude \| pi`, `to?`, `model?`, `effort?` (no session) | `{batchId, switches, skipped: [{name, why}]}` |
 
@@ -139,7 +143,7 @@ These routes use `src/server/request-validation.ts` and domain DTOs in `src/shar
 | Method/path | Purpose / request |
 |---|---|
 | `GET /api/state`; `GET /api/items/:id` | Inbox projection; item detail/history |
-| `GET /api/auto-approve`; `POST /api/auto-approve` | Inbox-only persisted automation state; `{enabled: boolean}` (off by default) |
+| `GET /api/auto-approve`; `POST /api/auto-approve` | Inbox-only persisted automation state `{enabled, count, mode, qa}`; set `{mode: off \| approve_all \| qa, agentId?}` (the QA agent) or the older `{enabled: boolean}` (off by default). QA answers need an agent; `qa` reports it with `online`, `withQa`, `answered`, `overridden` |
 | `POST /api/items/:id/replies` | Answer, as above |
 | `POST /api/items/:id/snooze` | `{until: timestamp}` |
 | `POST /api/items/:id/back-of-queue` | `{}`; the founder moves an item that needs them behind every other waiting item. It stays `needs_attention` (not snoozed, not resolved), no reply is created and nothing is sent to the agent. Returns the item with `backedAt` set; 409 unless it is `needs_attention`. Logged as the item event `item.backqueued`. Order rule in [DESIGN](DESIGN.md#layout) |

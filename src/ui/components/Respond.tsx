@@ -19,6 +19,8 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
   const [busy, setBusy] = useState(false);
   const [showLater, setShowLater] = useState(false);
   const [showNote, setShowNote] = useState(false);
+  // Overriding the QA agent: your own answer to the same revision, which reaches the agent marked as overriding it.
+  const [overriding, setOverriding] = useState(false);
   const recommended = recommendedOption(item.options, item.recommendation);
   const attachments = useAttachments();
   const last = replies.at(-1);
@@ -34,6 +36,7 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
       setText("");
       attachments.clear();
       setMode("answer");
+      setOverriding(false);
       if (item.type === "decide") onAnswered?.();
       else onDone?.();
     } catch (e) {
@@ -59,14 +62,18 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
   const approval = detail.pipelineApproval && (item.type === "milestone" || item.type === "try") ? detail.pipelineApproval : null;
   const acceptLabel = item.type === "milestone" ? "Accept milestone" : "Approve";
 
-  if (item.state === "answer_queued" || item.state === "delivered") {
+  const byQa = replies.some((r) => r.revision === item.revision && r.answeredBy === "qa_agent");
+  const overridden = replies.some((r) => r.revision === item.revision && r.overridesQa);
+  if ((item.state === "answer_queued" || item.state === "delivered") && !overriding) {
     return (
       <footer className={`respond answered${attachments.dragging ? " dropping" : ""}`} {...attachments.drop}>
         {last ? <div className={`delivery ${last.state}`}>{deliveryLabel(last)}</div> : null}
         {approval ? <p className="muted small-note pipeline-approval">{approval.accepted
           ? "A pipeline counts your acceptance of this revision. Messages do not change it; withdraw it only if you no longer approve."
           : "A pipeline's \u201cFounder approves\u201d step needs your own acceptance of this revision; approve-all does not count."}</p> : null}
+        {byQa && !overridden ? <p className="muted small-note">The QA agent answered this for you. If you would answer differently, override it: the agent gets your answer as overriding the QA agent's.</p> : null}
         <div className="row">
+          {byQa && !overridden ? <button className="primary small" onClick={() => setOverriding(true)}>Override QA answer</button> : null}
           {approval && !approval.accepted ? <button className="primary small" disabled={waiting} onClick={() => void send("accept")}>{acceptLabel}</button> : null}
           <button className="ghost small" onClick={() => setMode("discuss")}>Add a message</button>
           {approval?.accepted ? <button className="ghost small" onClick={() => setMode("withdraw")}>Withdraw approval</button> : null}
@@ -129,6 +136,7 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
     <footer className={`respond${attachments.dragging ? " dropping" : ""}`} {...attachments.drop}>
       {last?.state === "failed" || last?.state === "stale" ? <div className={`delivery ${last.state}`}>{deliveryLabel(last)}</div> : null}
       {approval ? <p className="muted small-note pipeline-approval">A pipeline's “Founder approves” step waits for your own acceptance; approve-all leaves this for you.</p> : null}
+      {overriding ? <p className="muted small-note">Your answer overrides the QA agent's for this revision.</p> : null}
       {mode === "discuss" ? (
         <Discuss text={text} setText={setText} attachments={attachments} busy={waiting} said={said} onSend={() => void send("discuss")} onCancel={() => setMode("answer")} />
       ) : (
@@ -150,7 +158,7 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
                 {open ? <button className="primary" disabled={!text.trim() || waiting} onClick={() => void send("answer")}>Answer</button> : (
                   <button className="ghost" aria-expanded={showNote} onClick={() => setShowNote(!showNote)}>Add a note</button>
                 )}
-                {secondary}
+                {overriding ? <button className="ghost" onClick={() => setOverriding(false)}>Keep the QA answer</button> : secondary}
               </div>
             </>
           ) : null}
@@ -161,7 +169,7 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
                 <button className="ghost" onClick={onOpenPreview}>Try it</button>
                 <button className="primary" disabled={waiting} onClick={() => void send("accept")}>Approve</button>
                 <button className="ghost" disabled={waiting || !said} onClick={() => void send("request_changes")}>Needs changes</button>
-                {secondary}
+                {overriding ? <button className="ghost" onClick={() => setOverriding(false)}>Keep the QA answer</button> : secondary}
               </div>
             </>
           ) : null}
@@ -171,7 +179,7 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
               <div className="row">
                 <button className="primary" disabled={waiting} onClick={() => void send("accept")}>{acceptLabel}</button>
                 <button className="ghost" disabled={waiting || !said} onClick={() => void send("request_changes")}>Request changes</button>
-                {secondary}
+                {overriding ? <button className="ghost" onClick={() => setOverriding(false)}>Keep the QA answer</button> : secondary}
               </div>
             </>
           ) : null}

@@ -30,6 +30,7 @@ Pi extension ──────────┘                        │
 | `src/server/switch.ts` | Durable workflow/checkpoints around non-idempotent effects, replacement-pane visibility/held deliveries, identity takeover and recovery-required pauses |
 | `src/server/activity.ts`, `effort.ts`, `models.ts` | Ephemeral tools/helpers/model/session-name observations, in-memory session-only effort control, local transcript model fallback |
 | `src/server/review-fallback.ts` | Asynchronously cached git candidate lists and safe projector selection; display-only changes, no invented agent activity or model call |
+| `src/server/autoapprove.ts`, `qa.ts`; `src/shared/qa.ts` | The founder's inbox automation setting (Off, Approve all, QA answers); the QA agent's queue, answers, learning feed and cursor. No model call; the QA agent is an ordinary office session |
 | `src/server/crewtree.ts`, `crewtree.default.json`; `src/shared/crewtree.ts` | Authoritative crew-choice JSON, seed, validation and selection rules |
 | `src/server/usage.ts`, `codexaccount.ts`; `src/shared/usage.ts` | Local transcript/cache parsing, token attribution, persisted latest meter readings/pause notices, optional authenticated account read; no model inference |
 | `src/server/herdr.ts`, `machine.ts` | Concrete terminal presence/prompt/focus/pane/worktree adapter; optional local process watcher and verified headless-main-process signalling |
@@ -76,6 +77,7 @@ Commands/receipts need different treatment from observations/caches. The table r
 | Message `sending` claim | Durable conditional claim | Marked failed/may-have-arrived at Messages construction; explicit Retry can duplicate receipt. Definite pre-submission inactive-agent refusal alone gets bounded startup requeue |
 | Switch step, effect intent, pane identities, handoff path and brief state | Durable SQLite plus handoff file | Resume reconciles identifiable effects. Unknown opening/launch/brief outcomes pause visibly rather than replay; ordinary deliveries remain held until confirmed brief |
 | Approve-all setting/count and auto-answer history | Durable SQLite | Off by default; restart keeps chosen rule and uses ordinary revision/answer/replay path, never automatically retries failed/uncertain delivery |
+| QA answers: chosen QA agent, learning cursor, who answered (`replies.answered_by`) | Durable SQLite; learnings are the QA agent's own files in `learnings/` | Restart answers nothing; what the QA agent has is derived when read (online agent, eligible item), so an offline agent returns everything to the founder without a timer |
 | Pending effort requests/results | **In-memory only, current limitation** | Disappear at restart along with reports. A running-process 30-second timeout is visible; restart does not preserve that promise |
 | Crew tree | Authoritative `crew-tree.json` outside SQLite | Seeded once from default; saved JSON persists mode, rules and harness/model pairs |
 | Activity, helpers, reported model/session name/capability/current effort | In-memory session-scoped observations | Re-report after restart/session replacement; tool line fades after 2 minutes, helpers after 30; idle clears turn activity |
@@ -87,7 +89,7 @@ Commands/receipts need different treatment from observations/caches. The table r
 | Projector candidate lists/slide slot, adapter/git fact caches | Rebuildable caches | Cold projector shows idle until asynchronous list ready; safe source bytes are rechecked, not cached as trusted |
 | UI camera/preferences/animations/wildlife | Page-local (some preferences localStorage) | No service correctness state; no persistent wildlife history |
 
-Back up **the whole data directory**, not just `inbox.sqlite`: include SQLite consistently (stop the service or use a SQLite-aware backup, including WAL when needed), `files/`, `uploads/`, `crew-tree.json` and `handoffs/`. Default data directory is `~/.review-inbox`, overridden by `INBOX_DATA_DIR`; checkout/harness transcripts live elsewhere and are not copied by that backup. Schema migrations are storage-owned transactions; a newer database version is refused before modification. Never downgrade a backup by blindly opening it with an older checkout.
+Back up **the whole data directory**, not just `inbox.sqlite`: include SQLite consistently (stop the service or use a SQLite-aware backup, including WAL when needed), `files/`, `uploads/`, `crew-tree.json`, `handoffs/` and `learnings/` (the QA agent's). Default data directory is `~/.review-inbox`, overridden by `INBOX_DATA_DIR`; checkout/harness transcripts live elsewhere and are not copied by that backup. Schema migrations are storage-owned transactions; a newer database version is refused before modification. Never downgrade a backup by blindly opening it with an older checkout.
 
 ## Optional provider and integration matrix
 

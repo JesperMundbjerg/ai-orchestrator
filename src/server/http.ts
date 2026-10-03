@@ -82,10 +82,12 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
 
   const routes: Route[] = [
     // UI
-    route("GET", /^\/api\/state$/, emptySchema, () => inbox.state()),
+    // What the QA agent has now is marked here, outside the inbox projection the office itself reads.
+    route("GET", /^\/api\/state$/, emptySchema, () => opts.autoApprove ? opts.autoApprove.qa.mark(inbox.state()) : inbox.state()),
     route("GET", /^\/api\/auto-approve$/, emptySchema, () => needAutoApprove().state()),
-    route("POST", /^\/api\/auto-approve$/, validation.autoApproveSchema, (_r, b) => needAutoApprove().setEnabled(b.enabled)),
-    route("GET", /^\/api\/items\/([\w-]+)$/, emptySchema, (_r, _b, [id]) => inbox.detail(id!)),
+    route("POST", /^\/api\/auto-approve$/, validation.autoApproveSchema, (_r, b) => b.mode !== undefined
+      ? needAutoApprove().setMode(b.mode, b.agentId) : needAutoApprove().setEnabled(b.enabled!)),
+    route("GET", /^\/api\/items\/([\w-]+)$/, emptySchema, (_r, _b, [id]) => opts.autoApprove ? opts.autoApprove.qa.markDetail(inbox.detail(id!)) : inbox.detail(id!)),
     route("POST", /^\/api\/items\/([\w-]+)\/replies$/, validation.answerSchema, (_r, b, [id]) => inbox.answer(id!, b)),
     route("POST", /^\/api\/items\/([\w-]+)\/snooze$/, validation.snoozeSchema, (_r, b, [id]) => inbox.snooze(id!, b.until)),
     route("POST", /^\/api\/items\/([\w-]+)\/back-of-queue$/, emptySchema, (_r, _b, [id]) => inbox.backOfQueue(id!)),
@@ -181,6 +183,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     }),
     route("POST", /^\/api\/agent\/handoff$/, deliveryHandoffSchema, (_r, b) => needWorld().messages.handoff(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/review$/, deliveryReviewSchema, (_r, b) => needWorld().messages.review(needWorld().resolve(b.session), b)),
+    // QA answers: only the QA agent the founder chose; it decides through the ordinary answer path, marked as its own.
+    route("POST", /^\/api\/agent\/qa\/next$/, protocol.qaNext.request, (_r, b) => needAutoApprove().qa.next(b.session)),
+    route("POST", /^\/api\/agent\/qa\/answer$/, protocol.qaAnswer.request, (_r, b) => needAutoApprove().qa.answer(b)),
+    route("POST", /^\/api\/agent\/qa\/answers$/, protocol.qaAnswers.request, (_r, b) => needAutoApprove().qa.answers(b.session, b.limit)),
+    route("POST", /^\/api\/agent\/qa\/learned$/, protocol.qaLearned.request, (_r, b) => needAutoApprove().qa.learned(b.session, b.through)),
     route("POST", /^\/api\/agent\/ack$/, protocol.acknowledge.request, (_r, b) => inbox.acknowledge(b.session, b.deliveryId, b.error)),
     route("POST", /^\/api\/agent\/withdraw$/, protocol.withdraw.request, (_r, b) => inbox.closeItem(b.session, b.item, "withdrawn")),
     route("POST", /^\/api\/agent\/resolve$/, protocol.resolve.request, (_r, b) => inbox.closeItem(b.session, b.item, "resolved")),

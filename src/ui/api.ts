@@ -1,5 +1,5 @@
 import type { CrewTreeUpdate, CrewTreeState } from "../shared/crewtree.ts";
-import type { AgentSwitch, AllLeadsResult, InboxState, Item, ItemDetail, MachineState, PageCheck, Project, Reply, ReplyAction, StandingLane, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
+import type { AgentSwitch, AllLeadsResult, AutoApproveState, AutomationMode, InboxState, Item, ItemDetail, MachineState, PageCheck, Project, Reply, ReplyAction, StandingLane, Task, Message, Team, WorldAgent, WorldState } from "../shared/types.ts";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
@@ -13,8 +13,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
-  autoApprove: () => request<{ enabled: boolean; count: number }>("GET", "/api/auto-approve"),
-  setAutoApprove: (enabled: boolean) => request<{ enabled: boolean; count: number }>("POST", "/api/auto-approve", { enabled }),
+  autoApprove: () => request<AutoApproveState>("GET", "/api/auto-approve"),
+  setAutoApprove: (mode: AutomationMode, agentId?: string) => request<AutoApproveState>("POST", "/api/auto-approve", { mode, agentId }),
   state: () => request<InboxState>("GET", "/api/state"),
   detail: (itemId: string) => request<ItemDetail>("GET", `/api/items/${itemId}`),
   answer: (itemId: string, body: { id: string; revision: number; action: ReplyAction; choice?: string; text?: string; images?: string[] }) =>

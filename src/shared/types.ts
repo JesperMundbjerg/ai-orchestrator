@@ -169,7 +169,13 @@ export interface Reply {
   error: string | null;
   createdAt: string;
   deliveredAt: string | null;
+  /** Who answered: the founder, Approve all, or the QA agent on the founder's behalf. Absent from older services. */
+  answeredBy?: AnsweredBy;
+  /** A founder answer that overrides the QA agent's answer to the same revision. */
+  overridesQa?: boolean;
 }
+
+export type AnsweredBy = "founder" | "approve_all" | "qa_agent";
 
 export interface HistoryEvent {
   id: number;
@@ -187,6 +193,8 @@ export interface ItemSummary extends Item {
   videoCount?: number;
   thumbnail: string | null;
   lastReply: Reply | null;
+  /** The QA agent has this item now, so it is out of Needs you; it comes back when the QA agent is offline or QA answers are off. */
+  withQa?: boolean;
 }
 
 export interface InboxState {
@@ -206,6 +214,66 @@ export interface ItemDetail {
   /** Present when a pipeline run presented this revision for its "Founder approves" step. Approve-all never
    * answers it; only the founder's own Accept counts, and a later message does not withdraw it. */
   pipelineApproval?: { runId: string; accepted: boolean };
+  /** The QA agent has this item now (see ItemSummary.withQa). */
+  withQa?: boolean;
+}
+
+// ── Inbox automation: Approve all, or the QA agent answering on the founder's behalf ─────────
+
+export const AUTOMATION_MODES = ["off", "approve_all", "qa"] as const;
+export type AutomationMode = (typeof AUTOMATION_MODES)[number];
+
+export interface AutoApproveState {
+  /** Approve all is on (kept for older clients; `mode` says which automation runs). */
+  enabled: boolean;
+  /** Revisions Approve all has answered, over its lifetime. */
+  count: number;
+  mode: AutomationMode;
+  /** The QA agent, when one is chosen (whatever the mode). */
+  qa: QaSummary | null;
+}
+
+export interface QaSummary {
+  agentId: string;
+  /** Null when the office no longer knows that agent. */
+  agentName: string | null;
+  online: boolean;
+  /** Items the QA agent has now, out of Needs you. Zero whenever it is offline or QA answers are off. */
+  withQa: number;
+  /** Revisions it answered, and how many of those the founder overrode, over its lifetime. */
+  answered: number;
+  overridden: number;
+}
+
+/** What `inbox qa next` hands the QA agent: one question, and where the learnings are. */
+export interface QaNext {
+  item: (Item & { project: string; taskTitle: string }) | null;
+  /** Questions it has now, including this one. */
+  waiting: number;
+  /** Founder answers it has not learned from yet (`inbox qa answers`). */
+  toLearn: number;
+  learnings: string;
+}
+
+/** A founder answer the QA agent learns from. Approve-all and QA answers are never in this feed. */
+export interface FounderAnswer {
+  /** The event id; `inbox qa learned --through` it once learned. */
+  seq: number;
+  at: string;
+  itemId: string;
+  revision: number;
+  project: string;
+  itemType: ItemType;
+  title: string;
+  request: string;
+  recommendation: string;
+  options: Option[];
+  action: ReplyAction;
+  choice: string | null;
+  choiceLabel: string | null;
+  text: string;
+  /** The QA agent's answer this one overrode, with the learnings it cited. */
+  overrode: { action: ReplyAction; choice: string | null; learnings: string[] } | null;
 }
 
 // ── Agent protocol inputs ────────────────────────────────────────────────────────────────
@@ -281,6 +349,9 @@ export interface PendingReply {
   /** Absolute paths of the images you attached, for the agent to read. */
   images: string[];
   createdAt: string;
+  /** Absent means the founder (older services did not say). */
+  answeredBy?: AnsweredBy;
+  overridesQa?: boolean;
 }
 
 // ── The office world ─────────────────────────────────────────────────────────────────────

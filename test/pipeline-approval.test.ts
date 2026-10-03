@@ -148,6 +148,22 @@ test("approve-all leaves a pipeline's approval waiting for the founder; an expli
   assert.equal(o.gate(o.approve(run, legacy)).allowed, true);
 });
 
+test("QA answers never take a pipeline's approval: the QA agent is not offered it, cannot answer it, and it stays in Needs you", async t => {
+  const o = await office(t);
+  // The reviewer is the QA agent here; nothing but the office's own records decides what it may answer.
+  o.auto.qa.office = { agent: (id) => (id === "reviewer" ? { id, name: "reviewer", online: true, taskIds: [] } : null),
+    resolve: () => ({ id: "reviewer", name: "reviewer", online: true, taskIds: [] }), notice: () => {} };
+  o.auto.setMode("qa", "reviewer");
+  const run = o.start(); const item = await o.present(run);
+  assert.equal(o.auto.qa.next({ harness: "manual", sessionId: "reviewer" }).item, null);
+  assert.throws(() => o.auto.qa.answer({ session: { harness: "manual", sessionId: "reviewer" }, item: item.itemId, revision: item.revision, action: "accept", reason: "r" }),
+    /stays with the founder: a pipeline's “Founder approves” step/);
+  assert.equal(o.inbox.state().items.length, o.auto.qa.mark(o.inbox.state()).items.filter((i) => !i.withQa).length, "nothing pipeline-bound leaves Needs you");
+  // Even a QA answer that reached it some other way is not the founder's acceptance.
+  o.inbox.answer(item.itemId, { id: `qa:${item.itemId}:${item.revision}`, revision: item.revision, action: "accept", text: "QA" }, "qa_agent");
+  assert.throws(() => o.approve(run, item), /explicit founder acceptance/);
+});
+
 test("a review receipt belongs to the run that handed the work over, not to equal bytes elsewhere", async t => {
   const o = await office(t, reviewGraph);
   const a = o.start();
