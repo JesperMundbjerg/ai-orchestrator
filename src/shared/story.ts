@@ -80,7 +80,7 @@ export function storyIntro(id?: string, retell = false): string {
     "Start straight in: no label, framing or disclaimer, and never call it fictional, imagined or a backstory, or mention being an AI or a character.",
     s ? `Your seeds, a starting point, not a checklist: ${s.place} in the ${s.decade}; a parent who was ${s.trade}; ${s.object}; ${s.joy}; a fear of ${s.fear}.`
       : "`inbox team` gives you a few seeds to start from.",
-    "Be original: the office already has too many rivers, fjords and boats, grandparents' workshops, and fears of things left unsaid or of silence, so avoid those.",
+    "Make it a real, ordinary life, not a whimsical job, and be original: the office already has too many rivers, fjords and boats, grandparents' workshops, lighthouses, observatories, tiny railways, switchboards, \"formerly the keeper of…\" whimsy, and fears of things left unsaid or of silence, so avoid those.",
     '`inbox team` tells you your office name; save it once with inbox story "…" (plain text, at most 800 characters). If you already saved it in this conversation, skip this.',
   ].join(" ");
 }

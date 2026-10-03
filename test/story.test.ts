@@ -259,9 +259,11 @@ test("story seeds are the same for an agent every time and differ across agents"
     assert.ok(new Set(ids.map((id) => storySeeds(id)[field])).size >= 5, `${field} varies`);
   }
   assert.equal(new Set(ids.map((id) => storyIntro(id))).size, ids.length, "no two agents get the same seeds");
-  assert.ok(ids.every((id) => !/\b(unsaid|silen(ce|t)|rivers?|fjords?|boats?|workshops?)\b/i.test(Object.values(storySeeds(id)).join(" "))), "no overused theme is seeded");
+  assert.ok(ids.every((id) => !/\b(unsaid|silen(ce|t)|rivers?|fjords?|boats?|workshops?|lighthouses?|observator(y|ies)|railways?|switchboards?|keeper)\b/i.test(Object.values(storySeeds(id)).join(" "))), "no overused theme is seeded");
   assert.match(storyIntro("agent"), /no label, framing or disclaimer/);
   assert.match(storyIntro("agent"), /left unsaid/, "the overused themes are named to avoid");
+  for (const theme of ["lighthouses", "observatories", "tiny railways", "switchboards", "formerly the keeper of", "ordinary life"]) assert.ok(storyIntro("agent").includes(theme), theme);
+  assert.ok(!framedStory("I'm Hugo, formerly the keeper of a tiny observatory where the telescope sulked."), "whimsy is discouraged, not refused");
 });
 
 const framed = [
