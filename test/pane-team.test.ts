@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/server/db.ts";
@@ -171,15 +171,33 @@ test("a pane nobody started anything in is forgotten after a day", () => {
   assert.equal((db.prepare("SELECT count(*) AS n FROM pane_teams").get() as { n: number }).n, 0);
 });
 
-test("the record survives a restart of the service", () => {
-  const { alpha, other } = repositories();
-  const { world, setLive, db, inbox, source } = setup();
-  const { team } = project(alpha, setLive, world);
-  world.paneOpened(mateSession(alpha), "p9");
-  const restarted = new World(db, source, () => inbox.state());
-  setLive([agent("p1", alpha, "s1"), agent("p9", other, "s9")]);
-  assert.equal(restarted.state().agents.find((a) => a.paneId === "p9")!.teamId, team.id);
-});
+for (const { title, ageHours, survives } of [
+  { title: "the record survives a restart of the service", ageHours: 23, survives: true },
+  { title: "a restart does not renew an unused pane record's one-day lifetime", ageHours: 25, survives: false },
+]) {
+  test(title, (t) => {
+    const { alpha, other } = repositories();
+    const dir = mkdtempSync(join(tmpdir(), "pane-team-restart-"));
+    const file = join(dir, "inbox.sqlite");
+    let service = setup(undefined, file);
+    t.after(() => {
+      if (service.db.isOpen) service.db.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    const { world, setLive, clock } = service;
+    const { team } = project(alpha, setLive, world);
+    world.paneOpened(mateSession(alpha), "p9");
+    service.db.close();
+
+    // Keep the injected clock across restart: wall time would expire this fixed-date fixture.
+    clock.at = new Date(clock.at.getTime() + ageHours * 60 * 60 * 1000);
+    service = setup(clock, file);
+    service.setLive([agent("p1", alpha, "s1"), agent("p9", other, "s9")]);
+    const crew = service.world.state().agents.find((a) => a.paneId === "p9")!;
+    assert.equal(crew.teamId, survives ? team.id : null);
+    assert.equal(crew.role, "member", "restarting never appoints the crew member lead");
+  });
+}
 
 test("an agent still waiting in its pane is placed once it is running, not before", () => {
   const { alpha, other } = repositories();
