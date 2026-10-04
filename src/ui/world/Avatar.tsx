@@ -14,7 +14,7 @@ import { useGames } from "./Games.tsx";
 import { useGym } from "./Gym.tsx";
 import { armReach, cornerWalk, gestureAt, handTarget, newPose, newReach, VISIT, visitAt, type LiftPose, type Reach, type Visit } from "./gym.ts";
 import { Paddle, usePing } from "./PingPong.tsx";
-import { newPlayer, playerPose, type Player as PingPlayer } from "./pingpong.ts";
+import { newPlayer, PingEase, playerPose, type Player as PingPlayer } from "./pingpong.ts";
 
 const WALK_SPEED = 1.9;
 /** Strolling round the garden, taking it easy. */
@@ -86,7 +86,7 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
   const gym = useGym();
   const ping = usePing();
   // Scratch for the gym's lifts and ping pong, so a frame allocates nothing.
-  const lifting = useMemo(() => ({ pose: newPose(), reach: newReach(), hand: [0, 0, 0] as [number, number, number], player: newPlayer() }), []);
+  const lifting = useMemo(() => ({ pose: newPose(), reach: newReach(), hand: [0, 0, 0] as [number, number, number], player: newPlayer(), ease: new PingEase() }), []);
   // At a gym station, a routine of their own for this visit: three sets with rests, then on to the next station.
   const visit: Visit | undefined = useMemo(() => {
     if (!spot.gym) return undefined;
@@ -193,7 +193,10 @@ export function Avatar({ agent, spot, enterFrom, waiting, selected, onSelect, bu
     const end = spot.pingpong;
     ping?.playback.arrive(agent.id, there && end !== undefined && agent.status === "idle", Date.now());
     const rally = end !== undefined ? ping?.playback.seconds(Date.now()) ?? null : null;
-    const playing = ping && end !== undefined && rally !== null ? playerPose(ping.table, m.pos[0], m.pos[1], m.yaw, end, rally, look.height, look.build, lifting.player) : null;
+    // Their partner walking off stops the rally: staying put, they ease out of their swing into standing.
+    const easing = lifting.ease.frame(end, rally, Date.now(), !walking && !m.path.length);
+    if (easing && easing.keep < 1) pace?.moved(performance.now());
+    const playing = ping && easing ? playerPose(ping.table, m.pos[0], m.pos[1], m.yaw, easing.end, easing.seconds, look.height, look.build, lifting.player, undefined, easing.keep) : null;
 
     const t = state.clock.elapsedTime + m.phase;
     // At their station while they work, they make something; otherwise they stand at it.

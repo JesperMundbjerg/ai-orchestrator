@@ -8,7 +8,7 @@ import { gestureAt, HIP, newPose, newReach } from "./gym.ts";
 import { textTexture } from "./label.ts";
 import { usePace } from "./Pace.tsx";
 import { Paddle, usePing } from "./PingPong.tsx";
-import { ballAt, newPing, newPlayer, playerPose } from "./pingpong.ts";
+import { ballAt, newPing, newPlayer, PingEase, playerPose } from "./pingpong.ts";
 import { cheerAt, coolerAt, cornerWalk, cupAt, highFiveAt, matsAt, regularLook, scheduleRegulars, VISIT, visitAt, type Placement, type Regulars } from "./regulars.ts";
 import type { Vec2 } from "./spatial.ts";
 
@@ -82,7 +82,7 @@ function Regular({ placement, keeper, walk, onSelect }: { placement: Placement; 
   const joints: Joints = useMemo(() => ({ body, upper, head, legs, knees, ankles, arms, elbows }), []);
   // They are there when the office opens, and walk when they move round, step aside or come back.
   const motion = useRef({ pos: [...spot.pos] as Vec2, yaw: spot.facing, path: [] as Vec2[], spot, phase: (regular.name.length * 1.7) % 10 });
-  const scratch = useMemo(() => ({ pose: newPose(), reach: newReach(), hand: [0, 0, 0] as [number, number, number], player: newPlayer(), ball: newPing() }), []);
+  const scratch = useMemo(() => ({ pose: newPose(), reach: newReach(), hand: [0, 0, 0] as [number, number, number], player: newPlayer(), ball: newPing(), ease: new PingEase() }), []);
   const [hovered, setHovered] = useState(false);
   const pace = usePace();
   const gym = useGym();
@@ -141,7 +141,10 @@ function Regular({ placement, keeper, walk, onSelect }: { placement: Placement; 
     const lift = act === "lift" ? gym?.pose(regular.id, ms, look.height, scratch.pose) ?? null : null;
     if (lift?.moving) pace?.moved(now);
     const rally = ping?.playback.seconds(ms) ?? null;
-    const playing = act === "play" && ping && rally !== null ? playerPose(ping.table, m.pos[0], m.pos[1], m.yaw, spot.pingpong!, rally, look.height, look.build, scratch.player) : null;
+    // Their partner walking off stops the rally: staying put, they ease out of their swing into standing.
+    const easing = scratch.ease.frame(act === "play" ? spot.pingpong : undefined, rally, ms, !walking && !m.path.length);
+    if (easing && easing.keep < 1) pace?.moved(now);
+    const playing = ping && easing ? playerPose(ping.table, m.pos[0], m.pos[1], m.yaw, easing.end, easing.seconds, look.height, look.build, scratch.player, undefined, easing.keep) : null;
 
     const [ll, lr] = legs.current, [al, ar] = arms.current, [el, er] = elbows.current;
     if (!ll || !lr || !al || !ar || !el || !er) return;
@@ -152,7 +155,7 @@ function Regular({ placement, keeper, walk, onSelect }: { placement: Placement; 
       if (gestureAt(lift) > 0) pace?.ambled(now);
     } else if (playing && playRig(joints, g, m.pos, m.yaw, playing, look)) {
       // After a point, the one who won it holds the paddle up high; the free hand may have the ball.
-      const cheer = cheerAt(spot.pingpong!, rally!);
+      const cheer = rally !== null ? cheerAt(easing!.end, rally) : 0;
       if (cheer > 0) blend(ar, er, UP, 1, cheer);
     } else {
       restRig(joints);

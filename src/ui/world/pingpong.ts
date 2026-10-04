@@ -175,8 +175,11 @@ const TOSS_UP = 0.14;
 const TOSS = 0.55;
 /** The ball lying on the table before anyone plays, on player 0's side by their free hand. */
 export const BALL_REST = { a: -(TABLE_L / 2 - 0.12), y: LOW, c: -0.2 };
-/** The players ease into their stance over this long, as play starts. */
+/** The players ease into their stance over this long, as play starts, and out of it when play stops under them. */
 const SETTLE = 0.6;
+export const UNSETTLE = 0.6;
+/** The ball, when play stops, hops back to where it rests over this long. */
+export const BALL_BACK = 1.1;
 /** How fast a player shuffles across to the ball, on average (m/s). */
 const ACROSS_SPEED = 1.5;
 /** At least this many points before the match goes round again, served alternately by whoever has the ball. */
@@ -565,9 +568,9 @@ const HAND: [number, number, number] = [0, 0, 0], LEFT: [number, number, number]
  * How a player standing at (x, z), turned `yaw`, stands and plays `seconds` into play at their end of
  * `table`: crouched, stepping across and in to the ball, the paddle's blade where the rally has it,
  * the free hand catching, holding and tossing the ball, and the head turned to it. As play starts
- * they ease into it from standing.
+ * they ease into it from standing; `keep` (1 to 0) eases them back out of it (see `PingEase`).
  */
-export function playerPose(table: ReturnType<typeof pingTable>, x: number, z: number, yaw: number, end: End, seconds: number, h: number, build: number, out: Player, rally: Rally = RALLY): Player {
+export function playerPose(table: ReturnType<typeof pingTable>, x: number, z: number, yaw: number, end: End, seconds: number, h: number, build: number, out: Player, rally: Rally = RALLY, keep = 1): Player {
   const cos = Math.cos(yaw), sin = Math.sin(yaw);
   stepAt(end, seconds, STEP, rally);
   // A point of the table's frame, in the player's own (x across, z forward, metres), from where they have stepped to.
@@ -596,12 +599,51 @@ export function playerPose(table: ReturnType<typeof pingTable>, x: number, z: nu
   for (let i = 0; i < 3; i++) LEFT[i] = FREE[i]! + (LEFT[i]! - FREE[i]!) * w;
   armReach(LEFT[0], LEFT[1], LEFT[2], -ELBOW_OUT[0], ELBOW_OUT[1], ELBOW_OUT[2], out.left);
   out.head = Math.max(-0.9, Math.min(0.9, Math.atan2(BALL.a - out.rootX, Math.max(0.2, BALL.c))));
-  if (seconds < SETTLE) {
-    // Into the stance from standing tall, arms by the side.
-    const f = ease(Math.max(0, seconds) / SETTLE);
+  // Into the stance from standing tall, arms by the side, as play starts; `keep` of it as they ease out.
+  const f = keep * (seconds < SETTLE ? ease(Math.max(0, seconds) / SETTLE) : 1);
+  if (f < 1) {
     out.rootX *= f; out.rootY *= f; out.rootZ *= f; out.stride *= f;
     out.thigh *= f; out.knee *= f; out.ankle *= f; out.bend *= f; out.head *= f;
     for (const arm of [out.right, out.left]) { arm.x *= f; arm.y *= f; arm.z *= f; arm.elbow *= f; }
   }
+  return out;
+}
+
+/**
+ * Out of play without a snap: when the rally stops under a player who stays where they are (their partner walked
+ * off, or the pair changed), their swing carries on as the match had it and fades into standing over `UNSETTLE`.
+ * Walking off ends it at once, the walk taking over. One per player, fed each frame.
+ */
+export class PingEase {
+  private last: { end: End; seconds: number; at: number } | null = null;
+  /**
+   * This frame's moment of play to pose and how much of the pose to keep, or null to stand: from their end, the
+   * rally's seconds (null while it is stopped), the time (ms) and whether they are staying put.
+   */
+  frame(end: End | undefined, rally: number | null, now: number, staying: boolean): { end: End; seconds: number; keep: number } | null {
+    if (end !== undefined && rally !== null) {
+      this.last = { end, seconds: rally, at: now };
+      return { end, seconds: rally, keep: 1 };
+    }
+    const last = this.last;
+    const gone = last ? Math.max(0, (now - last.at) / 1000) : Infinity;
+    if (!last || !staying || gone >= UNSETTLE) {
+      this.last = null;
+      return null;
+    }
+    return { end: last.end, seconds: last.seconds + gone, keep: 1 - ease(gone / UNSETTLE) };
+  }
+}
+
+/**
+ * The ball, `u` (0 to 1) of the way back from where it was when play stopped to where it rests: a hop over the
+ * net and onto the table, never through either.
+ */
+export function ballBack(from: Ping, u: number, out: Ping): Ping {
+  // Up before across, so it clears the table's edge from below it (a ball rolled off the end) as well as the net.
+  const k = ease(Math.max(0, Math.min(1, u))), across = k * k;
+  out.a = from.a + (BALL_REST.a - from.a) * across;
+  out.c = from.c + (BALL_REST.c - from.c) * across;
+  out.y = from.y + (BALL_REST.y - from.y) * k + 0.4 * 4 * k * (1 - k);
   return out;
 }

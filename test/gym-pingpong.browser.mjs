@@ -7,6 +7,7 @@
 // at a point's end: the ball caught, held through the pause and tossed for the next serve. The world changing while they
 // play (as a live office's does every few seconds) never restarts the rally. Pictures at desktop and
 // phone width, a minute of video (several points, each kind of ending) and a short one at phone width. Then everyone gets work: the players leave and the ball rests.
+// Last, in a second office, a lone agent playing a regular gets work mid-rally: the regular eases out of their swing.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -20,17 +21,29 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "playwright")
 const home = await mkdtemp(join(tmpdir(), "inbox-pingpong-test-"));
 const shots = process.env.SHOTS ?? join(homedir(), ".review-inbox/handoffs/agent-office/gym/pingpong");
 await mkdir(shots, { recursive: true });
-const socket = createServer();
-await new Promise((resolve) => socket.listen(0, "127.0.0.1", resolve));
-const port = socket.address().port;
-await new Promise((resolve) => socket.close(resolve));
-assert.notEqual(port, 4870);
-const url = `http://127.0.0.1:${port}`;
-const control = join(home, "control");
-const office = await spawnScratchOffice(process.execPath, ["test/gym-office.fixture.ts"], {
-  env: { ...process.env, GYM_AGENTS: "23", GYM_CONTROL: control, HOME: home, INBOX_DATA_DIR: join(home, "data"), INBOX_PORT: String(port), HERDR_BIN_PATH: "/usr/bin/false", HERDR_SOCKET_PATH: "/nonexistent", INBOX_CODEX_ACCOUNT_POLLING: "0", INBOX_PRESENCE_DISCOVERY: "0", INBOX_BROWSER_CLEANUP: "0" },
-  stdio: "ignore",
-});
+/** An isolated office of `agents` idle agents, in its own folder under the scratch HOME, on a free port that is never 4870. */
+const startOffice = async (agents, name) => {
+  const dir = join(home, name);
+  await mkdir(dir);
+  const socket = createServer();
+  await new Promise((resolve) => socket.listen(0, "127.0.0.1", resolve));
+  const port = socket.address().port;
+  await new Promise((resolve) => socket.close(resolve));
+  assert.notEqual(port, 4870);
+  const control = join(dir, "control");
+  const office = await spawnScratchOffice(process.execPath, ["test/gym-office.fixture.ts"], {
+    env: { ...process.env, GYM_AGENTS: agents, GYM_CONTROL: control, HOME: dir, INBOX_DATA_DIR: join(dir, "data"), INBOX_PORT: String(port), HERDR_BIN_PATH: "/usr/bin/false", HERDR_SOCKET_PATH: "/nonexistent", INBOX_CODEX_ACCOUNT_POLLING: "0", INBOX_PRESENCE_DISCOVERY: "0", INBOX_BROWSER_CLEANUP: "0" },
+    stdio: "ignore",
+  });
+  const url = `http://127.0.0.1:${port}`;
+  for (let i = 0; ; i++) {
+    try { if ((await fetch(`${url}/api/world`)).ok) break; } catch {}
+    if (i === 100) { await office.stop(); throw new Error("Scratch office did not start"); }
+    await delay(100);
+  }
+  return { port, url, control, stop: () => office.stop() };
+};
+let office, lone;
 
 // The moments to hold: the serve, its bounces, a rally shot over the net and its bounce, and each hit's paddle; then
 // the first point's end, the pause holding the ball, and the next toss; a long ball and a net ball.
@@ -61,13 +74,10 @@ const MOMENTS = [
 
 let browser;
 try {
-  for (let i = 0; ; i++) {
-    try { if ((await fetch(`${url}/api/world`)).ok) break; } catch {}
-    if (i === 100) throw new Error("Scratch office did not start");
-    await delay(100);
-  }
+  office = await startOffice("23", "pair");
+  const { port, url, control } = office;
   browser = await chromium.launch({ headless: true, args: ["--use-angle=metal"] });
-  const open = async (viewport, video) => {
+  const open = async (viewport, video, at = url) => {
     const context = await browser.newContext({ viewport, ...(video ? { recordVideo: { dir: join(home, "video"), size: viewport } } : {}) });
     const page = await context.newPage();
     const errors = [];
@@ -98,7 +108,7 @@ try {
         return { store, view, ping, plan, avatars: [...avatars.values()] };
       };
     });
-    await page.goto(`${url}/#/world`);
+    await page.goto(`${at}/#/world`);
     await page.waitForFunction(() => !!window.__scene().store && !!window.__scene().view);
     return { context, page, errors };
   };
@@ -222,11 +232,59 @@ try {
     await settle(page, 3000);
     await page.screenshot({ path: join(shots, "desktop-regulars-back.png") });
   }
+  // A partner walks off mid-rally: a lone agent plays a regular and gets work. The regular, staying at their end, eases
+  // out of the swing they were in and into standing, rather than snapping to it. The clock is held mid-swing as the agent
+  // leaves, so the one staying must still be in that swing once the rally has stopped, then run on a few frames at a time.
+  lone = await startOffice("1", "lone");
+  const solo = await open({ width: 1280, height: 800 }, false, lone.url);
+  {
+    const { page } = solo;
+    await playing(page);
+    const plan = await planOf(page);
+    const start = await page.evaluate(() => { const now = Date.now(); return now - window.__scene().ping.playback.seconds(now) * 1000; });
+    const staying = await page.evaluate(([x, z]) => {
+      let best = null;
+      window.__scene().store.scene.traverse((o) => { if (o.name.startsWith("regular:") && Math.hypot(o.position.x - x, o.position.z - z) < 0.8) best = o.name; });
+      return best;
+    }, pingSpot(plan, 1).pos);
+    assert.ok(staying, "a regular plays the lone agent at the other end");
+    await look(page, { distance: 4.2, side: 2.2, pitch: -0.4 });
+    const swing = start + (RALLY.hits.find((h) => h.end === 1 && !h.serve).at + 0.12) * 1000;
+    const paddle = () => page.evaluate((name) => { const o = window.__scene().store.scene.getObjectByName(name).getObjectByName("paddle"); return o.getWorldPosition(o.position.clone()).toArray(); }, staying);
+    const frame = async (ms, shot) => {
+      await page.evaluate((t) => { window.__now = t; window.__scene().store.invalidate(); }, swing + ms);
+      await page.waitForTimeout(120);
+      if (shot) await page.screenshot({ path: join(shots, `partner-leaves-${shot}.png`) });
+      return page.evaluate(() => window.__scene().ping.playback.seconds(Date.now()) === null);
+    };
+    await frame(0);
+    await settle(page, 300);
+    await page.screenshot({ path: join(shots, "partner-leaves-0-mid-swing.png") });
+    const mid = await paddle();
+    await writeFile(lone.control, "working");
+    await page.waitForFunction(() => window.__scene().ping.playback.seconds(Date.now()) === null, null, { timeout: 10_000 });
+    await frame(0, "1-rally-stopped");
+    const gap = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    const stopped = await paddle();
+    assert.ok(gap(stopped, mid) < 0.03, `the one staying snapped out of their swing as their partner left: the paddle moved ${gap(stopped, mid).toFixed(3)} m at once`);
+    // Then the clock runs on: their swing carries on and fades into standing within a fraction of a second, no jumps.
+    const trail = [stopped];
+    for (const [i, ms] of [100, 200, 300, 400, 500, 600, 800, 1000].entries()) {
+      if (!(await frame(ms, `${i + 2}-${ms}ms`))) break; // the next player is already in and playing
+      trail.push(await paddle());
+    }
+    assert.ok(trail.length >= 6, "the rally stayed stopped long enough to see them ease out");
+    for (let i = 1; i < trail.length; i++) assert.ok(gap(trail[i], trail[i - 1]) < 0.2, `the paddle jumps ${gap(trail[i], trail[i - 1]).toFixed(3)} m easing out`);
+    if (trail.length === 9) assert.ok(gap(trail[8], trail[7]) < 0.03, "standing once eased out");
+    assert.ok(gap(trail.at(-1), mid) > 0.08, "they end up standing, not frozen mid-swing");
+    assert.deepEqual(solo.errors, []);
+  }
   assert.deepEqual(desk.errors, []);
   assert.deepEqual(phone.errors, []);
-  console.log(`Ping pong checked in a scratch office on port ${port}: two players paired, ball on each paddle at its hit, bounces on the right sides and over the net, held in hand between points, a world update never restarts the rally, players leave on work, the ball rests until the regulars take the table back. Screenshots and videos in ${shots}`);
+  console.log(`Ping pong checked in a scratch office on port ${port}: two players paired, ball on each paddle at its hit, bounces on the right sides and over the net, held in hand between points, a world update never restarts the rally, a partner leaving mid-rally leaves the other easing out of their swing, players leave on work, the ball rests until the regulars take the table back. Screenshots and videos in ${shots}`);
 } finally {
   await browser?.close();
-  await office.stop();
+  await office?.stop();
+  await lone?.stop();
   await rm(home, { recursive: true, force: true });
 }

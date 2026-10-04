@@ -4,7 +4,7 @@ import { BoxGeometry, CylinderGeometry, MeshStandardMaterial, SphereGeometry, ty
 import type { BuildingPlan } from "./building.ts";
 import type { Kit } from "./Furniture.tsx";
 import { usePace } from "./Pace.tsx";
-import { ballAt, BALL_R, BALL_REST, BLADE, NET_H, newPing, PingPlayback, pingTable, TABLE_H, TABLE_L, TABLE_W } from "./pingpong.ts";
+import { BALL_BACK, ballAt, ballBack, BALL_R, BALL_REST, BLADE, NET_H, newPing, PingPlayback, pingTable, TABLE_H, TABLE_L, TABLE_W } from "./pingpong.ts";
 
 // The ping pong table as drawn: its boxes go in with the building's furniture (`furnishPingPong`),
 // the ball is one small mesh (`PingScene`) and each player holds a paddle (`Paddle`, in Avatar.tsx).
@@ -54,21 +54,37 @@ export function Paddle() {
   );
 }
 
-/** The ball: in play while both players are at the table, otherwise lying on it by player 0's end, where play starts. Only a rally asks the pacer for frames. */
+/**
+ * The ball: in play while both players are at the table, otherwise lying on it by player 0's end, where play starts.
+ * When play stops it hops back there from wherever it was. Only a rally and that hop ask the pacer for frames.
+ */
 export function PingScene({ plan }: { plan: BuildingPlan }) {
   const ping = usePing();
   const pace = usePace();
   const ball = useRef<Mesh>(null);
   const at = useMemo(newPing, []);
+  // Where it was when play last stopped, and when (ms).
+  const back = useMemo(() => ({ from: newPing(), at: -Infinity, playing: false }), []);
   const table = useMemo(() => pingTable(plan), [plan]);
   useFrame(() => {
     const m = ball.current;
     if (!m) return;
     const seconds = ping?.playback.seconds(Date.now()) ?? null;
     if (seconds === null) {
-      Object.assign(at, BALL_REST);
+      const now = Date.now();
+      if (back.playing) {
+        Object.assign(back.from, at);
+        back.at = now;
+        back.playing = false;
+      }
+      const u = (now - back.at) / 1000 / BALL_BACK;
+      if (u < 1) {
+        ballBack(back.from, u, at);
+        pace?.moved(performance.now());
+      } else Object.assign(at, BALL_REST);
     } else {
       ballAt(seconds, at);
+      back.playing = true;
       pace?.moved(performance.now());
     }
     m.position.set(table.center[0] + at.a * table.along[0] + at.c * table.across[0], at.y, table.center[1] + at.a * table.along[1] + at.c * table.across[1]);

@@ -5,7 +5,7 @@ import type { Vec2 } from "../src/ui/world/spatial.ts";
 import { place, planBuilding, routeIn, type BuildingPlan } from "../src/ui/world/building.ts";
 import { FOREARM, gymCorner, gymSpot, handFrom, shoulderFrame, STATIONS } from "../src/ui/world/gym.ts";
 import {
-  bakeRally, BALL_R, BALL_REST, ballAt, BLADE, choosePingPong, handAt, NET_H, newHand, newPing, newPlayer, ON_HAND, paddleAt, pingCorner, pingSpot, PingPlayback, pingTable, playerPose, RALLY, STAND, TABLE_H, TABLE_L, TABLE_W, TABLE_X, TABLE_Z, type End, type Ping, type Player, type Rally,
+  BALL_BACK, ballBack, bakeRally, BALL_R, BALL_REST, ballAt, BLADE, choosePingPong, handAt, NET_H, newHand, newPing, newPlayer, ON_HAND, paddleAt, pingCorner, PingEase, pingSpot, PingPlayback, pingTable, playerPose, RALLY, STAND, TABLE_H, TABLE_L, TABLE_W, TABLE_X, TABLE_Z, UNSETTLE, type End, type Ping, type Player, type Rally,
 } from "../src/ui/world/pingpong.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({ id, identity: id, name: id, harness: "manual", cwd: null, project: null, branch: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra });
@@ -267,6 +267,62 @@ test("any seed bakes a whole match, and through it, round again, the ball and bo
         if (t >= 0.6) assert.ok(Math.hypot(blade[0] - target[0], blade[1] - target[1], blade[2] - target[2]) < 0.03, `${seed}: end ${end}'s blade off the paddle's place at ${t.toFixed(2)}s`);
       }
     }
+  }
+});
+
+test("a partner walking off mid-rally leaves the other easing out of their swing into standing, wherever in the match it happens", () => {
+  const plan = planBuilding([], [], []);
+  const table = pingTable(plan);
+  const flat = (p: Player) => [p.rootX, p.rootY, p.rootZ, p.stride, p.thigh, p.knee, p.bend, p.head, p.right.x, p.right.y, p.right.z, p.right.elbow, p.left.x, p.left.y, p.left.z, p.left.elbow];
+  const pose = (spot: ReturnType<typeof pingSpot>, e: { end: End; seconds: number; keep: number } | null, out: Player) => {
+    if (!e) return flat(Object.assign(out, newPlayer()));
+    return flat(playerPose(table, spot.pos[0], spot.pos[1], spot.facing, e.end, e.seconds, 1, 1, out, RALLY, e.keep));
+  };
+  const a = newPlayer(), b = newPlayer(), dt = 10;
+  for (const end of [0, 1] as const) {
+    const spot = pingSpot(plan, end);
+    // Every so often through the match, and early on, still settling in.
+    for (let stop = 0.3; stop < RALLY.length; stop += 1.37) {
+      const ease = new PingEase();
+      const at = 1_000_000;
+      let before = pose(spot, ease.frame(end, stop, at, true), a);
+      // From the last frame of play, a frame at a time, until they stand.
+      for (let ms = dt; ms <= UNSETTLE * 1000 + 2 * dt; ms += dt) {
+        const e = ease.frame(end, null, at + ms, true);
+        const now = pose(spot, e, b);
+        for (let i = 0; i < now.length; i++) assert.ok(Math.abs(now[i]! - before[i]!) < (i < 3 ? 0.025 : 0.25), `end ${end}, stopped at ${stop.toFixed(2)}s: joint ${i} jumps ${(now[i]! - before[i]!).toFixed(3)} ${ms} ms on`);
+        if (e) assert.ok(Math.abs(e.seconds - (stop + ms / 1000)) < 1e-9, "the swing carries on as the match has it");
+        before = now;
+      }
+      assert.equal(ease.frame(end, null, at + UNSETTLE * 1000 + 50, true), null, "standing once eased out");
+    }
+  }
+  // Walking off: the walk takes over at once. And play starting again goes back to the rally's own clock.
+  const ease = new PingEase();
+  ease.frame(0, 12, 0, true);
+  assert.equal(ease.frame(0, null, 10, false), null);
+  assert.equal(ease.frame(undefined, null, 20, true), null, "nothing to ease out of");
+  ease.frame(1, 30, 0, true);
+  ease.frame(1, null, 100, true);
+  assert.deepEqual(ease.frame(1, 0.05, 200, true), { end: 1, seconds: 0.05, keep: 1 });
+});
+
+test("when play stops, the ball hops back from wherever it is to where it rests, over the net and never through the table", () => {
+  const from = newPing(), p = newPing(), q = newPing();
+  for (let t = 0; t < RALLY.length; t += 0.07) {
+    ballAt(t, from);
+    const steps = 200, frame = BALL_BACK / steps;
+    assert.deepEqual(ballBack(from, 0, p), from);
+    for (let i = 0; i < steps; i++) {
+      ballBack(from, i / steps, p);
+      ballBack(from, (i + 1) / steps, q);
+      const jump = Math.hypot(q.a - p.a, q.y - p.y, q.c - p.c);
+      // No faster than the ball goes in play.
+      assert.ok(jump / frame < 7, `stopped at ${t.toFixed(2)}s: the ball jumps ${jump.toFixed(3)} m`);
+      if (Math.abs(q.a) < TABLE_L / 2 && Math.abs(q.c) < TABLE_W / 2) assert.ok(q.y > TABLE_H + BALL_R - 1e-6, `stopped at ${t.toFixed(2)}s: through the table`);
+      if (Math.sign(p.a) !== Math.sign(q.a)) assert.ok(p.y > TABLE_H + NET_H + BALL_R, `stopped at ${t.toFixed(2)}s: through the net`);
+    }
+    for (const k of ["a", "y", "c"] as const) assert.ok(Math.abs(q[k] - BALL_REST[k]) < 1e-9, "back where it rests");
   }
 });
 
