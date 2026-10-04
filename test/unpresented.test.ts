@@ -159,6 +159,7 @@ test("a whole idle team with no commits gets one office message at five minutes,
   assert.equal(f.notices().length, 1);
   assert.match(f.prompts[0]!, /\[From the office\]/);
   assert.match(f.prompts[0]!, /Your whole team has been idle for 5 minutes/);
+  assert.match(f.prompts[0]!, /keep working on whatever does not depend on it/);
   assert.match(f.prompts[0]!, /inbox milestone.*inbox decide.*open question.*inbox say founder/s);
   assert.doesNotMatch(f.prompts[0]!, /Unpresented work/);
   assert.equal(f.notices()[0]!.deliveries[0]!.state, "delivered");

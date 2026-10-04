@@ -119,6 +119,22 @@ test("a team's offline lead keeps what waits for it, and a switching agent is he
   assert.deepEqual(s.deliveries(s.sleepy.id).map((d) => d.state), ["failed"]);
 });
 
+test("a standing team's offline member keeps what waits for it, a project's member does not", (t) => {
+  const s = setup(t);
+  const at = new Date().toISOString();
+  s.db.prepare("INSERT INTO teams (id, name, standing, created_at) VALUES ('lanes', 'Lanes', 1, ?)").run(at);
+  s.db.prepare("INSERT INTO teams (id, name, standing, created_at) VALUES ('proj', 'Project', 0, ?)").run(at);
+  s.world.updateAgent(s.sleepy.id, { teamId: "lanes" });
+  s.say("for the lane");
+  s.setLive([s.pane("sender")]);
+  s.advance(GRACE * 5);
+  assert.equal(s.watch(), false, "recovered onto a replacement later, it gets this then");
+  assert.deepEqual(s.deliveries(s.sleepy.id).map((d) => d.state), ["queued"]);
+  s.db.prepare("UPDATE world_agents SET team_id = 'proj', role = 'member' WHERE id = ?").run(s.sleepy.id);
+  assert.equal(s.watch(), true, "a project's crew member is gone once unseen for the grace period");
+  assert.deepEqual(s.toSender(), [GONE_LINE(1, s.sleepy.name)]);
+});
+
 test("nothing fails while herdr cannot be read", (t) => {
   const s = setup(t);
   s.say("hello");

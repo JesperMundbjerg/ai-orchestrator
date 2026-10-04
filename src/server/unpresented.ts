@@ -27,7 +27,7 @@ type History = { presented_head: string | null; reminded_head: string | null; re
 type Sample = { head: string; count: number; latest: string };
 type TeamIdleHistory = { members: string | null; message_after: number | null; notified: number; reminded_at: number | null; head: string | null };
 const MINUTE = 60_000;
-const WHOLE_TEAM_IDLE = "Your whole team has been idle for 5 minutes. If the work is done, present it now (inbox milestone). If you are waiting for something from the founder, ask for it (inbox decide, with options or an open question). Otherwise tell the founder in one line what happens next (inbox say founder).";
+const WHOLE_TEAM_IDLE = "Your whole team has been idle for 5 minutes. If the work is done, present it now (inbox milestone). If you are waiting for something from the founder, ask for it (inbox decide, with options or an open question), and until it answers keep working on whatever does not depend on it. Otherwise tell the founder in one line what happens next (inbox say founder).";
 
 export class Unpresented {
   private db: DatabaseSync;
