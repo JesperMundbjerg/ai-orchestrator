@@ -261,7 +261,7 @@ export const agentOperations = {
   }) as Schema<QaNext>),
   qaAnswer: post("/api/agent/qa/answer", qaAnswerSchema, qaAnswerResponse),
   qaAnswers: post("/api/agent/qa/answers", qaAnswersSchema, object({ answers: list(founderAnswerResponse), remaining: number, learnedThrough: number })),
-  qaLearned: post("/api/agent/qa/learned", qaLearnedSchema, object({ learnedThrough: number })),
+  qaLearned: post("/api/agent/qa/learned", qaLearnedSchema, object({ learnedThrough: number, answersLearned: number, consolidate: boolean })),
   qaJudge: post("/api/agent/qa/judge", qaJudgeSchema, qaPredictionResponse),
   switchAgent: post("/api/world/switches", switchSchema, switchResponse),
   switchAll: post("/api/world/switches/all-from", switchAllSchema, object({ batchId: text, switches: list(switchResponse), skipped: list(object({ name: text, why: text })) })),
