@@ -15,12 +15,33 @@ const MARK = "review-inbox-pipeline-guard-v2";
 const LEGACY_MARK = "review-inbox-pipeline-guard-v1";
 const LOCAL = ".review-inbox-pipeline";
 const LAUNCHER = ".claude/hooks/review-inbox-pipeline.sh";
-/** The committed harness commands: repo-relative, through a POSIX launcher, so a missing node still fails closed. */
-export const HARNESS_COMMANDS = {
-  claude: `sh "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/${LAUNCHER}" claude`,
-  codex: `sh "$(git rev-parse --show-toplevel)/${LAUNCHER}" codex`,
-};
+/** Words that make a shell command look like delivery. The launcher adds the policy's own guarded commands. */
+const DELIVERY_WORDS = ["push", "merge", "land", "publish", "gh"];
 const REINSTALL = "reinstall pipeline hooks from the Review Inbox checkout: bin/inbox pipeline install-hooks <main checkout of this project>";
+/** What a hook that cannot reach its guard does: refuse what looks like delivery (a hook that fails to start does not
+ * block, so silence would fail open), pass everything else. One line of POSIX sh, shared by the launcher and the
+ * committed commands so there is a single matcher; a payload without a command (an edit) is never refused. */
+function failClosed(words: Iterable<string>, reason: string): string {
+  const pattern = `(^|[^[:alnum:]_])(${[...words].map((w) => w.replace(/[.[\]()*+?{}|^$\\]/g, "\\$&")).join("|")})([^[:alnum:]_]|$)`;
+  const deny = JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
+  return `input=$(cat); if printf '%s' "$input" | grep -Eq ${quote('(^|[^\\])"(command|cmd)"[[:space:]]*:')} && printf '%s' "$input" | grep -Eq ${quote(pattern)}; then printf '%s\\n' ${quote(deny)}; else printf '{}\\n'; fi`;
+}
+/** Run the launcher of the work tree the hook is in; with no work tree, or no launcher in it, fail closed the same way
+ * the launcher does without node. Never exits 127 silently: `git rev-parse` printing nothing used to run `sh /.claude/…`. */
+function harnessCommand(root: string, harness: "claude" | "codex"): string {
+  const reason = `Protected delivery blocked: the Review Inbox pipeline guard was not found here (outside a Git work tree of the project, or its ${LAUNCHER} is missing). Run delivery from inside the project, or reinstall: bin/inbox pipeline install-hooks <main checkout>.`;
+  return `root=${root}; l="$root/${LAUNCHER}"; [ -n "$root" ] && [ -f "$l" ] && exec sh "$l" ${harness}; ${failClosed(DELIVERY_WORDS, reason)}`;
+}
+/** The committed harness commands: repo-relative, through a POSIX launcher, so a missing node, launcher or work tree still fails closed. */
+export const HARNESS_COMMANDS = {
+  claude: harnessCommand('${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}', "claude"),
+  codex: harnessCommand("$(git rev-parse --show-toplevel 2>/dev/null)", "codex"),
+};
+/** Earlier committed commands, still ours to replace on reinstall: they failed open (exit 127) outside a work tree. */
+const PREVIOUS_COMMANDS = [
+  `sh "\${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/${LAUNCHER}" claude`,
+  `sh "$(git rev-parse --show-toplevel)/${LAUNCHER}" codex`,
+];
 const OUTAGE = "Protected delivery blocked: the Review Inbox gate is unavailable or invalid. Restart the office and retry; editing, tests and local commits remain available.";
 type Operation = "push" | "pr" | "merge" | "land" | "publish";
 export type GuardedCommand = { command: string; operation: Operation; ref: string; candidateArgument?: number; checkoutArgument?: number };
@@ -486,12 +507,11 @@ console.log(JSON.stringify(reason ? { hookSpecificOutput: { hookEventName: 'PreT
  * main checkout's ignored `.review-inbox-pipeline/node` (PATH as the fallback). A hook that cannot start
  * does not block, so without any node the launcher itself denies every shell command that may be delivery. */
 function launcher(config: HookConfig): string {
-  const words = new Set(["push", "merge", "land", "publish", "gh"]);
+  const words = new Set(DELIVERY_WORDS);
   for (const c of config.guardedCommands) for (const w of shellWords(c.command)[0] ?? []) {
     const b = basename(w); if (b.length > 2 && !["node", "npm", "npx", "sh", "bash", "env"].includes(b)) words.add(b);
   }
-  const pattern = `(^|[^[:alnum:]_])(${[...words].map((w) => w.replace(/[.[\]()*+?{}|^$\\]/g, "\\$&")).join("|")})([^[:alnum:]_]|$)`;
-  const deny = JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: `Protected delivery blocked: no node found for the pipeline guard (neither the main checkout's ${LOCAL}/node nor PATH); ${REINSTALL}. Editing, tests and local commits remain available.` } });
+  const reason = `Protected delivery blocked: no node found for the pipeline guard (neither the main checkout's ${LOCAL}/node nor PATH); ${REINSTALL}. Editing, tests and local commits remain available.`;
   return `#!/bin/sh
 # ${MARK}
 # ${TRACKED_NOTE}
@@ -501,12 +521,7 @@ node=
 case $common in */.git) [ -r "\${common%/.git}/${LOCAL}/node" ] && IFS= read -r node < "\${common%/.git}/${LOCAL}/node" ;; esac
 { [ -n "$node" ] && [ -x "$node" ]; } || node=$(command -v node 2>/dev/null) || node=
 if [ -n "$hooks" ] && [ -f "$hooks/review-inbox-pipeline.mjs" ] && [ -n "$node" ]; then exec "$node" "$hooks/review-inbox-pipeline.mjs" "$1"; fi
-input=$(cat)
-if printf '%s' "$input" | grep -Eq '(^|[^\\])"(command|cmd)"[[:space:]]*:' && printf '%s' "$input" | grep -Eq ${quote(pattern)}; then
-  printf '%s\\n' ${quote(deny)}
-else
-  printf '{}\\n'
-fi
+${failClosed(words, reason)}
 `;
 }
 
@@ -540,7 +555,7 @@ export function installHooks(path: string, options: { dryRun?: boolean; uninstal
   // v1 called the runner, the first v2 the entrypoint, both by absolute path; now the launcher.
   const owns = (command: unknown): boolean => {
     if (typeof command !== "string") return false;
-    if (Object.values(HARNESS_COMMANDS).includes(command)) return true;
+    if (Object.values(HARNESS_COMMANDS).includes(command) || PREVIOUS_COMMANDS.includes(command)) return true;
     const words = shellWords(command)[0] ?? [];
     return (words.length === 4 && words[1] === runner && ["claude", "codex"].includes(words[2]!) && words[3] === configPath)
       || (words.length === 3 && words[1] === toolHook && ["claude", "codex"].includes(words[2]!));

@@ -196,3 +196,55 @@ test("upgrading FysikLab's v1 install drops every absolute path, keeps its bound
   assert.equal(existsSync(manifest.prePush), false); assert.equal(existsSync(local), false);
   assert.equal(dirname(manifest.prePush), join(realpathSync(s.repo), ".git/hooks"));
 });
+
+/** The committed command run through sh, as a harness would: any cwd, only `extra` beyond PATH/HOME, a Bash tool payload. */
+function runCommand(mode: "claude" | "codex", cwd: string, env: Record<string, string>, command: string, tool = "Bash") {
+  return spawnSync("/bin/sh", ["-c", HARNESS_COMMANDS[mode]], { cwd, env, input: JSON.stringify({ session_id: "scratch", tool_name: tool, tool_input: { command } }), encoding: "utf8" });
+}
+
+test("outside any work tree the committed commands deny delivery and let ordinary commands through, never exiting 127", (t) => {
+  const s = scratch(t); s.install();
+  s.git(s.repo, "add", "-A"); s.git(s.repo, "commit", "-m", "Install pipeline hooks");
+  const outside = join(s.root, "not a repo"); mkdirSync(outside);
+  assert.notEqual(spawnSync("git", ["-C", outside, "rev-parse", "--show-toplevel"], { env: { ...s.env, GIT_CEILING_DIRECTORIES: s.root } }).status, 0, "the scratch cwd is outside every work tree");
+  const env = { ...s.env, GIT_CEILING_DIRECTORIES: s.root };
+  const land = `node .claude/hooks/worktree-sync.mjs land ${s.repo} abc123`;
+  for (const mode of ["claude", "codex"] as const) {
+    for (const command of [`git -C ${s.repo} push origin dev`, land, "git push origin HEAD:dev", "gh pr merge 7", "npm publish"]) {
+      const r = runCommand(mode, outside, env, command);
+      assert.equal(r.status, 0, `${mode} ${command}: ${r.stderr}`); assert.match(s.denial(JSON.parse(r.stdout)) ?? "", /Protected delivery blocked/, `${mode} denies ${command}`);
+    }
+    for (const command of ["ls", "npm test && git commit -m local", "cat notes.md"]) {
+      const r = runCommand(mode, outside, env, command);
+      assert.equal(r.status, 0, r.stderr); assert.deepEqual(JSON.parse(r.stdout), {}, `${mode} allows ${command}`);
+    }
+    // Text that mentions delivery but is not a shell command (an edit) is not refused.
+    const edit = spawnSync("/bin/sh", ["-c", HARNESS_COMMANDS[mode]], { cwd: outside, env, input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: "notes", content: "git push origin dev" } }), encoding: "utf8" });
+    assert.deepEqual(JSON.parse(edit.stdout), {});
+  }
+});
+
+test("a missing launcher inside a repository denies delivery instead of exiting 127", (t) => {
+  const s = scratch(t); s.install();
+  s.git(s.repo, "add", "-A"); s.git(s.repo, "commit", "-m", "Install pipeline hooks");
+  rmSync(join(s.repo, ".claude/hooks/review-inbox-pipeline.sh"));
+  for (const mode of ["claude", "codex"] as const) {
+    const denied = runCommand(mode, s.repo, s.env, "git push origin dev");
+    assert.equal(denied.status, 0, denied.stderr); assert.ok(s.denial(JSON.parse(denied.stdout)), `${mode} denies delivery`);
+    assert.deepEqual(JSON.parse(runCommand(mode, s.repo, s.env, "ls").stdout), {}, `${mode} allows ls`);
+  }
+});
+
+test("reinstall replaces the earlier commands that failed open and adds no duplicate", (t) => {
+  const s = scratch(t);
+  const earlier: Record<string, string> = { ".claude/settings.json": 'sh "${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}/.claude/hooks/review-inbox-pipeline.sh" claude', ".codex/hooks.json": 'sh "$(git rev-parse --show-toplevel)/.claude/hooks/review-inbox-pipeline.sh" codex' };
+  for (const [file, command] of Object.entries(earlier)) {
+    mkdirSync(dirname(join(s.repo, file)), { recursive: true });
+    writeFileSync(join(s.repo, file), JSON.stringify({ hooks: { PreToolUse: [{ matcher: ".*", hooks: [{ type: "command", command, timeout: 15 }] }] } }));
+  }
+  s.install();
+  for (const [file, mode] of [[".claude/settings.json", "claude"], [".codex/hooks.json", "codex"]] as const) {
+    const commands = JSON.parse(readFileSync(join(s.repo, file), "utf8")).hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.command));
+    assert.deepEqual(commands, [HARNESS_COMMANDS[mode]]);
+  }
+});

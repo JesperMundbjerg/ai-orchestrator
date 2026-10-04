@@ -517,7 +517,7 @@ test("v1 reinstall replaces owned extension and commands cleanly, keeps boundari
   assert.ok(JSON.parse(readFileSync(join(local, "config.json"), "utf8")).protectedRefs.includes("refs/heads/release"));
   for (const path of [".claude/settings.json", ".codex/hooks.json"]) {
     const hooks = JSON.parse(readFileSync(join(s.repo, path), "utf8")).hooks.PreToolUse.flatMap((group: any) => group.hooks);
-    assert.equal(hooks.length, 2); assert.equal(hooks[0].command, "keep-me"); assert.match(hooks[1].command, /^sh ".*\/\.claude\/hooks\/review-inbox-pipeline\.sh" (claude|codex)$/);
+    assert.equal(hooks.length, 2); assert.equal(hooks[0].command, "keep-me"); assert.match(hooks[1].command, /exec sh "\$l" (claude|codex); /); assert.ok(hooks[1].command.includes(".claude/hooks/review-inbox-pipeline.sh"));
   }
   s.install({ uninstall: true }); assert.equal(readFileSync(hook, "utf8"), "#!/bin/sh\nexit 7\n");
   assert.equal(existsSync(join(s.repo, ".claude/hooks/review-inbox-pipeline.mjs")), false);
