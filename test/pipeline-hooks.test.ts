@@ -378,6 +378,110 @@ test("attached Git directories target the protected checkout and context overrid
   assert.equal(target.git("rev-parse", "HEAD"), target.candidate);
 });
 
+test("autonomous delivery is explicit, survives reinstall, and can be restored to office mode", (t) => {
+  const s = scratch(t);
+  const path = join(s.repo, ".review-inbox-pipeline/config.json");
+  s.install();
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).deliveryMode, "office");
+  s.install({ deliveryMode: "autonomous" });
+  const enabled = readFileSync(path, "utf8");
+  assert.equal(JSON.parse(enabled).deliveryMode, "autonomous");
+  s.install();
+  assert.equal(readFileSync(path, "utf8"), enabled);
+  assert.throws(() => s.install({ deliveryMode: "typo" }), /delivery-mode/);
+  assert.equal(readFileSync(path, "utf8"), enabled, "invalid settings cause no writes");
+  s.install({ deliveryMode: "office" });
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).deliveryMode, "office");
+  const cli = spawnSync(process.execPath, [resolve("bin/inbox"), "pipeline", "install-hooks", s.repo, "--delivery-mode", "autonomous", "--dry-run"], {
+    encoding: "utf8", env: { ...process.env, HOME: s.root, INBOX_DATA_DIR: join(s.root, "office-data"), INBOX_URL: "http://127.0.0.1:1", HERDR_SOCKET_PATH: "/nonexistent", HERDR_BIN_PATH: "/usr/bin/false", INBOX_CODEX_ACCOUNT_POLLING: "0", INBOX_PRESENCE_DISCOVERY: "0", INBOX_BROWSER_CLEANUP: "0" },
+  });
+  assert.equal(cli.status, 0, cli.stderr); assert.match(cli.stdout, /Delivery mode: autonomous/);
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).deliveryMode, "office", "CLI dry-run does not change the mode");
+});
+
+test("autonomous commits, canonical land/publish and PR creation never call the office", async (t) => {
+  const s = scratch(t);
+  writeFileSync(join(s.repo, "orchestrator.json"), JSON.stringify({ project: "fysiklab", integrationBranch: "dev" }));
+  s.install({ deliveryMode: "autonomous", inboxCommand: ["/nonexistent/office"] });
+  const config = JSON.parse(readFileSync(join(s.repo, ".review-inbox-pipeline/config.json"), "utf8"));
+  const commands = ["git commit -m fix", "git push origin HEAD:dev", "git push --force origin HEAD:main-pr",
+    `node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${s.candidate}`, "node .claude/hooks/worktree-sync.mjs publish",
+    "gh pr create --base main --head remote-only-branch", "gh pr create --repo example/project --base main --head remote-only-branch",
+    "INBOX_PIPELINE_RUN=$RUN INBOX_PIPELINE_ROUND=stale git push origin HEAD:dev"];
+  const extension = await import(join(s.repo, ".pi/extensions/review-inbox-pipeline.ts"));
+  let handler: any; extension.default({ on(_: string, callback: any) { handler = callback; } });
+  for (const command of commands) {
+    assert.equal(guardTool(config, { tool_input: { command } }, s.repo, "pi", "ordinary-member"), null, command);
+    assert.equal(await handler({ input: { command } }, { cwd: s.repo, sessionManager: { getSessionFile: () => "ordinary-member" } }), undefined, command);
+    const result = spawnSync(process.execPath, [join(s.repo, ".claude/hooks/review-inbox-pipeline.mjs")], { cwd: s.repo, input: JSON.stringify({ tool_input: { command } }), encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr); assert.deepEqual(JSON.parse(result.stdout), {}, command);
+  }
+  assert.deepEqual(s.readCalls(), []);
+  const other = scratch(t);
+  assert.match(guardTool(config, { input: { command: `node .claude/hooks/worktree-sync.mjs land '${other.repo}' ${s.candidate}` } }, s.repo, "pi")!, /checkout in this repository/);
+  s.git("checkout", "-b", "not-ready"); writeFileSync(join(s.repo, "file"), "later"); s.git("commit", "-am", "later");
+  const later = s.git("rev-parse", "HEAD");
+  assert.equal(guardTool(config, { input: { command: `node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${s.candidate}` } }, s.repo, "pi"), null, "an earlier pinned ancestor need not disturb later work");
+  s.git("checkout", "feature");
+  assert.match(guardTool(config, { input: { command: `node .claude/hooks/worktree-sync.mjs land '${s.repo}' ${later}` } }, s.repo, "pi")!, /HEAD ancestry/);
+});
+
+test("autonomous mode retains main/master, merge, force and deletion protections", (t) => {
+  const s = scratch(t);
+  const config: HookConfig = { ...s.config, deliveryMode: "autonomous", protectedRefs: ["refs/heads/dev", "refs/heads/shared"], inboxCommand: ["/nonexistent/office"] };
+  s.git("branch", "shared"); s.git("branch", "master");
+  for (const command of ["git push origin HEAD:main", "git push origin HEAD:master", "git checkout main && git merge feature",
+    "git checkout master && git merge feature", "gh pr merge 42", "git push --force origin HEAD:dev", "git push -uf origin HEAD:dev",
+    "git push --force-with-lease origin HEAD:shared", "git push origin +HEAD:dev", "git push --no-verify origin HEAD:dev",
+    "git push --delete origin dev", "git push origin :shared", "git push --mirror origin"]) {
+    assert.ok(guardTool(config, { input: { command } }, s.repo, "pi"), command);
+  }
+  assert.equal(guardTool(config, { input: { command: "git checkout dev && git merge feature" } }, s.repo, "pi"), null);
+  assert.deepEqual(s.readCalls(), []);
+});
+
+test("autonomous pre-push uses the actual remote tip and refuses non-fast-forward updates and deletion", (t) => {
+  const s = scratch(t);
+  const remote = join(s.root, "remote.git");
+  assert.equal(spawnSync("git", ["init", "--bare", remote]).status, 0);
+  s.git("remote", "add", "origin", remote); s.git("push", "origin", "HEAD:dev");
+  writeFileSync(join(s.repo, "file"), "left"); s.git("commit", "-am", "left");
+  const left = s.git("rev-parse", "HEAD");
+  s.git("checkout", "-b", "right", s.candidate);
+  writeFileSync(join(s.repo, "file"), "right"); s.git("commit", "-am", "right");
+  const right = s.git("rev-parse", "HEAD");
+  s.install({ deliveryMode: "autonomous", inboxCommand: ["/nonexistent/office"] });
+  s.git("push", "origin", `${left}:dev`);
+  for (const refspec of [`${right}:dev`, ":dev", `${left}:refs/heads/main`, `${left}:refs/heads/master`]) {
+    const result = spawnSync("git", ["-C", s.repo, "push", "--force", "origin", refspec], { encoding: "utf8" });
+    assert.notEqual(result.status, 0, refspec);
+    assert.match(result.stderr, /Protected delivery blocked/, refspec);
+  }
+  const config = JSON.parse(readFileSync(join(s.repo, ".review-inbox-pipeline/config.json"), "utf8"));
+  assert.equal(guardPrePush(config, `refs/heads/right ${right} refs/heads/dev ${"0".repeat(40)}\n`, s.repo), null, "creating an integration ref has no earlier tip");
+  assert.match(guardPrePush(config, `refs/heads/right ${right} refs/heads/dev ${left}\n`, s.repo)!, /fast-forward/);
+  assert.equal(guardTool(config, { input: { command: "git checkout dev && git merge right" } }, s.repo, "pi"), null, "a local fast-forward still works");
+  s.git("update-ref", "refs/heads/dev", left);
+  assert.match(guardTool(config, { input: { command: "git checkout dev && git merge right" } }, s.repo, "pi")!, /non-fast-forward/);
+  s.git("push", "origin", `${left}:refs/heads/main-pr`);
+  s.git("push", "--force", "origin", `${right}:refs/heads/main-pr`);
+  assert.equal(spawnSync("git", ["--git-dir", remote, "rev-parse", "refs/heads/dev"], { encoding: "utf8" }).stdout.trim(), left);
+  assert.deepEqual(s.readCalls(), []);
+});
+
+test("autonomous installed fallbacks never let main writes through when the runner is missing", async (t) => {
+  const s = scratch(t); s.install({ deliveryMode: "autonomous" });
+  rmSync(join(s.repo, ".review-inbox-pipeline"), { recursive: true });
+  const extension = await import(join(s.repo, ".pi/extensions/review-inbox-pipeline.ts"));
+  let handler: any; extension.default({ on(_: string, callback: any) { handler = callback; } });
+  const ctx = { cwd: s.repo, sessionManager: { getSessionFile: () => undefined } };
+  for (const command of ["git push origin HEAD:main", "git checkout main && git merge feature", "gh pr merge 1", "git push origin HEAD:dev"]) {
+    assert.equal((await handler({ input: { command } }, ctx)).block, true, command);
+  }
+  assert.equal(await handler({ input: { command: "gh pr create --base main --head remote-only-branch" } }, ctx), undefined);
+  assert.equal(await handler({ input: { command: "git status" } }, ctx), undefined);
+});
+
 test("installed guards call the real office CLI gate end to end in a scratch repo", { timeout: 60000 }, async (t) => {
   const s = scratch(t); const home = join(s.root, "office-home"); mkdirSync(home);
   const keys = ["HOME", "INBOX_DATA_DIR", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "INBOX_CODEX_ACCOUNT_POLLING", "INBOX_PRESENCE_DISCOVERY", "INBOX_BROWSER_CLEANUP"];

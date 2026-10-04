@@ -1,4 +1,5 @@
-// Explicit, project-local workflow guardrails. The office, not these hooks, decides policy.
+// Explicit, project-local delivery policy: office gates by default, or autonomous delivery
+// with local shared-ref safety when the owner selects that mode through the installer.
 // This builtin-only module is copied into installed repos so moving the office checkout
 // cannot silently disable an installed guard. No user/global harness config is written.
 // Tracked output names no machine or checkout path: the committed entrypoints find the main
@@ -47,7 +48,8 @@ type Operation = "push" | "pr" | "merge" | "land" | "publish";
 export type GuardedCommand = { command: string; operation: Operation; ref: string; candidateArgument?: number; checkoutArgument?: number };
 /** A fix-comments lane that delivers its own fixes outside office runs, from exactly this checkout (a realpath). */
 export type DeliveryLane = { name: string; checkout: string };
-export type HookConfig = { marker: string; protectedRefs: string[]; guardedCommands: GuardedCommand[]; inboxCommand: string[]; lanes?: DeliveryLane[]; policyPaths?: string[] };
+export type DeliveryMode = "office" | "autonomous";
+export type HookConfig = { marker: string; protectedRefs: string[]; guardedCommands: GuardedCommand[]; inboxCommand: string[]; deliveryMode?: DeliveryMode; lanes?: DeliveryLane[]; policyPaths?: string[] };
 type Boundary = { repo: string; operation: Operation; ref: string; candidate: string; checkout?: string; run?: string; round?: string };
 type Json = Record<string, any>;
 type Change = { path: string; content: string | null; mode?: number; renameFrom?: string };
@@ -62,7 +64,10 @@ function maybeGit(repo: string, ...args: string[]): string {
   try { return git(repo, ...args); } catch { return ""; }
 }
 function refName(ref: string): string { return ref.startsWith("refs/") ? ref : `refs/heads/${ref}`; }
-function protectedRef(config: HookConfig, ref: string): boolean { return config.protectedRefs.includes(refName(ref)); }
+function protectedRef(config: HookConfig, ref: string): boolean {
+  const name = refName(ref);
+  return config.protectedRefs.includes(name) || (config.deliveryMode === "autonomous" && ["refs/heads/main", "refs/heads/master"].includes(name));
+}
 function jsonFile(path: string): Json {
   if (!existsSync(path)) return {};
   const value: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -172,7 +177,7 @@ export function commandBoundaries(command: string, cwd: string, config: HookConf
     if (words[0] === "cd" && words[1]) { repo = resolve(repo, words[1]); branch = maybeGit(repo, "symbolic-ref", "--quiet", "HEAD"); continue; }
     const add = (operation: Operation, ref: string, rev: string, at = repo, checkout = at) => {
       if (!protectedRef(config, ref)) return;
-      if ((named.run !== undefined && !/^[A-Za-z0-9._-]+$/.test(named.run)) || (named.round !== undefined && !/^[0-9]+$/.test(named.round))) throw new Error("INBOX_PIPELINE_RUN / INBOX_PIPELINE_ROUND in the command must be literal values (a run id and a number), not shell expansions");
+      if (config.deliveryMode !== "autonomous" && ((named.run !== undefined && !/^[A-Za-z0-9._-]+$/.test(named.run)) || (named.round !== undefined && !/^[0-9]+$/.test(named.round)))) throw new Error("INBOX_PIPELINE_RUN / INBOX_PIPELINE_ROUND in the command must be literal values (a run id and a number), not shell expansions");
       boundaries.push({ repo: at, operation, ref: refName(ref), candidate: sha(at, rev), checkout, ...named });
     };
     if (basename(words[0]!) === "git") {
@@ -195,25 +200,32 @@ export function commandBoundaries(command: string, cwd: string, config: HookConf
         else if (at === repo) branch = ""; // Unknown target: subsequent merge is conservative.
       }
       if (verb === "push") {
+        if (config.deliveryMode === "autonomous" && args.includes("--no-verify")) throw new Error("Autonomous delivery keeps the pre-push backstop; --no-verify is refused");
         // pre-push supplies authoritative expanded refspecs, including --all / --mirror.
         // Preflight explicit refspecs; unresolved/default pushes are checked conservatively.
         const positional = args.filter((a) => !a.startsWith("-"));
         const specs = positional.slice(1);
+        const unsafe = args.some(a => a === "--mirror" || a.startsWith("--force") || /^-[^-]*[fd]/.test(a));
+        const push = (ref: string, rev: string, forced = false) => {
+          if (!protectedRef(config, ref)) return;
+          if (config.deliveryMode === "autonomous" && (unsafe || forced)) throw new Error("Shared refs require a normal, verified fast-forward push; force, deletion and --no-verify are refused");
+          add("push", ref, rev, at);
+        };
         if (specs.length && !args.includes("--all") && !args.includes("--mirror")) {
           for (const spec of specs) {
             const [src, target] = spec.replace(/^\+/, "").split(":");
             const dest = target ?? src!;
-            if (dest.includes("*")) { for (const ref of config.protectedRefs) add("push", ref, "HEAD", at); }
+            if (dest.includes("*")) { for (const ref of config.protectedRefs) push(ref, "HEAD", spec.startsWith("+")); }
             else if (protectedRef(config, dest)) {
               if (!src || args.includes("--delete") || args.includes("-d")) throw new Error("Deleting a protected ref is not pipeline delivery");
-              add("push", dest, src, at);
+              push(dest, src, spec.startsWith("+"));
             }
           }
         } else {
           const upstream = maybeGit(at, "rev-parse", "--symbolic-full-name", "@{upstream}");
           const dest = upstream.replace(/^refs\/remotes\/[^/]+\//, "refs/heads/") || current;
-          if (dest && !args.includes("--all") && !args.includes("--mirror")) add("push", dest, "HEAD", at);
-          else for (const ref of config.protectedRefs) add("push", ref, "HEAD", at);
+          if (dest && !args.includes("--all") && !args.includes("--mirror")) push(dest, "HEAD");
+          else for (const ref of config.protectedRefs) push(ref, "HEAD");
         }
       }
       if (verb === "merge" && !args.some((a) => ["--abort", "--quit"].includes(a))) {
@@ -229,6 +241,8 @@ export function commandBoundaries(command: string, cwd: string, config: HookConf
       }
     }
     if (basename(words[0]!) === "gh" && words[1] === "pr" && ["create", "merge"].includes(words[2] ?? "")) {
+      // Creating a PR neither updates its base branch nor needs a locally checked-out head.
+      if (config.deliveryMode === "autonomous" && words[2] === "create") continue;
       if (option(words, "--repo", "-R")) throw new Error("Cross-repository PR delivery needs an explicit repository-bound release procedure");
       const base = option(words, "--base", "-B") || maybeGit(repo, "symbolic-ref", "refs/remotes/origin/HEAD").replace(/^refs\/remotes\/[^/]+\//, "") || "main";
       if (words[2] === "merge") throw new Error("PR merge requires an explicit pinned release boundary; use the office's release procedure");
@@ -272,7 +286,7 @@ function gate(boundary: Boundary, config: HookConfig, identity: Json): string | 
 // Lane delivery: a declared fix-comments lane lands its own fixes outside office runs. The class comes
 // from the candidate checkout, never from a missing run variable; everything else is run (or waiver)
 // delivery and asks the office. Advisory like the rest of these hooks: it stops mistakes, not an owner.
-/** The guard's own files and the adapter. Lanes never deliver these; a founder waiver can. */
+/** Office-mode lanes cannot deliver these policy files; autonomous mode is explicitly owner-enabled. */
 export const POLICY_PATHS = ["orchestrator.json", ".review-inbox-pipeline/**", ".claude/hooks/review-inbox-pipeline.mjs", LAUNCHER, ".pi/extensions/review-inbox-pipeline.ts", ".codex/hooks.json"];
 const LANE_OPERATIONS: Operation[] = ["push", "land", "publish"];
 function laneOf(config: HookConfig, checkout: string | undefined): DeliveryLane | undefined {
@@ -318,7 +332,27 @@ function laneDecision(boundary: Boundary, config: HookConfig, run: string | unde
   try { if (jsonFile(record).ref !== boundary.ref) return null; } catch { return null; }
   return policyClean(config, boundary.repo, boundary.ref, boundary.candidate, base) ? "" : null;
 }
+/** Autonomous mode removes office permission checks, not ref safety. Git's pre-push supplies
+ * the authoritative remote tip; a canonical land may integrate a diverged candidate in its
+ * disposable checkout, but its eventual push must still fast-forward the shared ref. */
+function autonomousDecision(boundary: Boundary, base?: string): string | null {
+  if (boundary.operation === "pr") return null;
+  if (["refs/heads/main", "refs/heads/master"].includes(boundary.ref)) return "Protected delivery blocked: pushes and merges to main/master remain forbidden in autonomous mode";
+  try {
+    sha(boundary.repo, boundary.candidate);
+    if (boundary.operation === "land") {
+      const checkout = boundary.checkout;
+      if (!checkout || realpathSync(git(checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")) !== realpathSync(git(boundary.repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))) return "Protected delivery blocked: landing requires a candidate checkout in this repository";
+      if (spawnSync("git", ["-C", checkout, "merge-base", "--is-ancestor", boundary.candidate, "HEAD"]).status !== 0) return "Protected delivery blocked: landing candidate is not in the named checkout's HEAD ancestry";
+    }
+    if (boundary.operation === "push" && base !== undefined && !/^0+$/.test(base)) {
+      if (spawnSync("git", ["-C", boundary.repo, "merge-base", "--is-ancestor", base, boundary.candidate]).status !== 0) return "Protected delivery blocked: shared integration refs require fast-forward updates; fetch the remote tip and integrate it first";
+    }
+    return null;
+  } catch { return "Protected delivery blocked: candidate or checkout unavailable for local ref-safety checks"; }
+}
 function decide(boundary: Boundary, config: HookConfig, identity: Json, base?: string): string | null {
+  if (config.deliveryMode === "autonomous") return autonomousDecision(boundary, base);
   const lane = laneDecision(boundary, config, boundary.run || process.env.INBOX_PIPELINE_RUN, base);
   if (lane === "") return null;
   return lane ?? gate(boundary, config, identity);
@@ -363,7 +397,7 @@ export function guardPrePush(config: HookConfig, input: string, cwd: string): st
     if (!protectedRef(config, ref)) continue;
     if (/^0+$/.test(candidate)) return "Protected delivery blocked: deleting a protected ref is not delivery";
     const remote = fields[3]!;
-    const reason = decide({ repo: cwd, operation: "push", ref, candidate, checkout: cwd }, config, identity(), /^0+$/.test(remote) ? undefined : remote);
+    const reason = decide({ repo: cwd, operation: "push", ref, candidate, checkout: cwd }, config, identity(), config.deliveryMode === "autonomous" ? remote : /^0+$/.test(remote) ? undefined : remote);
     if (reason) return reason;
   }
   return null;
@@ -435,8 +469,8 @@ function mergeSettings(path: string, command: string, remove: boolean, original:
  * Node's erasable-TS loader makes toString() builtin-only JavaScript here. */
 function toolEntrypoint(config: HookConfig, pi: boolean): string {
   const parser = [git, maybeGit, refName, protectedRef, quote, shellWords, option, inlineRun, sha, commandBoundaries, mainCheckout].map(fn => fn.toString()).join("\n");
-  const policy = { marker: config.marker, protectedRefs: config.protectedRefs, guardedCommands: config.guardedCommands };
-  const types = pi ? `type Config = { marker: string; protectedRefs: string[]; guardedCommands: { command: string; operation: string; ref: string; candidateArgument?: number; checkoutArgument?: number }[]; inboxCommand?: string[]; lanes?: { name: string; checkout: string }[]; policyPaths?: string[] };
+  const policy = { marker: config.marker, protectedRefs: config.protectedRefs, guardedCommands: config.guardedCommands, deliveryMode: config.deliveryMode ?? "office" };
+  const types = pi ? `type Config = { deliveryMode?: 'office' | 'autonomous'; marker: string; protectedRefs: string[]; guardedCommands: { command: string; operation: string; ref: string; candidateArgument?: number; checkoutArgument?: number }[]; inboxCommand?: string[]; lanes?: { name: string; checkout: string }[]; policyPaths?: string[] };
 type Input = { tool_input?: { command?: string | string[]; cmd?: string | string[]; cwd?: string; workdir?: string }; input?: Input['tool_input']; cwd?: string; session_id?: string };
 type Guard = (config: Config, input: Input, cwd: string, harness: string, session?: string) => string | null;
 type Context = { cwd: string; sessionManager: { getSessionFile(): string | undefined } };
@@ -459,7 +493,7 @@ function loadConfig(from${pi ? ": string" : ""}) {
   const local = localDir(from);
   if (!existsSync(join(local, 'pipeline-hooks.ts'))) throw new Error('missing runner');
   const config = JSON.parse(readFileSync(join(local, 'config.json'), 'utf8'));
-  if (![POLICY.marker, ${JSON.stringify(LEGACY_MARK)}].includes(config.marker) || !Array.isArray(config.protectedRefs) || !config.protectedRefs.every((ref${pi ? ": unknown" : ""}) => typeof ref === 'string') || !Array.isArray(config.guardedCommands) || !config.guardedCommands.every((c${pi ? ": Config['guardedCommands'][number]" : ""}) => c && typeof c.command === 'string' && typeof c.ref === 'string' && ['push', 'pr', 'merge', 'land', 'publish'].includes(c.operation) && (c.candidateArgument === undefined || (Number.isInteger(c.candidateArgument) && c.candidateArgument >= 0))) || !Array.isArray(config.inboxCommand) || !config.inboxCommand.length || !config.inboxCommand.every((arg${pi ? ": unknown" : ""}) => typeof arg === 'string')) throw new Error('invalid pipeline guard config');
+  if ((config.deliveryMode !== undefined && !['office', 'autonomous'].includes(config.deliveryMode)) || ![POLICY.marker, ${JSON.stringify(LEGACY_MARK)}].includes(config.marker) || !Array.isArray(config.protectedRefs) || !config.protectedRefs.every((ref${pi ? ": unknown" : ""}) => typeof ref === 'string') || !Array.isArray(config.guardedCommands) || !config.guardedCommands.every((c${pi ? ": Config['guardedCommands'][number]" : ""}) => c && typeof c.command === 'string' && typeof c.ref === 'string' && ['push', 'pr', 'merge', 'land', 'publish'].includes(c.operation) && (c.candidateArgument === undefined || (Number.isInteger(c.candidateArgument) && c.candidateArgument >= 0))) || !Array.isArray(config.inboxCommand) || !config.inboxCommand.length || !config.inboxCommand.every((arg${pi ? ": unknown" : ""}) => typeof arg === 'string')) throw new Error('invalid pipeline guard config');
   return { config, runner: join(local, 'pipeline-hooks.ts') };
 }
 async function reasonFor(input${pi ? ": Input" : ""}, cwd${pi ? ": string" : ""}, harness${pi ? ": string" : ""}, from${pi ? ": string" : ""}, session = '')${pi ? ": Promise<string | null>" : ""} {
@@ -531,7 +565,7 @@ ${failClosed(words, reason)}
 }
 
 /** Validate a complete plan before touching disk. Existing unrelated settings are retained. */
-export function installHooks(path: string, options: { dryRun?: boolean; uninstall?: boolean; inboxCommand?: string[]; node?: string; warn?: (message: string) => void } = {}): Change[] {
+export function installHooks(path: string, options: { dryRun?: boolean; uninstall?: boolean; deliveryMode?: DeliveryMode; inboxCommand?: string[]; node?: string; warn?: (message: string) => void } = {}): Change[] {
   const repo = realpathSync(git(resolve(path), "rev-parse", "--show-toplevel")); rejectGlobal(repo);
   const local = join(repo, LOCAL); const manifestPath = join(local, "manifest.json");
   const prior = existsSync(manifestPath) ? jsonFile(manifestPath) as Manifest : undefined;
@@ -577,6 +611,11 @@ export function installHooks(path: string, options: { dryRun?: boolean; uninstal
     config.guardedCommands = [...new Map([...previous.guardedCommands, ...config.guardedCommands].map((c) => [JSON.stringify([c.command, c.operation, c.ref, c.candidateArgument]), c])).values()];
     // Lanes are a permission: only the current adapter grants them. Policy paths only accumulate.
     config.policyPaths = [...new Set([...(previous.policyPaths ?? []), ...(config.policyPaths ?? [])])];
+    config.deliveryMode = previous.deliveryMode;
+  }
+  if (config) {
+    config.deliveryMode = options.deliveryMode ?? config.deliveryMode ?? "office";
+    if (!["office", "autonomous"].includes(config.deliveryMode)) throw new Error("delivery-mode must be office or autonomous");
   }
   const changes: Change[] = [];
   const settings: Manifest["settings"] = prior?.settings ?? {};
@@ -644,10 +683,16 @@ export function installHooks(path: string, options: { dryRun?: boolean; uninstal
 }
 
 export function installHooksCommand(argv: string[]): void {
-  const parsed = parseArgs({ args: argv, allowPositionals: true, options: { "dry-run": { type: "boolean" }, uninstall: { type: "boolean" } } });
-  if (parsed.positionals.length !== 1) throw new Error("Usage: inbox pipeline install-hooks <main-checkout> [--dry-run] [--uninstall]");
-  const changes = installHooks(parsed.positionals[0]!, { dryRun: parsed.values["dry-run"], uninstall: parsed.values.uninstall, warn: (message) => console.error(`warning: ${message}`) });
+  const parsed = parseArgs({ args: argv, allowPositionals: true, options: { "dry-run": { type: "boolean" }, uninstall: { type: "boolean" }, "delivery-mode": { type: "string" } } });
+  if (parsed.positionals.length !== 1) throw new Error("Usage: inbox pipeline install-hooks <main-checkout> [--dry-run] [--uninstall] [--delivery-mode office|autonomous]");
+  const mode = parsed.values["delivery-mode"];
+  if (mode !== undefined && mode !== "office" && mode !== "autonomous") throw new Error("delivery-mode must be office or autonomous");
+  const changes = installHooks(parsed.positionals[0]!, { dryRun: parsed.values["dry-run"], uninstall: parsed.values.uninstall, deliveryMode: mode, warn: (message) => console.error(`warning: ${message}`) });
   for (const change of changes) console.log(`${parsed.values["dry-run"] ? "Would " : ""}${change.renameFrom ? "restore/chain" : change.content === null ? "remove" : "write"} ${change.path}`);
+  if (!parsed.values.uninstall) {
+    const config = changes.find(c => c.path.endsWith(`/${LOCAL}/config.json`));
+    if (config?.content) console.log(`Delivery mode: ${JSON.parse(config.content).deliveryMode}`);
+  }
   if (!parsed.values.uninstall) console.log(`Commit the changed tracked files (${[".claude/settings.json", ".codex/hooks.json", ".claude/hooks/review-inbox-pipeline.mjs", LAUNCHER, ".pi/extensions/review-inbox-pipeline.ts"].join(", ")}); ${LOCAL}/ stays local and ignores itself. Trust/reload project hooks in each harness before delivery. Preflight is not delivery evidence; protected pre-push rechecks every ref.`);
 }
 
@@ -655,7 +700,7 @@ function hookMain(): void {
   const [mode, configPath] = process.argv.slice(2);
   if (!configPath) throw new Error(OUTAGE);
   const config = jsonFile(configPath) as HookConfig;
-  if (![MARK, LEGACY_MARK].includes(config.marker) || !Array.isArray(config.protectedRefs) || !config.inboxCommand?.length) throw new Error(OUTAGE);
+  if ((config.deliveryMode !== undefined && !["office", "autonomous"].includes(config.deliveryMode)) || ![MARK, LEGACY_MARK].includes(config.marker) || !Array.isArray(config.protectedRefs) || !config.inboxCommand?.length) throw new Error(OUTAGE);
   const raw = readFileSync(0, "utf8");
   if (mode === "pre-push") {
     const reason = guardPrePush(config, raw, process.cwd());
