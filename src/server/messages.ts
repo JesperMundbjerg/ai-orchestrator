@@ -19,7 +19,7 @@ import { WaitingMessages } from "./waiting.ts";
 import { offlineRecipient, withOffline } from "../shared/waiting.ts";
 import { MessageLoops } from "./loops.ts";
 import { OfficeNotices } from "./notices.ts";
-import { Undelivered } from "./undelivered.ts";
+import { Undelivered, type GoneDeliveries } from "./undelivered.ts";
 import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { AgentSource } from "./world.ts";
 import { AgentStartingError } from "./agent-starting.ts";
@@ -70,6 +70,8 @@ export class Messages {
   laneRegistration: LaneRegistration = () => null;
   /** Domain gate, wired by World. Checks and delivery ledger share this store's transaction. */
   pipelines: Pipelines | null = null;
+  /** How long an agent not running (nor holding a task) may be unseen before what waits for it fails as gone; null: only removed agents. Wired by World. */
+  goneAfterMs: number | null = null;
   /** Agents being switched to another harness: what waits for them is held until the new session has its brief. */
   held: () => ReadonlySet<string> = () => new Set();
   /** Agents a reply is being typed into; like a message being sent, it keeps them busy. */
@@ -82,7 +84,49 @@ export class Messages {
 
   /** The regular reaction observes waits and publishes committed office-to-founder notices. */
   watch(state: WorldState): boolean {
-    return this.undelivered.tick(state, this.now().getTime(), this.founderNotices);
+    const gone = this.failGone(state);
+    return this.undelivered.tick(state, this.now().getTime(), this.founderNotices) || gone;
+  }
+
+  /**
+   * Deliveries to someone the office knows is gone for good fail with that reason, and each sender
+   * hears once, batched per recipient, in the same commit. The first run after a start sweeps old rows.
+   * Nothing is failed while herdr is unreadable: nobody can be told apart from absent then.
+   */
+  private failGone(state: WorldState): boolean {
+    if (this.source && !this.source.available()) return false;
+    const gone = this.undelivered.gone(state, this.now().getTime(), this.held(), this.goneAfterMs);
+    if (!gone.length) return false;
+    this.atomic(() => this.giveUp(gone, state, true));
+    return true;
+  }
+
+  /** The founder is removing `agentId`, whose waiting deliveries the caller then drops: their senders are told first. */
+  removing(agentId: string, state: WorldState): void {
+    const gone = this.undelivered.gone(state, this.now().getTime(), this.held(), this.goneAfterMs, new Set([agentId]));
+    if (gone.length) this.atomic(() => this.giveUp(gone, state, false));
+  }
+
+  /** In the caller's transaction: optionally fail the rows, and tell each agent sender once with a line per gone recipient, the founder by an office notice. */
+  private giveUp(gone: GoneDeliveries[], state: WorldState, fail: boolean): void {
+    const at = this.now();
+    const failRow = this.db.prepare("UPDATE message_deliveries SET state = 'failed', error = ?, updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'queued'");
+    const told = new Map<string | null, string[]>();
+    for (const g of gone) {
+      const error = g.removed ? `${g.name} is gone: removed from the office, so this can no longer be typed to them.` : `${g.name} is gone: not running in the office for a day or more, so this can no longer be typed to them.`;
+      if (fail) for (const id of g.messageIds) failRow.run(error, at.toISOString(), id, g.agentId);
+      for (const s of g.senders) {
+        if (s.office) continue;
+        const lines = told.get(s.sender) ?? [];
+        lines.push(`${s.count} message${s.count === 1 ? "" : "s"} to ${g.name} ${s.count === 1 ? "was" : "were"} not delivered: ${g.name} is gone; re-send to whoever took over.`);
+        told.set(s.sender, lines);
+      }
+    }
+    for (const [sender, lines] of told) {
+      const body = lines.join("\n");
+      if (sender === null) this.founderNotices.record("Messages not delivered", body, gone.map((g) => g.agentId), at.getTime());
+      else if (state.agents.some((a) => a.id === sender && !gone.some((g) => g.agentId === a.id))) this.notice(sender, body);
+    }
   }
 
   /** Messages given to `agentId` that it has not taken up yet (queued, or being typed). */

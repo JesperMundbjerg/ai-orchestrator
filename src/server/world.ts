@@ -130,6 +130,7 @@ const FIRST_MATE = [
   "Bring the founder only real decisions (`inbox decide`) and finished, checked increments they can look at (`inbox milestone`): present every visible step as soon as it is done, even if the project is not finished, with a milestone per visible step. Attach screenshots (`--screenshot`), pages to step through (`--page \"Label=URL\"`), or a video (`--video`). The office reminds you about commits you have not shown; if they are not ready, tell the founder why in one line with `inbox say founder`.",
   "When the whole team is idle, present finished work, ask for what you need with `inbox decide`, or tell the founder what happens next with `inbox say founder`; the office checks after five idle minutes and reminds you once until someone works again.",
   'Answer each message from the founder in one or two sentences with `inbox say founder "…"`, and follow up the same way when the job is done or something new happens, such as a crew member finishing.',
+  "After you submit a decision, try or milestone, keep your team working on whatever does not depend on the answer, and for a decision with a recommendation have that path prepared without anything irreversible, since only the founder's answer is approval; check `inbox replies` when you next stop.",
   "Ask a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers, options read \"Label: consequence\", and the recommendation gives your pick and why; `inbox --help` has an example.",
 ].join(" ");
 
@@ -207,6 +208,7 @@ export class World {
     this.waivers = new Waivers(db, () => this.state(), now);
     this.waivers.changed = () => this.onChange("world");
     this.messages.pipelines = this.pipelines;
+    this.messages.goneAfterMs = PANE_RECORD_LIFE_MS;
     this.leadWatch = new LeadWatch(db, now, {
       makeLead: (id) => { this.updateAgent(id, { role: "lead" }); },
       handOver: (teamId, from, to) => this.messages.handOverQueued(teamId, from, to),
@@ -628,7 +630,7 @@ export class World {
       const lead = state.agents.find((a) => a.teamId === team.id && a.role === "lead");
       lines.push(team.standing ? `Team: ${team.name}, a standing team.` : `Project: ${team.name}, in the worktree ${team.path} (branch ${team.branch ?? "unknown"}).`);
       const part = team.standing
-        ? me.role === "lead" ? "You lead it: divide the work among your crew and keep them moving." : `${lead ? lead.name : "Its lead"} leads it and divides the work; take yours from them.`
+        ? me.role === "lead" ? "You lead it: divide the work among your crew and keep them moving, and while the founder has not answered, continue with what does not depend on it and only prepare a recommendation, since only their answer is approval." : `${lead ? lead.name : "Its lead"} leads it and divides the work; take yours from them.`
         : me.role === "lead" ? `Your office name is ${me.name}. ${FIRST_MATE}` : `${lead ? lead.name : "Its first mate"} is its first mate: take your work from them and report back with \`inbox say ${lead?.name ?? "NAME"} "…"\`, not to the founder.`;
       lines.push(part);
       lines.push(this.pipelines.brief(team.id, me.id));
@@ -1134,7 +1136,7 @@ export class World {
 
   /**
    * Takes someone nobody runs out of the office. What it said and handed over keeps it as the
-   * sender; messages still waiting for it are dropped. If it led a team, the team's longest-standing
+   * sender; messages still waiting for it are dropped, after their senders are told. If it led a team, the team's longest-standing
    * running member leads it next. Refused while it runs, since herdr would bring it straight back.
    */
   removeAgent(id: string): void {
@@ -1144,6 +1146,7 @@ export class World {
     if (agent.paneId || agent.status !== "offline") {
       throw new InboxError(409, `${agent.name} is running in herdr. Close it there first; only someone nothing runs behind can be removed.`);
     }
+    this.messages.removing(id, this.state());
     this.tx(() => {
       this.db.prepare("DELETE FROM message_deliveries WHERE agent_id = ? AND state != 'delivered'").run(id);
       this.db.prepare("UPDATE world_agents SET removed = 1, team_id = NULL, role = 'member' WHERE id = ?").run(id);

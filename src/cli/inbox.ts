@@ -56,6 +56,8 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
       --page "Step 1=http://localhost:3000/sim/isotopes?step=1" --look "The hint pulses under the slider" \\
       --page "Step 2=http://localhost:3000/sim/isotopes?step=2" --look "It is gone once you have dragged"
 
+  The founder may take minutes or hours to answer, so after submitting keep working on whatever does not depend on it, and for a decide with a recommendation prepare that path but do nothing irreversible until they answer: the answer is the approval, never your recommendation. Check \`inbox replies\` when you next stop.
+
   A try answers as "Approved" (done, maybe with a note) or "Needs changes" (the note says what); a milestone as accepted or changes requested.
 
   --video copies MP4, WebM or MOV files up to 200 MB each; playback depends on browser codec support.
@@ -191,6 +193,12 @@ function session(): SessionInput {
   throw new Error("cannot tell which agent session this is: run inside Claude Code, Codex or a herdr pane, or pass --harness and --session");
 }
 
+/** What an agent does while the founder has not answered: other work goes on, and a recommendation is only prepared, never taken as their answer. */
+export function whileWaiting(type: ItemType, recommended: boolean): string {
+  const prepare = type === "decide" && recommended ? ", and prepare your recommended path without doing anything irreversible until they answer" : "";
+  return `Keep going with any work that does not depend on the answer${prepare}; check \`inbox replies\` when you next stop.`;
+}
+
 async function submit(type: ItemType, title: string | undefined): Promise<void> {
   const base = flags.json ? (JSON.parse(readFileSync(flags.json === "-" ? 0 : flags.json, "utf8")) as Partial<SubmitInput["item"]>) : {};
   const itemTitle = title ?? base.title;
@@ -231,6 +239,7 @@ async function submit(type: ItemType, title: string | undefined): Promise<void> 
   for (const hint of lengthHints(item)) console.error(`inbox: hint: ${hint}`);
   for (const warning of result.warnings ?? []) console.error(`inbox: warning: ${warning}`);
   console.log(result.changed ? `Submitted "${itemTitle}" (revision ${result.revision}, item ${result.itemId}).` : `No change: "${itemTitle}" is already in the inbox as revision ${result.revision}.`);
+  if (result.changed) console.log(whileWaiting(type, Boolean(item.recommendation && item.options?.length)));
 }
 
 /** --page "Label=URL" [--look "…"], repeated: each --look says what to look at on the page before it. */

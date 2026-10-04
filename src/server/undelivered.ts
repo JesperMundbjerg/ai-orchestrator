@@ -5,6 +5,16 @@ import type { WorldAgent, WorldState } from "../shared/types.ts";
 import type { OfficeNotices } from "./notices.ts";
 
 const WAIT_MS = 10 * 60_000;
+
+/** Queued deliveries to one agent the office knows is gone, with who sent each. `sender` is null for the founder or the office. */
+export interface GoneDeliveries {
+  agentId: string;
+  name: string;
+  removed: boolean;
+  senders: Array<{ sender: string | null; office: boolean; count: number }>;
+  messageIds: string[];
+}
+
 export class Undelivered {
   private db: DatabaseSync;
   private free: ReadonlySet<WorldAgent["status"]>;
@@ -17,6 +27,38 @@ export class Undelivered {
   drained(): void {
     this.db.exec(`DELETE FROM undelivered_episodes WHERE agent_id NOT IN
       (SELECT agent_id FROM message_deliveries WHERE state = 'queued')`);
+  }
+
+  /**
+   * Agents whose queued deliveries can never be typed: removed from the office, or not seen
+   * running (or holding a task) for `graceMs`, which the office sets to how long a pane keeps its
+   * record while nothing runs there. Without a grace period only the removed count.
+   * Never an agent that is running, being switched (`held`), or a team's lead, which waits to
+   * return or be replaced by the founder's choice (leadwatch). Observation only: the caller fails the rows.
+   */
+  gone(state: WorldState, at: number, held: ReadonlySet<string>, graceMs: number | null, removing: ReadonlySet<string> = new Set()): GoneDeliveries[] {
+    const running = new Set(state.agents.filter((a) => a.paneId).map((a) => a.id));
+    const rows = this.db.prepare(`SELECT d.message_id, d.agent_id, a.name, a.removed, a.role, a.team_id, a.last_seen_at,
+        m.from_agent_id, m.from_office FROM message_deliveries d
+      JOIN messages m ON m.id = d.message_id JOIN world_agents a ON a.id = d.agent_id
+      WHERE d.state = 'queued' ORDER BY m.rowid`).all() as Array<Record<string, unknown>>;
+    const out = new Map<string, GoneDeliveries>();
+    for (const r of rows) {
+      const agentId = String(r.agent_id);
+      if (!removing.has(agentId) && (running.has(agentId) || held.has(agentId))) continue;
+      const removed = Boolean(r.removed) || removing.has(agentId);
+      const away = Date.parse(String(r.last_seen_at ?? ""));
+      if (!removed && ((r.role === "lead" && r.team_id) || graceMs === null || !(away <= at - graceMs))) continue;
+      const entry = out.get(agentId) ?? { agentId, name: String(r.name), removed, senders: [], messageIds: [] };
+      out.set(agentId, entry);
+      entry.messageIds.push(String(r.message_id));
+      const sender = r.from_agent_id ? String(r.from_agent_id) : null;
+      const office = Boolean(r.from_office);
+      const known = entry.senders.find((s) => s.sender === sender && s.office === office);
+      if (known) known.count++;
+      else entry.senders.push({ sender, office, count: 1 });
+    }
+    return [...out.values()];
   }
 
   tick(state: WorldState, at: number, notices: OfficeNotices): boolean {
