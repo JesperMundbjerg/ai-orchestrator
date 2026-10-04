@@ -1,6 +1,7 @@
 // A project's own description of itself: `orchestrator.json` in its main checkout names its
 // checks, reviewers, landing rules, where its pages are served and its standing lanes. The service
-// reads it and runs nothing from it but a lane's own `attach` argv (standing.ts). A missing file
+// reads it and runs nothing from it but a lane's own `attach` argv (standing.ts); `laneRouting` is
+// read by lanerouting.ts, which writes the override it names. A missing file
 // is fine; an invalid one is reported rather than half-used, and the file is read again whenever it changes.
 
 import { readFileSync, statSync } from "node:fs";
@@ -11,7 +12,7 @@ import { validateGraph } from "./pipelines/model.ts";
 
 export const ADAPTER_FILE = "orchestrator.json";
 
-const KNOWN = ["project", "integrationBranch", "preview", "comments", "decisions", "checks", "reviewers", "land", "lanes", "pipeline"];
+const KNOWN = ["project", "integrationBranch", "preview", "comments", "decisions", "checks", "reviewers", "land", "lanes", "pipeline", "laneRouting"];
 
 type Json = Record<string, unknown>;
 

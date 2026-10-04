@@ -61,6 +61,8 @@ test("without the declaration the office writes nothing, whatever happens", () =
 test("<git-common-dir> is git's common directory of the main checkout, and an override outside it or the checkout is refused", () => {
   const p = project();
   assert.equal(routingFiles(p.root, "fysiklab")!.override, p.file);
+  // The adapter knows the key: a declaring project shows no problem for it.
+  assert.deepEqual(parseAdapter(readFileSync(join(p.root, "orchestrator.json"), "utf8"), p.root, "space-shuttle").problems, []);
   writeFileSync(join(p.root, "orchestrator.json"), JSON.stringify({ project: "fysiklab", laneRouting: { override: "../elsewhere.json" } }));
   assert.throws(() => routingFiles(p.root, "fysiklab"), /outside the main checkout/);
   writeFileSync(join(p.root, "orchestrator.json"), JSON.stringify({ project: "fysiklab", laneRouting: { override: 3 } }));

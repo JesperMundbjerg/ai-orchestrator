@@ -52,6 +52,7 @@ Optional scalar fields generally accept omission or `null`; provided strings mus
 | `reviewers.perSlice`, `reviewers.cap` | String list; string | Metadata only; does not start or enforce reviewers |
 | `land.mode`, `land.publish`, `land.setup` | Strings | Metadata only; commands never run |
 | `lanes` | List of lane objects, default `[]` | Joins declared lanes to observed office agents and supports lane-name messaging; a lane's `attach` argv is run for status and explicit recovery (below) |
+| `laneRouting.override`, `laneRouting.tracked` | Paths; `override` required when `laneRouting` is given | Opt-in: the office becomes the only writer of the untracked `override`, routing standing lanes there on the founder's switch and the Pi pause; `tracked` is only read (below) |
 
 An empty `preview` object yields `null`. A lane requires `name`, unique case-insensitively. Its optional `worktree`, `agent`, `model`, `role` and `harness` are non-empty strings; `harness` must be `pi`, `claude`, `codex` or `manual`. Relative worktree paths resolve against the main checkout root; absolute paths stay absolute. These paths are descriptions, not requests to create or claim worktrees. `harness` and `model` supply offline display fallbacks, not launch instructions or match filters. Optional `attach` is a non-empty list of non-empty strings (argv, not a shell line).
 
@@ -71,6 +72,16 @@ The service runs it with the lane's worktree (or the main checkout) as the worki
 | recover | `--recover --pane PANE --session SESSION --json` | only on the founder's explicit Recover (timeout 120 s) | rename the agent or its pane, signal a process it has not verified as its own companion, or take work from a session still executing it |
 
 Its **last stdout line** is one JSON object: `state`, `reason`, `registered: {session, pane} | null`, `companion: {pid, fresh, log} | null`, `progressAt` (the registered session's last completed turn, or null; shown as such, never as proof of work) and `changed` (recover: whether anything was written or started). The exit code must match `state`: `0` connected, `3` disconnected (the registered session is confirmed gone), `4` busy (the old session is working or blocked, or another recovery holds the lane), `5` unavailable (a transport error; nothing changed), `6` refused (wrong session, harness, checkout or lane, ambiguity, or a live owner it cannot verify; nothing changed), `7` failed (the companion did not become ready; the registration is left recoverable). Anything else, or JSON that disagrees with its exit code, is a transport error. Retrying a recovery that already succeeded must return `0` with `changed: false` and start nothing. With `attach`, the lane joins the office agent running the registered session, not `agent`; see [DESIGN](DESIGN.md) for what the office shows.
+
+## Lane routing override
+
+A project whose lanes' harness and model live in a tracked routing file can let the office override them in an untracked file:
+
+```json
+"laneRouting": { "override": "<git-common-dir>/fysiklab/lane-routing.json", "tracked": ".pi/fysiklab.json" }
+```
+
+`override` may start with `<git-common-dir>` (`git rev-parse --git-common-dir` in the main checkout); any other relative path, and `tracked`, resolve against the main checkout. The override must stay inside the main checkout or the git common directory. It has the tracked file's shape: top-level `runtimes`, `lanes`, `agents`, `nativeClaude`, where a key in the override wins and an absent key means the tracked default. The project reads both; the office never writes `tracked`. Without `laneRouting` the office writes nothing. The office writes only the keys it changes, keeps unknown keys and replaces the file atomically; a lane's runtime is written as `runtimes.L` and `lanes.L` together (`"pi"` + `"<provider>/<model>"`, or `"claude"` + `"claude-code/<model>"`). It writes on the founder's switch of a lane's agent, and when the office pauses or unpauses Pi; a write affects only the lane's next start. See [DESIGN](DESIGN.md) for the pause and how lifting it restores the earlier values.
 
 ## Lane matching
 
