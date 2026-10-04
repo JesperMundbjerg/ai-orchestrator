@@ -10,6 +10,7 @@ import { parseArgs } from "node:util";
 import { openPane } from "./pane.ts";
 import { pipelineCommand, deliveryBinding, telemetryLogCommand } from "./pipeline.ts";
 import { installHooksCommand } from "./pipeline-hooks.ts";
+import { LEASE_HELP, leaseArgs, leaseCommand } from "./lease.ts";
 import { acknowledge, call, fetchReplies, formatReply, get } from "../shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
@@ -105,6 +106,7 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox pipeline waiver --repo PATH --ref dev --candidate SHA --reason "why"   ask the founder to allow exactly this commit to that branch once, without a run
       --json FILE supplies an operation payload (including structured evidence); --revision N is an optimistic lock
       --client-id ID makes a lost-response retry replay-safe. Gate is preflight, not a publication receipt.
+${LEASE_HELP}
   inbox switch NAME [--to claude|pi] [--model M] [--effort E]
                                   move an agent to the other harness: it writes a handoff, a new session takes over its
                                   name, team, role and messages, and its old pane closes; the model follows the crew guide
@@ -384,6 +386,8 @@ async function main(argv: string[]): Promise<void> {
   if (argv[0] === "pipeline" && argv[1] === "install-hooks") return installHooksCommand(argv.slice(2));
   // Fire-and-forget: parsed on its own so no flag, session or office problem ever fails the caller.
   if (argv[0] === "pipeline" && argv[1] === "telemetry" && argv[2] === "log") return telemetryLogCommand(argv.slice(3), (harness, sessionId) => { flags = { harness, session: sessionId } as Flags; return session(); });
+  const lease = leaseArgs(argv);
+  if (lease) return leaseCommand(lease, (harness, sessionId) => { flags = { harness, session: sessionId } as Flags; return session(); });
   const parsed = parseArgs({ args: argv, allowPositionals: true, options: OPTIONS, tokens: true });
   flags = parsed.values;
   order = parsed.tokens.flatMap((t) => (t.kind === "option" ? [{ name: t.name, value: t.value }] : []));

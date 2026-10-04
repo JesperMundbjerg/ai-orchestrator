@@ -18,6 +18,7 @@ import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "./status.ts
 import type { Waiting } from "./WorldView.tsx";
 import { PipelineButton } from "../pipelines/PipelineButton.tsx";
 import { stallLine } from "../components/StalledTeams.tsx";
+import { leaseLine, type LeaseView } from "../../shared/leases.ts";
 
 /** The project list: where each stands, open one, start a project, change or finish one. */
 export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
@@ -139,6 +140,19 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
  * One team up close: where it stands and who holds it up, what each member is doing, the
  * work it handed over or has to review, and what was said in it with how far each got.
  */
+/** The project's capture lease ("Capture: Ada · 2 waiting"), read again whenever the office changes. */
+function useLeaseLine(teamId: string, world: WorldState): string | null {
+  const [line, setLine] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/world/teams/${teamId}/lease`)
+      .then((res) => (res.ok ? (res.json() as Promise<{ lease: LeaseView | null }>) : { lease: null }))
+      .then((body) => live && setLine(leaseLine(body.lease)), () => live && setLine(null));
+    return () => { live = false; };
+  }, [teamId, world]);
+  return line;
+}
+
 export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnswer, onClose }: {
   team: WorldTeam;
   world: WorldState;
@@ -157,6 +171,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
   const said = teamMessages(world, team.id);
   const talk = (view === "me" ? said.filter(withMe) : said).slice(0, 15);
   const between = said.filter((m) => !withMe(m)).length;
+  const lease = useLeaseLine(team.id, world);
 
   return (
     <aside className="world-panel agent">
@@ -171,6 +186,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
         <span className="muted" title={team.path ?? undefined}> · {team.standing ? "always on" : `worktree on ${team.branch ?? "an unknown branch"}`}</span>
       </div>
 
+      {lease ? <p className="muted small-note">{lease}</p> : null}
       {team.stalled ? <p className="warn small-note">{stallLine(team.stalled)}.</p> : null}
       {!!team.unpresentedCommits && <p className="muted small-note">{team.unpresentedCommits} {team.unpresentedCommits === 1 ? "commit" : "commits"} not shown to you yet</p>}
       {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}

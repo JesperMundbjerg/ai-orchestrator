@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { migratePipelines, retainPipelineHistory } from "./pipelines/migration.ts";
 import { migrateWaivers } from "./pipelines/waiver.ts";
+import { migrateCaptureLeases } from "./leases-schema.ts";
 
 export function dataDir(): string {
   return process.env.INBOX_DATA_DIR ?? join(homedir(), ".review-inbox");
@@ -379,7 +380,7 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
     override TEXT NOT NULL REFERENCES lane_routing_pauses(override), section TEXT NOT NULL CHECK (section IN ('runtimes', 'lanes')),
     lane TEXT NOT NULL, previous TEXT, written TEXT NOT NULL, PRIMARY KEY (override, section, lane)
   );`);
-}];
+}, migrateCaptureLeases];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) {

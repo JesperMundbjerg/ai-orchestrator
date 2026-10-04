@@ -11,6 +11,7 @@ import { createInboxServer } from "./http.ts";
 import { StandingLanes } from "./standing.ts";
 import { CrewTreeStore } from "./crewtree.ts";
 import { Inbox } from "./inbox.ts";
+import { Leases } from "./leases.ts";
 import { AutoApprove } from "./autoapprove.ts";
 import { QaAgents } from "./qa-agent.ts";
 import { Machine } from "./machine.ts";
@@ -75,6 +76,13 @@ switches.tookOver = (agentId, to, model) => laneRouting.switched(world.state(), 
 const syncLaneRouting = () => {
   try { laneRouting.sync(world.state(), piPaused(world.crew?.state().tree.mode, usage.crewPause())); } catch (err) { console.error(`lane routing: ${(err as Error).message}`); }
 };
+// The capture lease: one headless checker per repository, passed on FIFO and told through ordinary office notices.
+const leases = new Leases(db, {
+  state: () => world.state(),
+  notify: (agentId, text) => void world.messages.notice(agentId, text),
+  presence: () => herdr.available(),
+  telemetry: world.pipelines.telemetry,
+});
 // When disabled there is no process watcher or process-control HTTP surface at all.
 const machine = config.browserCleanup ? new Machine(() => world.state()) : undefined;
 if (machine) machine.tellLead = (teamId, text) => world.tellLead(teamId, text);
@@ -91,11 +99,12 @@ setInterval(() => {
     console.error(`usage: ${(err as Error).message}`);
   }
   syncLaneRouting();
+  try { leases.sweep(); } catch (err) { console.error(`capture leases: ${(err as Error).message}`); }
   try { world.waivers.sync(); } catch (err) { console.error(`waivers: ${(err as Error).message}`); }
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();
 
-createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches, usage, autoApprove, standing }).listen(port, "127.0.0.1", () => {
+createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches, usage, autoApprove, standing, leases }).listen(port, "127.0.0.1", () => {
   autoApprove.sweep();
   console.log(`Review inbox on http://localhost:${port}  (data: ${dir})`);
 });

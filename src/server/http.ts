@@ -21,6 +21,8 @@ import type { Herdr } from "./herdr.ts";
 import type { Machine } from "./machine.ts";
 import type { StandingLanes } from "./standing.ts";
 import type { Switches } from "./switch.ts";
+import type { Leases } from "./leases.ts";
+import { leaseSchemas } from "./leases-protocol.ts";
 import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
 import { pipelineSchemas, waiverSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema, telemetryQuery, telemetryReportSchema } from "./pipelines/protocol.ts";
@@ -38,7 +40,7 @@ function route<T>(method: string, pattern: RegExp, schema: Schema<T>, handler: (
   return [method, pattern, (req, body, params) => handler(req, schema.parse(body), params)];
 }
 
-export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove; standing?: StandingLanes }): Server {
+export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove; standing?: StandingLanes; leases?: Leases }): Server {
   const clients = new Set<ServerResponse>();
   const broadcast = (reason: string) => {
     for (const res of clients) res.write(`event: changed\ndata: ${JSON.stringify({ reason })}\n\n`);
@@ -61,6 +63,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   if (opts.machine) opts.machine.onChange = () => broadcast("machine");
   if (opts.usage) opts.usage.onChange = () => broadcast("usage");
   if (opts.standing) opts.standing.onChange = () => broadcast("lanes");
+  if (opts.leases) opts.leases.onChange = () => broadcast("lease");
   if (herdr) {
     herdr.onChange = () => {
       broadcast("presence");
@@ -139,6 +142,15 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/agent\/pipeline\/waiver$/, waiverSchemas.request, (_r, b) => needWorld().waivers.request(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/pipeline\/waiver\/gate$/, waiverSchemas.gate, (_r, b) => needWorld().waivers.gate(needWorld().resolve(b.session), b)),
     route("GET", /^\/api\/world\/teams\/([\w-]+)\/pipeline\/waivers$/, emptySchema, (_r, _b, [id]) => needWorld().waivers.list(needWorld().pipelines.teamView(id!).repoRoot)),
+    // The office-run capture lease: one per repository, FIFO; the caller is resolved by session, the repository from its checkout.
+    route("POST", /^\/api\/agent\/lease\/acquire$/, leaseSchemas.acquire, (_r, b) => needLeases().acquire(needWorld().resolve(b.session), { resource: b.resource, path: b.repo ?? b.session.cwd, run: b.run, reason: b.reason })),
+    route("POST", /^\/api\/agent\/lease\/release$/, leaseSchemas.release, (_r, b) => needLeases().release(needWorld().resolve(b.session), { resource: b.resource, path: b.repo ?? b.session.cwd })),
+    route("POST", /^\/api\/agent\/lease\/leave$/, leaseSchemas.leave, (_r, b) => needLeases().leave(needWorld().resolve(b.session), { resource: b.resource, path: b.repo ?? b.session.cwd })),
+    route("POST", /^\/api\/agent\/lease\/renew$/, leaseSchemas.renew, (_r, b) => needLeases().renew(needWorld().resolve(b.session), { resource: b.resource, path: b.repo ?? b.session.cwd })),
+    route("POST", /^\/api\/agent\/lease\/status$/, leaseSchemas.status, (_r, b) => needLeases().status(needWorld().resolve(b.session), { resource: b.resource, path: b.repo ?? b.session.cwd })),
+    route("POST", /^\/api\/agent\/lease\/revoke$/, leaseSchemas.revoke, (_r, b) => needLeases().revoke(needWorld().resolve(b.session), { resource: b.resource, path: b.repo ?? b.session.cwd, reason: b.reason })),
+    route("POST", /^\/api\/agent\/lease\/limit$/, leaseSchemas.limit, (_r, b) => needLeases().limit(needWorld().resolve(b.session), { resource: b.resource, path: b.repo ?? b.session.cwd, minutes: b.minutes })),
+    route("GET", /^\/api\/world\/teams\/([\w-]+)\/lease$/, emptySchema, (_r, _b, [id]) => ({ lease: needLeases().forTeam(id!) })),
     route("POST", /^\/api\/world\/teams\/([\w-]+)\/merge$/, validation.mergeSchema, (_r, b, [id]) => needWorld().mergeTeam(id!, b.into)),
     route("POST", /^\/api\/world\/all-leads\/messages$/, validation.allLeadsSchema, (_r, b) => needWorld().messages.tellAllLeads(b)),
     route("POST", /^\/api\/world\/teams\/([\w-]+)\/messages$/, validation.messageSchema, (_r, b, [id]) => needWorld().messages.instruct(id!, b)),
@@ -215,6 +227,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   function needStanding(): StandingLanes {
     if (!opts.standing) throw new InboxError(404, "this service does not check standing lanes");
     return opts.standing;
+  }
+
+  function needLeases(): Leases {
+    if (!opts.leases) throw new InboxError(404, "this service runs no capture leases");
+    return opts.leases;
   }
 
   function needMachine(): Machine {

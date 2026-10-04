@@ -218,13 +218,15 @@ Response: `PipelineTelemetryView` = `{coverageStartedAt, coverageSchemaVersion, 
 | **Decision wait** | not stored: derived on read into `decisionWaits` | `runId`, `itemId`, `revision`, `type`, `blocking`, `stepId` (step whose evidence endorses it, or null), `waitingSince`, `answeredAt` (or null), `action` (`accept`/`request_changes`/null), `automatic` (approve-all), `waitMs` (null while waiting) |
 | **Capture lease** (reported) | `pipeline.telemetry.lease` | `action` (`grant`/`release`/`expire`), `lease`, `holder`, `resource?`, `reportedAt?` (the reporter's `--at`, normalized to UTC), `agentId` and `agentTeamId` (the reporting agent, resolved by session), `repeats`, `lastAt?`; `runId` (`--run`, must exist) and `teamId` (that run's team) or null |
 | **Capture attempt** (reported) | `pipeline.telemetry.attempt` | `attempt`, `lease?`, `outcome` (`started`/`succeeded`/`failed`/`abandoned`), `reason?`, `reportedAt?`, `agentId`, `agentTeamId`, `repeats`, `lastAt?`; `runId`/`teamId` as for a lease |
+| **Capture lease** (office-run) | `pipeline.telemetry.lease`, `source: "office"` | `action` (`grant`/`join`/`leave`/`renew`/`release`/`expire`/`revoke`), `lease` (one id from queue join to release), `holder` (the holder's or waiter's name), `agentId`, `resource` (`capture`), `repo` (Git common dir), `purpose?` (the acquire `--reason`), `waitMs` (grant: queue join to grant, 0 when free), `expiresAt` (grant/renew), `heldMs` (release/expire/revoke), `waitedMs` (leave), `position` (join), `reason` (release `gone`; leave `left`/`gone`; revoke's reason), `by`/`byAgentId` (revoke), `repeats`; `runId`/`teamId` from the acquire's `--run` or null |
 
 Semantics:
 
 - **Gate result**: one row per pipeline gate answer, whether from `POST /api/agent/pipeline/gate` (hooks, CLI) or from a protected handoff/review (`requireDelivery`), including refusals thrown before or during evaluation. Reason codes: `run_archived`, `run_closed`, `stale_round`, `stale_candidate`, `uncommitted_candidate`, `candidate_unavailable`, `pipeline_unavailable`, `selection_missing`, `path_scope`, `not_review_step`, `no_boundary`, `step_<state>` (with `node`; for example `step_ready`, `step_stale`), `work_round_mismatch`, `operation_incomplete`, `operation_unsupported`, `operation_repo_mismatch`, `operation_repo_unavailable`, `ref_not_protected`, `gate_required`, `other_team_run`, the thrown error's code (for example `pipeline_lead_required`, `pipeline_stale_round`) or `http_<status>`. The same result for the same run, agent and request within 10 minutes increments `repeats` on its row instead of adding one. Exact-SHA waiver gates are not included; their refusals stay `pipeline.waiver.gate_refused`.
 - **Integration**: one row per committed `branch` edit; a replayed request records nothing. `rebranch` means the selections changed (`scopeRevision` incremented).
 - **Publication**: pending when a gate first allows a dev `push`, `land` or `publish` for that run's candidate. It resolves when the office sees the candidate on the published branch (`landed`), the run is re-pinned to another commit (`superseded`) or the run is abandoned. The office does not see a push fail, so a pending row that never resolves is what that looks like.
-- **Capture lease and attempt**: the office has no capture slot of its own; these are reported from outside. Whoever grants a capture lease logs each grant and release, and the project's capture tooling logs each attempt, with `inbox pipeline telemetry log` (below). The row's `at` is when the office received it. The same report again within 10 minutes increments `repeats`. No gate, edit or delivery reads them.
+- **Capture lease (office-run)**: every change to an office-run capture lease (below), written after the lease change commits; a failing write is only counted in `dropped`.
+- **Capture lease and attempt (reported)**: leases granted outside the office, and capture attempts, are reported from outside. Whoever grants a capture lease logs each grant and release, and the project's capture tooling logs each attempt, with `inbox pipeline telemetry log` (below). The row's `at` is when the office received it. The same report again within 10 minutes increments `repeats`. No gate, edit or delivery reads them.
 - **Decision wait**: for each founder approval item revision a run presented (`pipeline_item_bindings`), the wait from that revision's creation to the founder's first Accept or Needs changes on it. A discussion message is not an answer, and snoozed time is not subtracted. Omitted (`[]`) when `kind` is given.
 
 Reporting a capture lease or attempt:
@@ -250,6 +252,31 @@ The CLI is fire-and-forget. It gives up after 2 s and always exits 0. When the o
 A `run` that does not exist is a 404. An unknown session is refused as for any agent route.
 
 `dropped` counts telemetry notes this office process could not write (queue full, or a failed write) since it started. Recording is bounded for every kind, reported ones included: a queue of at most 500 notes and the newest 20,000 rows (the coverage marker excepted).
+
+### Capture lease
+
+One office-run lease per repository and resource, keyed by the repository's Git common dir, so every checkout, lane and team of it shares it (`src/server/leases.ts`, decoders in `src/server/leases-protocol.ts`, DTOs in `src/shared/leases.ts`; not in the `agentOperations` registry). The only resource is `capture`: the project's one headless checker (probe/take captures, `npm run check`, full browser tests). The caller is resolved by session; the repository from `repo` (any path inside a checkout) or else the session's `cwd`. Every request runs expiry and gone-holder checks for that lease first, and answers `LeaseResult` = `LeaseView & {you: {state: "held"|"queued"|"none", position, leaseId}, text}`, where `LeaseView` = `{resource, repo, root, project, holder: {agentId, name, leaseId, since, expiresAt, runId, reason} | null, queue: [{agentId, name, leaseId, position, since, runId, reason}], holdMinutes, lead: {agentId, name} | null}`. Any field not listed is a 400.
+
+| Method/path | Request / response |
+|---|---|
+| `POST /api/agent/lease/acquire` | `{session, resource, repo?, run?, reason?}` → `LeaseResult`; granted at once when free, else the caller joins the FIFO queue. Idempotent while held or queued. `run` must exist (404 `lease_run_unknown`) and belong to the caller's team (403 `lease_run_other_team`) |
+| `POST /api/agent/lease/release` | `{session, resource, repo?}` → `LeaseResult`; the holder only (403 `lease_not_holder`); the first in line is granted and told |
+| `POST /api/agent/lease/leave` | `{session, resource, repo?}` → `LeaseResult`; leaves the queue (no-op when not in it; 409 `lease_held` for the holder) |
+| `POST /api/agent/lease/renew` | `{session, resource, repo?}` → `LeaseResult`; the holder only; expiry becomes now + the hold limit |
+| `POST /api/agent/lease/status` | `{session, resource, repo?}` → `LeaseResult` |
+| `POST /api/agent/lease/revoke` | `{session, resource, repo?, reason}` → `LeaseResult`; the repository's lead only (403 `lease_lead_required`); 409 `lease_free` when nobody holds it |
+| `POST /api/agent/lease/limit` | `{session, resource, repo?, minutes}` → `LeaseResult`; the repository's lead only; 1–240 minutes, applied from the next grant or renewal (default 30) |
+| `GET /api/world/teams/:id/lease` | `{lease: LeaseView \| null}` for the team's repository; read-only, null when it has never been used |
+
+CLI (exits 0 when you hold it, 3 while you wait in line; `--json` prints the result):
+
+```sh
+inbox lease acquire capture [--run RUN] [--reason TEXT] [--wait SEC]   # --wait polls by re-acquiring, at most 120 s
+inbox lease release|renew|leave|status capture
+inbox lease revoke capture --reason TEXT
+inbox lease limit capture --minutes N
+#   common: --repo PATH
+```
 
 ### Change stream
 

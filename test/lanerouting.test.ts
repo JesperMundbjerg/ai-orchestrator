@@ -179,7 +179,8 @@ test("an existing database gains the pause tables without losing anything", () =
   const file = join(dir, "inbox.sqlite");
   const old = openDatabase(file);
   const version = Number(old.prepare("PRAGMA user_version").get()!.user_version);
-  old.exec(`DROP TABLE lane_routing_paused; DROP TABLE lane_routing_pauses; PRAGMA user_version = ${version - 1};`);
+  // 14 is the schema version before lane routing's migration, so reopening reruns it (and any later ones).
+  old.exec("DROP TABLE lane_routing_paused; DROP TABLE lane_routing_pauses; PRAGMA user_version = 14;");
   old.prepare("INSERT INTO usage_told (key, at) VALUES ('kept', 'now')").run();
   old.close();
   const db = openDatabase(file);

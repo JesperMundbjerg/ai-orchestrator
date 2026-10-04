@@ -161,6 +161,20 @@ Both routes use `review-excerpt.ts`: canonical checkout confinement, no dot/priv
 
 The queue on the clearing is `needsYou` from the inbox, one place per agent. The office never shows an agent's terminal: you read what they are doing and what was said, and a message to one agent goes through the same deliveries as everything else. herdr's own errors reach the UI as one line.
 
+## Capture lease
+
+The office runs one capture lease per repository (`src/server/leases.ts`, `test/lease.test.ts`). It enforces the founder's CPU rule of one headless checker at a time: probe/take captures, `npm run check` and full browser tests. It is mutual exclusion, not a port reservation, and it replaces crews asking their lead for the slot by hand.
+
+- **One per repository.** Keyed by the Git common dir, so every checkout, lane and team of the repository shares it, and another repository has its own.
+- **FIFO, never blocking.** `inbox lease acquire capture` grants at once when free, otherwise the caller joins the queue and gets its position immediately (`--wait` polls for at most 120 s). Acquiring again while holding or queued changes nothing. When the holder releases, the first in line is granted in the same transaction and told through the ordinary notice path: "Capture lease granted: go ahead; release with inbox lease release capture".
+- **Only the holder releases or renews.** A waiter leaves the queue with `leave`. `--run` binds the lease to a pipeline run that must exist and belong to the caller's team.
+- **Expiry.** A hold lasts the repository's limit (30 min unless its lead sets 1–240 with `inbox lease limit`). `renew` restarts it. Past it, the next sweep (every request, and the service's 30 s tick) tells the holder and the lead, then grants the next.
+- **Gone holders.** A holder or waiter the office shows without a pane (the office's offline status) for 5 minutes in a row, while herdr answers, loses the lease or its place. While herdr is unavailable nobody is judged gone, and the 5 minutes start again.
+- **Lead override.** Only the lead of the standing team working in the repository (its path or one of its lanes, such as Mission Control) can revoke, with a reason; for a repository without one, the lead of the project at its main checkout. Holder and queue are told, and the next is granted.
+- **Durable.** Holder and queue live in `capture_leases` and `capture_lease_queue`, so a restart keeps them; only the 5-minute gone timer restarts.
+- **Telemetry never blocks.** Every grant, join, leave, renew, release, expire and revoke is noted to the pipeline lease telemetry (`source: "office"`, with the lease id and `waitMs` from queue join to grant), and notices are queued, both only after the commit and each in its own try/catch. A failing write never changes, delays or aborts a lease operation.
+- A project's team panel shows "Capture: <holder> · N waiting" while the lease is held or waited on.
+
 ## Exact-SHA repair waiver
 
 The founder's one sanctioned way to deliver a commit without a pipeline run (`src/server/pipelines/waiver.ts`, migration 11, `test/pipeline-waiver.test.ts`). It exists for repairs, like a broken guard, that a blocked team cannot put through a run. Only the founder's attention guards it, so its rules are narrow:
