@@ -368,7 +368,10 @@ export function bakeRally(seed = "pingpong"): Rally {
         const f = { ...flight(at, a, LOW, along(a), at + T, next.a, 0, next.c, false), vy: up };
         f.y1 = yAt(f, f.t1);
         if (Math.abs(along(a)) > TABLE_W / 2 - 0.08) continue;
-        if (f.t1 - f.t0 < 0.08 || (missed ? f.y1 < 0.92 || f.y1 > 1.08 : f.y1 < (n === 1 ? 0.74 : 0.8) || f.y1 > 1.22)) continue;
+        // One that gets past them goes by about chest high, a little higher the longer nothing fits (from a high, deep
+        // hit it can't come down that low), up to where a long ball is caught.
+        const above = missed ? 1.08 + 0.22 * Math.min(1, tries / 200) : 1.22;
+        if (f.t1 - f.t0 < 0.08 || (missed ? f.y1 < 0.92 || f.y1 > above : f.y1 < (n === 1 ? 0.74 : 0.8) || f.y1 > above)) continue;
         out.push(f);
         break;
       }
@@ -459,10 +462,10 @@ export function bakeRally(seed = "pingpong"): Rally {
 export const RALLY = bakeRally();
 
 /** Seconds since play started, as a moment of the match: the pick-up once, then round and round. */
-export function rallyTime(seconds: number): number {
-  if (seconds < RALLY.length) return Math.max(0, seconds);
-  const loop = RALLY.length - RALLY.intro;
-  return RALLY.intro + ((((seconds - RALLY.intro) % loop) + loop) % loop);
+export function rallyTime(seconds: number, rally: Rally = RALLY): number {
+  if (seconds < rally.length) return Math.max(0, seconds);
+  const loop = rally.length - rally.intro;
+  return rally.intro + ((((seconds - rally.intro) % loop) + loop) % loop);
 }
 
 /** A player's paddle (where the blade's middle is) and the ball, written into reusable outs. */
@@ -490,9 +493,9 @@ function between2<K extends { at: number; ease?: Ease }>(keys: K[], t: number): 
   return [k0, k1, shape(k1.ease ?? "both", raw)];
 }
 
-/** Where an end's paddle is `seconds` into play. */
-export function paddleAt(end: End, seconds: number, out: Ping): Ping {
-  const [k0, k1, u] = between2(RALLY.paddles[end], rallyTime(seconds));
+/** Where an end's paddle is `seconds` into play (of the baked match, or another `rally`). */
+export function paddleAt(end: End, seconds: number, out: Ping, rally: Rally = RALLY): Ping {
+  const [k0, k1, u] = between2(rally.paddles[end], rallyTime(seconds, rally));
   out.a = k0.a + (k1.a - k0.a) * u;
   out.y = k0.y + (k1.y - k0.y) * u;
   out.c = k0.c + (k1.c - k0.c) * u;
@@ -502,8 +505,8 @@ export function paddleAt(end: End, seconds: number, out: Ping): Ping {
 /** Where an end's free hand would have the ball, and how far it is from hanging (0) to there (1). */
 export interface Hand extends Ping { w: number }
 export const newHand = (): Hand => ({ a: 0, y: 0, c: 0, w: 0 });
-export function handAt(end: End, seconds: number, out: Hand): Hand {
-  const [k0, k1, u] = between2(RALLY.hands[end], rallyTime(seconds));
+export function handAt(end: End, seconds: number, out: Hand, rally: Rally = RALLY): Hand {
+  const [k0, k1, u] = between2(rally.hands[end], rallyTime(seconds, rally));
   out.a = k0.a + (k1.a - k0.a) * u;
   out.y = k0.y + (k1.y - k0.y) * u;
   out.c = k0.c + (k1.c - k0.c) * u;
@@ -512,8 +515,8 @@ export function handAt(end: End, seconds: number, out: Hand): Hand {
 }
 
 /** How far an end's player has stepped in (metres) and leans further over, `seconds` into play. */
-export function stepAt(end: End, seconds: number, out: { z: number; b: number }): { z: number; b: number } {
-  const keys = RALLY.steps[end], t = rallyTime(seconds);
+export function stepAt(end: End, seconds: number, out: { z: number; b: number }, rally: Rally = RALLY): { z: number; b: number } {
+  const keys = rally.steps[end], t = rallyTime(seconds, rally);
   const i = Math.min(seek(keys, t, keyAt), keys.length - 2);
   const k0 = keys[i]!, k1 = keys[i + 1]!;
   const u = ease(Math.max(0, Math.min(1, (t - k0.at) / Math.max(1e-6, k1.at - k0.at))));
@@ -523,17 +526,17 @@ export function stepAt(end: End, seconds: number, out: { z: number; b: number })
 }
 
 /** Where the ball is `seconds` into play: lying on the table, in flight, rolling, or in someone's hand. */
-export function ballAt(seconds: number, out: Ping): Ping {
-  const t = rallyTime(seconds);
-  if (t < RALLY.holds[0]!.t0) return Object.assign(out, BALL_REST);
-  for (const h of RALLY.holds) {
+export function ballAt(seconds: number, out: Ping, rally: Rally = RALLY): Ping {
+  const t = rallyTime(seconds, rally);
+  if (t < rally.holds[0]!.t0) return Object.assign(out, BALL_REST);
+  for (const h of rally.holds) {
     if (t >= h.t0 && t < h.t1) {
-      handAt(h.end, t, HELD);
+      handAt(h.end, t, HELD, rally);
       out.a = HELD.a; out.y = HELD.y; out.c = HELD.c;
       return out;
     }
   }
-  const f = RALLY.flights[seek(RALLY.flights, t, (f) => f.t0)]!;
+  const f = rally.flights[seek(rally.flights, t, (f) => f.t0)]!;
   const tau = Math.min(t, f.t1) - f.t0, raw = tau / (f.t1 - f.t0);
   const u = f.roll ? 1 - (1 - raw) * (1 - raw) : raw;
   out.a = f.a0 + (f.a1 - f.a0) * u;
@@ -564,9 +567,9 @@ const HAND: [number, number, number] = [0, 0, 0], LEFT: [number, number, number]
  * the free hand catching, holding and tossing the ball, and the head turned to it. As play starts
  * they ease into it from standing.
  */
-export function playerPose(table: ReturnType<typeof pingTable>, x: number, z: number, yaw: number, end: End, seconds: number, h: number, build: number, out: Player): Player {
+export function playerPose(table: ReturnType<typeof pingTable>, x: number, z: number, yaw: number, end: End, seconds: number, h: number, build: number, out: Player, rally: Rally = RALLY): Player {
   const cos = Math.cos(yaw), sin = Math.sin(yaw);
-  stepAt(end, seconds, STEP);
+  stepAt(end, seconds, STEP, rally);
   // A point of the table's frame, in the player's own (x across, z forward, metres), from where they have stepped to.
   const local = (p: Ping) => {
     const dx = table.center[0] + p.a * table.along[0] + p.c * table.across[0] - x;
@@ -574,9 +577,9 @@ export function playerPose(table: ReturnType<typeof pingTable>, x: number, z: nu
     p.a = dx * cos - dz * sin;
     p.c = dx * sin + dz * cos - STEP.z;
   };
-  local(paddleAt(end, seconds, PADDLE));
-  local(ballAt(seconds, BALL));
-  local(handAt(end, seconds, FREE_HAND));
+  local(paddleAt(end, seconds, PADDLE, rally));
+  local(ballAt(seconds, BALL, rally));
+  local(handAt(end, seconds, FREE_HAND, rally));
   out.rootX = Math.max(-0.5, Math.min(0.5, PADDLE.a - REACH_OUT * h));
   out.rootZ = STEP.z;
   out.stride = STEP.z * 0.9;

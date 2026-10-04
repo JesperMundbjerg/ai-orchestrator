@@ -5,7 +5,7 @@ import type { Vec2 } from "../src/ui/world/spatial.ts";
 import { place, planBuilding, routeIn, type BuildingPlan } from "../src/ui/world/building.ts";
 import { FOREARM, gymCorner, gymSpot, handFrom, shoulderFrame, STATIONS } from "../src/ui/world/gym.ts";
 import {
-  bakeRally, BALL_R, BALL_REST, ballAt, BLADE, choosePingPong, handAt, NET_H, newHand, newPing, newPlayer, ON_HAND, paddleAt, pingCorner, pingSpot, PingPlayback, pingTable, playerPose, RALLY, STAND, TABLE_H, TABLE_L, TABLE_W, TABLE_X, TABLE_Z, type End, type Ping, type Player,
+  bakeRally, BALL_R, BALL_REST, ballAt, BLADE, choosePingPong, handAt, NET_H, newHand, newPing, newPlayer, ON_HAND, paddleAt, pingCorner, pingSpot, PingPlayback, pingTable, playerPose, RALLY, STAND, TABLE_H, TABLE_L, TABLE_W, TABLE_X, TABLE_Z, type End, type Ping, type Player, type Rally,
 } from "../src/ui/world/pingpong.ts";
 
 const agent = (id: string, extra: Partial<WorldAgent> = {}): WorldAgent => ({ id, identity: id, name: id, harness: "manual", cwd: null, project: null, branch: null, status: "idle", title: null, paneId: null, taskIds: [], teamId: null, role: "member", waitingOnYou: false, doing: null, helpers: [], model: null, sessionName: null, ran: true, ...extra });
@@ -225,6 +225,61 @@ test("each player's paddle hand reaches the blade, and the free hand the ball it
       assert.ok(worstHand < 0.03, `end ${end} at ${h}/${build}: the free hand ${worstHand.toFixed(3)} m from the ball at ${worstHandAt.toFixed(2)}s`);
     }
   }
+});
+
+test("any seed bakes a whole match, and through it, round again, the ball and both players move on without a jump", () => {
+  const plan = planBuilding([], [], []);
+  const table = pingTable(plan);
+  const flat = (p: Player) => [p.rootX, p.rootY, p.rootZ, p.stride, p.thigh, p.knee, p.bend, p.head, p.right.x, p.right.y, p.right.z, p.right.elbow, p.left.x, p.left.y, p.left.z, p.left.elbow];
+  const names = ["rootX", "rootY", "rootZ", "stride", "thigh", "knee", "bend", "head", "right.x", "right.y", "right.z", "right.elbow", "left.x", "left.y", "left.z", "left.elbow"];
+  const b0 = newPing(), b1 = newPing(), paddle = newPing(), hand = newHand(), p0 = newPlayer(), p1 = newPlayer();
+  const spots = ([0, 1] as const).map((end) => pingSpot(plan, end));
+  const dt = 0.01;
+  for (let s = 0; s < 8; s++) {
+    // A seed some versions of the bake found no shot for, and seven more.
+    const seed = s ? `seed${s * 7}` : "seed3";
+    const rally: Rally = bakeRally(seed);
+    assert.ok(rally.points.length >= 24, `${seed}: a whole match`);
+    for (let t = 0; t < rally.length + 6; t += 0.03) {
+      ballAt(t, b0, rally);
+      ballAt(t + dt, b1, rally);
+      const jump = Math.hypot(b1.a - b0.a, b1.y - b0.y, b1.c - b0.c);
+      assert.ok(jump < 0.1, `${seed}: the ball jumps ${jump.toFixed(3)} m at ${t.toFixed(2)}s`);
+      if (Math.abs(b0.a) < TABLE_L / 2 && Math.abs(b0.c) < TABLE_W / 2) assert.ok(b0.y > TABLE_H + BALL_R - 1e-6, `${seed}: the ball in the table at ${t.toFixed(2)}s`);
+      if (Math.sign(b0.a) !== Math.sign(b1.a) && Math.abs(b0.c) < TABLE_W / 2 + 0.16) assert.ok(b0.y > TABLE_H + NET_H + BALL_R, `${seed}: through the net at ${t.toFixed(2)}s`);
+      for (const end of [0, 1] as const) {
+        // Each player on their own side: the paddle, and the free hand when it reaches out, never over the far half.
+        const own = (a: number) => (end ? a : -a);
+        assert.ok(own(paddleAt(end, t, paddle, rally).a) > TABLE_L / 2 - 0.3, `${seed}: end ${end}'s paddle over the table at ${t.toFixed(2)}s`);
+        handAt(end, t, hand, rally);
+        assert.ok(hand.w < 0.5 || own(hand.a) > TABLE_L / 2 - 0.3, `${seed}: end ${end}'s free hand over the table at ${t.toFixed(2)}s`);
+        const spot = spots[end]!;
+        playerPose(table, spot.pos[0], spot.pos[1], spot.facing, end, t, 1, 1, p0, rally);
+        playerPose(table, spot.pos[0], spot.pos[1], spot.facing, end, t + dt, 1, 1, p1, rally);
+        const p = flat(p0), q = flat(p1);
+        for (let i = 0; i < p.length; i++) assert.ok(Math.abs(p[i]! - q[i]!) < (i < 3 ? 0.025 : 0.25), `${seed}: end ${end}'s ${names[i]} jumps ${(q[i]! - p[i]!).toFixed(3)} at ${t.toFixed(2)}s`);
+        assert.ok(Math.abs(p0.rootX) < 0.5 - 1e-9, `${seed}: end ${end} reaching further across than they can step at ${t.toFixed(2)}s`);
+        // The blade where the rally has it.
+        const local = (q: Ping) => place([0, 0], -spot.facing, [table.world(q.a, q.c)[0] - spot.pos[0], table.world(q.a, q.c)[1] - spot.pos[1]]);
+        const [lx, lz] = local(paddle), target: [number, number, number] = [0, 0, 0];
+        shoulderFrame(lx - p0.rootX, paddle.y - p0.rootY, lz - p0.rootZ, p0.bend, 1, 1, target);
+        const blade = handFrom(p0.right, FOREARM + BLADE);
+        if (t >= 0.6) assert.ok(Math.hypot(blade[0] - target[0], blade[1] - target[1], blade[2] - target[2]) < 0.03, `${seed}: end ${end}'s blade off the paddle's place at ${t.toFixed(2)}s`);
+      }
+    }
+  }
+});
+
+test("a plan worked out again for the same office puts the table in the same place, though every object in it is new", () => {
+  // The office keys the rally's clock on where the table is, so a world update (every message, every status) never
+  // restarts a rally; only a different pair or a moved table does.
+  const agents = crew(8), teams = [team("t")];
+  const a = planBuilding(agents, teams, []), b = planBuilding(agents.map((x) => ({ ...x })), teams, []);
+  assert.notEqual(a.outline, b.outline);
+  const [ta, tb] = [pingTable(a), pingTable(b)];
+  assert.deepEqual([ta.center, ta.yaw], [tb.center, tb.yaw]);
+  const bigger = pingTable(planBuilding(crew(40), teams, []));
+  assert.ok(bigger.center[0] !== ta.center[0] || bigger.center[1] !== ta.center[1], "a bigger office moves the table");
 });
 
 interface Block { id: string; center: Vec2; half: Vec2; facing: number }
