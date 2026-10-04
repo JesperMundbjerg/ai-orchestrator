@@ -393,7 +393,13 @@ function serveStatic(res: ServerResponse, dir: string, pathname: string): void {
   catch { throw new ValidationError("url", "invalid URL encoding"); }
   const target = normalize(join(dir, decoded));
   const inside = target.startsWith(normalize(dir));
-  const path = inside && existsSync(target) && statSync(target).isFile() ? target : join(dir, "index.html");
+  const file = inside && existsSync(target) && statSync(target).isFile() ? target : null;
+  // Only client-side routes fall back to the app shell. A missing asset (anything with a file extension)
+  // is a 404: answering index.html there makes a tab from before a rebuild fail on a MIME error.
+  if (!file && (pathname.startsWith("/assets/") || extname(decoded))) throw new InboxError(404, `no such file: ${pathname}`);
+  const index = join(dir, "index.html");
+  const path = file ?? index;
   if (!existsSync(path)) throw new InboxError(404, "UI not built: run npm run build, or use npm run dev");
-  sendFile(res, path);
+  // The shell names the current build's hashed chunks, so it must be revalidated on every load.
+  sendFile(res, path, path === index ? { "cache-control": "no-cache" } : {});
 }
