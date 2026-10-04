@@ -477,7 +477,8 @@ function Scene({ office, plan, world, agents, teams, waiting, arrivals, talk, ca
   const gym = useMemo(() => new GymPlayback(), []);
   // The two at the ping pong table, by end; their rally starts once both are there.
   const pair = [...stage.spots].filter(([, s]) => s.pingpong !== undefined).sort(([, a], [, b]) => a.pingpong! - b.pingpong!).map(([id]) => id);
-  const ping = useMemo(() => ({ playback: new PingPlayback(pair), table: pingTable(plan) }), [JSON.stringify(pair), plan.outline, plan.hall]);
+  const table = pingTable(plan);
+  const ping = useMemo(() => ({ playback: new PingPlayback(pair), table }), [JSON.stringify(pair), table.center[0], table.center[1], table.yaw]);
   const walk = useMemo(() => routeIn(plan), [plan]);
   // What each member makes at their station in their team's room.
   const makes = useMemo(() => crafters(office.corners), [office]);

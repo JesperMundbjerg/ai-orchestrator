@@ -4,7 +4,8 @@
 // herdr disabled, nothing read from sessions or accounts), on a free port that is never 4870, in headless Chromium,
 // and closes both in finally. Two idle agents pair up at the table; the clock is held at the serve, its two bounces and
 // the rally's hits and bounces, to check the ball meets each paddle, lands on the right side and clears the net, and
-// at a point's end: the ball caught, held through the pause and tossed for the next serve. Pictures at desktop and
+// at a point's end: the ball caught, held through the pause and tossed for the next serve. The world changing while they
+// play (as a live office's does every few seconds) never restarts the rally. Pictures at desktop and
 // phone width, a minute of video (several points, each kind of ending) and a short one at phone width. Then everyone gets work: the players leave and the ball rests.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -73,6 +74,9 @@ try {
     page.on("pageerror", (e) => errors.push(e.message));
     await page.addInitScript(() => {
       window.__roots = new Set();
+      // The office's change feed, so the check can say the world changed (as a live office's does every few seconds).
+      const RealSource = window.EventSource;
+      window.EventSource = class extends RealSource { constructor(...args) { super(...args); window.__changes = this; } };
       window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { supportsFiber: true, inject: () => 1, onCommitFiberRoot: (_, r) => window.__roots.add(r), onCommitFiberUnmount: () => {} };
       const realNow = Date.now;
       Date.now = () => window.__now ?? realNow();
@@ -156,6 +160,21 @@ try {
       assert.ok(Math.abs(results[name].ball[1] - (TABLE_H + BALL_R)) > 0.008, `${name}: the ball is in a hand, not on the table`);
     }
     await writeFile(join(shots, "measurements.json"), JSON.stringify(results, null, 2));
+    // The world changes while they play (a message, a status, a title): the office works its plan out again, and the
+    // rally goes on where it was rather than starting over with the ball back on the table.
+    await page.evaluate(() => { delete window.__now; });
+    const clock = () => page.evaluate(() => { const p = window.__scene().ping; return { pair: [...p.playback.pair], seconds: p.playback.seconds(Date.now()) }; });
+    let before = await clock();
+    for (let i = 0; i < 3; i++) {
+      const fetched = page.waitForResponse((r) => r.url().endsWith("/api/world"));
+      await page.evaluate(() => window.__changes.dispatchEvent(new MessageEvent("changed", { data: JSON.stringify({ reason: "world" }) })));
+      await fetched;
+      await settle(page, 600);
+      const after = await clock();
+      assert.deepEqual(after.pair, pair);
+      assert.ok(after.seconds !== null && after.seconds > before.seconds + 0.4, `a world update restarted the rally: ${before.seconds?.toFixed(2)}s, then ${after.seconds?.toFixed(2)}s`);
+      before = after;
+    }
   }
   // At phone width: the serve, a rally shot over the net and a hit.
   const phone = await open({ width: 390, height: 844 });
@@ -205,7 +224,7 @@ try {
   }
   assert.deepEqual(desk.errors, []);
   assert.deepEqual(phone.errors, []);
-  console.log(`Ping pong checked in a scratch office on port ${port}: two players paired, ball on each paddle at its hit, bounces on the right sides and over the net, held in hand between points, players leave on work, the ball rests until the regulars take the table back. Screenshots and videos in ${shots}`);
+  console.log(`Ping pong checked in a scratch office on port ${port}: two players paired, ball on each paddle at its hit, bounces on the right sides and over the net, held in hand between points, a world update never restarts the rally, players leave on work, the ball rests until the regulars take the table back. Screenshots and videos in ${shots}`);
 } finally {
   await browser?.close();
   await office.stop();
