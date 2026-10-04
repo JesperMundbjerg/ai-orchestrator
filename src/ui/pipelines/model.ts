@@ -109,3 +109,6 @@ export function nodeFromDefinition(definition: PipelineDefinition, id: string): 
     default: return { ...base, kind: "step", evidence: [definition.id === "builtin:check" ? "check" : "report"] };
   }
 }
+
+/** The team view and the palette both report e.g. a missing checkout; show each problem once. */
+export const mergeProblems = (...lists: (readonly string[] | undefined)[]): string[] => [...new Set(lists.flatMap((list) => list ?? []))];

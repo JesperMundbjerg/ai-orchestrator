@@ -6,7 +6,7 @@ import { Canvas } from "./Canvas.tsx";
 import { Inspector } from "./Inspector.tsx";
 import { RunView } from "./RunView.tsx";
 import { WaiverList } from "./WaiverList.tsx";
-import { builtins, connect, graphWarnings, nodeFromDefinition, positionsFor, removeNode } from "./model.ts";
+import { builtins, connect, graphWarnings, mergeProblems, nodeFromDefinition, positionsFor, removeNode } from "./model.ts";
 import { tidyLayout } from "./layout.ts";
 import { useChangeSignal } from "../hooks.ts";
 import "./pipelines.css";
@@ -129,6 +129,7 @@ export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: 
     anchor.href = url; anchor.download = "pipeline-proposal.json"; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     setNotice("Exported a proposed orchestrator.json pipeline field. The repository was not changed.");
   };
+  const problems = mergeProblems(view?.problems, palette?.problems);
   const warnings = graph.nodes.length ? graphWarnings(graph) : [];
   const node = graph.nodes.find((n) => n.id === selected);
   const definitions = [...(palette?.entries ?? []), ...builtins.filter((d) => !palette?.entries.some((e) => e.id === d.id))];
@@ -147,7 +148,7 @@ export default function PipelineEditor({ teamId, teamName, onClose }: { teamId: 
       {error && <div className="pipeline-notice warn" role="alert">{conflict ? "Another editor changed this pipeline. Your draft is still here. Export it or reload; nothing was overwritten. " : ""}{error} <button className="ghost small" disabled={busy} onClick={() => { if (!dirty || window.confirm("Reload from the office and discard your unsaved edits?")) void load(); }}>Reload from office</button></div>}
       {mode === "run" && runsError && <p className="pipeline-notice warn" role="alert">{runsError}</p>}
       {notice && <p className="pipeline-notice" role="status">{notice}</p>}
-      {view?.problems.length || palette?.problems.length ? <div className="pipeline-notice" role="alert"><strong>Office validation / discovery</strong><ul>{[...(view?.problems ?? []), ...(palette?.problems ?? [])].map((problem, index) => <li key={index}>{problem}</li>)}</ul></div> : null}
+      {problems.length ? <div className="pipeline-notice" role="alert"><strong>Office validation / discovery</strong><ul>{problems.map((problem) => <li key={problem}>{problem}</li>)}</ul></div> : null}
       {mode !== "run" && warnings.length > 0 && <div className="pipeline-notice warn" role="alert"><strong>Draft warnings</strong><ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
       {!view ? <div className="pipeline-empty">{busy ? "Loading the team pipeline…" : "Pipeline unavailable. No local mock or default has been substituted."}</div> : mode === "run" ? <><RunView runs={view.runs} selectedId={selectedRun} onSelect={setSelectedRun} refresh={() => void refreshRuns()} busy={busy} /><WaiverList teamId={teamId} tick={tick} /></> : <div className="pipeline-body">
         <aside className="pipeline-palette" aria-label="Step palette"><h3>Add a step</h3><p className="pipeline-help">Choose a repo definition or a built-in obligation.</p><input type="search" aria-label="Search discovered steps" placeholder="Find a step…" value={query} onChange={(event) => setQuery(event.target.value)} />
