@@ -345,6 +345,39 @@ test("Git itself refuses protected publication while ordinary feature pushes con
   assert.equal(spawnSync("git", ["--git-dir", remote, "rev-parse", "--verify", "refs/heads/dev"]).status, 128);
 });
 
+test("attached Git directories target the protected checkout and context overrides fail closed", async (t) => {
+  const caller = scratch(t);
+  const target = scratch(t);
+  target.git("checkout", "dev");
+  caller.install();
+  rmSync(join(caller.repo, ".review-inbox-pipeline"), { recursive: true });
+  const extension = await import(join(caller.repo, ".pi/extensions/review-inbox-pipeline.ts"));
+  let handler: any;
+  extension.default({ on(_: string, callback: any) { handler = callback; } });
+  const ctx = { cwd: caller.repo, sessionManager: { getSessionFile: () => undefined } };
+  const forms = [`-C '${target.repo}'`, `'-C${target.repo}'`, `-C '${target.root}' '-Crepo space'`];
+  for (const form of forms) {
+    const command = `git ${form} merge ${target.candidate}`;
+    const boundaries = commandBoundaries(command, caller.repo, caller.config);
+    assert.equal(boundaries.length, 1);
+    assert.equal(boundaries[0]!.repo, target.repo);
+    assert.equal(boundaries[0]!.ref, "refs/heads/dev");
+    assert.equal((await handler({ input: { command } }, ctx)).block, true);
+    const r = spawnSync(process.execPath, [join(caller.repo, ".claude/hooks/review-inbox-pipeline.mjs")], {
+      cwd: caller.repo, input: JSON.stringify({ cwd: caller.repo, tool_input: { command } }), encoding: "utf8",
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, "deny");
+  }
+  for (const form of [`'--git-dir=${target.repo}/.git'`, `--work-tree '${target.repo}'`, `'--work-tree=${target.repo}'`, "-ccore.hooksPath=/tmp/absent", "--config-env=core.hooksPath=HOOKS", "--namespace=other"]) {
+    assert.throws(() => commandBoundaries(`git ${form} merge ${target.candidate}`, caller.repo, caller.config), /context\/config overrides/);
+    assert.equal((await handler({ input: { command: `git ${form} merge ${target.candidate}` } }, ctx)).block, true);
+  }
+  assert.equal(await handler({ input: { command: `git '-C${target.repo}' status` } }, ctx), undefined);
+  assert.equal(caller.git("branch", "--show-current"), "feature");
+  assert.equal(target.git("rev-parse", "HEAD"), target.candidate);
+});
+
 test("installed guards call the real office CLI gate end to end in a scratch repo", { timeout: 60000 }, async (t) => {
   const s = scratch(t); const home = join(s.root, "office-home"); mkdirSync(home);
   const keys = ["HOME", "INBOX_DATA_DIR", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "INBOX_CODEX_ACCOUNT_POLLING", "INBOX_PRESENCE_DISCOVERY", "INBOX_BROWSER_CLEANUP"];

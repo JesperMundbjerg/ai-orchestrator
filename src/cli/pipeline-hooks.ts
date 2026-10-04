@@ -178,8 +178,13 @@ export function commandBoundaries(command: string, cwd: string, config: HookConf
     if (basename(words[0]!) === "git") {
       let at = repo; let i = 1; let contextOverride = false;
       while (words[i]?.startsWith("-")) {
-        if (words[i] === "-C") { at = resolve(at, words[i + 1] ?? ""); i += 2; }
-        else if (["-c", "--git-dir", "--work-tree"].includes(words[i]!)) { contextOverride = true; i += 2; }
+        const word = words[i]!;
+        if (word === "-C") {
+          if (words[i + 1] === undefined) throw new Error("Git -C requires a directory");
+          at = resolve(at, words[i + 1]!); i += 2;
+        } else if (word.startsWith("-C")) { at = resolve(at, word.slice(2)); i++; }
+        else if (["-c", "--git-dir", "--work-tree", "--config-env", "--namespace"].includes(word)) { contextOverride = true; i += 2; }
+        else if (word.startsWith("-c") || ["--git-dir=", "--work-tree=", "--config-env=", "--namespace="].some(option => word.startsWith(option))) { contextOverride = true; i++; }
         else i++;
       }
       const verb = words[i++]; const args = words.slice(i);
