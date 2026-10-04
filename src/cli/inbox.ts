@@ -545,8 +545,10 @@ async function qaCommand(sub: string | undefined, itemRef: string | undefined): 
     }
     case "learned": {
       if (!flags.through) throw new Error("inbox qa learned needs --through SEQ");
-      const done = await call<{ learnedThrough: number }>("/api/agent/qa/learned", { session: session(), through: Number(flags.through) });
-      return console.log(`Learned through ${done.learnedThrough}.`);
+      const done = await call<{ learnedThrough: number; answersLearned?: number; consolidate?: boolean }>("/api/agent/qa/learned", { session: session(), through: Number(flags.through) });
+      console.log(`Learned through ${done.learnedThrough}.`);
+      if (done.consolidate) console.log(`\nConsolidate now: you have taken in ${done.answersLearned} founder answers. Rewrite your learnings as principles, merge overlaps, deprecate weak ones and keep every source (\`inbox qa guide\`, "Keep it general"); log it in log.md.`);
+      return;
     }
     default:
       throw new Error("inbox qa next | answer | answers | judge | learned | guide");

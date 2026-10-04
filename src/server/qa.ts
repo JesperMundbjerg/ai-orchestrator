@@ -8,7 +8,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { LEARNING_SLUG, QA_NOTICE_PREFIX } from "../shared/qa.ts";
+import { consolidationDue, LEARNING_SLUG, QA_NOTICE_PREFIX } from "../shared/qa.ts";
 import type { FounderAnswer, InboxState, Item, ItemDetail, Option, QaNext, QaPrediction, QaSummary, QaVerdict, Reply, ReplyAction, SessionInput } from "../shared/types.ts";
 import { Inbox, InboxError } from "./inbox.ts";
 import { presentedBy } from "./pipelines/approval.ts";
@@ -285,16 +285,24 @@ export class QaDesk {
     return { action: String(row.action) as ReplyAction, choice: row.choice == null ? null : String(row.choice), learnings };
   }
 
-  /** The QA agent has learned from the founder's answers up to this one. The cursor only moves forward. */
-  learned(session: SessionInput, through: number): { learnedThrough: number } {
+  /** The QA agent has learned from the founder's answers up to this one. The cursor only moves forward.
+   * \`consolidate\` says this step crossed a consolidation point; the service counts answers and never reads the learnings. */
+  learned(session: SessionInput, through: number): { learnedThrough: number; answersLearned: number; consolidate: boolean } {
     this.caller(session, false);
     const max = Number(this.db.prepare("SELECT coalesce(max(id), 0) AS n FROM events").get()!.n);
     if (!Number.isInteger(through) || through < 0 || through > max) throw new InboxError(400, `--through must be an answer's seq from \`inbox qa answers\``);
     // A prediction in words is part of what is learned: judge it before moving past the founder's answer.
     const unjudged = (this.db.prepare(`${COMPARED} WHERE e.id <= ? AND e.id > ?`).all(through, this.setting().through) as Row[]).find((r) => verdict(r) === "needs_judging");
     if (unjudged) throw new InboxError(409, `judge your prediction first: inbox qa judge ${String(unjudged.item_id)} --revision ${Number(unjudged.revision)} --match | --mismatch`);
+    const before = this.answersThrough(this.setting().through);
     this.db.prepare("UPDATE auto_approve SET qa_learned_through = max(qa_learned_through, ?) WHERE singleton = 1").run(through);
-    return { learnedThrough: this.setting().through };
+    const learnedThrough = this.setting().through, answersLearned = this.answersThrough(learnedThrough);
+    return { learnedThrough, answersLearned, consolidate: consolidationDue(before, answersLearned) };
+  }
+
+  /** How many of the founder's own answers lie at or before this seq: what the learn feed has handed over up to it. */
+  private answersThrough(seq: number): number {
+    return Number(this.db.prepare("SELECT count(*) AS n FROM events WHERE kind = 'reply.queued' AND actor = 'user' AND id <= ?").get(seq)!.n);
   }
 
   /** An empty Open Knowledge Format bundle, so the QA agent's first learning has somewhere valid to go. Never overwrites. */

@@ -10,6 +10,7 @@ import { AutoApprove } from "../src/server/autoapprove.ts";
 import { Messages } from "../src/server/messages.ts";
 import type { QaAgent } from "../src/server/qa.ts";
 import { formatReply } from "../src/shared/agent-client.ts";
+import { CONSOLIDATE_EVERY, QA_GUIDE } from "../src/shared/qa.ts";
 import type { QaPrediction, Reply, SessionInput, SubmitInput, WorldState } from "../src/shared/types.ts";
 import { needsYou } from "../src/ui/queue.ts";
 
@@ -216,6 +217,26 @@ test("the QA agent learns only from the founder's own answers, as they were aske
   assert.equal(auto.qa.learned(qaSession, 0).learnedThrough, a.seq, "the cursor never moves back");
   assert.throws(() => auto.qa.learned(qaSession, 10_000), /seq/);
   assert.match(notices().join("\n"), /founder answers wait for you to learn from/);
+});
+
+test("moving the learn cursor past every 25th founder answer asks the QA agent to consolidate, once per crossing", (t) => {
+  const { inbox, auto, submit } = setup(t);
+  auto.setMode("qa", "quinn");
+  for (let n = 0; n < CONSOLIDATE_EVERY + 5; n++) inbox.answer(submit({ type: "milestone", title: `Ready ${n}` }).itemId, { revision: 1, action: "accept" });
+  // A QA answer is not the founder's and is not counted.
+  auto.qa.answer({ session: qaSession, item: submit({ type: "milestone", title: "For QA" }).itemId, revision: 1, action: "accept", reason: "r" });
+  const seqs = auto.qa.answers(qaSession, 100).answers.map((a) => a.seq);
+  assert.equal(seqs.length, CONSOLIDATE_EVERY + 5);
+  const step = (count: number) => auto.qa.learned(qaSession, seqs[count - 1]!);
+
+  assert.deepEqual(step(20), { learnedThrough: seqs[19], answersLearned: 20, consolidate: false });
+  assert.deepEqual(step(CONSOLIDATE_EVERY + 1), { learnedThrough: seqs[CONSOLIDATE_EVERY], answersLearned: CONSOLIDATE_EVERY + 1, consolidate: true });
+  assert.equal(step(CONSOLIDATE_EVERY + 1).consolidate, false, "the same cursor again does not ask twice");
+  assert.equal(step(20).consolidate, false, "a cursor that cannot move back asks nothing");
+  assert.equal(step(CONSOLIDATE_EVERY + 5).consolidate, false);
+  // The guide tells the agent the same cadence, and speaks of the founder as they.
+  assert.match(QA_GUIDE, new RegExp(`every ${CONSOLIDATE_EVERY} founder answers`));
+  assert.doesNotMatch(QA_GUIDE, /(?<!")\bhe\b/i, "only the rule against it quotes it");
 });
 
 test("choosing QA answers needs an agent the office knows and prepares an empty OKF bundle without overwriting it", (t) => {
