@@ -52,6 +52,28 @@ test("install merges both harness settings, preserves hooks and other keys, is b
   assert.equal(r.status, 0, r.stderr); // No phantom original hook on re-install.
 });
 
+test("the installed runner starts without Node's MODULE_TYPELESS_PACKAGE_JSON warning; its package.json is part of the install, uninstall and reinstall", (t) => {
+  const s = scratch(t); const local = join(s.repo, ".review-inbox-pipeline"); const marker = join(local, "package.json");
+  // As in a real project: a package.json without "type" above the runner is what makes Node warn about it.
+  writeFileSync(join(s.repo, "package.json"), '{"name":"scratch-project"}\n'); s.git("add", "package.json"); s.git("commit", "-m", "package.json");
+  const plan = s.install({ dryRun: true });
+  assert.equal(plan.length, 12, "the dry run lists twelve writes"); assert.ok(plan.some((c) => c.path.endsWith("/.review-inbox-pipeline/package.json") && c.content === '{"type":"module"}\n'));
+  assert.equal(existsSync(local), false, "a dry run writes nothing");
+  s.install();
+  assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), { type: "module" });
+  const run = () => spawnSync(process.execPath, [join(local, "pipeline-hooks.ts"), "claude", join(local, "config.json")], { cwd: s.repo, env: { ...process.env, HOME: s.root }, input: JSON.stringify({ tool_input: { command: "ls" } }), encoding: "utf8" });
+  let r = run(); assert.equal(r.status, 0, r.stderr); assert.deepEqual(JSON.parse(r.stdout), {});
+  assert.doesNotMatch(r.stderr, /MODULE_TYPELESS_PACKAGE_JSON/); assert.equal(r.stderr, "");
+  // The check can fail: the same runner without the file does warn.
+  rmSync(marker); r = run(); assert.match(r.stderr, /MODULE_TYPELESS_PACKAGE_JSON/);
+  // Reinstall restores it without a manifest edit; the directory still ignores itself, so Git never sees it.
+  s.install(); assert.deepEqual(JSON.parse(readFileSync(marker, "utf8")), { type: "module" });
+  assert.equal(run().stderr, ""); assert.ok(!s.git("status", "--short", "--ignored").split("\n").some((l) => l.startsWith("??") && l.includes(".review-inbox-pipeline")));
+  // Uninstall removes it, so the directory goes too; installing again brings it back.
+  s.install({ uninstall: true }); assert.equal(existsSync(marker), false); assert.equal(existsSync(local), false);
+  s.install(); assert.ok(existsSync(marker)); assert.equal(run().stderr, "");
+});
+
 test("dry-run has no writes; uninstall removes only our hook and retains concurrent additions", (t) => {
   const s = scratch(t); const plan = s.install({ dryRun: true }); assert.ok(plan.length); assert.equal(existsSync(join(s.repo, ".claude")), false);
   s.install();

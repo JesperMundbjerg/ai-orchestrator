@@ -525,12 +525,12 @@ export function installHooks(path: string, options: { dryRun?: boolean; uninstal
   const settingsPaths = [join(repo, ".claude/settings.json"), join(repo, ".codex/hooks.json")];
   const pi = join(repo, ".pi/extensions/review-inbox-pipeline.ts");
   const toolHook = join(repo, ".claude/hooks/review-inbox-pipeline.mjs");
-  const launcherPath = join(repo, LAUNCHER); const nodePath = join(local, "node"); const ignorePath = join(local, ".gitignore");
+  const launcherPath = join(repo, LAUNCHER); const nodePath = join(local, "node"); const ignorePath = join(local, ".gitignore"); const packagePath = join(local, "package.json");
   let prePush = prior?.prePush || resolve(repo, git(repo, "rev-parse", "--git-path", "hooks/pre-push"));
   prePush = resolve(prePush); rejectGlobal(prePush);
   // A hooksPath outside the checkout is explicit git configuration; honour it, but not symlinks.
   const common = realpathSync(resolve(repo, git(repo, "rev-parse", "--git-common-dir")));
-  for (const p of [runner, manifestPath, configPath, nodePath, ignorePath, ...settingsPaths, pi, toolHook, launcherPath]) safePath(repo, p);
+  for (const p of [runner, manifestPath, configPath, nodePath, ignorePath, packagePath, ...settingsPaths, pi, toolHook, launcherPath]) safePath(repo, p);
   if (existsSync(prePush) && lstatSync(prePush).isSymbolicLink()) throw new Error(`Refusing symlinked pre-push hook: ${prePush}`);
   const backup = prior?.backup || `${prePush}.review-inbox-original-${createHash("sha256").update(repo).digest("hex").slice(0, 12)}`;
   let node = options.node;
@@ -579,11 +579,13 @@ export function installHooks(path: string, options: { dryRun?: boolean; uninstal
     if (!prior) return [];
     changes.push({ path: pi, content: null }, { path: toolHook, content: null }, { path: launcherPath, content: null });
     changes.push(existsSync(backup) ? { path: prePush, content: null, renameFrom: backup } : { path: prePush, content: null });
-    for (const p of [runner, configPath, nodePath, ignorePath, manifestPath]) changes.push({ path: p, content: null });
+    for (const p of [runner, configPath, nodePath, ignorePath, packagePath, manifestPath]) changes.push({ path: p, content: null });
   } else {
     changes.push({ path: runner, content: `// ${MARK}\n// ${note}\n${readFileSync(fileURLToPath(import.meta.url), "utf8").replace(GENERATED_HEADER, "")}` });
     // Local and ignored (the directory ignores itself): the machine's node, inbox command and lane checkouts.
     changes.push({ path: ignorePath, content: "# Local to this checkout and machine; never commit.\n*\n" }, { path: nodePath, content: `${node}\n` });
+    // The runner is a .ts file Node runs directly; without a package.json that says "module" it warns MODULE_TYPELESS_PACKAGE_JSON on every hook call.
+    changes.push({ path: packagePath, content: '{"type":"module"}\n' });
     changes.push({ path: configPath, content: serialized({ _generated: note, ...config }) });
     // Committed: no machine or checkout path.
     changes.push({ path: pi, content: toolEntrypoint(config!, true) }, { path: toolHook, content: toolEntrypoint(config!, false) }, { path: launcherPath, content: launcher(config!), mode: 0o755 });
