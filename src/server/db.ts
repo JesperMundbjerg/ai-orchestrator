@@ -368,6 +368,17 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
 }, (db) => {
   // The QA agent the office started itself (JSON), so it closes only that one when the founder picks another model or none.
   addColumn(db, "auto_approve", "qa_started", "TEXT");
+}, (db) => {
+  // The office's Pi pause on a project's lane-routing override (lanerouting.ts): one row per override
+  // while paused, and each key it changed with its earlier override value (NULL: the key was absent)
+  // and the value it wrote, both as JSON, so lifting restores them after a restart too.
+  db.exec(`CREATE TABLE IF NOT EXISTS lane_routing_pauses (
+    override TEXT PRIMARY KEY, project TEXT NOT NULL, started_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS lane_routing_paused (
+    override TEXT NOT NULL REFERENCES lane_routing_pauses(override), section TEXT NOT NULL CHECK (section IN ('runtimes', 'lanes')),
+    lane TEXT NOT NULL, previous TEXT, written TEXT NOT NULL, PRIMARY KEY (override, section, lane)
+  );`);
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {

@@ -122,6 +122,8 @@ export class Switches {
   private driving = new Map<string, Promise<void>>();
   private batches = new Map<string, Promise<void>>();
   private tree: { at: number; tree: CrewTree | null } | null = null;
+  /** The new session has taken over: a standing lane it stands behind is routed to its harness next time (lanerouting.ts); the service wires it. */
+  tookOver: (agentId: string, to: Harness, model: string) => void = () => {};
 
   /** `dir` is the service's data directory: handoffs are written under it. */
   constructor(db: DatabaseSync, world: World, source: SwitchSource | null, dir: string, opts: { now?: () => Date; timing?: Partial<SwitchTiming>; sleep?: (ms: number) => Promise<void> } = {}) {
@@ -479,6 +481,11 @@ export class Switches {
     });
     this.recount();
     this.world.onChange("world");
+    try {
+      this.tookOver(id, str(s.to_harness) as Harness, str(s.model));
+    } catch (err) {
+      console.error(`switch ${str(s.id)}: lane routing: ${(err as Error).message}`);
+    }
   }
 
   /** What was another record's becomes `into`'s, and that record goes. */

@@ -15,6 +15,7 @@ import { AutoApprove } from "./autoapprove.ts";
 import { QaAgents } from "./qa-agent.ts";
 import { Machine } from "./machine.ts";
 import { Switches } from "./switch.ts";
+import { LaneRouting, piPaused } from "./lanerouting.ts";
 import { startIntegrations, startupConfig } from "./startup-config.ts";
 import { Usage } from "./usage.ts";
 import { World } from "./world.ts";
@@ -64,6 +65,16 @@ const standing = new StandingLanes(() => world.state(), herdr);
 world.messages.laneRegistration = standing.registered;
 world.standingHolds = standing.holding;
 const switches = new Switches(db, world, herdr, dir);
+// A project that declares a lane-routing override gets its standing lanes' harness written there: by the founder's switch, and by the Pi pause.
+const laneRouting = new LaneRouting(db, {
+  notice: (title, body, agentIds) => { world.messages.founderNotices.record(title, body, agentIds, Date.now()); world.onChange("world"); },
+  tree: () => world.crew?.state().tree ?? null,
+  registered: standing.registered,
+});
+switches.tookOver = (agentId, to, model) => laneRouting.switched(world.state(), agentId, to, model);
+const syncLaneRouting = () => {
+  try { laneRouting.sync(world.state(), piPaused(world.crew?.state().tree.mode, usage.crewPause())); } catch (err) { console.error(`lane routing: ${(err as Error).message}`); }
+};
 // When disabled there is no process watcher or process-control HTTP surface at all.
 const machine = config.browserCleanup ? new Machine(() => world.state()) : undefined;
 if (machine) machine.tellLead = (teamId, text) => world.tellLead(teamId, text);
@@ -71,6 +82,7 @@ const dist = fileURLToPath(new URL("../../dist", import.meta.url));
 
 startIntegrations(config, { herdr, machine, usage });
 void switches.resume();
+syncLaneRouting();
 setInterval(() => {
   inbox.wakeDue();
   try {
@@ -78,6 +90,7 @@ setInterval(() => {
   } catch (err) {
     console.error(`usage: ${(err as Error).message}`);
   }
+  syncLaneRouting();
   try { world.waivers.sync(); } catch (err) { console.error(`waivers: ${(err as Error).message}`); }
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();
