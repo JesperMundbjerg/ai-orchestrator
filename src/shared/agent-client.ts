@@ -33,6 +33,8 @@ export interface AgentClientOptions {
   session?: SessionInput;
   fetch?: typeof fetch;
   timeoutMs?: number;
+  /** The limit of the one retry a read that timed out gets; at least three times the first limit. */
+  retryTimeoutMs?: number;
 }
 type ClientInput<K extends keyof AgentOperations> = OperationInput<K> extends { session: SessionInput }
   ? Omit<OperationInput<K>, "session"> & { session?: SessionInput } : OperationInput<K>;
@@ -48,14 +50,17 @@ function errorDetails(v: unknown): FieldProblem[] | undefined {
   if (!Array.isArray(v) || !v.every((d) => d && typeof d === "object" && typeof d.path === "string" && typeof d.message === "string")) return undefined;
   return v.map((d) => ({ path: d.path, message: d.message }));
 }
+/** Calls that only read: a GET, and the two POSTs that fetch the caller's brief and the crew. Only these are ever retried. */
+const READ_ONLY_POSTS = new Set(["/api/agent/team", "/api/agent/crew"]);
+/** A read that timed out is tried once more with at least this long, as a loaded office answers late rather than not at all. */
+const RETRY_TIMEOUT_MS = 15_000;
+
 function transport(options: AgentClientOptions) {
   // Resolve once, not a process-global environment lookup on each request.
   const baseUrl = (options.baseUrl ?? serviceUrl()).replace(/\/+$/, "");
   const fetcher = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 5000;
-  return async (method: string, path: string, body: unknown, request: RequestOptions = {}, responseSchema?: Schema<unknown>): Promise<unknown> => {
-    const ms = request.timeoutMs ?? timeoutMs;
-    if (!Number.isSafeInteger(ms) || ms < 0) throw new AgentClientError("timeoutMs: must be a non-negative integer", { kind: "validation", code: "invalid_request" });
+  const attempt = async (method: string, path: string, body: unknown, request: RequestOptions, responseSchema: Schema<unknown> | undefined, ms: number): Promise<unknown> => {
     let encoded: string | undefined;
     try { encoded = method === "GET" ? undefined : JSON.stringify(body); }
     catch (err) { throw new AgentClientError("request body is not JSON-serializable", { kind: "validation", code: "invalid_request", cause: err }); }
@@ -91,6 +96,20 @@ function transport(options: AgentClientOptions) {
       throw new AgentClientError(kind === "cancelled" ? "inbox request cancelled" : kind === "timeout" ? "inbox request timed out" : "could not reach inbox", {
         kind, status: res?.status, code: kind === "transport" ? "transport_error" : kind, cause: err,
       });
+    }
+  };
+  return async (method: string, path: string, body: unknown, request: RequestOptions = {}, responseSchema?: Schema<unknown>): Promise<unknown> => {
+    const ms = request.timeoutMs ?? timeoutMs;
+    if (!Number.isSafeInteger(ms) || ms < 0) throw new AgentClientError("timeoutMs: must be a non-negative integer", { kind: "validation", code: "invalid_request" });
+    try {
+      return await attempt(method, path, body, request, responseSchema, ms);
+    } catch (err) {
+      // Never for a write: it may have been done. A read that timed out is asked once more, with longer.
+      const readOnly = method === "GET" || (method === "POST" && READ_ONLY_POSTS.has(path));
+      if (readOnly && err instanceof AgentClientError && err.kind === "timeout" && !request.signal?.aborted) {
+        return attempt(method, path, body, request, responseSchema, Math.max(options.retryTimeoutMs ?? RETRY_TIMEOUT_MS, ms * 3));
+      }
+      throw err;
     }
   };
 }

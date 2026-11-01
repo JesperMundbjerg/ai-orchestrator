@@ -22,8 +22,12 @@ import type { PaneInfo, WorkspaceInfo } from "./finish-cleanup.ts";
 const run = promisify(execFile);
 const POLL_MS = 3000;
 const SUBSCRIBED_POLL_MS = 20_000;
-/** One slow or failed `agent list` must not make every agent vanish: the last good list stays this long. */
-const BLIND_GRACE_MS = 45_000;
+/** A loaded machine starts a process slowly, so `agent list` gets time before it counts as failed. */
+const LIST_TIMEOUT_MS = 8000;
+/** Failed or slow reads in a row before herdr counts as not answering: one stall says nothing about the agents. */
+const BLIND_AFTER_FAILURES = 2;
+/** While it does not answer, the last good list stays this long; after that nobody can be said to be there. */
+const BLIND_GRACE_MS = 120_000;
 
 interface HerdrAgent {
   agent?: string;
@@ -41,6 +45,7 @@ export class Herdr implements PresenceSource, AgentSource {
   private agents: HerdrAgent[] = [];
   private ok = false;
   private lastGoodAt = 0;
+  private failures = 0;
   private timer: NodeJS.Timeout | null = null;
   private bin: string;
   private socketPath: string;
@@ -140,21 +145,28 @@ export class Herdr implements PresenceSource, AgentSource {
     let next: HerdrAgent[] = [];
     let ok = false;
     try {
-      const { stdout } = await run(this.bin, ["agent", "list"], { timeout: 2500 });
+      const { stdout } = await run(this.bin, ["agent", "list"], { timeout: LIST_TIMEOUT_MS });
       next = (JSON.parse(stdout) as { result?: { agents?: HerdrAgent[] } }).result?.agents ?? [];
       ok = true;
     } catch {
       // herdr not installed or not running: no presence, which is a valid state.
     }
     // A failed read says nothing about the agents: without it every pane would read as gone, and a session
-    // would be taken for the unnamed agent of its checkout. Keep the last good list for a short while;
-    // `available()` still tells that herdr is not answering.
-    if (ok) this.lastGoodAt = this.now();
-    else if (this.now() - this.lastGoodAt <= BLIND_GRACE_MS) next = this.agents;
+    // would be taken for the unnamed agent of its checkout. The last good list stays for a while, and one
+    // failure alone does not even make herdr unavailable; `available()` tells when it keeps not answering.
+    let reported = ok;
+    if (ok) {
+      this.lastGoodAt = this.now();
+      this.failures = 0;
+    } else {
+      this.failures++;
+      if (this.failures < BLIND_AFTER_FAILURES && this.lastGoodAt) reported = this.ok;
+      if (this.now() - this.lastGoodAt <= BLIND_GRACE_MS) next = this.agents;
+    }
     await this.stale.sample(next, this.queuedPanes(), (paneId) => this.readVisible(paneId), this.now);
     this.agents = next;
-    this.ok = ok;
-    if (JSON.stringify([ok, next.map((a) => fingerprint(this.effective(a)))]) !== before) this.onChange();
+    this.ok = reported;
+    if (JSON.stringify([reported, next.map((a) => fingerprint(this.effective(a)))]) !== before) this.onChange();
   }
 
   private effective(a: HerdrAgent): HerdrAgent {

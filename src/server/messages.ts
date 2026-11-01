@@ -135,12 +135,17 @@ export class Messages {
     return (this.db.prepare("SELECT count(*) AS n FROM message_deliveries WHERE agent_id = ? AND state IN ('queued', 'sending')").get(agentId) as { n: number }).n;
   }
 
+  /** herdr is the office's only way to tell an agent that is gone from one it cannot see. */
+  private blind(): boolean {
+    return !!this.source && !this.source.available();
+  }
+
   /** Only queued recipients need immediate screen sampling; never scan unrelated panes. */
   queuedPanes(state: WorldState): Set<string> {
     const rows = this.db.prepare("SELECT m.*, d.agent_id, d.updated_at AS queued_at FROM message_deliveries d JOIN messages m ON m.id = d.message_id WHERE d.state = 'queued'").all() as Row[];
     const agents = new Map(state.agents.map((a) => [a.id, a]));
     this.waiting.check(rows.map((r) => {
-      const offline = offlineRecipient(agents.get(str(r.agent_id)), state.teams);
+      const offline = this.blind() ? null : offlineRecipient(agents.get(str(r.agent_id)), state.teams);
       return toMessage(r, [{ agentId: str(r.agent_id), state: "queued", updatedAt: str(r.queued_at), error: null, ...(offline ? { offline } : {}) }]);
     }), this.now().getTime());
     const ids = new Set(rows.map((r) => str(r.agent_id)));
@@ -277,7 +282,8 @@ export class Messages {
     const state = this.world();
     const agent = state.agents.find((a) => a.name.toLowerCase() === name);
     // The sender is told at once when whoever it is for is offline, rather than reading "busy" later.
-    const told = (message: Message) => withOffline([message], state.agents, state.teams)[0]!;
+    // While herdr does not answer nobody can be called offline, so nothing is said about it.
+    const told = (message: Message) => this.blind() ? message : withOffline([message], state.agents, state.teams)[0]!;
     if (agent) {
       if (agent.id === from.id) throw new InboxError(400, "that is you");
       return told(this.store("message", from.id, null, body, null, [agent.id], replay));
