@@ -5,6 +5,10 @@
 // happens, so a restart picks a switch up where it was, and a failure before the old pane closes
 // closes the new one and leaves the agent as it was.
 //
+// When the agent cannot write a handoff (its model is unavailable), the founder can say so
+// (`--no-handoff`): the office then writes a factual one itself (switch-handoff.ts) and never
+// prompts the old pane; every later step is the same.
+//
 // The office is told only two things: which panes not to see (a new session before it takes over,
 // an old one being closed) and whose deliveries to hold until the new session has its brief.
 
@@ -19,6 +23,8 @@ import { startFlags } from "./crewtree.ts";
 import { InboxError } from "./inbox.ts";
 import { AgentStartingError } from "./agent-starting.ts";
 import { agentId, hookSettings, liveIdentity, type AgentSource, type LiveAgent, type World } from "./world.ts";
+import { DEFAULT_ROOTS } from "./models.ts";
+import { ensureHandoffModes, factualHandoff, isFactual, markFactual, transcriptPath, writeHandoff } from "./switch-handoff.ts";
 
 /** What a switch needs from herdr beyond what the office already uses. */
 export interface SwitchSource extends AgentSource {
@@ -53,6 +59,8 @@ const other = (h: Harness): Harness => (h === "claude" ? "pi" : "claude");
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,80}$/;
 
 type Row = Record<string, unknown>;
+/** What a switch is asked with: `handoff: false` means the office writes the handoff, the old session is never asked. */
+type SwitchOpts = { to?: unknown; model?: unknown; effort?: unknown; handoff?: unknown };
 const str = (v: unknown): string => (v == null ? "" : String(v));
 const opt = (v: unknown): string | null => (v == null ? null : String(v));
 
@@ -122,11 +130,12 @@ export class Switches {
   private driving = new Map<string, Promise<void>>();
   private batches = new Map<string, Promise<void>>();
   private tree: { at: number; tree: CrewTree | null } | null = null;
+  private claudeRoot: string;
   /** The new session has taken over: a standing lane it stands behind is routed to its harness next time (lanerouting.ts); the service wires it. */
   tookOver: (agentId: string, to: Harness, model: string) => void = () => {};
 
   /** `dir` is the service's data directory: handoffs are written under it. */
-  constructor(db: DatabaseSync, world: World, source: SwitchSource | null, dir: string, opts: { now?: () => Date; timing?: Partial<SwitchTiming>; sleep?: (ms: number) => Promise<void> } = {}) {
+  constructor(db: DatabaseSync, world: World, source: SwitchSource | null, dir: string, opts: { now?: () => Date; timing?: Partial<SwitchTiming>; sleep?: (ms: number) => Promise<void>; claudeRoot?: string } = {}) {
     this.db = db;
     this.world = world;
     this.source = source;
@@ -134,6 +143,8 @@ export class Switches {
     this.now = opts.now ?? (() => new Date());
     this.timing = { ...SWITCH_TIMING, ...opts.timing };
     this.sleep = opts.sleep ?? sleep;
+    this.claudeRoot = opts.claudeRoot ?? DEFAULT_ROOTS.claude;
+    ensureHandoffModes(db);
     world.hiddenPanes = () => this.hidden;
     world.messages.held = () => this.held;
     world.switches = this;
@@ -149,16 +160,17 @@ export class Switches {
   }
 
   /** Starts switching one agent, named as the office shows it or by id. Refused at once when it cannot be done. */
-  start(ref: string, opts: { to?: unknown; model?: unknown; effort?: unknown } = {}): AgentSwitch {
+  start(ref: string, opts: SwitchOpts = {}): AgentSwitch {
     const agent = this.find(ref);
-    const id = this.insert(agent, this.plan(agent, opts), null, 0);
+    const id = this.insert(agent, this.plan(agent, opts), null, 0, factualOpt(opts));
     const started = this.get(id);
     void this.drive(id);
     return started;
   }
 
   /** Switches every running agent on `from`, one by one; those that cannot be are said, not switched. */
-  allFrom(from: unknown, opts: { to?: unknown; model?: unknown; effort?: unknown } = {}): { batchId: string; switches: AgentSwitch[]; skipped: Array<{ name: string; why: string }> } {
+  allFrom(from: unknown, opts: SwitchOpts = {}): { batchId: string; switches: AgentSwitch[]; skipped: Array<{ name: string; why: string }> } {
+    const factual = factualOpt(opts);
     if (typeof from !== "string" || !SWITCHABLE.includes(from as Harness)) throw new InboxError(400, `name the harness to switch away from: ${SWITCHABLE.join(" or ")}`);
     const running = this.world.state().agents.filter((a) => a.harness === from && a.paneId);
     if (!running.length) throw new InboxError(404, `nobody is running on ${label(from as Harness)}`);
@@ -167,7 +179,7 @@ export class Switches {
     const ids: string[] = [];
     for (const agent of running) {
       try {
-        ids.push(this.insert(agent, this.plan(agent, opts), batchId, ids.length));
+        ids.push(this.insert(agent, this.plan(agent, opts), batchId, ids.length, factual));
       } catch (err) {
         skipped.push({ name: agent.name, why: (err as Error).message });
       }
@@ -209,7 +221,7 @@ export class Switches {
   }
 
   /** What to start and where, or why not. */
-  private plan(agent: WorldAgent, opts: { to?: unknown; model?: unknown; effort?: unknown }): CrewChoice {
+  private plan(agent: WorldAgent, opts: SwitchOpts): CrewChoice {
     if (opts.to !== undefined && opts.to !== null && !SWITCHABLE.includes(opts.to as Harness)) throw new InboxError(400, `switch to ${SWITCHABLE.join(" or ")}`);
     const to = (opts.to as Harness | undefined) ?? other(agent.harness);
     const why = this.refusal(agent, to);
@@ -260,19 +272,24 @@ export class Switches {
     return found;
   }
 
-  private insert(agent: WorldAgent, choice: CrewChoice, batchId: string | null, seq: number): string {
+  private insert(agent: WorldAgent, choice: CrewChoice, batchId: string | null, seq: number, factual: boolean): string {
     const id = randomUUID().slice(0, 8);
     const at = this.now().toISOString();
     const to = choice.harness as Harness;
-    const says = batchId && seq > 0 ? `Waiting for its turn: the others on ${label(agent.harness)} are switched first` : this.waitingSays(agent);
-    this.db.prepare(`INSERT INTO agent_switches (id, agent_id, agent_name, cwd, from_harness, to_harness, model, effort, step, says, batch_id, seq, started_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, agent.id, agent.name, agent.cwd!, agent.harness, to, choice.model, choice.effort, batchId && seq > 0 ? "queued" : "waiting", says, batchId, seq, at, at);
+    const says = batchId && seq > 0 ? `Waiting for its turn: the others on ${label(agent.harness)} are switched first` : this.waitingSays(agent, factual);
+    // The switch and how its handoff is written commit together, so a restart never asks an agent the founder said cannot answer.
+    this.tx(() => {
+      this.db.prepare(`INSERT INTO agent_switches (id, agent_id, agent_name, cwd, from_harness, to_harness, model, effort, step, says, batch_id, seq, started_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, agent.id, agent.name, agent.cwd!, agent.harness, to, choice.model, choice.effort, batchId && seq > 0 ? "queued" : "waiting", says, batchId, seq, at, at);
+      if (factual) markFactual(this.db, id);
+    });
     this.changed();
     return id;
   }
 
-  private waitingSays(agent: WorldAgent): string {
+  private waitingSays(agent: WorldAgent, factual: boolean): string {
+    if (factual) return `The office is writing ${agent.name}'s handoff itself; ${agent.name} is not asked`;
     return agent.paneId ? `Waiting for ${agent.name} to be free` : `${agent.name} is not running, so there is no handoff to write`;
   }
 
@@ -287,7 +304,7 @@ export class Switches {
         if (FINISHED.has(s.step as SwitchStep) && s.effect !== "cleanup") continue;
         if (s.step === "queued") {
           const agent = this.world.state().agents.find((a) => a.id === str(s.agent_id));
-          this.update(str(s.id), { step: "waiting", says: agent ? this.waitingSays(agent) : `Waiting for ${str(s.agent_name)}` });
+          this.update(str(s.id), { step: "waiting", says: agent ? this.waitingSays(agent, isFactual(this.db, str(s.id))) : `Waiting for ${str(s.agent_name)}` });
         }
         await this.drive(str(r.id));
         const after = this.row(str(r.id))!;
@@ -334,6 +351,7 @@ export class Switches {
       case "waiting": {
         if (s.effect === "legacy_handoff") throw new RecoveryRequired("the legacy handoff prompt outcome is unknown; inspect the old session before continuing");
         const agent = this.agent(s);
+        if (isFactual(this.db, id)) return this.writeFactual(s, agent);
         if (!agent.paneId) {
           this.update(id, { step: "opening", says: `${name} is not running, so there is no handoff to write. Opening a pane for ${label(to)}` });
           return "next";
@@ -361,7 +379,7 @@ export class Switches {
           return "next";
         }
         if (!agent.paneId) throw new Refused(`${name} stopped running before it wrote its handoff`);
-        if (at - Date.parse(str(s.asked_at)) > this.timing.handoffMs) throw new Refused(`${name} did not write its handoff within ${minutes(this.timing.handoffMs)}`);
+        if (at - Date.parse(str(s.asked_at)) > this.timing.handoffMs) throw new Refused(`${name} did not write its handoff within ${minutes(this.timing.handoffMs)}; if its model is unavailable, run the switch again with --no-handoff and the office writes a factual handoff instead`);
         return "wait";
       }
       case "opening": {
@@ -437,7 +455,7 @@ export class Switches {
         // The brief is a prerequisite, not an ordinary message. Busy/trust-prompt waits
         // stay queued here and all existing messages remain held, even across restarts.
         if (!FREE.has(agent.status)) return "wait";
-        const text = briefPrompt(name, label(from), opt(s.handoff), agent.role === "lead");
+        const text = briefPrompt(name, label(from), opt(s.handoff), agent.role === "lead", isFactual(this.db, id));
         this.update(id, { effect: "briefing", brief_state: "sending" });
         try {
           await source.prompt(str(s.new_pane), text);
@@ -454,6 +472,34 @@ export class Switches {
       default:
         return "wait";
     }
+  }
+
+  /**
+   * The founder said the agent cannot write its own handoff: the office writes a factual one and
+   * never prompts the old pane. Writing it is local and whole (a renamed temporary file), so a
+   * restart before the next step is recorded simply writes it again; nothing external is repeated.
+   * A busy agent is not waited for: a session whose model is unavailable never becomes free.
+   */
+  private writeFactual(s: Row, agent: WorldAgent): "next" {
+    const id = str(s.id);
+    const name = str(s.agent_name);
+    const from = str(s.from_harness) as Harness;
+    const to = str(s.to_harness) as Harness;
+    const file = this.handoffPath(s);
+    const live = agent.paneId ? this.source?.live().find((l) => l.paneId === agent.paneId) ?? null : null;
+    const sessionId = live?.sessionId ?? null;
+    const state = this.world.state();
+    const text = factualHandoff(this.db, {
+      agent, state, from, to, sessionId,
+      transcript: transcriptPath(from, sessionId, this.claudeRoot),
+      registered: this.world.messages.laneRegistration,
+    });
+    writeHandoff(file, text);
+    this.update(id, {
+      step: "opening", effect: null, handoff: file, old_pane: agent.paneId, old_name: live?.name ?? null,
+      says: `The office wrote ${name}'s handoff to ${file} (${name} was not asked). Opening a pane for ${label(to)}${agent.paneId ? " beside it" : ""}`,
+    });
+    return "next";
   }
 
   /**
@@ -639,6 +685,13 @@ function fileState(path: string): { size: number; mtimeMs: number } | null {
   }
 }
 
+/** `handoff: false` asks for the office's factual handoff; anything else but true or absent is refused. */
+function factualOpt(opts: SwitchOpts): boolean {
+  if (opts.handoff === undefined || opts.handoff === null || opts.handoff === true) return false;
+  if (opts.handoff === false) return true;
+  throw new InboxError(400, "handoff is true (the agent writes it) or false (the office writes a factual one)");
+}
+
 const minutes = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} minutes` : `${Math.round(ms / 1000)} seconds`);
 
 /** What the agent being switched is asked: it writes its own handoff, in its own words. */
@@ -651,10 +704,12 @@ export function handoffPrompt(name: string, to: string, file: string): string {
 }
 
 /** The new session's first prompt: who it is now, and the handoff to read before anything else. */
-export function briefPrompt(name: string, from: string, handoff: string | null, lead: boolean): string {
+export function briefPrompt(name: string, from: string, handoff: string | null, lead: boolean, factual = false): string {
   return [
     `You are ${name} in the office now: you take over from ${name}'s ${from} session, which has been closed. The office already treats you as ${name}, with the same name, team and role${lead ? " (you lead your project)" : ""}, and messages for ${name} come to you.`,
-    handoff ? `First read the handoff it wrote for you: ${handoff}.` : `${name} was not running, so there is no handoff.`,
+    handoff && factual
+      ? `The old session could not write a handoff (its model is unavailable), so the office wrote a factual one for you: ${handoff}. First read it, then read the last part of the old transcript it names before acting, and do not redo finished work.`
+      : handoff ? `First read the handoff it wrote for you: ${handoff}.` : `${name} was not running, so there is no handoff.`,
     "Then run `inbox team` to see your project, your crew and what waits for you, and carry on with the work where it stands. Do not announce the switch; just continue.",
   ].join(" ");
 }

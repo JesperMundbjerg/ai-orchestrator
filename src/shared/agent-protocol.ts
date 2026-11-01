@@ -150,7 +150,8 @@ export const limitReadingSchema: Schema<LimitReading> = object({
   credits: optional(creditsSchema),
 });
 export const usageSchema = object({ provider: oneOf(["claude", "codex"]), limits: list(limitReadingSchema) });
-export const switchOptions = { to: optional(oneOf(["claude", "pi"])), model: optional(nonempty), effort: optional(nonempty) };
+/** `handoff: false`: the old session is not asked; the office writes a factual handoff itself. */
+export const switchOptions = { to: optional(oneOf(["claude", "pi"])), model: optional(nonempty), effort: optional(nonempty), handoff: optional(boolean) };
 export const switchSchema = object({ agent: nonempty, ...switchOptions });
 export const switchAllSchema = object({ from: oneOf(["claude", "pi"]), ...switchOptions });
 export const emptySchema = object({});

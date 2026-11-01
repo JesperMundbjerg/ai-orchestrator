@@ -111,6 +111,9 @@ ${LEASE_HELP}
                                   move an agent to the other harness: it writes a handoff, a new session takes over its
                                   name, team, role and messages, and its old pane closes; the model follows the crew guide
   inbox switch --all-from pi      the same for every running agent on that harness, one by one
+  inbox switch NAME --no-handoff  the same, for an agent that cannot answer (its model is unavailable): the old session is not
+                                  asked; the office writes a factual handoff (checkout, git state, old transcript, open items,
+                                  waiting messages) itself. Works with --all-from too
   inbox lane [PROJECT LANE]       a project's standing lanes with an attach command: connected, disconnected, busy or unknown, and who holds them
   inbox lane recover PROJECT LANE --to NAME
                                   attach the lane to NAME's running session through the project's own attach command; it never
@@ -172,7 +175,7 @@ const OPTIONS = {
   harness: { type: "string" },
   model: { type: "string" },
   effort: { type: "string" },
-  "all-from": { type: "string" },
+  "all-from": { type: "string" }, "no-handoff": { type: "boolean" },
   session: { type: "string" },
   help: { type: "boolean", short: "h" },
   choice: { type: "string" }, answer: { type: "string" }, accept: { type: "boolean" }, "request-changes": { type: "string" },
@@ -275,7 +278,7 @@ async function replies(): Promise<void> {
  * then follows along, printing each step as it happens. Stopping this command does not stop the switch.
  */
 async function switchAgents(name: string | undefined): Promise<void> {
-  const opts = { to: flags.to, model: flags.model, effort: flags.effort };
+  const opts = { to: flags.to, model: flags.model, effort: flags.effort, ...(flags["no-handoff"] ? { handoff: false } : {}) };
   let ids: string[];
   if (flags["all-from"]) {
     const batch = await call<{ switches: AgentSwitch[]; skipped: Array<{ name: string; why: string }> }>("/api/world/switches/all-from", { from: flags["all-from"], ...opts });
