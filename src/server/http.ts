@@ -19,6 +19,7 @@ import { UPLOAD_BODY_LIMIT } from "./uploads.ts";
 import type { AutoApprove } from "./autoapprove.ts";
 import type { Herdr } from "./herdr.ts";
 import type { Machine } from "./machine.ts";
+import type { StallWatch } from "./stallwatch.ts";
 import type { StandingLanes } from "./standing.ts";
 import type { Switches } from "./switch.ts";
 import type { Leases } from "./leases.ts";
@@ -42,7 +43,7 @@ function route<T>(method: string, pattern: RegExp, schema: Schema<T>, handler: (
   return [method, pattern, (req, body, params) => handler(req, schema.parse(body), params)];
 }
 
-export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove; standing?: StandingLanes; leases?: Leases; pageComments?: PageComments }): Server {
+export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; stalls?: StallWatch; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove; standing?: StandingLanes; leases?: Leases; pageComments?: PageComments }): Server {
   const clients = new Set<ServerResponse>();
   const broadcast = (reason: string) => {
     for (const res of clients) res.write(`event: changed\ndata: ${JSON.stringify({ reason })}\n\n`);
@@ -176,6 +177,8 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("GET", /^\/api\/world\/switches\/((?!all-from$)[\w-]+)$/, emptySchema, (_r, _b, [id]) => needSwitches().get(id!)),
     // What agents left running on the machine; Close is refused for anything but a listed headless browser.
     route("GET", /^\/api\/machine$/, emptySchema, () => needMachine().state()),
+    // The blocks of the office's own event loop, with what ran during each.
+    route("GET", /^\/api\/machine\/stalls$/, emptySchema, () => needStalls().state()),
     route("POST", /^\/api\/machine\/browsers\/(\d+)\/close$/, emptySchema, (_r, _b, [pid]) => needMachine().close(Number(pid))),
     // Page comments: any page's comment to a team the office lists, by id; the founder's allowlist of hosting pages.
     route("GET", /^\/api\/page-comments\/teams$/, emptySchema, () => needPageComments().teams()),
@@ -268,6 +271,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   function needMachine(): Machine {
     if (!opts.machine) throw new InboxError(404, "this service does not watch the machine");
     return opts.machine;
+  }
+
+  function needStalls(): StallWatch {
+    if (!opts.stalls) throw new InboxError(404, "this service does not watch its own event loop");
+    return opts.stalls;
   }
 
   const allowedHosts = new Set([`127.0.0.1:${opts.port}`, `localhost:${opts.port}`]);

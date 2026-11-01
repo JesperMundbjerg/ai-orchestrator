@@ -14,6 +14,7 @@ import { Inbox } from "./inbox.ts";
 import { Leases } from "./leases.ts";
 import { AutoApprove } from "./autoapprove.ts";
 import { Machine } from "./machine.ts";
+import { StallWatch } from "./stallwatch.ts";
 import { Switches } from "./switch.ts";
 import { LaneRouting, piPaused } from "./lanerouting.ts";
 import { startIntegrations, startupConfig } from "./startup-config.ts";
@@ -73,6 +74,9 @@ const leases = new Leases(db, {
   presence: () => herdr.available(),
   telemetry: world.pipelines.telemetry,
 });
+// Blocks of the event loop over a second, with a CPU profile of each; INBOX_STALL_WATCH=0 turns it off.
+const stalls = process.env.INBOX_STALL_WATCH === "0" ? undefined : new StallWatch({ dir: join(dir, "stalls") });
+void stalls?.start().catch((err: Error) => console.error(`stall watch: ${err.message}`));
 // When disabled there is no process watcher or process-control HTTP surface at all.
 const machine = config.browserCleanup ? new Machine(() => world.state()) : undefined;
 if (machine) machine.tellLead = (teamId, text) => world.tellLead(teamId, text);
@@ -102,7 +106,7 @@ setInterval(() => {
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();
 
-createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches, usage, autoApprove, standing, leases, pageComments }).listen(port, "127.0.0.1", () => {
+createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, stalls, switches, usage, autoApprove, standing, leases, pageComments }).listen(port, "127.0.0.1", () => {
   autoApprove.sweep();
   console.log(`Review inbox on http://localhost:${port}  (data: ${dir})`);
 });
