@@ -303,8 +303,8 @@ test("`inbox comment fixed` closes a comment as the agent running it, with its u
   }, live);
 });
 
-test("the page-comment table is migration 18", () => {
+test("the page-comment table exists from migration 18 on", () => {
   const db = openDatabase(":memory:");
-  assert.equal(Number(db.prepare("PRAGMA user_version").get()!.user_version), 18);
+  assert.ok(Number(db.prepare("PRAGMA user_version").get()!.user_version) >= 18, "later migrations may follow it");
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'page_comments'").get());
 });
