@@ -1,18 +1,81 @@
 import { useEffect, useState } from "react";
-import type { PageComment } from "../../shared/pagecomments.ts";
+import { CLOSED_COMMENT_STATUSES, type PageComment } from "../../shared/pagecomments.ts";
 import { ago } from "../format.ts";
 
 const LABEL: Record<PageComment["status"], string> = {
-  queued: "queued", delivered: "delivered", working: "working", fixed: "fixed", declined: "declined", failed: "not delivered",
+  held: "held in a group", queued: "queued", delivered: "delivered", working: "working", asked: "asked",
+  fixed: "fixed", declined: "declined", withdrawn: "withdrawn", failed: "not delivered",
 };
 const DELIVERY_CLASS: Record<PageComment["status"], string> = {
-  queued: "queued", delivered: "delivered", working: "sending", fixed: "delivered", declined: "failed", failed: "failed",
+  held: "queued", queued: "queued", delivered: "delivered", working: "sending", asked: "sending",
+  fixed: "delivered", declined: "failed", withdrawn: "failed", failed: "failed",
 };
 const SHOWN = 10;
 
 /** Where on which page, briefly: its title, else the url without its scheme. */
 function pageLine(c: PageComment): string {
   return c.page.title ?? c.page.url?.replace(/^https?:\/\//, "") ?? c.openUrl?.replace(/^https?:\/\//, "") ?? "a page";
+}
+
+const post = async (path: string, body: unknown) => {
+  const res = await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `request failed (${res.status})`);
+};
+
+/** The founder's check of a fix: verified, or still wrong with what is wrong (that opens a follow-up comment). */
+function VerifyFix({ comment }: { comment: PageComment }) {
+  const [wrong, setWrong] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const verify = async (verdict: "verified" | "still-wrong") => {
+    setBusy(true); setError(null);
+    try { await post(`/api/page-comments/${comment.id}/verify`, { verdict, ...(verdict === "still-wrong" && wrong?.trim() ? { note: wrong } : {}) }); setWrong(null); }
+    catch (err) { setError((err as Error).message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="order-verify" style={{ display: "flex", flexDirection: "column", gap: 6, margin: "6px 0" }}>
+      {wrong === null ? (
+        <div className="order-meta">
+          <button type="button" disabled={busy} onClick={() => void verify("verified")}>Verified</button>
+          <button type="button" disabled={busy} onClick={() => setWrong("")}>Still wrong…</button>
+        </div>
+      ) : (
+        <>
+          <textarea aria-label={`What is still wrong with ${comment.id}`} value={wrong} onChange={(e) => setWrong(e.target.value)} placeholder="What is still wrong?" rows={2} style={{ width: "100%", font: "inherit" }} />
+          <div className="order-meta">
+            <button type="button" className="primary" disabled={busy} onClick={() => void verify("still-wrong")}>Send back as a follow-up</button>
+            <button type="button" disabled={busy} onClick={() => setWrong(null)}>Cancel</button>
+          </div>
+        </>
+      )}
+      {error ? <span className="delivery failed">{error}</span> : null}
+    </div>
+  );
+}
+
+/** The lead's open question, answered here by the founder just as the page would. */
+function AnswerQuestion({ comment }: { comment: PageComment }) {
+  const [text, setText] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const send = async () => {
+    if (!text.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      await post(`/api/page-comments/${comment.id}/answer`, { text });
+      setText("");
+    } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
+  };
+  return (
+    <div className="order-question" style={{ display: "flex", flexDirection: "column", gap: 6, margin: "6px 0" }}>
+      <div><strong>{comment.by ?? "The lead"} asks:</strong> {comment.question}</div>
+      <textarea aria-label={`Answer the question on ${comment.id}`} value={text} onChange={(e) => setText(e.target.value)} placeholder="Answer for the page" rows={2} style={{ width: "100%", font: "inherit" }} />
+      <div className="order-meta">
+        <button type="button" className="primary" disabled={busy || !text.trim()} onClick={() => void send()}>Answer</button>
+        {error ? <span className="delivery failed"> {error}</span> : null}
+      </div>
+    </div>
+  );
 }
 
 /** A team's page comments, newest first: the office's own queue, live from its status stream. */
@@ -30,24 +93,30 @@ export function PageCommentsSection({ teamId }: { teamId: string }) {
     return () => { alive = false; source.close(); };
   }, [teamId]);
   if (!comments.length) return null;
-  const open = comments.filter((c) => !["fixed", "declined"].includes(c.status)).length;
+  const open = comments.filter((c) => !CLOSED_COMMENT_STATUSES.includes(c.status)).length;
+  const asked = comments.filter((c) => c.status === "asked").length;
   return (
     <div>
-      <div className="section-label">Page comments{open ? ` · ${open} open` : ""}</div>
+      <div className="section-label">Page comments{open ? ` · ${open} open` : ""}{asked ? ` · ${asked} asked` : ""}</div>
       <ul className="order-list">
         {comments.map((c) => (
           <li key={c.id} className="order instruction from-you">
             <div className="order-head">
               <strong>{pageLine(c)}</strong>
+              {c.kind ? <span className="muted"> · {c.kind}</span> : null}
               <span className="muted"> · {ago(c.createdAt)}</span>
             </div>
             <div className="order-text">{c.text}</div>
+            {c.status === "asked" && c.question ? <AnswerQuestion comment={c} /> : null}
+            {c.status === "fixed" && !c.verification ? <VerifyFix comment={c} /> : null}
+            {c.status !== "asked" && c.answer ? <div className="order-text muted">Asked: {c.question} · Answered: {c.answer}</div> : null}
             <div className="order-meta">
               <span className={`delivery ${DELIVERY_CLASS[c.status]}`} title={c.note ?? undefined}>
                 {LABEL[c.status]}{c.by ? ` by ${c.by}` : ""}{c.note ? `: ${c.note}` : ""}
               </span>
+              {c.verification ? <span className={`delivery ${c.verification === "verified" ? "delivered" : "failed"}`}>{c.verification === "verified" ? "verified" : "still wrong"}</span> : null}
               {c.openUrl ? <a className="muted" href={c.openUrl} target="_blank" rel="noreferrer"> open</a> : null}
-              <span className="muted"> {c.id}</span>
+              <span className="muted"> {c.id}{c.groupId ? ` · group ${c.groupId}` : ""}{c.revision ? ` · edited ${c.revision}×` : ""}{c.followsUp ? ` · follows up ${c.followsUp}` : ""}{c.followUps.length ? ` · followed up by ${c.followUps.join(", ")}` : ""}</span>
             </div>
           </li>
         ))}

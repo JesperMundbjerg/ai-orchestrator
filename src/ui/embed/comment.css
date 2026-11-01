@@ -31,3 +31,11 @@ button:disabled { opacity: 0.55; cursor: default; }
 .status.error { color: var(--warn); }
 .status.ok { color: var(--ok); }
 .origins textarea { min-height: 120px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.buttons { display: flex; gap: 8px; margin-left: auto; }
+.muted { color: var(--muted); font-size: 12.5px; }
+.group { background: var(--soft); border-radius: 8px; padding: 6px 8px; }
+button.link { border: 0; background: none; padding: 2px 4px; color: var(--muted); text-decoration: underline; font-size: 12.5px; }
+.questions { display: flex; flex-direction: column; gap: 8px; }
+.question { border: 1px solid var(--accent); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.question p { margin: 0; font-weight: 600; }
+.question textarea { min-height: 56px; }

@@ -34,9 +34,18 @@ async function office(fn: (o: { base: string; world: World; typed: string[]; dir
     state: () => world.state(), instruct: (id, input) => world.messages.instruct(id, input),
     message: (id) => world.messages.message(id), resolve: (session) => world.resolve({ ...session, cwd: session.cwd ?? undefined }),
   }, join(dir, "page-comments.json"));
-  const port = nextPort++;
-  const server = createInboxServer(inbox, null, { port, staticDir: ui, world, pageComments });
-  await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+  // A port another process holds is skipped (the service's host check needs the port up front).
+  let server!: ReturnType<typeof createInboxServer>;
+  for (let tries = 0; ; tries++) {
+    const port = nextPort++;
+    server = createInboxServer(inbox, null, { port, staticDir: ui, world, pageComments });
+    const listening = server;
+    const ok = await new Promise<boolean>((resolve) => {
+      listening.once("error", (err: NodeJS.ErrnoException) => { if (err.code === "EADDRINUSE" && tries < 20) resolve(false); else throw err; });
+      listening.listen(port, "127.0.0.1", () => resolve(true));
+    });
+    if (ok) break;
+  }
   try {
     await fn({ base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, world, typed, dir, comments: pageComments, setLive: (next) => void (live = next) });
   } finally {
@@ -238,7 +247,12 @@ test("a comment goes queued → delivered → working → fixed; the fixer's url
       const seen = stream.events.filter((e) => e.id === sent.id).map((e) => e.status);
       assert.deepEqual(seen.slice(seen.indexOf("delivered")), ["delivered", "working", "fixed"], `the stream's order: ${seen.join(", ")}`);
       const last = stream.events.at(-1)!;
-      assert.deepEqual(last, { id: sent.id, teamId: team.id, status: "fixed", openUrl: "http://localhost:3000/lessons/orbits?step=2#focus", note: "Reworded", commit: "abc1234", meta: { lesson: "orbits", step: 2 }, updatedAt: last.updatedAt });
+      assert.deepEqual(last, {
+        id: sent.id, teamId: team.id, teamName: "Dispatch", groupId: null, status: "fixed", text: "Step 2 explains the focus wrongly.", kind: null,
+        openUrl: "http://localhost:3000/lessons/orbits?step=2#focus", note: "Reworded", commit: "abc1234", question: null, answer: null, by: null,
+        revision: 0, editable: false, followsUp: null, followUps: [], verification: null, verifiedAt: null,
+        meta: { lesson: "orbits", step: 2 }, updatedAt: last.updatedAt,
+      }, "the event carries everything a page shows");
       assert.equal((await (await fetch(`${base}/api/page-comments/${sent.id}`)).json()).status, "fixed");
       assert.equal((await (await fetch(`${base}/api/page-comments?team=${team.id}`)).json()).comments.length, 1);
     } finally { await stream.close(); }
@@ -303,8 +317,278 @@ test("`inbox comment fixed` closes a comment as the agent running it, with its u
   }, live);
 });
 
+const typedFor = (typed: string[], needle: string) => typed.filter((t) => t.includes(needle));
+
+test("a held group changes in place until it is sent, then reaches the lead as one message; each comment keeps its own id and status", async () => {
+  await office(async ({ base, world, typed, comments }) => {
+    const { team, empty } = await seat(world);
+    const add = async (body: Record<string, unknown>) => (await fetch(`${base}/api/page-comments/teams/${team.id}/comments`, json(body))).json();
+    const page = { url: "http://localhost:3000/lessons/orbits", title: "Orbits" };
+    const first = await add({ text: "Axis labels are missing.", kind: "bug", hold: true, page });
+    assert.equal(first.status, "held");
+    assert.equal(first.editable, true);
+    assert.match(first.groupId, /^pg-[0-9a-f]{10}$/);
+    const second = await add({ text: "The caption is long-winded.", kind: "copy", hold: true, groupId: first.groupId, page });
+    const third = await add({ text: "Maybe animate it?", hold: true, groupId: first.groupId, page });
+    assert.equal(second.groupId, first.groupId);
+    // A group goes to one team.
+    assert.equal((await fetch(`${base}/api/page-comments/teams/${empty.id}/comments`, json({ text: "x", hold: true, groupId: first.groupId }))).status, 409);
+
+    // Before it is sent, an edit and a withdraw change the office's copy; the lead hears nothing.
+    const edited = await (await fetch(`${base}/api/page-comments/${second.id}/edit`, json({ text: "The caption is too long.", kind: "copy" }))).json();
+    assert.equal(edited.text, "The caption is too long.");
+    assert.equal(edited.revision, 1);
+    assert.equal(edited.status, "held");
+    assert.equal((await (await fetch(`${base}/api/page-comments/${third.id}/withdraw`, json({}))).json()).status, "withdrawn");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(typed.length, 0, "nothing reaches the lead while the group is held");
+    assert.equal((await fetch(`${base}/api/page-comments/${first.id}/status`, json({ status: "working" }))).status, 409, "the lead cannot mark what it has not been given");
+
+    const sent = await (await fetch(`${base}/api/page-comments/groups/${first.groupId}/send`, json({}))).json();
+    assert.deepEqual(sent.comments.map((c: { id: string; status: string }) => [c.id, c.status]), [[first.id, "queued"], [second.id, "queued"], [third.id, "withdrawn"]]);
+    await until(() => typed.length > 0);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(typed.length, 1, "one message for the group");
+    const prompt = typed[0]!;
+    assert.match(prompt, new RegExp(`\\[Page comments: 2 in group ${first.groupId}\\]`));
+    assert.match(prompt, new RegExp(`1\\. Page comment ${first.id} · bug\\nOn "Orbits" http://localhost:3000/lessons/orbits\\n\\nAxis labels are missing\\.`));
+    assert.match(prompt, new RegExp(`2\\. Page comment ${second.id} · copy[^]*The caption is too long\\.`));
+    assert.ok(!prompt.includes("long-winded") && !prompt.includes("animate"), "the edited text, and not the withdrawn comment");
+    assert.equal(comments.get(first.id).messageId, comments.get(second.id).messageId);
+    await until(() => (comments.sync(), comments.get(second.id).status === "delivered"));
+    assert.equal(comments.get(first.id).status, "delivered");
+    // Each has its own status from here on.
+    assert.equal((await (await fetch(`${base}/api/page-comments/${first.id}/status`, json({ status: "fixed", note: "Labelled" }))).json()).status, "fixed");
+    assert.equal(comments.get(second.id).status, "delivered");
+    assert.equal(comments.get(third.id).status, "withdrawn");
+    // A sent group takes no more comments.
+    assert.equal((await fetch(`${base}/api/page-comments/teams/${team.id}/comments`, json({ text: "late", hold: true, groupId: first.groupId }))).status, 409);
+
+    // Discarding a held group withdraws its comments without anyone hearing.
+    const other = await add({ text: "Never mind", hold: true });
+    const discarded = await (await fetch(`${base}/api/page-comments/groups/${other.groupId}/discard`, json({}))).json();
+    assert.deepEqual(discarded.comments.map((c: { status: string }) => c.status), ["withdrawn"]);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(typedFor(typed, "Never mind").length, 0);
+  }, live);
+});
+
+test("a batch of comments is queued as one group in one call, replay-safe with a client id", async () => {
+  await office(async ({ base, world, typed }) => {
+    const { team } = await seat(world);
+    const body = { clientId: "batch-1", comments: [{ text: "One", kind: "idea" }, { text: "Two", openUrl: "http://localhost:3000/b" }] };
+    const out = await (await fetch(`${base}/api/page-comments/teams/${team.id}/groups`, json(body))).json();
+    assert.equal(out.comments.length, 2);
+    assert.ok(out.comments.every((c: { groupId: string }) => c.groupId === out.groupId));
+    assert.equal(out.comments[0].kind, "idea");
+    await until(() => typed.length > 0);
+    const again = await (await fetch(`${base}/api/page-comments/teams/${team.id}/groups`, json(body))).json();
+    assert.deepEqual(again.comments.map((c: { id: string }) => c.id), out.comments.map((c: { id: string }) => c.id), "the same ids again");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(typed.length, 1, "one message, once");
+    assert.match(typed[0]!, /\[Page comments: 2 in group/);
+    assert.match(typed[0]!, /Open to check: http:\/\/localhost:3000\/b/);
+    assert.equal((await fetch(`${base}/api/page-comments/teams/${team.id}/groups`, json({ comments: [] }))).status, 400);
+  }, live);
+});
+
+test("after delivery an edit reaches the lead as a follow-up on the same id, and a withdrawal tells the lead and closes it", async () => {
+  await office(async ({ base, world, typed, comments }) => {
+    const { team } = await seat(world);
+    const sent = comments.enqueue(team.id, { text: "The title is wrong.", kind: "copy", page: { url: "http://localhost:3000/a" } });
+    assert.equal(sent.editable, false, "the lead has it");
+    assert.match(sent.messageId ?? "", /./);
+    await until(() => typed.length === 1);
+    assert.match(typed[0]!, /\[Page comment · copy\]/, "the lead sees the kind");
+    const stream = sse(`${base}/api/page-comments/events?ids=${sent.id}`);
+    try {
+      const edited = await (await fetch(`${base}/api/page-comments/${sent.id}/edit`, json({ text: "The subtitle is wrong, not the title." }))).json();
+      assert.equal(edited.revision, 1);
+      assert.equal(edited.text, "The subtitle is wrong, not the title.");
+      assert.equal(edited.messageId, sent.messageId, "the comment still points at its first message");
+      await until(() => typed.length === 2);
+      assert.match(typed[1]!, new RegExp(`\\[Page comment ${sent.id} edited\\][^]*this replaces what you have:\\n\\n\\[Page comment · copy\\]\\nOn http://localhost:3000/a\\n\\nThe subtitle is wrong, not the title\\.`));
+      // The same edit again sends nothing.
+      await fetch(`${base}/api/page-comments/${sent.id}/edit`, json({ text: "The subtitle is wrong, not the title." }));
+      await until(() => stream.events.some((e) => e.revision === 1));
+      const withdrawn = await (await fetch(`${base}/api/page-comments/${sent.id}/withdraw`, json({ note: "Already fixed upstream" }))).json();
+      assert.equal(withdrawn.status, "withdrawn");
+      await until(() => typed.length === 3);
+      assert.match(typed[2]!, new RegExp(`\\[Page comment ${sent.id} withdrawn\\]\\nThe page withdrew this comment: Already fixed upstream\\. Stop any work on it`));
+      await until(() => stream.events.some((e) => e.status === "withdrawn"));
+      assert.equal((await fetch(`${base}/api/page-comments/${sent.id}/status`, json({ status: "fixed" }))).status, 409, "a withdrawn comment stays closed");
+      assert.equal((await fetch(`${base}/api/page-comments/${sent.id}/edit`, json({ text: "x" }))).status, 409);
+      assert.equal((await fetch(`${base}/api/page-comments/${sent.id}/withdraw`, json({}))).status, 200, "withdrawing twice is fine");
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(typed.length, 3);
+      assert.equal((await fetch(`${base}/api/page-comments/${sent.id}/edit`, json({}))).status, 400, "an edit says what changes");
+    } finally { await stream.close(); }
+  }, live);
+});
+
+test("`inbox comment ask` puts a question to the page; the answer reaches the lead on that comment and work goes on", async () => {
+  await office(async ({ base, world, typed, comments }) => {
+    const { team, lead } = await seat(world);
+    const held = comments.enqueue(team.id, { text: "held", hold: true });
+    assert.equal((await fetch(`${base}/api/page-comments/${held.id}/ask`, json({ question: "?" }))).status, 409, "nothing to ask about before the team has it");
+    const sent = comments.enqueue(team.id, { text: "The units look off.", page: { url: "http://localhost:3000/u" } });
+    await until(() => typed.length === 1);
+    const stream = sse(`${base}/api/page-comments/events?origin=http://localhost:3000`);
+    try {
+      const run = (...args: string[]) => new Promise<{ code: number; out: string }>((resolve) => {
+        const env: NodeJS.ProcessEnv = { ...process.env, INBOX_URL: base };
+        for (const k of ["CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "HERDR_PANE_ID"]) delete env[k];
+        execFile(process.execPath, ["bin/inbox", ...args], { env }, (err, stdout, stderr) => resolve({ code: err ? Number((err as { code?: number }).code ?? 1) : 0, out: stdout + stderr }));
+      });
+      assert.notEqual((await run("comment", "ask", sent.id)).code, 0, "a question is needed");
+      const asked = await run("comment", "ask", sent.id, "Which units: m/s or km/h?", "--harness", "pi", "--session", "s1");
+      assert.equal(asked.code, 0, asked.out);
+      assert.match(asked.out, /asked: Which units: m\/s or km\/h\?/);
+      assert.equal(comments.get(sent.id).status, "asked");
+      assert.equal(comments.get(sent.id).by, lead.name);
+      await until(() => stream.events.some((e) => e.status === "asked"));
+      const event = stream.events.find((e) => e.status === "asked")!;
+      assert.equal(event.question, "Which units: m/s or km/h?", "the page hears the question in the event");
+      assert.equal((await fetch(`${base}/api/page-comments/${sent.id}/answer`, json({}))).status, 400);
+      const answered = await (await fetch(`${base}/api/page-comments/${sent.id}/answer`, json({ text: "km/h, like the speedometer." }))).json();
+      assert.equal(answered.status, "working");
+      assert.equal(answered.answer, "km/h, like the speedometer.");
+      await until(() => typed.length === 2);
+      assert.match(typed[1]!, new RegExp(`^p1: [^]*\\[Page comment ${sent.id} answered\\]\\nYou asked: Which units: m/s or km/h\\?\\nThe answer: km/h, like the speedometer\\.`));
+      // A repeated answer is the same answer; another one without a question is refused.
+      assert.equal((await fetch(`${base}/api/page-comments/${sent.id}/answer`, json({ text: "km/h, like the speedometer." }))).status, 200);
+      assert.equal((await fetch(`${base}/api/page-comments/${sent.id}/answer`, json({ text: "m/s" }))).status, 409);
+      await new Promise((r) => setTimeout(r, 50));
+      assert.equal(typed.length, 2);
+      const shown = await run("comment", "show", sent.id);
+      assert.match(shown.out, /answer: km\/h/);
+    } finally { await stream.close(); }
+  }, live);
+});
+
+test("the widget acts on a host's comments only with well-formed requests about that host's own page", () => {
+  const allow = ["http://localhost:*"];
+  const from = (data: Record<string, unknown>) => acceptEmbedMessage("http://localhost:3000", { version: 1, ...data }, allow);
+  assert.deepEqual(from({ type: "office-comment:edit", requestId: "r1", id: "pc-0123456789", text: "new", kind: "  bug  ", openUrl: "https://bank.example/", meta: { a: 1 } }),
+    { type: "edit", requestId: "r1", id: "pc-0123456789", edit: { text: "new", kind: "bug", meta: { a: 1 } } }, "an openUrl elsewhere is dropped");
+  assert.equal(from({ type: "office-comment:edit", id: "../teams" }), null);
+  assert.deepEqual(from({ type: "office-comment:withdraw", id: "pc-0123456789" }), { type: "withdraw", requestId: null, id: "pc-0123456789" });
+  assert.equal(from({ type: "office-comment:answer", id: "pc-0123456789", text: "  " }), null);
+  assert.deepEqual(from({ type: "office-comment:answer", id: "pc-0123456789", text: "yes" }), { type: "answer", requestId: null, id: "pc-0123456789", text: "yes" });
+  assert.deepEqual(from({ type: "office-comment:send-group", comments: [{ text: "a", kind: "idea", page: { url: "https://bank.example/" } }, { text: "b", openUrl: "http://localhost:3000/b" }] }),
+    { type: "send-group", requestId: null, comments: [{ text: "a", kind: "idea", page: {} }, { text: "b", page: {}, openUrl: "http://localhost:3000/b" }] });
+  assert.equal(from({ type: "office-comment:send-group", comments: [] }), null);
+  assert.equal(from({ type: "office-comment:send-group", comments: [{ text: "" }] }), null);
+  assert.equal(acceptEmbedMessage("https://evil.example", { version: 1, type: "office-comment:withdraw", id: "pc-0123456789" }, allow), null);
+  assert.equal(pageCommentText("hi", {}, "unsure"), "[Page comment · unsure]\n\nhi");
+});
+
+test("the founder verifies a fix or finds it still wrong, which opens a follow-up that names the fix; lists select verified or not", async () => {
+  await office(async ({ base, world, typed, comments }) => {
+    const { team } = await seat(world);
+    const fix = async (text: string) => {
+      const c = comments.enqueue(team.id, { text, kind: "bug", page: { url: "http://localhost:3000/v", title: "V" }, openUrl: "http://localhost:3000/v?step=1", meta: { step: 1 } });
+      return comments.setStatus(c.id, { status: "fixed", note: `fixed ${text}`, commit: "abc1234", url: "http://localhost:3000/v?step=1#done" });
+    };
+    const good = await fix("good");
+    const bad = await fix("bad");
+    const open = comments.enqueue(team.id, { text: "not fixed yet" });
+    const verify = (id: string, body: unknown) => fetch(`${base}/api/page-comments/${id}/verify`, json(body));
+    assert.equal((await verify(open.id, { verdict: "verified" })).status, 409, "only a fixed comment is checked");
+    assert.equal((await verify(good.id, { verdict: "maybe" })).status, 400);
+    const list = async (q: string) => ((await (await fetch(`${base}/api/page-comments?team=${team.id}&${q}`)).json()).comments as Array<{ id: string }>).map((c) => c.id).sort();
+    assert.deepEqual(await list("verified=false"), [good.id, bad.id].sort(), "fixed and not yet verified");
+
+    const stream = sse(`${base}/api/page-comments/events?team=${team.id}&verified=true&limit=1`);
+    try {
+      const ok = await (await verify(good.id, { verdict: "verified" })).json();
+      assert.equal(ok.comment.verification, "verified");
+      assert.match(ok.comment.verifiedAt, /^\d{4}-/);
+      assert.equal(ok.followUp, null);
+      assert.equal((await (await verify(good.id, { verdict: "verified" })).json()).comment.verifiedAt, ok.comment.verifiedAt, "verifying twice changes nothing");
+      await until(() => stream.events.some((e) => e.id === good.id && e.verification === "verified"));
+      assert.ok(stream.events.every((e) => e.verification === "verified"), "the verified stream hears only verified fixes");
+    } finally { await stream.close(); }
+    assert.deepEqual(await list("verified=true"), [good.id]);
+
+    const before = typed.length;
+    const wrong = await (await verify(bad.id, { verdict: "still-wrong", note: "The label still overlaps on phones." })).json();
+    assert.equal(wrong.comment.verification, "still-wrong");
+    assert.equal(wrong.comment.status, "fixed", "the fixed comment keeps its history");
+    const follow = wrong.followUp;
+    assert.equal(follow.followsUp, bad.id);
+    assert.deepEqual(wrong.comment.followUps, [follow.id], "listed on both comments");
+    assert.equal(follow.text, "The label still overlaps on phones.");
+    assert.equal(follow.kind, "bug");
+    assert.deepEqual(follow.meta, { step: 1 });
+    assert.equal(follow.openUrl, "http://localhost:3000/v?step=1", "the page's own open URL, not the earlier fix's");
+    await until(() => typed.length > before);
+    assert.match(typed.at(-1)!, new RegExp(`Follows up page comment ${bad.id} \\(fixed; note: fixed bad; commit abc1234; open: http://localhost:3000/v\\?step=1#done\\): “bad”`));
+    // The same verdict again gives the same follow-up, never a second one.
+    assert.equal((await (await verify(bad.id, { verdict: "still-wrong", note: "again" })).json()).followUp.id, follow.id);
+    assert.equal((await verify(bad.id, { verdict: "verified" })).status, 409, "verify its follow-up instead");
+    assert.deepEqual(await list("verified=false"), [bad.id], "a still-wrong fix is not verified");
+  }, live);
+});
+
+test("a page can name the comment it follows up when it queues one; an unknown one is refused", async () => {
+  await office(async ({ base, world, typed, comments }) => {
+    const { team } = await seat(world);
+    const earlier = comments.enqueue(team.id, { text: "Wrong colour" });
+    comments.setStatus(earlier.id, { status: "declined", note: "On purpose: it matches the brand" });
+    const stream = sse(`${base}/api/page-comments/events?ids=${earlier.id}&limit=1`);
+    try {
+      const later = await (await fetch(`${base}/api/page-comments/teams/${team.id}/comments`, json({ text: "It really clashes with the chart.", followsUp: earlier.id }))).json();
+      assert.equal(later.followsUp, earlier.id);
+      await until(() => stream.events.some((e) => (e.followUps as string[]).includes(later.id)));
+      assert.deepEqual(comments.get(earlier.id).followUps, [later.id], "the earlier comment's page hears of it");
+      await until(() => typed.some((t) => t.includes("It really clashes")));
+      assert.match(typed.find((t) => t.includes("It really clashes"))!, new RegExp(`Follows up page comment ${earlier.id} \\(declined; note: On purpose: it matches the brand\\): “Wrong colour”`));
+    } finally { await stream.close(); }
+    assert.equal((await fetch(`${base}/api/page-comments/teams/${team.id}/comments`, json({ text: "x", followsUp: "pc-0000000000" }))).status, 404);
+    assert.equal((await fetch(`${base}/api/page-comments/teams/${team.id}/comments`, json({ text: "x", followsUp: "nope" }))).status, 400);
+  }, live);
+});
+
+test("a page's backend uploads a screenshot without an Origin header and attaches it to a comment", async () => {
+  await office(async ({ base, world, typed }) => {
+    const { team } = await seat(world);
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const up = await fetch(`${base}/api/uploads`, json({ data: png }));
+    assert.equal(up.status, 200, "no Origin: a local process, as before");
+    const { id } = await up.json();
+    assert.equal((await fetch(`${base}/api/uploads`, json({ data: png }, { origin: "http://localhost:3000" }))).status, 403, "a page's browser cannot upload directly");
+    const sent = await (await fetch(`${base}/api/page-comments/teams/${team.id}/comments`, json({ text: "See the screenshot", images: [id] }))).json();
+    assert.deepEqual(sent.images, [id]);
+    await until(() => typed.some((t) => t.includes("See the screenshot")));
+    assert.equal(world.messages.message(sent.messageId).images.length, 1, "the lead gets the image with the comment");
+    assert.equal((await fetch(`${base}/uploads/${id}`)).status, 200);
+  }, live);
+});
+
+test("the widget relays a verdict only when it is one of the two", () => {
+  const allow = ["http://localhost:*"];
+  const from = (data: Record<string, unknown>) => acceptEmbedMessage("http://localhost:3000", { version: 1, type: "office-comment:verify", id: "pc-0123456789", ...data }, allow);
+  assert.deepEqual(from({ verdict: "still-wrong", note: "overlaps" }), { type: "verify", requestId: null, id: "pc-0123456789", verdict: "still-wrong", note: "overlaps" });
+  assert.equal(from({ verdict: "fine" }), null);
+});
+
 test("the page-comment table exists from migration 18 on", () => {
   const db = openDatabase(":memory:");
   assert.ok(Number(db.prepare("PRAGMA user_version").get()!.user_version) >= 18, "later migrations may follow it");
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'page_comments'").get());
+});
+
+test("a database made at migration 18 before kinds, groups and checks gets their columns, keeping its comments", () => {
+  const db = openDatabase(":memory:");
+  // As migration 18 first shipped: drop what came later.
+  for (const c of ["kind", "group_id", "question", "answer", "revision", "follows_up", "verification", "verified_at"]) {
+    db.exec(`DROP INDEX IF EXISTS page_comments_group; DROP INDEX IF EXISTS page_comments_follows; ALTER TABLE page_comments DROP COLUMN ${c}`);
+  }
+  db.prepare(`INSERT INTO page_comments (id, team_id, text, page, status, attempts, fingerprint, created_at, updated_at)
+    VALUES ('pc-0123456789', 't', 'old', '{}', 'fixed', 1, 'f', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`).run();
+  const comments = new PageComments(db, { state: () => ({ teams: [], agents: [] }) as never, instruct: () => { throw new Error("no"); }, message: () => { throw new Error("no"); } }, join(tmpdir(), "unused.json"));
+  const old = comments.get("pc-0123456789");
+  assert.deepEqual([old.text, old.kind, old.groupId, old.revision, old.verification, old.followUps], ["old", null, null, 0, null, []]);
+  new PageComments(db, { state: () => ({ teams: [], agents: [] }) as never, instruct: () => { throw new Error("no"); }, message: () => { throw new Error("no"); } }, join(tmpdir(), "unused.json"));
 });

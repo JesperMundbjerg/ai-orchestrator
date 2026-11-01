@@ -1,6 +1,8 @@
 // npm run build && PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node test/pagecomments.browser.mjs
 // A page on another localhost port embeds the office's comment widget with the loader, picks a
 // team and sends; the comment reaches that team's lead as a founder message with the page context.
+// The lead asks, the founder answers in the widget; the host page verifies the fix as still wrong
+// through the loader; a group is collected and sent from the widget; the office panel verifies a fix.
 // Scratch office: own free port, temporary HOME/data, no herdr, no integrations, headless only.
 // Optional SCREENSHOT_DIR.
 import assert from "node:assert/strict";
@@ -92,6 +94,7 @@ try {
   await desk.screenshot({ path: join(shots, "01-desktop-open.png") });
   await widget.getByLabel("Team").selectOption({ label: `Dispatch (${lead.name}, offline)` });
   await widget.getByLabel("Comment").fill("The chart needs axis labels; students cannot tell what is plotted.");
+  await widget.getByLabel("Kind (optional)").fill("bug");
   await widget.getByRole("button", { name: "Send" }).click();
   await widget.getByText(/^Sent to Dispatch: /).waitFor();
   await desk.screenshot({ path: join(shots, "02-desktop-sent.png") });
@@ -108,11 +111,23 @@ try {
   assert.equal(sent.length, 1);
   assert.equal(sent[0].fromAgentId, null);
   assert.deepEqual(sent[0].deliveries.map((d) => d.agentId), [lead.id]);
-  assert.match(sent[0].text, new RegExp(`^\\[Page comment\\]\\nOn "Orbits lesson" http://localhost:${hostPort}/lessons/orbits#chart\\nAt: element #chart · #chart · viewport 1440x900\\n`));
+  assert.match(sent[0].text, new RegExp(`^\\[Page comment · bug\\]\\nOn "Orbits lesson" http://localhost:${hostPort}/lessons/orbits#chart\\nAt: element #chart · #chart · viewport 1440x900\\n`));
   assert.match(sent[0].text, new RegExp(`The chart needs axis labels[^]*Open to check: http://localhost:${hostPort}/lessons/orbits\\?step=2[^]*inbox comment fixed ${commentId}`));
   const queued = await call("GET", `/api/page-comments/${commentId}`);
   assert.deepEqual(queued.meta, { lesson: "orbits", step: 2 });
   assert.equal(queued.status, "queued", "the lead is offline, so it waits in the office's queue");
+
+  // The lead asks (as `inbox comment ask` would); the widget shows the question and the founder answers there.
+  await call("POST", `/api/page-comments/${commentId}/ask`, { question: "Which axis matters most: time or distance?" });
+  await widget.getByText("Which axis matters most: time or distance?").waitFor();
+  await desk.screenshot({ path: join(shots, "02a-desktop-question.png") });
+  await widget.getByLabel("Answer to Dispatch").fill("Time on x, distance on y.");
+  await widget.getByRole("button", { name: "Answer", exact: true }).click();
+  for (let i = 0; (await call("GET", `/api/page-comments/${commentId}`)).status !== "working"; i++) { if (i === 50) throw new Error("not answered"); await delay(100); }
+  assert.equal((await call("GET", `/api/page-comments/${commentId}`)).answer, "Time on x, distance on y.");
+  await widget.getByText("Which axis matters most").waitFor({ state: "detached" });
+  const answerMessage = (await call("GET", "/api/world")).withFounder.find((m) => m.teamId === dispatch.id && m.text.includes(`[Page comment ${commentId} answered]`));
+  assert.ok(answerMessage, "the answer reaches the lead as a message on the comment");
 
   // The lead fixes it (as the CLI would); the host page hears "fixed" with the fixer's url and shows it.
   const fixUrl = `http://localhost:${hostPort}/lessons/orbits?step=2#axes`;
@@ -122,6 +137,13 @@ try {
   const statuses = await desk.evaluate(() => window.statuses);
   assert.deepEqual(statuses.filter((e) => e.id === commentId).map((e) => e.status).slice(-1), ["fixed"]);
   await desk.screenshot({ path: join(shots, "02b-desktop-fixed.png") });
+
+  // The host page checks the fix through the loader: still wrong opens a follow-up that names it.
+  const verdict = await desk.evaluate((id) => window.officeComment.verify(id, "still-wrong", "The y label is cut off."), commentId);
+  assert.deepEqual(verdict.map((e) => e.id === commentId ? e.verification : e.followsUp), ["still-wrong", commentId]);
+  const followUpId = verdict[1].id;
+  const refused = await desk.evaluate(() => window.officeComment.verify("pc-0000000000", "verified").then(() => "ok", (e) => e.message));
+  assert.match(refused, /no page comment/);
 
   // The office shows it as from the founder: the team board lists the message.
   const officePage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -133,7 +155,15 @@ try {
   const shownInOffice = await officePage.getByText("The chart needs axis labels", { exact: false }).count();
   assert.ok(shownInOffice >= 2, "in the team's thread and in its page-comment queue");
   assert.ok(await officePage.getByText("fixed: Labelled both axes").count(), "the queue shows its status and note");
+  assert.ok(await officePage.getByText("still wrong", { exact: true }).count(), "and the founder's check");
+  assert.ok(await officePage.getByText(`follows up ${commentId}`, { exact: false }).count(), "the follow-up names the fixed comment");
+  // The follow-up is fixed too; the founder verifies it in the panel.
+  await call("POST", `/api/page-comments/${followUpId}/status`, { status: "fixed", note: "Moved the label in" });
+  await officePage.getByRole("button", { name: "Verified" }).waitFor();
   await officePage.screenshot({ path: join(shots, "03-office.png") });
+  await officePage.getByRole("button", { name: "Verified" }).click();
+  for (let i = 0; (await call("GET", `/api/page-comments/${followUpId}`)).verification !== "verified"; i++) { if (i === 50) throw new Error("not verified"); await delay(100); }
+  assert.deepEqual((await call("GET", `/api/page-comments?team=${dispatch.id}&verified=true`)).comments.map((c) => c.id), [followUpId]);
   await officePage.close();
 
   // The widget remembers the last team for this page origin.
@@ -148,11 +178,22 @@ try {
   assert.equal(await widget.getByLabel("Team").inputValue(), dispatch.id, "with nothing remembered (a fresh browser), the first team with a lead");
   const box = await phone.locator('iframe[title="Comment to a team"]').boundingBox();
   assert.ok(box && box.x >= 0 && box.x + box.width <= 390, "the panel fits a phone");
+  // Two comments collected as a group, then sent as one message.
+  const before = (await call("GET", "/api/world")).withFounder.filter((m) => m.teamId === dispatch.id).length;
   await widget.getByLabel("Comment").fill("On phones the chart is cut off at the right.");
+  await widget.getByRole("button", { name: "Add to group" }).click();
+  await widget.getByText("Added to the group for Dispatch.").waitFor();
+  await widget.getByLabel("Comment").fill("The caption wraps badly.");
+  await widget.getByLabel("Kind (optional)").fill("copy");
+  await widget.getByRole("button", { name: "Add to group" }).click();
+  await widget.getByRole("button", { name: "Send group (2)" }).waitFor();
   await phone.screenshot({ path: join(shots, "04-phone-open.png") });
-  await widget.getByRole("button", { name: "Send" }).click();
-  await widget.getByText(/^Sent to Dispatch: /).waitFor();
+  await widget.getByRole("button", { name: "Send group (2)" }).click();
+  await widget.getByText("Sent 2 as one group to Dispatch.").waitFor();
   await phone.screenshot({ path: join(shots, "05-phone-sent.png") });
+  const grouped = (await call("GET", "/api/world")).withFounder.filter((m) => m.teamId === dispatch.id);
+  assert.equal(grouped.length, before + 1, "one message for the group");
+  assert.match(grouped.find((m) => m.text.includes("[Page comments: "))?.text ?? "", /\[Page comments: 2 in group pg-[0-9a-f]{10}\][^]*cut off at the right[^]*· copy[^]*wraps badly/);
   await phone.close();
 
   // A page origin the founder did not allow cannot frame the widget at all.
@@ -169,7 +210,8 @@ try {
   const cross = await fetch(`${url}/api/page-comments/teams/${dispatch.id}/comments`, { method: "POST", headers: { "content-type": "application/json", origin: `http://localhost:${hostPort}` }, body: JSON.stringify({ text: "direct" }) });
   assert.equal(cross.status, 403);
 
-  assert.equal((await call("GET", "/api/world")).withFounder.filter((m) => m.teamId === dispatch.id).length, 2);
+  // Comment, answer, still-wrong follow-up, group.
+  assert.equal((await call("GET", "/api/world")).withFounder.filter((m) => m.teamId === dispatch.id).length, 4);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ ok: true, shots, shownInOffice }));
 } finally {

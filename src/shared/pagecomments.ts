@@ -38,14 +38,49 @@ export interface PageCommentInput {
   images?: string[];
   /** The same client id returns the first message instead of sending twice. */
   clientId?: string;
+  /** Comments with the same group id reach the lead together. With `hold`, it waits (held) until the group is sent; without, a held group is sent with it. */
+  groupId?: string;
+  /** Hold it in its group (a new one when no group id is given) until `POST /api/page-comments/groups/:id/send`. */
+  hold?: boolean;
+  /** An earlier comment this one follows up (e.g. it is still wrong after that fix); the lead sees that comment's note, commit and URL. */
+  followsUp?: string;
+  /** A free triage word the page chooses (e.g. bug, copy, idea, unsure), shown to the lead; at most 40 characters. */
+  kind?: string;
 }
 
-/** queued → delivered → working → fixed | declined; failed when it cannot be delivered. */
-export const PAGE_COMMENT_STATUSES = ["queued", "delivered", "working", "fixed", "declined", "failed"] as const;
+/** What a page may change on a comment it sent. Before the office hands it to the lead it changes in place; after, the lead gets the change as a follow-up. */
+export interface PageCommentEdit {
+  text?: string;
+  kind?: string;
+  openUrl?: string;
+  meta?: Record<string, unknown>;
+}
+
+/**
+ * held while it waits in an unsent group; queued → delivered → working → fixed | declined; asked while the lead waits for the page's answer
+ * (answered → working); withdrawn when the page takes it back; failed when it cannot be delivered.
+ */
+export const PAGE_COMMENT_STATUSES = ["held", "queued", "delivered", "working", "asked", "fixed", "declined", "withdrawn", "failed"] as const;
 export type PageCommentStatus = (typeof PAGE_COMMENT_STATUSES)[number];
 /** What the fixer may set: the rest is the office's own delivery state. */
 export const AGENT_COMMENT_STATUSES = ["working", "fixed", "declined"] as const;
 export type AgentCommentStatus = (typeof AGENT_COMMENT_STATUSES)[number];
+/** The founder's check of a fixed comment: verified, or still wrong (which opens a follow-up comment). */
+export const COMMENT_VERDICTS = ["verified", "still-wrong"] as const;
+export type CommentVerdict = (typeof COMMENT_VERDICTS)[number];
+
+/** Nothing moves a comment out of these. */
+export const CLOSED_COMMENT_STATUSES: readonly PageCommentStatus[] = ["fixed", "declined", "withdrawn"];
+export const KIND_MAX = 40;
+/** The suggestions the widget offers; any short word is accepted. */
+export const SUGGESTED_KINDS: readonly string[] = ["bug", "copy", "idea", "unsure"];
+
+/** A triage kind as stored: one short line, or undefined. */
+export function cleanKind(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const s = value.replace(/\s+/g, " ").trim();
+  return s ? s.slice(0, KIND_MAX) : undefined;
+}
 
 /** A page comment the office queues, delivers and tracks until it is fixed or declined. */
 export interface PageComment {
@@ -53,6 +88,10 @@ export interface PageComment {
   teamId: string;
   teamName: string;
   text: string;
+  /** The page's triage kind, if it gave one. */
+  kind: string | null;
+  /** Comments queued together share a group id and reach the lead in one message; each keeps its own id and status. */
+  groupId: string | null;
   page: PageContext;
   /** The page origin it was made on (from its url or openUrl), for filtering; null when neither is given. */
   origin: string | null;
@@ -64,8 +103,23 @@ export interface PageComment {
   /** The fixer's note (required to decline), or why delivery failed. */
   note: string | null;
   commit: string | null;
-  /** Who set the last working/fixed/declined status, by office name; null for the office or the founder. */
+  /** The lead's last question about it (status "asked" until the page answers). */
+  question: string | null;
+  /** The page's (or the founder's) answer to that question. */
+  answer: string | null;
+  /** Who set the last working/fixed/declined status or asked, by office name; null for the office or the founder. */
   by: string | null;
+  /** How many times the page edited it. */
+  revision: number;
+  /** The earlier comment this one follows up. */
+  followsUp: string | null;
+  /** Later comments that follow this one up, oldest first. */
+  followUps: string[];
+  /** The founder's check once it is fixed: null until checked. */
+  verification: CommentVerdict | null;
+  verifiedAt: string | null;
+  /** The office has not handed it to the lead yet, so an edit or withdraw changes it in place. */
+  editable: boolean;
   /** The office message that carried it to the lead (the latest one when it was sent again). */
   messageId: string | null;
   /** How many times the office has given it to the team. */
@@ -78,19 +132,39 @@ export interface PageComment {
 export interface PageCommentEvent {
   id: string;
   teamId: string;
+  teamName: string;
+  groupId: string | null;
   status: PageCommentStatus;
+  text: string;
+  kind: string | null;
   openUrl: string | null;
   note: string | null;
   commit: string | null;
+  question: string | null;
+  answer: string | null;
+  by: string | null;
+  revision: number;
+  editable: boolean;
+  followsUp: string | null;
+  followUps: string[];
+  verification: CommentVerdict | null;
+  verifiedAt: string | null;
   meta: Record<string, unknown> | null;
   updatedAt: string;
 }
 
-export const commentEvent = (c: PageComment): PageCommentEvent =>
-  ({ id: c.id, teamId: c.teamId, status: c.status, openUrl: c.openUrl, note: c.note, commit: c.commit, meta: c.meta, updatedAt: c.updatedAt });
+export const commentEvent = (c: PageComment): PageCommentEvent => ({
+  id: c.id, teamId: c.teamId, teamName: c.teamName, groupId: c.groupId, status: c.status, text: c.text, kind: c.kind,
+  openUrl: c.openUrl, note: c.note, commit: c.commit, question: c.question, answer: c.answer, by: c.by,
+  revision: c.revision, editable: c.editable, followsUp: c.followsUp, followUps: c.followUps,
+  verification: c.verification, verifiedAt: c.verifiedAt, meta: c.meta, updatedAt: c.updatedAt,
+});
 
 export const META_MAX_BYTES = 2048;
 export const COMMENT_ID = /^pc-[0-9a-f]{10}$/;
+export const GROUP_ID = /^pg-[0-9a-f]{10}$/;
+/** At most this many comments in one group. */
+export const GROUP_MAX = 20;
 
 export const PAGE_CONTEXT_LIMITS: Readonly<Record<keyof PageContext, number>> = {
   url: 500, title: 160, selector: 240, anchor: 120, selectedText: 600, viewport: 160,
@@ -161,9 +235,9 @@ export function pageContextLines(context: PageContext): string[] {
   return lines;
 }
 
-/** The message text the lead reads: a header naming it a page comment, the compact context, then the comment. */
-export function pageCommentText(text: string, context: PageContext): string {
-  const head = ["[Page comment]", ...pageContextLines(context)].join("\n");
+/** The message text the lead reads: a header naming it a page comment (and its kind), the compact context, then the comment. */
+export function pageCommentText(text: string, context: PageContext, kind?: string | null): string {
+  const head = [kind ? `[Page comment · ${kind}]` : "[Page comment]", ...pageContextLines(context)].join("\n");
   const body = text.trim();
   return body ? `${head}\n\n${body}` : head;
 }
@@ -181,11 +255,33 @@ export interface EmbedContextMessage {
   openUrl?: string;
   /** Page-specific fields handed back untouched with every status event. */
   meta?: Record<string, unknown>;
+  /** A triage kind to preselect in the widget. */
+  kind?: string;
   /** A team to preselect when this page origin has no remembered choice. */
   defaultTeamId?: string;
   /** PNG/JPEG/GIF/WebP data URLs the widget uploads and attaches (at most 8). */
   screenshots?: string[];
 }
+
+/** One comment a host page sends in a group through the widget (the widget adds its own page context to each). */
+export interface EmbedGroupItem {
+  text: string;
+  kind?: string;
+  page?: PageContext;
+  openUrl?: string;
+  meta?: Record<string, unknown>;
+}
+
+/**
+ * Host page → widget: act on this page's own comments. `requestId` comes back on the matching
+ * `office-comment:result`. Edit, withdraw and answer only reach comments made on the host's origin.
+ */
+export type EmbedActionMessage =
+  | { type: "office-comment:edit"; version: 1; requestId?: string; id: string } & PageCommentEdit
+  | { type: "office-comment:withdraw"; version: 1; requestId?: string; id: string; note?: string }
+  | { type: "office-comment:answer"; version: 1; requestId?: string; id: string; text: string }
+  | { type: "office-comment:verify"; version: 1; requestId?: string; id: string; verdict: CommentVerdict; note?: string }
+  | { type: "office-comment:send-group"; version: 1; requestId?: string; teamId?: string; clientId?: string; comments: EmbedGroupItem[] };
 
 /** Host page → widget: relay status events for this page origin's comments (all of them, or only these ids). */
 export interface EmbedWatchMessage {
@@ -200,11 +296,18 @@ export type EmbedOutMessage =
   | { type: "office-comment:sent"; version: 1; id: string; teamId: string; teamName: string; status: PageCommentStatus }
   | ({ type: "office-comment:status"; version: 1 } & PageCommentEvent)
   | { type: "office-comment:resize"; version: 1; height: number }
+  | { type: "office-comment:result"; version: 1; requestId: string | null; action: "edit" | "withdraw" | "answer" | "verify" | "send-group"; ok: true; comments: PageCommentEvent[] }
+  | { type: "office-comment:result"; version: 1; requestId: string | null; action: "edit" | "withdraw" | "answer" | "verify" | "send-group"; ok: false; error: string }
   | { type: "office-comment:error"; version: 1; error: string };
 
 export type AcceptedEmbedMessage =
-  | { type: "context"; page: PageContext; openUrl?: string; meta?: Record<string, unknown>; defaultTeamId?: string; screenshots: string[] }
-  | { type: "watch"; ids: string[] | null };
+  | { type: "context"; page: PageContext; openUrl?: string; meta?: Record<string, unknown>; kind?: string; defaultTeamId?: string; screenshots: string[] }
+  | { type: "watch"; ids: string[] | null }
+  | { type: "edit"; requestId: string | null; id: string; edit: PageCommentEdit }
+  | { type: "withdraw"; requestId: string | null; id: string; note?: string }
+  | { type: "answer"; requestId: string | null; id: string; text: string }
+  | { type: "verify"; requestId: string | null; id: string; verdict: CommentVerdict; note?: string }
+  | { type: "send-group"; requestId: string | null; teamId?: string; clientId?: string; comments: Array<{ text: string; kind?: string; page: PageContext; openUrl?: string; meta?: Record<string, unknown> }> };
 
 const sameOrigin = (url: string, origin: string): boolean => {
   try { return new URL(url).origin.toLowerCase() === origin.toLowerCase(); } catch { return false; }
@@ -228,15 +331,62 @@ export function acceptEmbedMessage(origin: string, data: unknown, allowlist: rea
     const ids = Array.isArray(d.ids) ? d.ids.filter((id): id is string => typeof id === "string" && COMMENT_ID.test(id)).slice(0, 200) : null;
     return { type: "watch", ids };
   }
-  if (d.type !== "office-comment:context") return null;
-  const page = cleanPageContext(d.page);
+  const requestId = typeof d.requestId === "string" && d.requestId.length <= 100 ? d.requestId : null;
+  const id = typeof d.id === "string" && COMMENT_ID.test(d.id) ? d.id : null;
+  const words = (v: unknown): string | undefined => (typeof v === "string" && v.trim() && v.length <= 6000 ? v : undefined);
   // A page speaks for itself: a url on another origin than the sender's is dropped.
-  if (page.url && !sameOrigin(page.url, origin)) delete page.url;
-  const openUrl = typeof d.openUrl === "string" && /^https?:\/\//i.test(d.openUrl) && d.openUrl.length <= 1000 && sameOrigin(d.openUrl, origin) ? d.openUrl : undefined;
+  const ownPage = (v: unknown): PageContext => {
+    const page = cleanPageContext(v);
+    if (page.url && !sameOrigin(page.url, origin)) delete page.url;
+    return page;
+  };
+  const ownUrl = (v: unknown): string | undefined => (typeof v === "string" && /^https?:\/\//i.test(v) && v.length <= 1000 && sameOrigin(v, origin) ? v : undefined);
+  const kind = cleanKind(d.kind);
+  if (d.type === "office-comment:edit") {
+    if (!id) return null;
+    const edit: PageCommentEdit = {};
+    const text = words(d.text); const openUrl = ownUrl(d.openUrl); const meta = cleanMeta(d.meta);
+    if (text) edit.text = text;
+    if (kind) edit.kind = kind;
+    if (openUrl) edit.openUrl = openUrl;
+    if (meta) edit.meta = meta;
+    return { type: "edit", requestId, id, edit };
+  }
+  if (d.type === "office-comment:withdraw") {
+    if (!id) return null;
+    const note = words(d.note);
+    return { type: "withdraw", requestId, id, ...(note ? { note } : {}) };
+  }
+  if (d.type === "office-comment:answer") {
+    const text = words(d.text);
+    return id && text ? { type: "answer", requestId, id, text } : null;
+  }
+  if (d.type === "office-comment:verify") {
+    const verdict = (COMMENT_VERDICTS as readonly unknown[]).includes(d.verdict) ? d.verdict as CommentVerdict : null;
+    const note = words(d.note);
+    return id && verdict ? { type: "verify", requestId, id, verdict, ...(note ? { note } : {}) } : null;
+  }
+  if (d.type === "office-comment:send-group") {
+    if (!Array.isArray(d.comments) || !d.comments.length || d.comments.length > GROUP_MAX) return null;
+    const comments: Array<{ text: string; kind?: string; page: PageContext; openUrl?: string; meta?: Record<string, unknown> }> = [];
+    for (const raw of d.comments as unknown[]) {
+      const c = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+      const text = words(c.text);
+      if (!text) return null;
+      const k = cleanKind(c.kind); const openUrl = ownUrl(c.openUrl); const meta = cleanMeta(c.meta);
+      comments.push({ text, page: ownPage(c.page), ...(k ? { kind: k } : {}), ...(openUrl ? { openUrl } : {}), ...(meta ? { meta } : {}) });
+    }
+    const teamId = typeof d.teamId === "string" && /^[\w-]{1,64}$/.test(d.teamId) ? d.teamId : undefined;
+    const clientId = typeof d.clientId === "string" && d.clientId.length <= 100 ? d.clientId : undefined;
+    return { type: "send-group", requestId, ...(teamId ? { teamId } : {}), ...(clientId ? { clientId } : {}), comments };
+  }
+  if (d.type !== "office-comment:context") return null;
+  const page = ownPage(d.page);
+  const openUrl = ownUrl(d.openUrl);
   const meta = cleanMeta(d.meta);
   const screenshots = Array.isArray(d.screenshots)
     ? d.screenshots.filter((s): s is string => typeof s === "string" && /^data:image\/(png|jpeg|gif|webp);base64,/.test(s)).slice(0, 8)
     : [];
   const defaultTeamId = typeof d.defaultTeamId === "string" && /^[\w-]{1,64}$/.test(d.defaultTeamId) ? d.defaultTeamId : undefined;
-  return { type: "context", page, ...(openUrl ? { openUrl } : {}), ...(meta ? { meta } : {}), ...(defaultTeamId ? { defaultTeamId } : {}), screenshots };
+  return { type: "context", page, ...(openUrl ? { openUrl } : {}), ...(meta ? { meta } : {}), ...(kind ? { kind } : {}), ...(defaultTeamId ? { defaultTeamId } : {}), screenshots };
 }

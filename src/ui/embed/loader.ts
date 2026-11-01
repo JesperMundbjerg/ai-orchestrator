@@ -4,7 +4,11 @@
 // context to it with postMessage. No imports: the build emits it as one plain script.
 // `window.officeComment.open({ selector, selectedText, openUrl, meta, ... })` opens it with more context.
 // The widget relays status changes of this page's comments: listen for "office-comment:status" on
-// window (detail: {id, status, openUrl, note, commit, meta}). `watch(ids)` narrows that to some ids.
+// window (detail: the comment's event: id, status, text, kind, groupId, question, answer, openUrl, note,
+// commit, verification, followsUp, followUps, meta…). `watch(ids)` narrows that to some ids.
+// The page acts on its own comments with promises that settle on the widget's answer:
+//   officeComment.edit(id, {text, kind, openUrl, meta}), .withdraw(id, note?), .answer(id, text),
+//   .verify(id, "verified" | "still-wrong", note?), .sendGroup([{text, kind, page, openUrl, meta}], {teamId, clientId})
 
 type Context = { url?: string; title?: string; selector?: string; anchor?: string; selectedText?: string; viewport?: string };
 type Extra = { openUrl?: string; meta?: Record<string, unknown> };
@@ -20,6 +24,9 @@ type Extra = { openUrl?: string; meta?: Record<string, unknown> };
   let fields: Extra = {};
   let watching: string[] | null = null;
   let screenshots: string[] = [];
+  let ready = false;
+  const waiting: Array<() => void> = [];
+  const pending = new Map<string, { resolve: (comments: unknown[]) => void; reject: (err: Error) => void }>();
 
   const panel = document.createElement("div");
   panel.style.cssText = "position:fixed;right:16px;bottom:64px;width:min(360px,calc(100vw - 32px));height:420px;max-height:calc(100vh - 96px);z-index:2147483646;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.25);overflow:hidden;display:none;background:#f8faf2";
@@ -66,7 +73,12 @@ type Extra = { openUrl?: string; meta?: Record<string, unknown> };
   addEventListener("message", (event) => {
     if (event.origin !== office || !frame || event.source !== frame.contentWindow) return;
     const data = event.data as { type?: string; height?: number } | null;
-    if (data?.type === "office-comment:ready") send();
+    if (data?.type === "office-comment:ready") { ready = true; send(); waiting.splice(0).forEach((go) => go()); }
+    else if (data?.type === "office-comment:result") {
+      const r = data as unknown as { requestId?: string; ok: boolean; comments?: unknown[]; error?: string };
+      const p = r.requestId ? pending.get(r.requestId) : undefined;
+      if (p && r.requestId) { pending.delete(r.requestId); r.ok ? p.resolve(r.comments ?? []) : p.reject(new Error(r.error ?? "refused")); }
+    }
     else if (data?.type === "office-comment:resize" && typeof data.height === "number") panel.style.height = `${Math.min(Math.max(data.height, 200), 640)}px`;
     if (data?.type) dispatchEvent(new CustomEvent(data.type, { detail: data }));
   });
@@ -75,8 +87,21 @@ type Extra = { openUrl?: string; meta?: Record<string, unknown> };
   button.addEventListener("pointerdown", () => { selected = String(getSelection() ?? ""); });
   button.addEventListener("click", () => (panel.style.display === "block" ? close() : open(selected ? { selectedText: selected } : {})));
 
+  /** Asks the widget to act; settles with the comments' events, or the office's refusal. */
+  const request = (type: string, body: Record<string, unknown>): Promise<unknown[]> => new Promise((resolve, reject) => {
+    const requestId = `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    pending.set(requestId, { resolve, reject });
+    const go = () => frame?.contentWindow?.postMessage({ type: `office-comment:${type}`, version: 1, requestId, ...body }, office);
+    ensureFrame();
+    if (ready) go(); else waiting.push(go);
+  });
+  const edit = (id: string, patch: Record<string, unknown>) => request("edit", { ...patch, id });
+  const withdraw = (id: string, note?: string) => request("withdraw", { id, ...(note ? { note } : {}) });
+  const answer = (id: string, text: string) => request("answer", { id, text });
+  const verify = (id: string, verdict: "verified" | "still-wrong", note?: string) => request("verify", { id, verdict, ...(note ? { note } : {}) });
+  const sendGroup = (comments: unknown[], opts: { teamId?: string; clientId?: string } = {}) => request("send-group", { comments, ...opts });
   const watch = (ids?: string[]) => { watching = ids?.length ? ids : null; ensureFrame(); send(); };
   const mount = () => { document.body.append(panel, button); ensureFrame(); };
   if (document.body) mount(); else addEventListener("DOMContentLoaded", mount);
-  (window as unknown as { officeComment: unknown }).officeComment = { open, close, watch };
+  (window as unknown as { officeComment: unknown }).officeComment = { open, close, watch, edit, withdraw, answer, verify, sendGroup };
 })();

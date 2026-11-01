@@ -2,8 +2,10 @@
 // owns everything after that. Pages pick a team by id from the list here, never by name. Each
 // comment is stored in the office's own queue and given to the team's lead as an ordinary founder
 // instruction through Messages.instruct (one delivery path: queued while the lead is busy or away,
-// batched, deduped); the lead closes it with `inbox comment fixed|declined`. Pages hear every
-// status change from an SSE stream, or through the widget's postMessage relay.
+// batched, deduped); the lead closes it with `inbox comment fixed|declined`, or asks the page with
+// `inbox comment ask`. Pages may group comments (one message to the lead, each its own id), edit or
+// withdraw them (in place before the office hands them over, as a follow-up message after), and
+// answer questions. Pages hear every change from an SSE stream, or through the widget's postMessage relay.
 // Which page origins may host the widget is the founder's setting, kept in the data directory; it
 // governs postMessage and framing only, never the service's Origin guard.
 
@@ -11,27 +13,50 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { object, optional, list, text, nonempty, record, oneOf, refine, fail, sessionSchema, type Schema } from "../shared/agent-protocol.ts";
+import { object, optional, list, text, nonempty, record, oneOf, refine, fail, sessionSchema, boolean, type Schema } from "../shared/agent-protocol.ts";
 import {
-  AGENT_COMMENT_STATUSES, COMMENT_ID, DEFAULT_PAGE_ORIGINS, META_MAX_BYTES, cleanMeta, cleanPageContext, commentEvent,
-  normalizeOriginPattern, pageCommentText,
-  type AgentCommentStatus, type PageComment, type PageCommentEvent, type PageCommentInput, type PageCommentStatus, type PageTeam,
+  AGENT_COMMENT_STATUSES, CLOSED_COMMENT_STATUSES, COMMENT_VERDICTS, COMMENT_ID, DEFAULT_PAGE_ORIGINS, GROUP_ID, GROUP_MAX, KIND_MAX, META_MAX_BYTES,
+  cleanKind, cleanMeta, cleanPageContext, commentEvent, normalizeOriginPattern, pageCommentText, pageContextLines,
+  type AgentCommentStatus, type PageComment, type CommentVerdict, type PageCommentEdit, type PageCommentEvent, type PageCommentInput, type PageCommentStatus, type PageTeam,
 } from "../shared/pagecomments.ts";
 import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { Message, SessionInput, WorldAgent, WorldState } from "../shared/types.ts";
 import { requestFingerprint } from "./db.ts";
 import { InboxError } from "./inbox.ts";
+import { ensurePageCommentColumns } from "./pagecomments-schema.ts";
 
 const httpUrl = (max: number): Schema<string> => refine(nonempty, (s, p) => {
   if (s.length > max || !/^https?:\/\//i.test(s)) fail(p, `must be an http(s) URL under ${max} characters`);
   try { new URL(s); } catch { fail(p, "must be a valid URL"); }
 });
-export const pageCommentSchema: Schema<PageCommentInput> = refine(object({
+const at = (p: string, key: string) => `${p ? `${p}.` : ""}${key}`;
+const kindSchema = refine(text, (s, p) => { if (s.length > KIND_MAX) fail(p, `keep it under ${KIND_MAX} characters`); });
+const groupIdSchema = refine(nonempty, (s, p) => { if (!GROUP_ID.test(s)) fail(p, "must be a group id from the office (pg-…)"); });
+const commentFields = {
   text: optional(text), page: optional(record), images: optional(list(nonempty)), clientId: optional(nonempty),
-  openUrl: optional(httpUrl(1000)), meta: optional(record),
-}), (b, p) => {
-  if (b.meta !== undefined && !cleanMeta(b.meta)) fail(`${p ? `${p}.` : ""}meta`, `must be a JSON object of at most ${META_MAX_BYTES} bytes`);
+  openUrl: optional(httpUrl(1000)), meta: optional(record), kind: optional(kindSchema),
+  followsUp: optional(refine(nonempty, (s, p) => { if (!COMMENT_ID.test(s)) fail(p, "must be a page comment id (pc-…)"); })),
+};
+const checkMeta = (b: { meta?: Record<string, unknown> }, p: string) => {
+  if (b.meta !== undefined && !cleanMeta(b.meta)) fail(at(p, "meta"), `must be a JSON object of at most ${META_MAX_BYTES} bytes`);
+};
+export const pageCommentSchema: Schema<PageCommentInput> = refine(object({
+  ...commentFields, groupId: optional(groupIdSchema), hold: optional(boolean),
+}), checkMeta);
+/** Several comments queued as one group: one message to the lead, each its own id and status. */
+export const pageCommentGroupSchema = refine(object({ comments: list(refine(object(commentFields), checkMeta)), clientId: optional(nonempty) }), (b, p) => {
+  if (!b.comments.length || b.comments.length > GROUP_MAX) fail(at(p, "comments"), `send 1 to ${GROUP_MAX} comments`);
 });
+export const commentEditSchema: Schema<PageCommentEdit> = refine(object({
+  text: optional(text), kind: optional(kindSchema), openUrl: optional(httpUrl(1000)), meta: optional(record),
+}), (b, p) => {
+  checkMeta(b, p);
+  if (b.text === undefined && b.kind === undefined && b.openUrl === undefined && b.meta === undefined) fail(p, "say what to change: text, kind, openUrl or meta");
+});
+export const commentWithdrawSchema = object({ note: optional(text) });
+export const commentAskSchema = object({ question: nonempty, session: optional(sessionSchema) });
+export const commentAnswerSchema = object({ text: nonempty, images: optional(list(nonempty)) });
+export const commentVerifySchema = object({ verdict: oneOf(COMMENT_VERDICTS), note: optional(text), clientId: optional(nonempty) });
 export const pageOriginsSchema = object({ origins: list(text) });
 export const commentStatusSchema = refine(object({
   status: oneOf(AGENT_COMMENT_STATUSES), note: optional(text), url: optional(httpUrl(1000)), commit: optional(nonempty), session: optional(sessionSchema),
@@ -42,7 +67,8 @@ export const commentStatusSchema = refine(object({
 
 /** A delivery that failed because its lead left is given to the team again, at most this many times in all. */
 export const MAX_ATTEMPTS = 3;
-const FINAL: ReadonlySet<PageCommentStatus> = new Set(["fixed", "declined"]);
+const FINAL: ReadonlySet<PageCommentStatus> = new Set(CLOSED_COMMENT_STATUSES);
+const TEXT_MAX = 6000;
 
 interface Office {
   state(): WorldState;
@@ -71,6 +97,8 @@ export class PageComments {
     this.office = office;
     this.settingsPath = settingsPath;
     this.now = now;
+    // Migration 18 made the table; columns added since then are added here when missing.
+    ensurePageCommentColumns(db);
   }
 
   /** Every team, ordered by name, with only what a page needs to pick one. */
@@ -87,32 +115,201 @@ export class PageComments {
     return { teams: teams.sort((a, b) => a.name.localeCompare(b.name)) };
   }
 
-  /** Queues one comment for the team and gives it to the lead at once when it can. The same client id returns the first comment. */
+  /**
+   * Queues one comment for the team and gives it to the lead at once when it can. The same client id
+   * returns the first comment. With `hold` it waits in its group (a new one without a group id) until
+   * the group is sent; a comment without `hold` to a held group sends the group with it.
+   */
   enqueue(teamId: string, input: PageCommentInput): PageComment {
+    const id = this.insert(teamId, input, input.groupId ?? (input.hold ? newGroupId() : null), input.hold ? "held" : "queued");
+    const comment = this.get(id);
+    // The earlier comment lists its follow-ups, so its page hears of this one too.
+    if (comment.followsUp) this.emit(comment.followsUp);
+    if (comment.groupId && !input.hold) return (this.sendGroup(comment.groupId), this.get(id));
+    if (comment.status !== "held") this.sync();
+    return this.get(id);
+  }
+
+  /** Queues several comments as one group: the lead gets them in one message; each keeps its own id and status. */
+  enqueueGroup(teamId: string, input: { comments: PageCommentInput[]; clientId?: string }): { groupId: string; comments: PageComment[] } {
+    if (!input.comments.length || input.comments.length > GROUP_MAX) throw new InboxError(400, `send 1 to ${GROUP_MAX} comments`);
+    const replay = input.clientId ? this.db.prepare("SELECT group_id FROM page_comments WHERE client_id = ?").get(`${input.clientId}:0`) as Row | undefined : undefined;
+    const groupId = opt(replay?.group_id) ?? newGroupId();
+    const ids: string[] = [];
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      input.comments.forEach((c, i) => ids.push(this.insert(teamId, { ...c, ...(input.clientId ? { clientId: `${input.clientId}:${i}` } : {}) }, groupId, "held", false)));
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+    for (const id of ids) this.emit(id);
+    this.sendGroup(groupId);
+    return { groupId, comments: ids.map((id) => this.get(id)) };
+  }
+
+  /** A held group goes to the lead now, as one message. */
+  sendGroup(groupId: string): { groupId: string; comments: PageComment[] } {
+    const members = this.groupRows(groupId);
+    for (const row of members) if (str(row.status) === "held") this.update(str(row.id), { status: "queued" });
+    this.sync();
+    return { groupId, comments: this.groupRows(groupId).map((r) => this.toComment(r, this.teamNames())) };
+  }
+
+  /** A held group is dropped: its comments are withdrawn without reaching anyone. */
+  discardGroup(groupId: string): { groupId: string; comments: PageComment[] } {
+    for (const row of this.groupRows(groupId)) if (str(row.status) === "held") this.update(str(row.id), { status: "withdrawn", note: "the group was discarded" });
+    return { groupId, comments: this.groupRows(groupId).map((r) => this.toComment(r, this.teamNames())) };
+  }
+
+  private groupRows(groupId: string): Row[] {
+    if (!GROUP_ID.test(groupId)) throw new InboxError(404, `no comment group ${groupId}`);
+    const rows = this.db.prepare("SELECT * FROM page_comments WHERE group_id = ? ORDER BY created_at, rowid").all(groupId) as Row[];
+    if (!rows.length) throw new InboxError(404, `no comment group ${groupId}`);
+    return rows;
+  }
+
+  private insert(teamId: string, input: PageCommentInput, groupId: string | null, status: "held" | "queued", announce = true): string {
     const page = cleanPageContext(input.page);
     const body = input.text?.trim() ?? "";
     const images = [...new Set(input.images ?? [])];
     const meta = input.meta === undefined ? null : cleanMeta(input.meta) ?? null;
+    const kind = cleanKind(input.kind) ?? null;
+    const followsUp = input.followsUp ?? null;
+    if (followsUp && !this.db.prepare("SELECT 1 FROM page_comments WHERE id = ?").get(followsUp)) throw new InboxError(404, `no page comment ${followsUp} to follow up`);
     if (!body && !images.length) throw new InboxError(400, "the comment needs some text");
-    if (body.length > 6000) throw new InboxError(413, "keep the comment under 6000 characters");
-    const fingerprint = requestFingerprint({ teamId, body, page, images: [...images].sort(), openUrl: input.openUrl ?? null, meta });
+    if (body.length > TEXT_MAX) throw new InboxError(413, `keep the comment under ${TEXT_MAX} characters`);
+    const fingerprint = requestFingerprint({ teamId, body, page, images: [...images].sort(), openUrl: input.openUrl ?? null, meta, kind, followsUp, groupId: input.groupId ?? null, hold: !!input.hold });
     if (input.clientId) {
       const prior = this.db.prepare("SELECT id, fingerprint FROM page_comments WHERE client_id = ?").get(input.clientId) as Row | undefined;
       if (prior) {
         if (prior.fingerprint !== fingerprint) throw Object.assign(new InboxError(409, "client id was already used for a different comment"), { code: "replay_conflict" });
-        return this.get(str(prior.id));
+        return str(prior.id);
       }
     }
     if (!this.office.state().teams.some((t) => t.id === teamId)) throw new InboxError(404, `no team ${teamId}`);
+    if (groupId) {
+      const other = this.db.prepare("SELECT team_id, status FROM page_comments WHERE group_id = ? AND status != 'withdrawn'").all(groupId) as Row[];
+      if (input.groupId && !other.length) throw new InboxError(404, `no comment group ${groupId}`);
+      if (other.some((r) => str(r.team_id) !== teamId)) throw new InboxError(409, "a group goes to one team");
+      if (other.some((r) => str(r.status) !== "held")) throw Object.assign(new InboxError(409, `group ${groupId} was already sent`), { code: "group_sent" });
+      if (other.length >= GROUP_MAX) throw new InboxError(409, `a group holds at most ${GROUP_MAX} comments`);
+    }
     const id = `pc-${randomBytes(5).toString("hex")}`;
-    const at = this.now().toISOString();
+    const now = this.now().toISOString();
     const origin = originOf(page.url) ?? originOf(input.openUrl);
-    this.db.prepare(`INSERT INTO page_comments (id, team_id, text, page, origin, open_url, meta, images, status, attempts, client_id, fingerprint, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)`)
-      .run(id, teamId, body, JSON.stringify(page), origin, input.openUrl ?? null, meta ? JSON.stringify(meta) : null, images.length ? JSON.stringify(images) : null, input.clientId ?? null, fingerprint, at, at);
+    this.db.prepare(`INSERT INTO page_comments (id, team_id, text, page, origin, open_url, meta, images, status, attempts, client_id, fingerprint, created_at, updated_at, kind, group_id, follows_up)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, teamId, body, JSON.stringify(page), origin, input.openUrl ?? null, meta ? JSON.stringify(meta) : null, images.length ? JSON.stringify(images) : null, status, input.clientId ?? null, fingerprint, now, now, kind, groupId, followsUp);
+    if (announce) this.emit(id);
+    return id;
+  }
+
+  /**
+   * The page changes its comment. Still in the office's hands (held, or queued and not yet handed to
+   * the lead), it changes in place; once the lead has it, the lead gets the change as a follow-up
+   * message on the same comment id. The same edit twice changes nothing.
+   */
+  edit(id: string, input: PageCommentEdit): PageComment {
+    const current = this.get(id);
+    if (FINAL.has(current.status)) throw Object.assign(new InboxError(409, `comment ${id} is already ${current.status}`), { code: "comment_closed" });
+    const row = this.row(id);
+    const text = input.text === undefined ? undefined : input.text.trim();
+    if (text !== undefined && !text) throw new InboxError(400, "the comment needs some text");
+    if (text && text.length > TEXT_MAX) throw new InboxError(413, `keep the comment under ${TEXT_MAX} characters`);
+    const kind = input.kind === undefined ? undefined : cleanKind(input.kind) ?? null;
+    const meta = input.meta === undefined ? undefined : cleanMeta(input.meta) ?? null;
+    const fields: Record<string, string | number | null> = {};
+    if (text !== undefined && text !== current.text) fields.text = text;
+    if (kind !== undefined && kind !== current.kind) fields.kind = kind;
+    if (input.openUrl !== undefined && input.openUrl !== opt(row.open_url)) fields.open_url = input.openUrl;
+    if (meta !== undefined && JSON.stringify(meta) !== JSON.stringify(current.meta)) fields.meta = meta ? JSON.stringify(meta) : null;
+    if (!Object.keys(fields).length) return current;
+    fields.revision = current.revision + 1;
+    if (!current.editable) {
+      const next = { ...current, text: text ?? current.text, kind: kind === undefined ? current.kind : kind, openUrl: opt(row.fixed_url) ?? input.openUrl ?? current.openUrl };
+      const changed = [fields.text !== undefined ? "text" : null, fields.kind !== undefined ? "kind" : null, fields.open_url !== undefined ? "open URL" : null, fields.meta !== undefined ? "page fields" : null].filter(Boolean).join(", ");
+      this.followUp(current, `[Page comment ${id} edited]\nThe page changed this comment's ${changed} (revision ${fields.revision}); this replaces what you have:\n\n${pageCommentText(next.text, current.page, next.kind)}${next.openUrl ? `\n\nOpen to check: ${next.openUrl}` : ""}`, `edit:${fields.revision}`);
+    }
+    this.update(id, fields, false);
     this.emit(id);
-    this.sync();
     return this.get(id);
+  }
+
+  /** The page takes its comment back. In the office's hands it simply closes; once the lead has it, the lead is told to stop. */
+  withdraw(id: string, input: { note?: string } = {}): PageComment {
+    const current = this.get(id);
+    if (current.status === "withdrawn") return current;
+    if (FINAL.has(current.status)) throw Object.assign(new InboxError(409, `comment ${id} is already ${current.status}`), { code: "comment_closed" });
+    const note = input.note?.trim() ? input.note.trim().slice(0, 2000) : null;
+    if (!current.editable) {
+      // Withdrawing never depends on reaching the lead: when nobody can be told, it still closes.
+      try { this.followUp(current, `[Page comment ${id} withdrawn]\nThe page withdrew this comment${note ? `: ${note}` : ""}. Stop any work on it; it is closed and needs no status from you.`, "withdraw"); }
+      catch { /* told in the comment's note below */ }
+    }
+    this.update(id, { status: "withdrawn", note: note ?? (current.editable ? "withdrawn before it reached the team" : "withdrawn by the page") }, false);
+    this.emit(id);
+    return this.get(id);
+  }
+
+  /** The lead (or its crew) asks the page about a comment: status asked, with the question in the event. */
+  ask(id: string, input: { question: string; session?: SessionInput }): PageComment {
+    const current = this.get(id);
+    if (FINAL.has(current.status)) throw Object.assign(new InboxError(409, `comment ${id} is already ${current.status}`), { code: "comment_closed" });
+    if (current.editable) throw Object.assign(new InboxError(409, `comment ${id} has not reached the team yet`), { code: "comment_not_delivered" });
+    const question = input.question.trim().slice(0, 2000);
+    if (current.status === "asked" && current.question === question) return current;
+    const by = input.session && this.office.resolve ? this.office.resolve(input.session).name : null;
+    this.update(id, { status: "asked", question, answer: null, by_name: by }, false);
+    this.emit(id);
+    return this.get(id);
+  }
+
+  /** The page (or the founder in the office) answers the question: it reaches the lead as a message on the comment, and work goes on. */
+  answer(id: string, input: { text: string; images?: string[] }): PageComment {
+    const current = this.get(id);
+    const answer = input.text.trim().slice(0, TEXT_MAX);
+    if (current.status !== "asked") {
+      if (current.answer === answer) return current;
+      throw Object.assign(new InboxError(409, `comment ${id} has no open question`), { code: "no_question" });
+    }
+    this.followUp(current, `[Page comment ${id} answered]\nYou asked: ${current.question}\nThe answer: ${answer}\n\nIt is back to working. Close it as before: \`inbox comment fixed ${id}\` or \`inbox comment declined ${id} --note "why"\`.`, `answer:${current.updatedAt}`, input.images);
+    this.update(id, { status: "working", answer }, false);
+    this.emit(id);
+    return this.get(id);
+  }
+
+  /**
+   * The founder checks a fixed comment. Verified marks it so (a release gate reads that); still wrong
+   * opens a follow-up comment to the same team, on the same page, that names the fix it follows up.
+   * Asking again gives the same answer: the same follow-up, never a second one.
+   */
+  verify(id: string, input: { verdict: CommentVerdict; note?: string }): { comment: PageComment; followUp: PageComment | null } {
+    const current = this.get(id);
+    if (current.status !== "fixed") throw Object.assign(new InboxError(409, `comment ${id} is ${current.status}, not fixed`), { code: "comment_not_fixed" });
+    const reopened = () => {
+      const row = this.db.prepare("SELECT id FROM page_comments WHERE follows_up = ? AND client_id = ?").get(id, `still-wrong:${id}`) as Row | undefined;
+      return row ? this.get(str(row.id)) : null;
+    };
+    if (current.verification === input.verdict) return { comment: current, followUp: input.verdict === "still-wrong" ? reopened() : null };
+    if (current.verification === "still-wrong") throw Object.assign(new InboxError(409, `comment ${id} was found still wrong; verify its follow-up instead`), { code: "comment_reopened" });
+    const at = this.now().toISOString();
+    this.update(id, { verification: input.verdict, verified_at: at }, false);
+    let followUp: PageComment | null = null;
+    if (input.verdict === "still-wrong") {
+      const row = this.row(id);
+      followUp = this.enqueue(current.teamId, {
+        text: input.note?.trim() || "Still wrong after the fix.", page: current.page, followsUp: id, clientId: `still-wrong:${id}`,
+        ...(opt(row.open_url) ? { openUrl: opt(row.open_url)! } : {}), ...(current.meta ? { meta: current.meta } : {}), ...(current.kind ? { kind: current.kind } : {}),
+      });
+    } else this.emit(id);
+    return { comment: this.get(id), followUp };
+  }
+
+  /** A message to the team's lead about a comment it already has. Throws when the office cannot give it to anyone. */
+  private followUp(c: PageComment, text: string, key: string, images?: string[]): void {
+    this.office.instruct(c.teamId, { text, ...(images?.length ? { images } : {}), clientId: `page-comment:${c.id}:${key}` });
   }
 
   get(id: string): PageComment {
@@ -122,10 +319,12 @@ export class PageComments {
     return this.toComment(row, this.teamNames());
   }
 
-  /** Newest first; filtered by team, page origin, ids or status. */
-  list(filter: { team?: string; origin?: string; ids?: string[]; status?: string; limit?: number } = {}): { comments: PageComment[] } {
+  /** Newest first; filtered by team, page origin, ids, status or (for fixed ones) whether the founder verified them. */
+  list(filter: { team?: string; origin?: string; ids?: string[]; status?: string; verified?: boolean; limit?: number } = {}): { comments: PageComment[] } {
     const where: string[] = [];
     const args: string[] = [];
+    // verified=true: fixed and verified; verified=false: fixed and not (yet) verified.
+    if (filter.verified !== undefined) where.push(filter.verified ? "status = 'fixed' AND verification = 'verified'" : "status = 'fixed' AND (verification IS NULL OR verification != 'verified')");
     if (filter.team) { where.push("team_id = ?"); args.push(filter.team); }
     if (filter.origin) { where.push("origin = ?"); args.push(filter.origin.toLowerCase()); }
     if (filter.status) { where.push("status = ?"); args.push(filter.status); }
@@ -146,6 +345,7 @@ export class PageComments {
       if (same) return current;
       throw Object.assign(new InboxError(409, `comment ${id} is already ${current.status}`), { code: "comment_closed" });
     }
+    if (current.editable) throw Object.assign(new InboxError(409, `comment ${id} has not reached the team yet`), { code: "comment_not_delivered" });
     if (input.status === "working" && current.status === "working" && !note) return current;
     const at = this.now().toISOString();
     this.db.prepare("UPDATE page_comments SET status = ?, note = COALESCE(?, note), fixed_url = COALESCE(?, fixed_url), commit_sha = COALESCE(?, commit_sha), by_name = ?, updated_at = ? WHERE id = ?")
@@ -165,7 +365,18 @@ export class PageComments {
     this.syncing = true;
     try {
       const rows = this.db.prepare("SELECT * FROM page_comments WHERE status IN ('queued', 'failed') ORDER BY created_at, rowid").all() as Row[];
-      for (const row of rows) this.advance(row);
+      const handed = new Set<string>();
+      for (const row of rows) {
+        if (handed.has(str(row.id))) continue;
+        // A group's queued comments that have no message yet go to the lead together.
+        const group = opt(row.group_id);
+        if (group && !row.message_id && str(row.status) === "queued") {
+          const members = rows.filter((r) => opt(r.group_id) === group && !r.message_id && str(r.status) === "queued");
+          for (const m of members) handed.add(str(m.id));
+          if (members.length > 1) { this.handOver(members); continue; }
+        }
+        this.advance(row);
+      }
     } finally {
       this.syncing = false;
     }
@@ -189,23 +400,61 @@ export class PageComments {
       return;
     }
     if (str(row.status) !== "queued") return;
-    if (attempts >= MAX_ATTEMPTS) return this.update(id, { status: "failed", note: "its team had nobody to give it to" });
-    const comment = this.toComment(row, this.teamNames());
+    this.handOver([row]);
+  }
+
+  /** Gives queued comments (one, or a group) to their team's lead in one message. */
+  private handOver(rows: Row[]): void {
+    const names = this.teamNames();
+    const exhausted = rows.filter((r) => Number(r.attempts) >= MAX_ATTEMPTS);
+    for (const r of exhausted) this.update(str(r.id), { status: "failed", note: "its team had nobody to give it to" });
+    const live = rows.filter((r) => Number(r.attempts) < MAX_ATTEMPTS);
+    if (!live.length) return;
+    const comments = live.map((r) => this.toComment(r, names));
+    const attempt = Math.max(...live.map((r) => Number(r.attempts))) + 1;
+    const key = comments.length === 1 ? comments[0]!.id : `${comments[0]!.groupId}:${requestFingerprint(comments.map((c) => c.id)).slice(0, 12)}`;
     try {
-      const message = this.office.instruct(comment.teamId, { text: this.leadText(comment), images: comment.images, clientId: `page-comment:${id}:${attempts + 1}` });
-      this.update(id, { message_id: message.id, attempts: attempts + 1, note: null });
+      const message = this.office.instruct(comments[0]!.teamId, {
+        text: comments.length === 1 ? this.leadText(comments[0]!) : this.groupText(comments),
+        images: [...new Set(comments.flatMap((c) => c.images))],
+        clientId: `page-comment:${key}:${attempt}`,
+      });
+      for (const r of live) this.update(str(r.id), { message_id: message.id, attempts: Number(r.attempts) + 1, note: null });
     } catch (err) {
       const e = err as InboxError;
-      // Nobody on the team yet: it stays queued until someone is.
-      if (e.status === 409) return this.update(id, { note: e.message }, false);
-      this.update(id, { status: "failed", note: e.message || "could not be given to the team" });
+      for (const r of live) {
+        // Nobody on the team yet: it stays queued until someone is.
+        if (e.status === 409) this.update(str(r.id), { note: e.message }, false);
+        else this.update(str(r.id), { status: "failed", note: e.message || "could not be given to the team" });
+      }
     }
   }
+
+  private static readonly CLOSE = "The page that sent it is told of each status, and may edit or withdraw it; an edit or withdrawal reaches you as a follow-up on the same id.";
 
   /** What the lead reads: the page context, the comment, where to open it, and how to close the loop. */
   private leadText(c: PageComment): string {
     const open = c.openUrl ? `\n\nOpen to check: ${c.openUrl}` : "";
-    return `${pageCommentText(c.text, c.page)}${open}\n\nPage comment ${c.id}. Say \`inbox comment working ${c.id}\` when you start; when it is fixed, \`inbox comment fixed ${c.id} [--url URL] [--note "…"] [--commit SHA]\` (--url when the fix is best seen somewhere more specific); if it will not be fixed, \`inbox comment declined ${c.id} --note "why"\`. The page that sent it is told.`;
+    return `${pageCommentText(c.text, c.page, c.kind)}${open}${this.followsUpText(c)}\n\nPage comment ${c.id}. Say \`inbox comment working ${c.id}\` when you start; when it is fixed, \`inbox comment fixed ${c.id} [--url URL] [--note "…"] [--commit SHA]\` (--url when the fix is best seen somewhere more specific); if it will not be fixed, \`inbox comment declined ${c.id} --note "why"\`; to ask the page, \`inbox comment ask ${c.id} "question"\`. ${PageComments.CLOSE}`;
+  }
+
+  /** What the lead needs of the comment this one follows up: its status, note, commit and where it was fixed. */
+  private followsUpText(c: PageComment): string {
+    if (!c.followsUp) return "";
+    let earlier: PageComment;
+    try { earlier = this.get(c.followsUp); } catch { return `\n\nFollows up page comment ${c.followsUp}.`; }
+    const facts = [earlier.status, earlier.note ? `note: ${earlier.note}` : null, earlier.commit ? `commit ${earlier.commit}` : null, earlier.openUrl ? `open: ${earlier.openUrl}` : null].filter(Boolean).join("; ");
+    return `\n\nFollows up page comment ${earlier.id} (${facts}): “${earlier.text.slice(0, 200)}${earlier.text.length > 200 ? "…" : ""}”`;
+  }
+
+  /** A group in one message: each comment with its own id, context and kind, then how to close each. */
+  private groupText(comments: PageComment[]): string {
+    const parts = comments.map((c, i) => {
+      const head = `${i + 1}. Page comment ${c.id}${c.kind ? ` · ${c.kind}` : ""}`;
+      const open = c.openUrl ? `\nOpen to check: ${c.openUrl}` : "";
+      return [head, ...pageContextLines(c.page), "", c.text].join("\n") + open + this.followsUpText(c).replace(/^\n\n/, "\n");
+    });
+    return `[Page comments: ${comments.length} in group ${comments[0]!.groupId}]\n\n${parts.join("\n\n")}\n\nEach keeps its own id and status: \`inbox comment working ID\`, \`inbox comment fixed ID [--url URL] [--note "…"] [--commit SHA]\`, \`inbox comment declined ID --note "why"\`, or \`inbox comment ask ID "question"\`. ${PageComments.CLOSE.replace("sent it", "sent them").replace("edit or withdraw it", "edit or withdraw each")}`;
   }
 
   /** The page origins allowed to host the widget; local dev servers until the founder sets them. */
@@ -247,8 +496,12 @@ export class PageComments {
     };
   }
 
+  private row(id: string): Row {
+    return this.db.prepare("SELECT * FROM page_comments WHERE id = ?").get(id) as Row;
+  }
+
   private update(id: string, fields: Record<string, string | number | null>, announce = true): void {
-    const before = this.db.prepare("SELECT * FROM page_comments WHERE id = ?").get(id) as Row;
+    const before = this.row(id);
     const keys = Object.keys(fields);
     if (keys.every((k) => (before[k] ?? null) === fields[k])) return;
     this.db.prepare(`UPDATE page_comments SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...keys.map((k) => fields[k]!), this.now().toISOString(), id);
@@ -272,14 +525,21 @@ export class PageComments {
   private toComment(r: Row, names: Map<string, string>): PageComment {
     return {
       id: str(r.id), teamId: str(r.team_id), teamName: names.get(str(r.team_id)) ?? "",
-      text: str(r.text), page: JSON.parse(str(r.page) || "{}"), origin: opt(r.origin),
+      text: str(r.text), kind: opt(r.kind), groupId: opt(r.group_id), page: JSON.parse(str(r.page) || "{}"), origin: opt(r.origin),
       openUrl: opt(r.fixed_url) ?? opt(r.open_url), meta: r.meta ? JSON.parse(str(r.meta)) : null,
       images: r.images ? JSON.parse(str(r.images)) : [],
       status: str(r.status) as PageCommentStatus, note: opt(r.note), commit: opt(r.commit_sha), by: opt(r.by_name),
+      question: opt(r.question), answer: opt(r.answer), revision: Number(r.revision ?? 0),
+      followsUp: opt(r.follows_up),
+      followUps: (this.db.prepare("SELECT id FROM page_comments WHERE follows_up = ? ORDER BY created_at, rowid").all(str(r.id)) as Row[]).map((x) => str(x.id)),
+      verification: opt(r.verification) as CommentVerdict | null, verifiedAt: opt(r.verified_at),
+      editable: str(r.status) === "held" || (str(r.status) === "queued" && !r.message_id),
       messageId: opt(r.message_id), attempts: Number(r.attempts), createdAt: str(r.created_at), updatedAt: str(r.updated_at),
     };
   }
 }
+
+const newGroupId = () => `pg-${randomBytes(5).toString("hex")}`;
 
 function originOf(url: string | undefined): string | null {
   if (!url) return null;

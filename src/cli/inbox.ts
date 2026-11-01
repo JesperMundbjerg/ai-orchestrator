@@ -120,13 +120,14 @@ ${LEASE_HELP}
                                   waiting messages) itself. Works with --all-from too
   inbox lane [PROJECT LANE]       a project's standing lanes with an attach command: connected, disconnected, busy or unknown, and who holds them
   inbox lane recover PROJECT LANE --to NAME
+                                  attach the lane to NAME's running session through the project's own attach command; it never
+                                  renames anyone or changes a lead, and says exactly what a fresh check confirmed or why it was refused
   inbox comment working ID        a page comment the office gave you: say you started on it
   inbox comment fixed ID [--url URL] [--note "…"] [--commit SHA]
                                   it is fixed; --url is where to see the fix when not the page's own open URL
   inbox comment declined ID --note "why"
-  inbox comment show ID           its status, page and open URL
-                                  attach the lane to NAME's running session through the project's own attach command; it never
-                                  renames anyone or changes a lead, and says exactly what a fresh check confirmed or why it was refused
+  inbox comment ask ID "question" ask the page about it: it says "asked" until the page answers, and the answer reaches you
+  inbox comment show ID           its status, kind, group, question and open URL
   inbox surface-check --writes "GLOB,GLOB" --base SHA [--commit SHA]
                                   in the repository: the files changed from base to commit (default HEAD) outside a crew
                                   member's write surface; exits 1 when there are any. ** spans folders, * stays in one
@@ -452,7 +453,7 @@ async function main(argv: string[]): Promise<void> {
     case "lane":
       return laneCommand(parsed.positionals.slice(1));
     case "comment":
-      return commentCommand(arg, parsed.positionals[2]);
+      return commentCommand(arg, parsed.positionals[2], parsed.positionals[3]);
     case "surface-check":
       return surfaceCheck();
     case "pane": {
@@ -489,15 +490,20 @@ function surfaceCheck(): void {
   process.exitCode = 1;
 }
 
-/** `inbox comment working|fixed|declined|show ID`: closes the loop on a page comment; the page that sent it is told. */
-async function commentCommand(sub: string | undefined, id: string | undefined): Promise<void> {
-  if (!sub || !id) throw new Error('inbox comment needs what and which: inbox comment fixed|declined|working|show ID');
+/** `inbox comment working|fixed|declined|ask|show ID`: closes the loop on a page comment, or asks its page; the page is told. */
+async function commentCommand(sub: string | undefined, id: string | undefined, question: string | undefined): Promise<void> {
+  if (!sub || !id) throw new Error('inbox comment needs what and which: inbox comment fixed|declined|working|ask|show ID');
   if (sub === "show") return console.log(commentLine(await get<PageComment>(`/api/page-comments/${encodeURIComponent(id)}`)));
-  if (!(AGENT_COMMENT_STATUSES as readonly string[]).includes(sub)) throw new Error(`unknown comment status "${sub}": use working, fixed or declined`);
-  if (sub === "declined" && !flags.note?.trim()) throw new Error('say why: inbox comment declined ID --note "why"');
   // Who marks it is recorded when this runs in an agent session; the founder may run it from any shell.
   let s: SessionInput | undefined;
   try { s = session(); } catch { s = undefined; }
+  if (sub === "ask") {
+    if (!question?.trim()) throw new Error('say what to ask: inbox comment ask ID "question"');
+    const out = await call<PageComment>(`/api/page-comments/${encodeURIComponent(id)}/ask`, { question, ...(s ? { session: s } : {}) });
+    return console.log(`${commentLine(out)}\nThe page is asked; its answer reaches you as a message on ${out.id}.`);
+  }
+  if (!(AGENT_COMMENT_STATUSES as readonly string[]).includes(sub)) throw new Error(`unknown comment status "${sub}": use working, fixed, declined or ask`);
+  if (sub === "declined" && !flags.note?.trim()) throw new Error('say why: inbox comment declined ID --note "why"');
   const url = flags.url?.at(-1);
   const out = await call<PageComment>(`/api/page-comments/${encodeURIComponent(id)}/status`, { status: sub, note: flags.note, url, commit: flags.commit, ...(s ? { session: s } : {}) });
   console.log(`${commentLine(out)}\nThe page that sent it is told.`);
@@ -505,7 +511,19 @@ async function commentCommand(sub: string | undefined, id: string | undefined): 
 
 function commentLine(c: PageComment): string {
   const where = c.page.title ?? c.page.url ?? "a page";
-  return [`Comment ${c.id} to ${c.teamName || c.teamId}: ${c.status}${c.note ? ` (${c.note})` : ""}`, `  on ${where}`, c.openUrl ? `  open: ${c.openUrl}` : null, c.commit ? `  commit: ${c.commit}` : null].filter(Boolean).join("\n");
+  return [
+    `Comment ${c.id} to ${c.teamName || c.teamId}: ${c.status}${c.note ? ` (${c.note})` : ""}`,
+    `  on ${where}`,
+    c.kind ? `  kind: ${c.kind}` : null,
+    c.groupId ? `  group: ${c.groupId}` : null,
+    c.question ? `  asked: ${c.question}` : null,
+    c.answer ? `  answer: ${c.answer}` : null,
+    c.followsUp ? `  follows up: ${c.followsUp}` : null,
+    c.followUps.length ? `  followed up by: ${c.followUps.join(", ")}` : null,
+    c.verification ? `  founder: ${c.verification === "verified" ? "verified" : "still wrong"}` : null,
+    c.openUrl ? `  open: ${c.openUrl}` : null,
+    c.commit ? `  commit: ${c.commit}` : null,
+  ].filter(Boolean).join("\n");
 }
 
 
