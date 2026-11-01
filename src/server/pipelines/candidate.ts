@@ -115,6 +115,30 @@ export function committedFingerprint(cwd: string, candidate: PipelineCandidate):
   for (const path of changedPaths) { const entry = committed.get(path); if (entry) tree.set(path, entry); else tree.delete(path); }
   return intendedBytes(tree, [...new Set([...changedPaths, ...(candidate.fingerprintPaths ?? [])])].sort(), candidate.fingerprintVersion ?? 1);
 }
+/**
+ * What a candidate changes, independent of where it sits: the `git patch-id` of the whole `base..head` diff
+ * (one diff, so a multi-commit candidate is judged as the change it makes, however its commits are split),
+ * plus each changed path's status and modes, which a patch id does not hash. `--verbatim` is `--stable` that
+ * keeps whitespace, so an indentation-only edit while resolving a conflict is a different change. Line numbers
+ * and blob ids are not part of it, so the same change re-based onto a moved base keeps its identity. The diff is
+ * read with every user setting that could reshape it pinned. Null when there is nothing to compare or Git cannot
+ * say: never "the same".
+ */
+export function patchIdentity(cwd: string, base: string, head: string): string | null {
+  const run = (args: string[], input?: string) => execFileSync("git", ["-c", "core.fsmonitor=false", ...args], { cwd, encoding: "utf8", timeout: 5000, maxBuffer: 64 * 1024 * 1024, ...(input === undefined ? { stdio: ["ignore", "pipe", "pipe"] } : { input, stdio: ["pipe", "pipe", "pipe"] }) });
+  try {
+    const shape = ["--no-ext-diff", "--no-textconv", "--no-renames", "--no-relative", "--no-color", "--diff-algorithm=myers", "-O/dev/null"];
+    const diff = run(["diff", ...shape, "--full-index", "--binary", "--src-prefix=a/", "--dst-prefix=b/", ref(base), ref(head), "--"]);
+    if (!diff) return null;
+    const id = run(["patch-id", "--verbatim"], diff).split(/\s+/)[0];
+    if (!id || !/^[0-9a-f]+$/.test(id)) return null;
+    // ":<old mode> <new mode> <old blob> <new blob> <status>\0<path>\0" per path: keep all but the blob ids.
+    const raw = run(["diff", ...shape, "--raw", "-z", ref(base), ref(head), "--"]).split("\0");
+    const modes: string[] = [];
+    for (let i = 0; i + 1 < raw.length; i += 2) { const [oldMode, newMode, , , status] = raw[i]!.replace(/^:/, "").split(" "); modes.push(`${oldMode} ${newMode} ${status} ${raw[i + 1]}`); }
+    return `${id}:${createHash("sha256").update(modes.join("\n")).digest("hex").slice(0, 16)}`;
+  } catch { return null; }
+}
 export function isAncestor(cwd: string, ancestor: string, descendant: string): boolean {
   try { git(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]); return true; } catch { return false; }
 }

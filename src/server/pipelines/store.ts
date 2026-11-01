@@ -11,7 +11,7 @@ import { dataDir, requestFingerprint } from "../db.ts";
 import { Adapters } from "../adapter.ts";
 import { activation, pathProblems, policyHash, selected, topological, validateGraph, validateLayout } from "./model.ts";
 import { BUILTINS, discover, within } from "./discovery.ts";
-import { capture, committedFingerprint, inRequest, inScope, isAncestor, laneCheckout, publishedBranch, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
+import { capture, committedFingerprint, inRequest, inScope, isAncestor, laneCheckout, patchIdentity, publishedBranch, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
 import { founderDecision, presentedBy } from "./approval.ts";
 import { PipelineTelemetry } from "./telemetry.ts";
 
@@ -21,6 +21,15 @@ const thrownCode = (err: unknown): string => err instanceof InboxError ? err.cod
 /** How an agent re-pins a run to the checkout's committed work; named by absolute path, since a cold pane may lack `inbox` on its PATH. */
 const repin = (runId: string) => inboxCommand(`pipeline branch ${runId} --candidate HEAD --notes "why"`);
 const quoted = (commands: string[]) => commands.map(c => `\`${c}\``).join(", ");
+/**
+ * Rebase first: a founder acceptance carried to a re-based candidate whose change is identical (`patchIdentity`).
+ * The copy is the office's, made inside the re-base edit from an acceptance that counted at that moment; it names
+ * the commit, base and acceptance it came from. Stored in the run snapshot beside the shared shapes.
+ */
+type Carried = { head: string; base: string; patch: string; evidenceId: string };
+type CarriedEvidence = PipelineEvidence & { carriedFrom?: Carried };
+type CarriedProvenance = PipelineProvenance & { carriedFrom?: string };
+type Rebase = NonNullable<PipelineRun["rebases"]>[number] & { approval?: { carried: boolean; from: string; onto: string; items: { itemId: string; revision: number }[]; text: string } };
 type Config = { team_id: string; repo_root: string | null; graph: string | null; layout: string; revision: number; layout_revision: number; protected: number; observed_hash: string | null };
 export class Pipelines {
   private db: DatabaseSync;
@@ -286,6 +295,7 @@ export class Pipelines {
       if (!input.rationale.trim()) throw new InboxError(400, "record why these branches apply");
       const choices = { ...run.selections, ...input.selections }; const problems = selected(run.graph, choices);
       if (problems.length) throw new InboxError(422, problems.join("; "));
+      const prior = structuredClone(run); let rebase: Rebase | null = null;
       if (input.candidate || input.base) {
         // Publication can remove already-reviewed paths from base..HEAD without changing their
         // bytes. Keep those paths in the evidence contract, so real changes still invalidate it.
@@ -295,17 +305,21 @@ export class Pipelines {
           const adapter = this.adapters.read(run.candidate.repoRoot, basename(run.candidate.repoRoot));
           if (adapter.problems.length) throw new InboxError(422, adapter.problems.join("; "));
           requirePublishedBase(next, adapter.adapter?.integrationBranch ?? "dev");
-          (run.rebases ??= []).push({ oldBase: run.candidate.base, newBase: next.base, notes: input.rationale.trim(), byAgentId: actor.id, at: this.now().toISOString() });
+          rebase = { oldBase: run.candidate.base, newBase: next.base, notes: input.rationale.trim(), byAgentId: actor.id, at: this.now().toISOString() };
+          (run.rebases ??= []).push(rebase);
         }
         if (next.fingerprint !== run.candidate.fingerprint) { run.round++; run.steps.forEach(s => { s.completedBy = null; }); }
         run.candidate = next;
       }
       const paths = pathProblems(run.graph, choices, run.candidate.changedPaths);
       if (paths.length) throw new InboxError(422, paths.join("; "), "pipeline_branch_conflict");
-      if (requestFingerprint(choices) !== requestFingerprint(run.selections)) {
+      const rescoped = requestFingerprint(choices) !== requestFingerprint(run.selections);
+      if (rescoped) {
         run.scopeRevision = (run.scopeRevision ?? 0) + 1;
         run.steps.forEach(s => { s.completedBy = null; });
       }
+      // A re-base that moved the run to a new round asks the founder again unless the change is identical.
+      if (rebase && !rescoped && run.round !== prior.round && run.candidate.head !== prior.candidate.head) this.carryApprovals(prior, run, rebase);
       const before = this.raw(run.id);
       run.selections = choices; run.rationale = input.rationale;
       const after = this.persist(run); changed = { before, after }; return after;
@@ -313,6 +327,44 @@ export class Pipelines {
     // Noted once the edit committed; a replayed request changed nothing and notes nothing.
     if (changed) this.integration(actor, changed);
     return result;
+  }
+  /**
+   * Rebase first: a founder acceptance that counted for the run's previous candidate carries to the re-based one
+   * only when the change is identical (`patchIdentity` of old base..old candidate and new base..new candidate).
+   * Checks and every other candidate-bound step stay stale as the new round made them. A carried acceptance is a
+   * new evidence record and provenance entry naming where it came from; the founder's decision on that item
+   * revision is still read live, so a later Needs changes or withdrawal still revokes it. Any difference, or a
+   * comparison Git cannot make, carries nothing: the founder is asked again. Either way the re-base records it.
+   */
+  private carryApprovals(prior: PipelineRun, run: PipelineRun, rebase: Rebase): void {
+    const accepted = prior.steps.map(was => {
+      const node = prior.graph.nodes.find(n => n.id === was.nodeId)!;
+      return { was, node, approvals: was.evidence.filter(e => e.kind === "approval" && e.approval && this.currentEvidence(prior, node, e) && !this.provenanceProblem(prior, e)) };
+    }).filter(a => a.approvals.length);
+    if (!accepted.length) return;
+    const from = prior.candidate.head, onto = run.candidate.base, at = this.now().toISOString();
+    const items = [...new Map(accepted.flatMap(a => a.approvals).map(e => [`${e.approval!.itemId}@${e.approval!.revision}`, { itemId: e.approval!.itemId, revision: e.approval!.revision }])).values()];
+    const before = patchIdentity(prior.candidate.checkout, prior.candidate.base, from);
+    const after = patchIdentity(run.candidate.checkout, onto, run.candidate.head);
+    const carried = before !== null && before === after;
+    const text = carried ? `approval carried over from ${short(from)}: same change, rebased onto ${short(onto)}`
+      : `approval asked again: the change differs from what the founder accepted at ${short(from)}${before && after ? "" : " (the two changes could not be compared)"}; present the rebased candidate ${short(run.candidate.head)}`;
+    rebase.approval = { carried, from, onto, items, text };
+    this.db.prepare("INSERT INTO events (at, actor, task_id, item_id, kind, detail) VALUES (?, 'office', NULL, NULL, ?, ?)")
+      .run(at, carried ? "pipeline.approval.carried" : "pipeline.approval.reasked", JSON.stringify({ runId: run.id, round: run.round, from, to: run.candidate.head, oldBase: prior.candidate.base, base: onto, patch: { before, after }, items }));
+    if (!carried) return;
+    for (const item of items) {
+      const entry: CarriedProvenance = { kind: "approval", id: item.itemId, revision: item.revision, round: run.round, scopeRevision: run.scopeRevision ?? 0, fingerprint: run.candidate.fingerprint, carriedFrom: from };
+      (run.provenance ??= []).push(entry);
+    }
+    for (const { was, approvals } of accepted) {
+      const step = run.steps.find(s => s.nodeId === was.nodeId)!;
+      const copies = approvals.map((e): CarriedEvidence => ({ ...e, id: randomUUID(), summary: `${text} (${e.summary})`, fingerprint: run.candidate.fingerprint, round: run.round, createdAt: at,
+        carriedFrom: { head: from, base: prior.candidate.base, patch: before!, evidenceId: e.id } }));
+      // A step the founder's acceptance alone completed stays complete; anything else it held must be done again.
+      if (was.completedBy && was.evidence.every(e => approvals.includes(e))) { step.evidence = copies; step.completedBy = was.completedBy; }
+      else step.evidence.push(...copies);
+    }
   }
   private integration(actor: WorldAgent, { before, after }: { before: PipelineRun; after: PipelineRun }): void {
     try {
@@ -462,7 +514,9 @@ export class Pipelines {
       const presented = presentedBy(this.db, a.itemId, a.revision);
       if (presented?.runId !== run.id) return "the founder accepted another run's presentation, not this run's";
       const p = given("approval", a.itemId, a.revision);
-      if (presented.fingerprint !== run.candidate.fingerprint || earlier(p)) return "the founder accepted an earlier round, selection scope or intended bytes; present the current candidate again";
+      // Rebase first: the office's own carry-over to this round, scope and bytes stands in for the presentation's bytes.
+      const carried = run.provenance?.some((c: CarriedProvenance) => c.carriedFrom && c.kind === "approval" && c.id === a.itemId && c.revision === a.revision && c.round === run.round && c.scopeRevision === scope && c.fingerprint === run.candidate.fingerprint);
+      if (!carried && (presented.fingerprint !== run.candidate.fingerprint || earlier(p))) return "the founder accepted an earlier round, selection scope or intended bytes; present the current candidate again";
       const decision = founderDecision(this.db, a.itemId, a.revision);
       if (!decision || decision.stale) return "the founder has not accepted this revision";
       if (decision.action !== "accept") return "the founder changed the decision to Needs changes";
@@ -551,6 +605,8 @@ export class Pipelines {
     if (input.delivery === "dev") try {
       if (capture(run.candidate.checkout, run.candidate.head, run.candidate.head).changedPaths.length) refuse("uncommitted_candidate", `commit intended bytes and refresh the candidate pin before dev delivery (${repin(run.id)}); never sweep unrelated dirt`);
     } catch { refuse("candidate_unavailable", "committed dev candidate is unavailable"); }
+    // Only a Git delivery would turn a behind candidate into another commit; a readiness preflight names no operation.
+    if (input.delivery === "dev" && run.state === "open" && input.operation && ["land", "publish", "push"].includes(input.operation)) { const behind = this.behind(run); if (behind) refuse("candidate_behind", behind); }
     const view = this.teamView(run.teamId);
     if (!view.graph || !view.repoRoot) refuse("pipeline_unavailable", "protected pipeline or repository is unavailable");
     for (const p of selected(run.graph, run.selections)) refuse("selection_missing", p);
@@ -582,6 +638,23 @@ export class Pipelines {
       if (target !== branch || target === "main" || target === "master") refuse("ref_not_protected", "ref is not the run repository's protected dev delivery branch");
     }
     return { allowed: !reasons.length, runId: run.id, round: run.round, candidate: run.candidate.head, reasons: [...new Set(reasons)], ...(baselineFailures.length ? { baselineFailures } : {}) };
+  }
+  /**
+   * Rebase first: why this dev run's candidate cannot land as itself, or null. A candidate that is neither on the
+   * published integration branch nor a descendant of its tip can only get there as a new commit (a cherry-pick or
+   * merge), which is never this run's exact candidate, so the run would never be delivered. Read from the local
+   * remote-tracking ref as the landing rule reads it (no fetch); unknown is not a refusal, as the push still decides.
+   */
+  private behind(run: PipelineRun): string | null {
+    const { repoRoot, checkout, head } = run.candidate;
+    try {
+      const branch = this.adapters.read(repoRoot, basename(repoRoot)).adapter?.integrationBranch ?? "dev";
+      const target = ["main", "master"].includes(branch) ? null : publishedBranch(repoRoot, branch, checkout);
+      if (!target || isAncestor(repoRoot, target.tip, head) || isAncestor(repoRoot, head, target.tip)) return null;
+      const remote = target.ref.startsWith("refs/remotes/"); const name = remote ? `origin/${branch}` : branch;
+      const move = remote ? `pipeline branch ${run.id} --base ${name} --candidate HEAD --notes "rebased onto ${name}"` : `pipeline branch ${run.id} --candidate HEAD --notes "rebased onto ${name}"`;
+      return `candidate ${short(head)} is behind ${name} (now at ${short(target.tip)}): landing it would make a new commit (a cherry-pick or merge) that this run never sees as delivered, since a dev run is delivered only when its exact candidate is on ${name}. Rebase first: in ${checkout} run \`${remote ? `git fetch origin ${branch} && git rebase origin/${branch}` : `git rebase ${branch}`}\`, move this run to the rebased candidate with ${inboxCommand(move)}, then re-run its checks (${inboxCommand(`pipeline status ${run.id}`)} lists what is stale) and gate the new candidate before landing it. The founder's approval carries over only if the change is identical; otherwise present it again.`;
+    } catch { return null; }
   }
   /**
    * An externally reported capture lease or attempt, recorded beside the reporting agent. A named
@@ -650,7 +723,7 @@ export class Pipelines {
     const run = given === undefined ? view.runs.find(r => r.state === "open" && !r.archived) ?? null : given;
     const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : `Do your assigned step and use ${inboxCommand("pipeline report RUN NODE --report FILE --notes \"result\"")}; only your first mate may complete steps or deliver.`;
     return [`Pipeline: ${view.graph?.label ?? "unavailable"} (${view.source}, policy ${view.policyHash?.slice(0, 12) ?? "missing"}). ${role}`,
-      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.landed ? `: on ${run.landed.ref.replace(/^refs\/(remotes|heads)\//, "")} at ${short(run.landed.tip)}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}${s.state === "done" ? this.named(run, s.nodeId) : this.needs(run, s.nodeId, s.state)}${s.baselineFailures?.length ? `; fails as on base, not a pass: ${s.baselineFailures.join("; ")}` : ""}`)] : [`Start a bounded wave: ${inboxCommand("pipeline start --base BASE --candidate HEAD")}`]),
+      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.landed ? `: on ${run.landed.ref.replace(/^refs\/(remotes|heads)\//, "")} at ${short(run.landed.tip)}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map((r: Rebase) => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).${r.approval ? ` ${r.approval.text[0]!.toUpperCase()}${r.approval.text.slice(1)}.` : ""}`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}${s.state === "done" ? this.named(run, s.nodeId) : this.needs(run, s.nodeId, s.state)}${s.baselineFailures?.length ? `; fails as on base, not a pass: ${s.baselineFailures.join("; ")}` : ""}`)] : [`Start a bounded wave: ${inboxCommand("pipeline start --base BASE --candidate HEAD")}`]),
       `Commands: ${inboxCommand("pipeline start|branch|abandon|assign|done|report|check|status|gate")}. No model is called; a gate allow is preflight, never a publication receipt.`].join("\n");
   }
   /** What a step that names its command still needs, for refusals and the briefing; empty for any other step. */
