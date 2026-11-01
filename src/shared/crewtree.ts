@@ -126,14 +126,15 @@ export const effectiveLead = (tree: Pick<CrewTree, "mode" | "lead">): CrewChoice
 
 /**
  * A backup on the other harness for a choice, for a tree that has none yet: Opus and GPT-6 Astra
- * stand in for each other, Sonnet and GPT-6.1 Sol likewise, and whatever else falls to the everyday
- * pair. Deterministic, so an old file reads the same every time until it is saved.
+ * stand in for each other, Sonnet and GPT-6.1 Sol likewise, Haiku goes to the cheap tier's GPT-6 Luna
+ * (at high, where Luna holds up), and whatever else falls to the everyday pair. Deterministic, so
+ * an old file reads the same every time until it is saved.
  */
 export function defaultBackup(c: CrewChoice): CrewChoice {
   const m = c.model.toLowerCase();
   if (c.harness === "claude") {
     if (m.includes("opus") || m.includes("fable")) return { harness: "pi", model: "openai-codex/gpt-6-astra", effort: "high" };
-    if (m.includes("haiku")) return { harness: "pi", model: "openai-codex/gpt-6.1-sol", effort: "low" };
+    if (m.includes("haiku")) return { harness: "pi", model: "openai-codex/gpt-6-luna", effort: "high" };
     return { harness: "pi", model: "openai-codex/gpt-6.1-sol", effort: "high" };
   }
   if (m.includes("astra")) return { harness: "claude", model: "opus", effort: "medium" };

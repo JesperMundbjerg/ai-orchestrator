@@ -143,6 +143,7 @@ test("the catalog holds Pi's model ids and names only, and nothing when Pi has n
   assert.deepEqual(catalog.harnesses.map((h) => h.id), ["claude", "pi"]);
   assert.deepEqual(catalog.harnesses[0]!.models.map((m) => m.id), ["opus", "sonnet", "haiku", "fable"]);
   assert.equal(catalog.harnesses[0]!.models.find((m) => m.id === "fable")?.label, "Fable 5.1");
+  assert.equal(catalog.harnesses[0]!.models.find((m) => m.id === "haiku")?.label, "Haiku 5.5", "the haiku alias starts Haiku 5.5, so the picker says so");
   assert.deepEqual(catalog.harnesses[1]!.models, [{ id: "openai-codex/gpt-6-astra", label: "GPT-6 Astra" }, { id: "openai-codex/gpt-6-sol", label: "GPT-6 Sol" }]);
   assert.ok(!JSON.stringify(crew.state()).includes("SECRET-TOKEN"));
   assert.deepEqual(store({ pi: false }).crew.catalog().harnesses[1]!.models, []);
@@ -274,7 +275,7 @@ test("a tree from before the switch loads with its backups filled in, and is cur
   const claude = (model: string, effort = "high") => ({ harness: "claude", model, effort });
   const r = loaded.tree.rules;
   assert.deepEqual(r[0]!.backup, pi("gpt-6-astra"), "Opus <-> GPT-6 Astra");
-  assert.deepEqual(r[0]!.children![0]!.backup, pi("gpt-6.1-sol", "low"), "Haiku to a light Sol");
+  assert.deepEqual(r[0]!.children![0]!.backup, pi("gpt-6-luna"), "Haiku to the cheap tier's Luna, at the effort where Luna holds up");
   assert.deepEqual(r[1]!.backup, claude("opus", "medium"));
   assert.deepEqual(r[2]!.backup, claude("sonnet"), "Sonnet <-> GPT-6.1 Sol");
   assert.deepEqual(r[3]!.backup, claude("sonnet"), "any other Pi model falls to Sonnet");
