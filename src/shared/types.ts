@@ -305,6 +305,12 @@ export interface Team {
   /** Worktrees it owns besides its own (its lanes): an agent working in one is on it, and finishing it never removes one. */
   worktrees: string[];
   createdAt: string;
+  /** What its lead is for, in the founder's words; delivered to the lead on every start the office causes. Empty for none. */
+  leadRole?: string;
+  /** A role file in the team's repository (for example `.claude/commands/mission-control.md`), read afresh at each lead start. Empty for none. */
+  leadRolePath?: string;
+  /** Why that file is not (fully) delivered right now: not found, unreadable, empty or cut. Null when it is, or none is set. */
+  leadRoleProblem?: string | null;
 }
 
 export type AgentRole = "lead" | "member";

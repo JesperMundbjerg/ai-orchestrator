@@ -215,7 +215,7 @@ test("starting a project makes its worktree beside the repository and starts a f
   assert.deepEqual(lead!.args.slice(0, 4), ["--model", "opus", "--effort", "medium"]);
   const brief = lead!.args[lead!.args.indexOf("--append-system-prompt") + 1]!;
   assert.match(brief, /first mate/);
-  assert.match(brief, /You do not write the code yourself/);
+  assert.match(brief, /You lead: plan, split and hand every change, however small, to your crew or lanes; never edit, fix or build yourself\./);
   assert.match(brief, /herdr agent start <name> --kind <kind> --pane "\$P" -- <model>/);
   assert.match(brief, /`P=\$\('[^']*bin\/inbox' pane\)` opens a pane in your tab, laid out with the others as a grid/);
   assert.ok(!brief.includes("herdr pane split"), "crew panes come from inbox pane, which lays them out");

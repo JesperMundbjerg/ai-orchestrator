@@ -11,14 +11,14 @@ import { openPane } from "./pane.ts";
 import { pipelineCommand, deliveryBinding, telemetryLogCommand } from "./pipeline.ts";
 import { installHooksCommand } from "./pipeline-hooks.ts";
 import { LEASE_HELP, leaseArgs, leaseCommand } from "./lease.ts";
-import { acknowledge, call, fetchReplies, formatReply, get } from "../shared/agent-client.ts";
+import { acknowledge, call, fetchReplies, formatReply, get, serviceUrl } from "../shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
 import { projectRoot } from "../shared/project.ts";
 import { AGENT_COMMENT_STATUSES, type PageComment } from "../shared/pagecomments.ts";
 import { storyIntro } from "../shared/story.ts";
 import { changedFiles, parseWrites, strayFiles } from "../shared/surface.ts";
-import type { AgentSwitch, StandingLane, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
+import type { AgentSwitch, StandingLane, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, Team, TeamBrief, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
 
@@ -76,6 +76,9 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
 
   The office (a project per worktree, run by its first mate; standing teams like Mission Control):
   inbox team                      who you are, your project, your part in it, what waits for you
+  inbox team role TEAM [--role "text"] [--role-file PATH]
+                                  a team's lead role: shown, or set (an empty value clears it). The office gives it, with the rule that
+                                  a lead only delegates, to its lead on every start; the file (in the team's repository) is read afresh each time
   inbox story "…"                 save your own short personal story (plain text, capped at 800 characters)
   ${storyIntro()}
   inbox crew                      the active crew preset and guide: which harness and model to start, under the founder's switch
@@ -178,6 +181,7 @@ const OPTIONS = {
   model: { type: "string" },
   effort: { type: "string" },
   "all-from": { type: "string" }, "no-handoff": { type: "boolean" },
+  role: { type: "string" }, "role-file": { type: "string" },
   session: { type: "string" },
   help: { type: "boolean", short: "h" },
   writes: { type: "string", multiple: true }, commit: { type: "string" },
@@ -306,6 +310,26 @@ async function switchAgents(name: string | undefined): Promise<void> {
   if (failed) throw new Error(`${failed} of ${ids.length} not switched`);
 }
 
+/** A team's lead role: shown, or set with --role "text" and/or --role-file PATH (an empty value clears it). */
+async function teamRoleCommand(name: string | undefined): Promise<void> {
+  if (!name) throw new Error('inbox team role needs the team: inbox team role TEAM [--role "text"] [--role-file .claude/commands/lead.md]');
+  const teams = (await get<{ teams: Team[] }>("/api/world")).teams;
+  const team = teams.find((t) => t.name.toLowerCase() === name.toLowerCase() || t.id === name);
+  if (!team) throw new Error(`no team ${name}${teams.length ? `; the teams are ${teams.map((t) => t.name).join(", ")}` : ""}`);
+  const patch = { ...(flags.role !== undefined ? { leadRole: flags.role } : {}), ...(flags["role-file"] !== undefined ? { leadRolePath: flags["role-file"] } : {}) };
+  let now: Team = team;
+  if (Object.keys(patch).length) {
+    const res = await fetch(`${serviceUrl()}/api/world/teams/${team.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(patch), signal: AbortSignal.timeout(5000) });
+    const out = await res.json() as Team & { error?: string };
+    if (!res.ok) throw new Error(out.error ?? `inbox answered ${res.status}`);
+    now = out;
+  }
+  const read = (await get<{ teams: Team[] }>("/api/world")).teams.find((t) => t.id === team.id) ?? now;
+  console.log(`${read.name}'s lead role:`);
+  console.log(`  text: ${read.leadRole || "(none)"}`);
+  console.log(`  file: ${read.leadRolePath || "(none)"}${read.leadRoleProblem ? `\n  problem: ${read.leadRoleProblem}` : ""}`);
+}
+
 /** One lane, as the founder reads it: its state, who holds it, and the last recovery. */
 function laneLine(l: StandingLane): string {
   const who = l.registered ? `registered session ${l.registered.session}${l.registered.agentName ? ` (${l.registered.agentName}${l.registered.role === "lead" ? `, lead of ${l.registered.teamName}` : l.registered.teamName ? `, ${l.registered.teamName}` : ""})` : ""}` : "no registered session";
@@ -424,6 +448,7 @@ async function main(argv: string[]): Promise<void> {
     case "pipeline":
       return pipelineCommand(parsed.positionals.slice(1), flags, session());
     case "team":
+      if (arg === "role") return teamRoleCommand(parsed.positionals[2]);
       return console.log((await call<TeamBrief>("/api/agent/team", { session: session() })).text);
     case "crew":
       return console.log((await call<{ text: string }>("/api/agent/crew", { session: session() })).text);

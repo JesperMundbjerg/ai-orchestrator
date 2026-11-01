@@ -11,7 +11,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type {
   ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, SwitchesView, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
@@ -35,6 +34,9 @@ import type { EffortReport } from "../shared/types.ts";
 import { whyStuck } from "../shared/stuck.ts";
 import { Unpresented } from "./unpresented.ts";
 import { LEAD_WATCH_SESSION, LeadWatch } from "./leadwatch.ts";
+import { INBOX_BIN } from "../shared/pipeline-cli.ts";
+import { withInboxPath } from "./inboxtext.ts";
+import { LeadRoles, ROLE_PATH_MAX_CHARS, ROLE_TEXT_MAX_CHARS, leadBrief, roleFileProblem } from "./leadrole.ts";
 import { withOffline } from "../shared/waiting.ts";
 import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, landingRef, linkedWorktrees, nameFor, notLanded, placeFor, processesIn, stopProcesses, uncommitted, type Checkout } from "./worktrees.ts";
 
@@ -103,17 +105,14 @@ function briefArgument(text: string): string {
   return text.replace(/[\s\p{White_Space}]/gu, " ").replace(/\p{Cc}/gu, "").replace(/ +/g, " ").trim();
 }
 
-/** The CLI of the checkout the service runs from; a lead's pane need not have `inbox` on its PATH. */
-const INBOX_BIN = fileURLToPath(new URL("../../bin/inbox", import.meta.url));
-
 /**
  * What a project's lead is, in the sense of firstmate (github.com/kunchenguid/firstmate): the
  * founder's one contact for the project, who runs a crew rather than doing the work itself.
  * Mission Control's lead is different: it dispatches a queue of comments to standing lanes.
  */
-const FIRST_MATE = [
-  "You are the project's first mate: the founder's one contact for it.",
-  "You do not write the code yourself. Split the work into tasks, start a crew member for each in herdr, supervise them to completion, check what they deliver, and report plain outcomes.",
+const FIRST_MATE_INTRO = "You are the project's first mate: the founder's one contact for it.";
+const FIRST_MATE_BODY = [
+  "Split the work into tasks, start a crew member for each in herdr, supervise them to completion, check what they deliver, and report plain outcomes.",
   "Start crew in this worktree:",
   `\`P=$(${quote(INBOX_BIN)} pane)\` opens a pane in your tab, laid out with the others as a grid, and prints its id (never split panes yourself);`,
   '`herdr agent start <name> --kind <kind> --pane "$P" -- <model>` starts a crew member in it (a unique lowercase name).',
@@ -133,6 +132,8 @@ const FIRST_MATE = [
   "After you submit a decision, try or milestone, keep your team working on whatever does not depend on the answer, and for a decision with a recommendation have that path prepared without anything irreversible, since only the founder's answer is approval; check `inbox replies` when you next stop.",
   "Ask a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers, options read \"Label: consequence\", and the recommendation gives your pick and why; `inbox --help` has an example.",
 ].join(" ");
+/** A project's first mate brief: who it is, the founder's rule and its team's role (`lead`, from leadrole.ts), then how it runs a crew. */
+const firstMate = (lead: string) => withInboxPath(`${FIRST_MATE_INTRO} ${lead}\n${FIRST_MATE_BODY}`);
 
 /**
  * Claude Code settings, for this session only, that run the inbox hook in a lead the office
@@ -167,6 +168,10 @@ export class World {
   private scanned = new Map<string, { at: number; found: ReturnType<typeof checkoutsIn> }>();
   /** The last status seen per team, so a team is announced when it becomes blocked, not while it stays so. */
   private announced: Map<string, TeamStatus> | null = null;
+  /** Each team's lead role setting (leadrole.ts). */
+  private readonly leadRoles: LeadRoles;
+  /** Agents the office made lead while computing state; told what a lead is told once the state is settled (react). */
+  private newLeads = new Set<string>();
   readonly messages: Messages;
   readonly pipelines: Pipelines;
   /** Founder-only exact-SHA repair waivers; the service wires in the inbox. */
@@ -198,6 +203,7 @@ export class World {
   constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date(), files = new SessionFiles()) {
     this.db = db;
     this.unpresented = new Unpresented(db);
+    this.leadRoles = new LeadRoles(db);
     this.source = source;
     this.inbox = inbox;
     this.paneNames = new PaneNames({ claimName: (id, name) => this.claimName(id, name), renamePane: source?.renamePane?.bind(source), registered: () => this.messages.laneRegistration, now: () => this.now().getTime() });
@@ -318,7 +324,7 @@ export class World {
 
     return {
       agents: world,
-      teams: teams.map((team) => ({ ...team, unpresentedCommits: team.standing ? 0 : this.unpresented.count(team.path), ...teamStatus(world.filter((a) => a.teamId === team.id)), stalled: this.leadWatch.stall(team.id) })),
+      teams: teams.map((team) => ({ ...team, unpresentedCommits: team.standing ? 0 : this.unpresented.count(team.path), ...teamStatus(world.filter((a) => a.teamId === team.id)), stalled: this.leadWatch.stall(team.id), leadRoleProblem: this.leadRoleProblem(team, world) })),
       messages: withOffline(this.messages.list(), world, teams),
       withFounder: withOffline(this.messages.withFounder(), world, teams),
       work,
@@ -431,7 +437,53 @@ export class World {
       const lead = [...candidates].sort((a, b) => Number(!a.paneId) - Number(!b.paneId) || since(a).localeCompare(since(b)))[0]!;
       this.db.prepare("UPDATE world_agents SET role = 'lead' WHERE id = ?").run(lead.id);
       lead.role = "lead";
+      this.newLeads.add(lead.id);
     }
+  }
+
+  /** The roots a team's lead role file is looked for in: git checkouts of the lead, the team and its lanes, then its other members. */
+  private roleRoots(team: Team, agents: ReadonlyArray<Pick<WorldAgent, "cwd" | "role">>): string[] {
+    const lead = agents.find((a) => a.role === "lead");
+    const cwds = [lead?.cwd, team.path, ...team.worktrees, ...agents.map((a) => a.cwd)];
+    return [...new Set(cwds.flatMap((c) => (c ? [this.checkout(c)?.top ?? []].flat() : [])))];
+  }
+
+  private leadRoleProblem(team: Team, world: readonly WorldAgent[]): string | null {
+    const setting = { text: team.leadRole ?? "", path: team.leadRolePath ?? "" };
+    return setting.path ? roleFileProblem(setting, this.roleRoots(team, world.filter((a) => a.teamId === team.id))) : null;
+  }
+
+  /**
+   * What a lead is told when it starts, for every start the office causes or sees: the founder's
+   * delegation rule and its team's lead role (text and role file, read now). The only place this is
+   * composed: a new project's system prompt, a takeover brief (switch.ts), `inbox team` and the notice
+   * sent to someone made lead all take it from here.
+   */
+  leadStart(team: Team, members: ReadonlyArray<Pick<WorldAgent, "cwd" | "role">> = []): string {
+    return leadBrief(team.name, { text: team.leadRole ?? "", path: team.leadRolePath ?? "" }, this.roleRoots(team, members));
+  }
+
+  /**
+   * The same for an agent the office knows, or null when it does not lead a team. `cwd` is where its
+   * new session runs when that is known better than the record (a takeover for a lead whose pane is gone).
+   */
+  leadStartFor(agentId: string, cwd?: string | null): string | null {
+    const state = this.state();
+    const agent = state.agents.find((a) => a.id === agentId);
+    const team = agent?.role === "lead" && agent.teamId ? state.teams.find((t) => t.id === agent.teamId) : null;
+    return team ? this.leadStart(team, [...(cwd ? [{ cwd, role: "lead" as const }] : []), ...state.agents.filter((a) => a.teamId === team.id)]) : null;
+  }
+
+  /** Tells someone just made lead what a lead is told (the office is not there to brief a session that is already running). */
+  private announceLead(agentId: string): void {
+    // Only a team with a role of its own: the delegation rule alone is in every `inbox team`, and a notice for each lead
+    // the service appoints by itself would be noise.
+    const team = this.state().agents.find((a) => a.id === agentId)?.teamId;
+    const set = team ? this.leadRoles.get(team) : null;
+    if (!set?.text && !set?.path) return;
+    const text = this.leadStartFor(agentId);
+    if (!text) return;
+    this.messages.notice(agentId, withInboxPath(`You are now the lead of your team. ${text}\nRun \`inbox team\` for your crew and what waits for you.`));
   }
 
   /**
@@ -630,19 +682,19 @@ export class World {
       const lead = state.agents.find((a) => a.teamId === team.id && a.role === "lead");
       lines.push(team.standing ? `Team: ${team.name}, a standing team.` : `Project: ${team.name}, in the worktree ${team.path} (branch ${team.branch ?? "unknown"}).`);
       const part = team.standing
-        ? me.role === "lead" ? "You lead it: divide the work among your crew and keep them moving, and while the founder has not answered, continue with what does not depend on it and only prepare a recommendation, since only their answer is approval." : `${lead ? lead.name : "Its lead"} leads it and divides the work; take yours from them.`
-        : me.role === "lead" ? `Your office name is ${me.name}. ${FIRST_MATE}` : `${lead ? lead.name : "Its first mate"} is its first mate: take your work from them and report back with \`inbox say ${lead?.name ?? "NAME"} "…"\`, not to the founder.`;
-      lines.push(part);
+        ? me.role === "lead" ? `${this.leadStart(team, state.agents.filter((a) => a.teamId === team.id))}\nDivide the work among your crew and keep them moving, and while the founder has not answered, continue with what does not depend on it and only prepare a recommendation, since only their answer is approval.` : `${lead ? lead.name : "Its lead"} leads it and divides the work; take yours from them.`
+        : me.role === "lead" ? `Your office name is ${me.name}. ${firstMate(this.leadStart(team, state.agents.filter((a) => a.teamId === team.id)))}` : `${lead ? lead.name : "Its first mate"} is its first mate: take your work from them and report back with \`inbox say ${lead?.name ?? "NAME"} "…"\`, not to the founder.`;
+      lines.push(withInboxPath(part));
       lines.push(this.pipelines.brief(team.id, me.id));
       if (me.role === "lead" && !team.standing && this.crew) lines.push(this.crew.text());
       if (team.purpose) lines.push(`Purpose: ${team.purpose}`);
       lines.push(`On it: ${state.agents.filter((a) => a.teamId === team.id && a.id !== me.id).map(status).join("; ") || "just you"}.`);
       const next = team.handsTo ? teams.get(team.handsTo) : null;
-      lines.push(next ? `Finished work goes to ${next.name}: inbox handoff "title" --summary "what was done, where, how to check it"` : "Finished work is not handed to another team.");
+      lines.push(next ? withInboxPath(`Finished work goes to ${next.name}: inbox handoff "title" --summary "what was done, where, how to check it"`) : "Finished work is not handed to another team.");
     }
     const toReview = state.work.filter((w) => w.state === "in_review" && w.toTeamId === me.teamId);
     for (const w of toReview) {
-      lines.push(`To review: work ${w.id} "${w.title}" from ${agents.get(w.fromAgentId)?.name ?? "someone"}. Verdict: inbox review ${w.id} accept|changes --notes "…"`);
+      lines.push(`To review: work ${w.id} "${w.title}" from ${agents.get(w.fromAgentId)?.name ?? "someone"}. Verdict: ${withInboxPath(`inbox review ${w.id} accept|changes --notes "…"`)}`);
     }
     for (const w of state.work.filter((x) => x.fromAgentId === me.id)) {
       const where = teams.get(w.toTeamId)?.name ?? "a disbanded team";
@@ -650,7 +702,7 @@ export class World {
     }
     const others = state.teams.filter((t) => t.id !== team?.id);
     if (others.length) lines.push(`Other projects and teams: ${others.map((t) => `${t.name}${t.purpose ? ` (${t.purpose})` : ""}`).join("; ")}.`);
-    lines.push('Talk to anyone, agent or team, by name: inbox say NAME "text". Messages arrive in their terminal when they are free. Answer the founder with inbox say founder "text".');
+    lines.push(withInboxPath('Talk to anyone, agent or team, by name: inbox say NAME "text". Messages arrive in their terminal when they are free. Answer the founder with inbox say founder "text".'));
     return { agentId: me.id, text: lines.join("\n") };
   }
 
@@ -661,6 +713,8 @@ export class World {
    */
   async react(): Promise<void> {
     const state = this.state();
+    for (const id of this.newLeads) this.announceLead(id);
+    this.newLeads.clear();
     this.paneNames.sync(state);
     const changed = this.unpresented.tick(state, this.now().getTime(), (lead, text) => { this.messages.notice(lead, text); });
     const stalled = this.leadWatch.tick(state);
@@ -760,6 +814,8 @@ export class World {
       standing: Boolean(r.standing),
       worktrees: lanes.get(str(r.id)) ?? [],
       createdAt: str(r.created_at),
+      leadRole: this.leadRoles.get(str(r.id)).text,
+      leadRolePath: this.leadRoles.get(str(r.id)).path,
     }));
     const gone = teams.filter((t) => t.path && !existsSync(t.path));
     for (const t of gone) this.forget(t, { reason: "missing" });
@@ -801,11 +857,11 @@ export class World {
     const brief = [
       `You run the project "${name}", working in this worktree (branch ${place.branch}, from ${base ?? "the main checkout"}).`,
       purpose ? `The project: ${purpose}` : "",
-      FIRST_MATE,
+      firstMate(this.leadStart(team)),
       storyIntro(),
       this.pipelines.brief(team.id),
-      '`inbox team` shows your office name, your crew and what waits for you; `inbox say NAME "text"` reaches anyone in the office.',
-      next ? `When the work is done, hand it to ${next} for review: inbox handoff "title" --summary "what was done, where, how to check it".` : "",
+      withInboxPath('`inbox team` shows your office name, your crew and what waits for you; `inbox say NAME "text"` reaches anyone in the office.'),
+      next ? withInboxPath(`When the work is done, hand it to ${next} for review: inbox handoff "title" --summary "what was done, where, how to check it".`) : "",
     ].filter(Boolean).join(" ");
     // The lead starts with only its brief, so herdr sees it ready for input; its first task follows as a prompt.
     // What it runs on is the crew tree's lead choice under the founder's switch; both harnesses take the brief as an appended system prompt.
@@ -840,7 +896,7 @@ export class World {
     }
   }
 
-  private insertTeam(t: Omit<Team, "id" | "createdAt" | "worktrees">): Team {
+  private insertTeam(t: Omit<Team, "id" | "createdAt" | "worktrees" | "leadRole" | "leadRolePath" | "leadRoleProblem">): Team {
     const id = randomUUID();
     this.db
       .prepare("INSERT INTO teams (id, name, purpose, hands_to, path, branch, standing, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -848,14 +904,24 @@ export class World {
     return this.team(id);
   }
 
-  updateTeam(id: string, patch: { name?: string; purpose?: string; handsTo?: string | null }): Team {
+  updateTeam(id: string, patch: { name?: string; purpose?: string; handsTo?: string | null; leadRole?: string; leadRolePath?: string }): Team {
     const team = this.team(id);
+    const role: Partial<{ text: string; path: string }> = {};
+    if (patch.leadRole !== undefined) {
+      role.text = patch.leadRole.trim();
+      if (role.text.length > ROLE_TEXT_MAX_CHARS) throw new InboxError(400, `the lead role is at most ${ROLE_TEXT_MAX_CHARS} characters; put a longer one in a file in the repository and set its path`);
+    }
+    if (patch.leadRolePath !== undefined) {
+      role.path = patch.leadRolePath.trim();
+      if (role.path.length > ROLE_PATH_MAX_CHARS || /[\0\r\n]/.test(role.path)) throw new InboxError(400, "the lead role file is one path, such as .claude/commands/mission-control.md");
+    }
     const name = patch.name === undefined ? team.name : this.teamName(patch.name, id);
     if (patch.handsTo === id) throw new InboxError(400, "a team cannot hand its work to itself");
     if (patch.handsTo) this.team(patch.handsTo);
     this.db
       .prepare("UPDATE teams SET name = ?, purpose = ?, hands_to = ? WHERE id = ?")
       .run(name, patch.purpose === undefined ? team.purpose : patch.purpose.trim(), patch.handsTo === undefined ? team.handsTo : patch.handsTo, id);
+    if (role.text !== undefined || role.path !== undefined) this.leadRoles.set(id, role);
     this.onChange("world");
     return this.team(id);
   }
@@ -1038,8 +1104,8 @@ export class World {
     const told = lead ? [lead] : state.agents.filter((a) => inside(a.cwd));
     const them = changes + ahead === 1 ? "it" : "them";
     const unlanded = [changes ? `${count(changes, "uncommitted change")} in ${checkout.top}` : "", ahead ? `${count(ahead, "commit")} not on ${landing}` : ""].filter(Boolean).join(" and ");
-    const notice = `The founder wants to finish ${team.name}, but its work has not landed: ${unlanded}. `
-      + `Commit and land ${them} on ${landing} the usual way (through the project's pipeline), then tell the founder it is ready to finish with \`inbox say founder\`.`;
+    const notice = withInboxPath(`The founder wants to finish ${team.name}, but its work has not landed: ${unlanded}. `
+      + `Commit and land ${them} on ${landing} the usual way (through the project's pipeline), then tell the founder it is ready to finish with \`inbox say founder\`.`);
     const pending = this.db.prepare(`SELECT 1 FROM messages m JOIN message_deliveries d ON d.message_id = m.id
       WHERE m.from_office = 1 AND m.text = ? AND d.agent_id = ? AND d.state IN ('queued', 'sending')`);
     for (const a of told) if (!pending.get(notice, a.id)) this.messages.notice(a.id, notice);
@@ -1083,6 +1149,7 @@ export class World {
     if (patch.teamId) this.team(patch.teamId);
     if (patch.role !== undefined && patch.role !== "lead" && patch.role !== "member") throw new InboxError(400, `role must be lead or member`);
     const teamId = patch.teamId === undefined ? (row.team_id ? str(row.team_id) : null) : patch.teamId;
+    const wasLead = row.role === "lead" && (row.team_id ? str(row.team_id) : null) === teamId;
     // Leaving a team drops the lead role with it.
     const role = !teamId ? "member" : patch.role ?? (patch.teamId !== undefined && patch.teamId !== row.team_id ? "member" : str(row.role));
     this.db.exec("BEGIN IMMEDIATE");
@@ -1096,6 +1163,8 @@ export class World {
       this.db.exec("ROLLBACK");
       throw err;
     }
+    // Someone made lead is told what a lead is told, now, however the founder or the office made it so.
+    if (role === "lead" && !wasLead) this.announceLead(id);
     this.onChange("world");
     return this.agent(id);
   }
@@ -1130,6 +1199,7 @@ export class World {
     if (lead.status !== "offline") throw new InboxError(409, `${lead.name} is running, so ${me.name} cannot take their place and name`);
     const fold = this.db.prepare("SELECT * FROM world_agents WHERE id = ?").get(lead.id) as Row;
     this.tx(() => this.seat(row, teamId, fold));
+    this.announceLead(id);
     this.onChange("world");
     return this.agent(id);
   }

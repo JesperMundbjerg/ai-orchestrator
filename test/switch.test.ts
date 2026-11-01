@@ -296,5 +296,6 @@ test("a project's lead switched: still its lead, and no new project is made for 
   const after = world.agent(lead.id);
   assert.deepEqual([after.name, after.role, after.teamId, after.harness], [lead.name, "lead", project.id, "pi"]);
   assert.equal((db.prepare("SELECT lead_pane FROM teams WHERE id = ?").get(project.id) as { lead_pane: string }).lead_pane, after.paneId);
-  assert.match(h.prompts.at(-1)!.text, /you lead your project/);
+  assert.match(h.prompts.at(-1)!.text, /you lead your team/);
+  assert.match(h.prompts.at(-1)!.text, /You lead: plan, split and hand every change, however small, to your crew or lanes; never edit, fix or build yourself\./);
 });

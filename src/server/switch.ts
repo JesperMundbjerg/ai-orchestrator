@@ -24,6 +24,7 @@ import { InboxError } from "./inbox.ts";
 import { AgentStartingError } from "./agent-starting.ts";
 import { agentId, hookSettings, liveIdentity, type AgentSource, type LiveAgent, type World } from "./world.ts";
 import { DEFAULT_ROOTS } from "./models.ts";
+import { withInboxPath } from "./inboxtext.ts";
 import { ensureHandoffModes, factualHandoff, isFactual, markFactual, transcriptPath, writeHandoff } from "./switch-handoff.ts";
 
 /** What a switch needs from herdr beyond what the office already uses. */
@@ -455,7 +456,8 @@ export class Switches {
         // The brief is a prerequisite, not an ordinary message. Busy/trust-prompt waits
         // stay queued here and all existing messages remain held, even across restarts.
         if (!FREE.has(agent.status)) return "wait";
-        const text = briefPrompt(name, label(from), opt(s.handoff), agent.role === "lead", isFactual(this.db, id));
+        // A lead gets its team's role and the delegation rule whether or not the old session left a handoff.
+        const text = briefPrompt(name, label(from), opt(s.handoff), agent.role === "lead" ? this.world.leadStartFor(agent.id, opt(s.cwd)) : null, isFactual(this.db, id));
         this.update(id, { effect: "briefing", brief_state: "sending" });
         try {
           await source.prompt(str(s.new_pane), text);
@@ -704,12 +706,14 @@ export function handoffPrompt(name: string, to: string, file: string): string {
 }
 
 /** The new session's first prompt: who it is now, and the handoff to read before anything else. */
-export function briefPrompt(name: string, from: string, handoff: string | null, lead: boolean, factual = false): string {
-  return [
-    `You are ${name} in the office now: you take over from ${name}'s ${from} session, which has been closed. The office already treats you as ${name}, with the same name, team and role${lead ? " (you lead your project)" : ""}, and messages for ${name} come to you.`,
+export function briefPrompt(name: string, from: string, handoff: string | null, lead: string | null, factual = false): string {
+  const text = [
+    `You are ${name} in the office now: you take over from ${name}'s ${from} session, which has been closed. The office already treats you as ${name}, with the same name, team and role${lead ? " (you lead your team)" : ""}, and messages for ${name} come to you.`,
     handoff && factual
       ? `The old session could not write a handoff (its model is unavailable), so the office wrote a factual one for you: ${handoff}. First read it, then read the last part of the old transcript it names before acting, and do not redo finished work.`
       : handoff ? `First read the handoff it wrote for you: ${handoff}.` : `${name} was not running, so there is no handoff.`,
     "Then run `inbox team` to see your project, your crew and what waits for you, and carry on with the work where it stands. Do not announce the switch; just continue.",
   ].join(" ");
+  // The lead's part is the office's own words (leadrole.ts, via the world), its role file in lines of its own.
+  return withInboxPath(lead ? `${lead}\n\n${text}` : text);
 }

@@ -9,7 +9,7 @@ import { SwitchHarness } from "./SwitchHarness.tsx";
 import { MachineWarning } from "./MachineWarning.tsx";
 import { StalledNote, StalledTeams } from "./StalledTeams.tsx";
 import { heldLanes, StandingLanes } from "./StandingLanes.tsx";
-import { finishTeam, leadTitle, TeamForm } from "./TeamForm.tsx";
+import { finishTeam, leadRoleWarning, leadTitle, TeamForm } from "./TeamForm.tsx";
 
 import { PipelineButton } from "../pipelines/PipelineButton.tsx";
 
@@ -187,6 +187,7 @@ function TeamColumn({ team, world, agents, state, over, target, run, clearError,
           </div>
           <span className={team.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
           <StalledNote team={team} />
+          {leadRoleWarning(team) ? <span className="warn small-note" role="alert" style={{ overflowWrap: "anywhere" }}>{leadRoleWarning(team)}</span> : null}
           <span className="muted small-note" title={team.path ?? undefined}>{team.standing ? "Always on" : `Worktree on ${team.branch ?? "an unknown branch"}`}{team.worktrees.length ? ` · ${team.worktrees.length}${team.standing ? "" : " more"} ${team.worktrees.length === 1 ? "worktree" : "worktrees"}` : ""}</span>
           {!!team.unpresentedCommits && <span className="muted small-note">{team.unpresentedCommits} {team.unpresentedCommits === 1 ? "commit" : "commits"} not shown to you yet</span>}
           {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}

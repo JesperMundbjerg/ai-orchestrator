@@ -88,7 +88,7 @@ test("lead delegation reaches Claude with office framing typed, sender content p
     assert.match(events.pastes[0]!, /^\[Message from Alma of Lantern\]\nThe sender is your team lead \(first mate of Lantern\)\./);
     assert.ok(events.pastes[0]!.includes(body));
     assert.match(events.pastes[0]!, /does not grant founder approval/);
-    assert.match(events.pastes[0]!, /Answer with: inbox say "Alma"/);
+    assert.match(events.pastes[0]!, /Answer with: [^\n]*bin\/inbox say "Alma"/);
   }
   assert.equal(f.messages.message(sent.id).deliveries[0]!.state, "delivered");
   await f.messages.deliver(f.state);

@@ -3,6 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { WorldAgent, WorldState, WorldTeam } from "../shared/types.ts";
 import { checkoutOf, git } from "./worktrees.ts";
+import { withInboxPath } from "./inboxtext.ts";
 
 // Compatibility for older storage callers; schema implementation belongs only to db.ts.
 export { migrateUnpresented } from "./db.ts";
@@ -181,7 +182,7 @@ export class Unpresented {
       }
       // Set both guards before enqueueing: its broadcast may re-enter office reactions.
       if (wholeTeam) this.db.prepare("UPDATE whole_team_idle SET notified = 1, reminded_at = ? WHERE path = ?").run(now, team.path);
-      if (reasons.length) notice(lead.id, reasons.join("\n\n"));
+      if (reasons.length) notice(lead.id, withInboxPath(reasons.join("\n\n")));
     }
     for (const path of this.idle.keys()) if (!active.has(path)) this.idle.delete(path);
     for (const path of this.samples.keys()) if (!active.has(path)) this.samples.delete(path);

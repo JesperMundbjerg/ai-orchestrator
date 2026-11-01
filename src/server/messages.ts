@@ -24,6 +24,7 @@ import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { AgentSource } from "./world.ts";
 import { AgentStartingError } from "./agent-starting.ts";
 import { requestFingerprint } from "./db.ts";
+import { withInboxPath } from "./inboxtext.ts";
 import type { PipelineGateInput } from "../shared/pipeline.ts";
 import type { Pipelines } from "./pipelines/store.ts";
 
@@ -676,8 +677,12 @@ function senderStanding(from: WorldAgent | null | undefined, recipient: WorldAge
   return from.teamId === recipient.teamId ? `your team lead (first mate of ${team.name})` : `the team lead of ${team.name}`;
 }
 
-/** A message as the agent reads it, without the footer that closes a prompt. */
+/** A message as the agent reads it, without the footer that closes a prompt; its `inbox` commands carry the CLI's path. */
 function compose(message: Message, agent: WorldAgent, state: WorldState, work: Work | null, images: string[]): string {
+  return withInboxPath(composeText(message, agent, state, work, images));
+}
+
+function composeText(message: Message, agent: WorldAgent, state: WorldState, work: Work | null, images: string[]): string {
   const agents = new Map(state.agents.map((a) => [a.id, a]));
   const teams = new Map(state.teams.map((t) => [t.id, t]));
   const from = message.fromAgentId ? agents.get(message.fromAgentId) : null;

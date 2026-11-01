@@ -30,7 +30,7 @@ export const api = {
   pin: (projectId: string, pinned: boolean) => request<Project>("POST", `/api/projects/${projectId}/pin`, { pinned }),
   world: () => request<WorldState>("GET", "/api/world"),
   createTeam: (body: { name: string; purpose?: string; handsTo?: string | null; repository?: string; standing?: boolean }) => request<Team>("POST", "/api/world/teams", body),
-  updateTeam: (teamId: string, patch: { name?: string; purpose?: string; handsTo?: string | null }) => request<Team>("PATCH", `/api/world/teams/${teamId}`, patch),
+  updateTeam: (teamId: string, patch: { name?: string; purpose?: string; handsTo?: string | null; leadRole?: string; leadRolePath?: string }) => request<Team>("PATCH", `/api/world/teams/${teamId}`, patch),
   /** `force` finishes past commits not on the integration branch (the branch is kept); uncommitted changes always refuse. */
   deleteTeam: (teamId: string, force = false) => request<{ ok: true; note: string }>("DELETE", `/api/world/teams/${teamId}`, force ? { force } : {}),
   teamWorktrees: (teamId: string) => request<{ worktrees: string[]; available: string[] }>("GET", `/api/world/teams/${teamId}/worktrees`),

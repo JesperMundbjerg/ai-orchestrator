@@ -100,7 +100,7 @@ test("one waiting message is typed exactly as before, with no header or age", as
   o.setStatus("idle");
   await o.world.react();
   assert.equal(o.typed.length, 1);
-  assert.match(o.typed[0]!.text, /^\[Message from the founder\]\n\nRail first, please\n\nAnswer the founder in one or two sentences: inbox say founder/);
+  assert.match(o.typed[0]!.text, /^\[Message from the founder\]\n\nRail first, please\n\nAnswer the founder in one or two sentences: [^\n]*bin\/inbox say founder/);
   assert.doesNotMatch(o.typed[0]!.text, /min ago|arrived while you were busy/);
   assert.match(o.typed[0]!.text, /\n\(From the office\. `inbox team` shows your project and who else is here\.\)$/);
 });
