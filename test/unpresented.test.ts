@@ -38,7 +38,8 @@ function setup(t: { after(fn: () => void): void }) {
     session: { harness: "pi", sessionId, cwd: path },
     item: { key: "video", type, title, blocking: false, ...(type === "try" ? { preview: { url: "http://localhost:4921/demo" } } : {}) },
   });
-  const notices = () => world.state().messages.filter((m) => m.fromOffice);
+  // The unlanded-work watch (unlanded.ts) speaks about the same idle worktrees; these tests are about presentation.
+  const notices = () => world.state().messages.filter((m) => m.fromOffice && !m.text.startsWith("Unlanded work"));
   return { db, inbox, world, path, root, live, prompts, commit, post, notices, now: () => time, advance: (ms: number) => { time += ms; } };
 }
 

@@ -2,6 +2,7 @@
 // branch it is on, and whether finishing a project there would lose anything.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -57,6 +58,34 @@ export function linkedWorktrees(repoRoot: string): string[] {
 /** Changed and untracked files, which removing the worktree would throw away. */
 export function uncommitted(path: string): number {
   return git(path, ["status", "--porcelain"]).split("\n").filter(Boolean).length;
+}
+
+/**
+ * What is uncommitted in a worktree, and a fingerprint that changes when any of it does: the changed
+ * paths with their sizes and times, so editing a file that was already dirty is a change too. The
+ * count is that of `uncommitted`.
+ */
+export function dirtyState(top: string): { count: number; fingerprint: string } {
+  const out = execFileSync("git", ["status", "--porcelain=v1", "-z"], { cwd: top, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, maxBuffer: 20_000_000 });
+  const tokens = out.split("\0").filter(Boolean);
+  const paths: string[] = [];
+  const entries: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    entries.push(token);
+    paths.push(token.slice(3));
+    // A rename or copy is followed by the path it came from.
+    if (token[0] === "R" || token[0] === "C" || token[1] === "R" || token[1] === "C") entries.push(tokens[++i] ?? "");
+  }
+  const hash = createHash("sha1");
+  hash.update(entries.join("\0"));
+  for (const path of paths.slice(0, 300)) {
+    try {
+      const st = statSync(join(top, path));
+      hash.update(`\0${st.size}:${Math.round(st.mtimeMs)}`);
+    } catch { hash.update("\0-"); }
+  }
+  return { count: paths.length, fingerprint: hash.digest("hex").slice(0, 16) };
 }
 
 /**

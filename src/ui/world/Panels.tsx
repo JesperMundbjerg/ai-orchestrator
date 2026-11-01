@@ -8,7 +8,8 @@ import { Effort } from "../components/Effort.tsx";
 import { SwitchHarness } from "../components/SwitchHarness.tsx";
 import { TellAllLeads } from "../components/TellAllLeads.tsx";
 import { ItemDetailView } from "../components/ItemDetail.tsx";
-import { finishAnyway, finishTeam, FinishRefused, leadRoleWarning, leadTitle, TeamForm } from "../components/TeamForm.tsx";
+import { finishAnyway, finishTeam, FinishRefused, leadRoleWarning, leadTitle, mergeInstructionWarning, TeamForm } from "../components/TeamForm.tsx";
+import { UnlandedList } from "../components/UnlandedList.tsx";
 import { ago, TYPE_LABEL } from "../format.ts";
 import { usageLine } from "../usageLine.ts";
 import type { BuildingPlan } from "./building.ts";
@@ -123,6 +124,7 @@ export function TeamsPanel({ world, plan, agents, onOpen, onCrewGuide }: {
                     <span className={live.status === "blocked" ? "team-blocked" : "muted"}>{line.text}</span>
                     <span className="muted small-note">{team.standing ? "Always on" : team.branch}</span>
                     {leadRoleWarning(live) ? <span className="warn small-note" style={{ overflowWrap: "anywhere" }}>{leadRoleWarning(live)}</span> : null}
+                    {mergeInstructionWarning(live) ? <span className="warn small-note" style={{ overflowWrap: "anywhere" }}>{mergeInstructionWarning(live)}</span> : null}
                   </button>
                   <button className="ghost small" onClick={() => (setError(null), setEditing(team.id))} aria-label={`Edit ${team.name}`}>Edit</button>
                 </div>
@@ -191,6 +193,7 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
       {lease ? <p className="muted small-note">{lease}</p> : null}
       {team.stalled ? <p className="warn small-note">{stallLine(team.stalled)}.</p> : null}
       {!!team.unpresentedCommits && <p className="muted small-note">{team.unpresentedCommits} {team.unpresentedCommits === 1 ? "commit" : "commits"} not shown to you yet</p>}
+      <UnlandedList items={(world.unlanded ?? []).filter((u) => u.teamId === team.id)} />
       {team.purpose ? <p className="team-purpose">{team.purpose}</p> : null}
       {team.handsTo ? <div className="muted small-note">Hands its finished work to {world.teams.find((t) => t.id === team.handsTo)?.name ?? "another team"}.</div> : null}
 

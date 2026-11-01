@@ -311,6 +311,12 @@ export interface Team {
   leadRolePath?: string;
   /** Why that file is not (fully) delivered right now: not found, unreadable, empty or cut. Null when it is, or none is set. */
   leadRoleProblem?: string | null;
+  /** How the team lands work, in the founder's words ("land <checkout> <sha>"); given to every lead and crew brief and to an agent that idles with unlanded work. Empty for none. */
+  mergeInstruction?: string;
+  /** A command file in the team's repository (for example `.claude/commands/worktree-sync.md`), read afresh each time it is delivered. Empty for none. */
+  mergeInstructionPath?: string;
+  /** Why that file is not (fully) delivered right now; null when it is, or none is set. */
+  mergeInstructionProblem?: string | null;
 }
 
 export type AgentRole = "lead" | "member";
@@ -666,6 +672,29 @@ export interface WorldState {
   switches?: SwitchesView;
   /** The founder's subscription use: the limits' meters, and each agent's and team's tokens this week. */
   usage?: UsageView;
+  /** Idle agents whose checkout holds work that has not reached the team's landing branch (unlanded.ts). */
+  unlanded?: UnlandedWork[];
+}
+
+/** How far the office has taken an idle agent's unlanded work: watching, told the agent, told its lead, told the founder. */
+export type UnlandedStage = "watching" | "agent" | "lead" | "founder";
+
+/** One idle agent's checkout with work that is not on the team's landing branch. */
+export interface UnlandedWork {
+  agentId: string;
+  agentName: string;
+  teamId: string | null;
+  checkout: string;
+  branch: string | null;
+  /** The branch the team lands work on, as the founder knows it. */
+  landing: string;
+  /** Changed and untracked files. */
+  uncommitted: number;
+  /** Commits checked out there that the landing branch does not have. */
+  ahead: number;
+  /** When the office first saw the checkout in this state while its agents were idle (ISO). */
+  since: string;
+  stage: UnlandedStage;
 }
 
 /**

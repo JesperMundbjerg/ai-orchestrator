@@ -37,6 +37,8 @@ import { LEAD_WATCH_SESSION, LeadWatch } from "./leadwatch.ts";
 import { INBOX_BIN } from "../shared/pipeline-cli.ts";
 import { withInboxPath } from "./inboxtext.ts";
 import { LeadRoles, ROLE_PATH_MAX_CHARS, ROLE_TEXT_MAX_CHARS, leadBrief, roleFileProblem } from "./leadrole.ts";
+import { MERGE_PATH_MAX_CHARS, MERGE_TEXT_MAX_CHARS, MergeInstructions, mergeBrief, mergeFileProblem, mergeInstructionBody } from "./unlanded-merge.ts";
+import { Unlanded } from "./unlanded.ts";
 import { withOffline } from "../shared/waiting.ts";
 import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, landingRef, linkedWorktrees, nameFor, notLanded, placeFor, processesIn, stopProcesses, uncommitted, type Checkout } from "./worktrees.ts";
 
@@ -170,6 +172,10 @@ export class World {
   private announced: Map<string, TeamStatus> | null = null;
   /** Each team's lead role setting (leadrole.ts). */
   private readonly leadRoles: LeadRoles;
+  /** Each team's merge instruction (unlanded-merge.ts). */
+  private readonly mergeInstructions: MergeInstructions;
+  /** Idle agents with work that never reached the team's landing branch (unlanded.ts). */
+  readonly unlanded: Unlanded;
   /** Agents the office made lead while computing state; told what a lead is told once the state is settled (react). */
   private newLeads = new Set<string>();
   readonly messages: Messages;
@@ -204,6 +210,7 @@ export class World {
     this.db = db;
     this.unpresented = new Unpresented(db);
     this.leadRoles = new LeadRoles(db);
+    this.mergeInstructions = new MergeInstructions(db);
     this.source = source;
     this.inbox = inbox;
     this.paneNames = new PaneNames({ claimName: (id, name) => this.claimName(id, name), renamePane: source?.renamePane?.bind(source), registered: () => this.messages.laneRegistration, now: () => this.now().getTime() });
@@ -215,6 +222,16 @@ export class World {
     this.waivers.changed = () => this.onChange("world");
     this.messages.pipelines = this.pipelines;
     this.messages.goneAfterMs = PANE_RECORD_LIFE_MS;
+    this.unlanded = new Unlanded(db, {
+      state: () => this.state(),
+      checkout: (cwd) => this.checkout(cwd),
+      landing: (checkout) => this.landing(checkout),
+      merge: (team, top) => team ? mergeInstructionBody(team.name, { text: team.mergeInstruction ?? "", path: team.mergeInstructionPath ?? "" }, [top, ...this.roleRoots(team, this.state().agents.filter((a) => a.teamId === team.id))]) : null,
+      runs: (teamId, top) => this.openRuns(teamId, top),
+      switching: (state) => new Set((state.switches?.recent ?? []).filter((x) => x.step !== "done" && x.step !== "failed").map((x) => x.agentId)),
+      tell: (agentId, text) => void this.messages.notice(agentId, text),
+      tellFounder: (text, agentIds, at) => this.messages.founderNotices.record("Unlanded work", text, agentIds, at),
+    });
     this.leadWatch = new LeadWatch(db, now, {
       makeLead: (id) => { this.updateAgent(id, { role: "lead" }); },
       handOver: (teamId, from, to) => this.messages.handOverQueued(teamId, from, to),
@@ -324,7 +341,8 @@ export class World {
 
     return {
       agents: world,
-      teams: teams.map((team) => ({ ...team, unpresentedCommits: team.standing ? 0 : this.unpresented.count(team.path), ...teamStatus(world.filter((a) => a.teamId === team.id)), stalled: this.leadWatch.stall(team.id), leadRoleProblem: this.leadRoleProblem(team, world) })),
+      teams: teams.map((team) => ({ ...team, unpresentedCommits: team.standing ? 0 : this.unpresented.count(team.path), ...teamStatus(world.filter((a) => a.teamId === team.id)), stalled: this.leadWatch.stall(team.id), leadRoleProblem: this.leadRoleProblem(team, world), mergeInstructionProblem: this.mergeProblem(team, world) })),
+      unlanded: this.unlanded.list(),
       messages: withOffline(this.messages.list(), world, teams),
       withFounder: withOffline(this.messages.withFounder(), world, teams),
       work,
@@ -453,6 +471,37 @@ export class World {
     return setting.path ? roleFileProblem(setting, this.roleRoots(team, world.filter((a) => a.teamId === team.id))) : null;
   }
 
+  private mergeProblem(team: Team, world: readonly WorldAgent[]): string | null {
+    const setting = { text: team.mergeInstruction ?? "", path: team.mergeInstructionPath ?? "" };
+    return setting.path ? mergeFileProblem(setting, this.roleRoots(team, world.filter((a) => a.teamId === team.id))) : null;
+  }
+
+  /** The branch a checkout's work lands on: its repository's integration branch, else the main checkout's. */
+  private landing(checkout: Checkout): { ref: string; name: string } {
+    return landingRef(checkout.repoRoot, this.adapters.read(checkout.repoRoot, checkout.repoName).adapter?.integrationBranch ?? null);
+  }
+
+  /** Open pipeline runs of a team whose candidate is in a checkout, with the next step each still needs. */
+  private openRuns(teamId: string, top: string): Array<{ id: string; head: string; next: string | null }> {
+    return this.pipelines.teamView(teamId).runs
+      .filter((r) => r.state === "open" && !r.archived && (r.candidate.checkout === top || r.candidate.checkout.startsWith(`${top}/`)))
+      .map((r) => {
+        const step = r.steps.find((x) => x.state !== "inactive" && x.state !== "done");
+        return { id: r.id, head: r.candidate.head, next: step ? `${step.nodeId} (${step.state})` : null };
+      });
+  }
+
+  /**
+   * How to land work, for a brief: the team's merge instruction (text and file, read now) with the branch it
+   * lands on when the team has one worktree to say it by. Empty when the team has none.
+   */
+  private mergeStart(team: Team, members: ReadonlyArray<Pick<WorldAgent, "cwd" | "role">>, lead: boolean): string {
+    const setting = { text: team.mergeInstruction ?? "", path: team.mergeInstructionPath ?? "" };
+    if (!setting.text && !setting.path) return "";
+    const top = team.standing ? null : team.path && this.checkout(team.path);
+    return mergeBrief(team.name, setting, this.roleRoots(team, members), top ? this.landing(top).name : null, lead);
+  }
+
   /**
    * What a lead is told when it starts, for every start the office causes or sees: the founder's
    * delegation rule and its team's lead role (text and role file, read now). The only place this is
@@ -460,7 +509,7 @@ export class World {
    * sent to someone made lead all take it from here.
    */
   leadStart(team: Team, members: ReadonlyArray<Pick<WorldAgent, "cwd" | "role">> = []): string {
-    return leadBrief(team.name, { text: team.leadRole ?? "", path: team.leadRolePath ?? "" }, this.roleRoots(team, members));
+    return [leadBrief(team.name, { text: team.leadRole ?? "", path: team.leadRolePath ?? "" }, this.roleRoots(team, members)), this.mergeStart(team, members, true)].filter(Boolean).join("\n");
   }
 
   /**
@@ -480,7 +529,8 @@ export class World {
     // the service appoints by itself would be noise.
     const team = this.state().agents.find((a) => a.id === agentId)?.teamId;
     const set = team ? this.leadRoles.get(team) : null;
-    if (!set?.text && !set?.path) return;
+    const merge = team ? this.mergeInstructions.get(team) : null;
+    if (!set?.text && !set?.path && !merge?.text && !merge?.path) return;
     const text = this.leadStartFor(agentId);
     if (!text) return;
     this.messages.notice(agentId, withInboxPath(`You are now the lead of your team. ${text}\nRun \`inbox team\` for your crew and what waits for you.`));
@@ -686,6 +736,11 @@ export class World {
         : me.role === "lead" ? `Your office name is ${me.name}. ${firstMate(this.leadStart(team, state.agents.filter((a) => a.teamId === team.id)))}` : `${lead ? lead.name : "Its first mate"} is its first mate: take your work from them and report back with \`inbox say ${lead?.name ?? "NAME"} "…"\`, not to the founder.`;
       lines.push(withInboxPath(part));
       lines.push(this.pipelines.brief(team.id, me.id));
+      // A lead has it in its role brief above; the crew is given it here.
+      if (me.role !== "lead") {
+        const merge = this.mergeStart(team, state.agents.filter((a) => a.teamId === team.id), false);
+        if (merge) lines.push(withInboxPath(merge));
+      }
       if (me.role === "lead" && !team.standing && this.crew) lines.push(this.crew.text());
       if (team.purpose) lines.push(`Purpose: ${team.purpose}`);
       lines.push(`On it: ${state.agents.filter((a) => a.teamId === team.id && a.id !== me.id).map(status).join("; ") || "just you"}.`);
@@ -718,7 +773,9 @@ export class World {
     this.paneNames.sync(state);
     const changed = this.unpresented.tick(state, this.now().getTime(), (lead, text) => { this.messages.notice(lead, text); });
     const stalled = this.leadWatch.tick(state);
-    if (changed || stalled) this.onChange("activity"); // redraw only; do not recursively react
+    let unlanded = false;
+    try { unlanded = this.unlanded.tick(state, this.now().getTime()); } catch (err) { console.error(`unlanded work: ${(err as Error).message}`); }
+    if (changed || stalled || unlanded) this.onChange("activity"); // redraw only; do not recursively react
     const first = this.announced === null;
     const before = this.announced ?? new Map<string, TeamStatus>();
     this.announced = new Map(state.teams.map((t) => [t.id, t.status]));
@@ -816,6 +873,8 @@ export class World {
       createdAt: str(r.created_at),
       leadRole: this.leadRoles.get(str(r.id)).text,
       leadRolePath: this.leadRoles.get(str(r.id)).path,
+      mergeInstruction: this.mergeInstructions.get(str(r.id)).text,
+      mergeInstructionPath: this.mergeInstructions.get(str(r.id)).path,
     }));
     const gone = teams.filter((t) => t.path && !existsSync(t.path));
     for (const t of gone) this.forget(t, { reason: "missing" });
@@ -896,7 +955,7 @@ export class World {
     }
   }
 
-  private insertTeam(t: Omit<Team, "id" | "createdAt" | "worktrees" | "leadRole" | "leadRolePath" | "leadRoleProblem">): Team {
+  private insertTeam(t: Omit<Team, "id" | "createdAt" | "worktrees" | "leadRole" | "leadRolePath" | "leadRoleProblem" | "mergeInstruction" | "mergeInstructionPath" | "mergeInstructionProblem">): Team {
     const id = randomUUID();
     this.db
       .prepare("INSERT INTO teams (id, name, purpose, hands_to, path, branch, standing, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -904,8 +963,17 @@ export class World {
     return this.team(id);
   }
 
-  updateTeam(id: string, patch: { name?: string; purpose?: string; handsTo?: string | null; leadRole?: string; leadRolePath?: string }): Team {
+  updateTeam(id: string, patch: { name?: string; purpose?: string; handsTo?: string | null; leadRole?: string; leadRolePath?: string; mergeInstruction?: string; mergeInstructionPath?: string }): Team {
     const team = this.team(id);
+    const merge: Partial<{ text: string; path: string }> = {};
+    if (patch.mergeInstruction !== undefined) {
+      merge.text = patch.mergeInstruction.trim();
+      if (merge.text.length > MERGE_TEXT_MAX_CHARS) throw new InboxError(400, `the merge instruction is at most ${MERGE_TEXT_MAX_CHARS} characters; put a longer one in a file in the repository and set its path`);
+    }
+    if (patch.mergeInstructionPath !== undefined) {
+      merge.path = patch.mergeInstructionPath.trim();
+      if (merge.path.length > MERGE_PATH_MAX_CHARS || /[\0\r\n]/.test(merge.path)) throw new InboxError(400, "the merge instruction file is one path, such as .claude/commands/worktree-sync.md");
+    }
     const role: Partial<{ text: string; path: string }> = {};
     if (patch.leadRole !== undefined) {
       role.text = patch.leadRole.trim();
@@ -922,6 +990,7 @@ export class World {
       .prepare("UPDATE teams SET name = ?, purpose = ?, hands_to = ? WHERE id = ?")
       .run(name, patch.purpose === undefined ? team.purpose : patch.purpose.trim(), patch.handsTo === undefined ? team.handsTo : patch.handsTo, id);
     if (role.text !== undefined || role.path !== undefined) this.leadRoles.set(id, role);
+    if (merge.text !== undefined || merge.path !== undefined) this.mergeInstructions.set(id, merge);
     this.onChange("world");
     return this.team(id);
   }

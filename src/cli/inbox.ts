@@ -79,6 +79,9 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox team role TEAM [--role "text"] [--role-file PATH]
                                   a team's lead role: shown, or set (an empty value clears it). The office gives it, with the rule that
                                   a lead only delegates, to its lead on every start; the file (in the team's repository) is read afresh each time
+  inbox team merge TEAM [--merge "text"] [--merge-file PATH]
+                                  how a team lands work, e.g. "land <checkout> <sha>" or .claude/commands/worktree-sync.md: shown, or set (an empty value
+                                  clears it). Given to every lead and crew brief and to an agent that goes idle with work that never landed
   inbox story "…"                 save your own short personal story (plain text, capped at 800 characters)
   ${storyIntro()}
   inbox crew                      the active crew preset and guide: which harness and model to start, under the founder's switch
@@ -182,6 +185,7 @@ const OPTIONS = {
   effort: { type: "string" },
   "all-from": { type: "string" }, "no-handoff": { type: "boolean" },
   role: { type: "string" }, "role-file": { type: "string" },
+  merge: { type: "string" }, "merge-file": { type: "string" },
   session: { type: "string" },
   help: { type: "boolean", short: "h" },
   writes: { type: "string", multiple: true }, commit: { type: "string" },
@@ -330,6 +334,26 @@ async function teamRoleCommand(name: string | undefined): Promise<void> {
   console.log(`  file: ${read.leadRolePath || "(none)"}${read.leadRoleProblem ? `\n  problem: ${read.leadRoleProblem}` : ""}`);
 }
 
+/** A team's merge instruction: shown, or set with --merge "text" and/or --merge-file PATH (an empty value clears it). */
+async function teamMergeCommand(name: string | undefined): Promise<void> {
+  if (!name) throw new Error('inbox team merge needs the team: inbox team merge TEAM [--merge "land <checkout> <sha>"] [--merge-file .claude/commands/worktree-sync.md]');
+  const teams = (await get<{ teams: Team[] }>("/api/world")).teams;
+  const team = teams.find((t) => t.name.toLowerCase() === name.toLowerCase() || t.id === name);
+  if (!team) throw new Error(`no team ${name}${teams.length ? `; the teams are ${teams.map((t) => t.name).join(", ")}` : ""}`);
+  const patch = { ...(flags.merge !== undefined ? { mergeInstruction: flags.merge } : {}), ...(flags["merge-file"] !== undefined ? { mergeInstructionPath: flags["merge-file"] } : {}) };
+  let now: Team = team;
+  if (Object.keys(patch).length) {
+    const res = await fetch(`${serviceUrl()}/api/world/teams/${team.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(patch), signal: AbortSignal.timeout(5000) });
+    const out = await res.json() as Team & { error?: string };
+    if (!res.ok) throw new Error(out.error ?? `inbox answered ${res.status}`);
+    now = out;
+  }
+  const read = (await get<{ teams: Team[] }>("/api/world")).teams.find((t) => t.id === team.id) ?? now;
+  console.log(`${read.name}'s merge instruction:`);
+  console.log(`  text: ${read.mergeInstruction || "(none)"}`);
+  console.log(`  file: ${read.mergeInstructionPath || "(none)"}${read.mergeInstructionProblem ? `\n  problem: ${read.mergeInstructionProblem}` : ""}`);
+}
+
 /** One lane, as the founder reads it: its state, who holds it, and the last recovery. */
 function laneLine(l: StandingLane): string {
   const who = l.registered ? `registered session ${l.registered.session}${l.registered.agentName ? ` (${l.registered.agentName}${l.registered.role === "lead" ? `, lead of ${l.registered.teamName}` : l.registered.teamName ? `, ${l.registered.teamName}` : ""})` : ""}` : "no registered session";
@@ -449,6 +473,7 @@ async function main(argv: string[]): Promise<void> {
       return pipelineCommand(parsed.positionals.slice(1), flags, session());
     case "team":
       if (arg === "role") return teamRoleCommand(parsed.positionals[2]);
+      if (arg === "merge") return teamMergeCommand(parsed.positionals[2]);
       return console.log((await call<TeamBrief>("/api/agent/team", { session: session() })).text);
     case "crew":
       return console.log((await call<{ text: string }>("/api/agent/crew", { session: session() })).text);

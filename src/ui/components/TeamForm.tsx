@@ -13,11 +13,18 @@ export interface TeamFields {
   /** Editing only: what the team's lead is for, and a role file in its repository; empty clears. */
   leadRole?: string;
   leadRolePath?: string;
+  /** Editing only: how the team lands work, as text and/or a command file in its repository; empty clears. */
+  mergeInstruction?: string;
+  mergeInstructionPath?: string;
 }
 
 /** The warning a team shows when its lead role file cannot be given to the lead. */
 export const leadRoleWarning = (team: Pick<Team, "leadRolePath" | "leadRoleProblem">) =>
   team.leadRolePath && team.leadRoleProblem ? `Lead role file: ${team.leadRoleProblem}` : null;
+
+/** The warning a team shows when its merge instruction file cannot be given to its agents. */
+export const mergeInstructionWarning = (team: Pick<Team, "mergeInstructionPath" | "mergeInstructionProblem">) =>
+  team.mergeInstructionPath && team.mergeInstructionProblem ? `Merge instruction file: ${team.mergeInstructionProblem}` : null;
 
 /** What a team's leader is called: a project's first mate runs a crew, a standing team's lead dispatches to it. */
 export const leadTitle = (team: Team) => (team.standing ? "Lead" : "First mate");
@@ -44,6 +51,8 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
   const [standing, setStanding] = useState(false);
   const [leadRole, setLeadRole] = useState(initial?.leadRole ?? "");
   const [leadRolePath, setLeadRolePath] = useState(initial?.leadRolePath ?? "");
+  const [mergeInstruction, setMergeInstruction] = useState(initial?.mergeInstruction ?? "");
+  const [mergeInstructionPath, setMergeInstructionPath] = useState(initial?.mergeInstructionPath ?? "");
   const [repository, setRepository] = useState(repositories[0]?.root ?? "");
   const others = teams.filter((t) => t.id !== initial?.id);
   const repo = repositories.find((r) => r.root === repository);
@@ -52,7 +61,7 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
   const save = () => {
     if (!canSubmit) return;
     const fields = { name: name.trim(), purpose: purpose.trim(), handsTo: handsTo || null };
-    onSubmit(initial ? { ...fields, leadRole: leadRole.trim(), leadRolePath: leadRolePath.trim() } : { ...fields, standing, repository: standing ? undefined : repository });
+    onSubmit(initial ? { ...fields, leadRole: leadRole.trim(), leadRolePath: leadRolePath.trim(), mergeInstruction: mergeInstruction.trim(), mergeInstructionPath: mergeInstructionPath.trim() } : { ...fields, standing, repository: standing ? undefined : repository });
   };
   return (
     <form
@@ -108,6 +117,17 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
             <span className="warn small-note" role="alert" style={{ overflowWrap: "anywhere" }}>{leadRoleWarning(initial)}</span>
           ) : null}
           <span className="muted small-note">The file is read when the lead starts, so an edit to it reaches the next start. Every lead is also told: plan, split and hand every change to the crew; never edit, fix or build itself.</span>
+        </div>
+      ) : null}
+      {initial ? (
+        <div className="field merge-instruction">
+          <span>Merge instruction</span>
+          <textarea rows={2} aria-label="Merge instruction" placeholder='How this team lands work, e.g. "land <checkout> <sha>". Given to every lead and crew brief, and to an agent that idles with work that never landed.' value={mergeInstruction} onChange={(e) => setMergeInstruction(e.target.value)} />
+          <input aria-label="Merge instruction file" placeholder="…or a command file in the team's repository, e.g. .claude/commands/worktree-sync.md" value={mergeInstructionPath} onChange={(e) => setMergeInstructionPath(e.target.value)} />
+          {mergeInstructionWarning({ mergeInstructionPath, mergeInstructionProblem: mergeInstructionPath === initial.mergeInstructionPath ? initial.mergeInstructionProblem : null }) ? (
+            <span className="warn small-note" role="alert" style={{ overflowWrap: "anywhere" }}>{mergeInstructionWarning(initial)}</span>
+          ) : null}
+          <span className="muted small-note">Without one, an agent that idles with unlanded work is told to land it on the team's landing branch the way its team lands work.</span>
         </div>
       ) : null}
       {initial && manage ? <TeamWorktrees team={initial} teams={teams} {...manage} /> : null}
