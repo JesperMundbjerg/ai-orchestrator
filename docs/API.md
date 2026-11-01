@@ -271,7 +271,7 @@ One office-run lease per repository and resource, keyed by the repository's Git 
 CLI (exits 0 when you hold it, 3 while you wait in line; `--json` prints the result):
 
 ```sh
-inbox lease acquire capture [--run RUN] [--reason TEXT] [--wait SEC]   # --wait polls by re-acquiring, at most 120 s
+inbox lease acquire capture [--run RUN] [--reason TEXT] [--wait SEC]   # --wait keeps re-acquiring until held or SEC s pass, at most 7200 s (2 h; more is capped, said on stderr); a timeout/connection error/5xx poll is logged and waiting goes on, a 4xx ends it; exit 0 held, 3 still queued
 inbox lease release|renew|leave|status capture
 inbox lease revoke capture --reason TEXT [--holder NAME]   # --holder when several hold it
 inbox lease limit capture --minutes N

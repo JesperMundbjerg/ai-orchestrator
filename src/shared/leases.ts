@@ -6,8 +6,8 @@ export type LeaseResource = typeof LEASE_RESOURCES[number];
 /** A hold lasts this long unless the project's lead set another limit. */
 export const DEFAULT_HOLD_MINUTES = 30;
 export const MAX_HOLD_MINUTES = 240;
-/** `inbox lease acquire --wait` never waits longer than this: agents' tool calls time out. */
-export const MAX_WAIT_SECONDS = 120;
+/** `inbox lease acquire --wait` waits at most this long (2 hours); asking for more is capped, and said so. */
+export const MAX_WAIT_SECONDS = 7200;
 /** How many agents hold a lease at once unless its lead set another capacity. */
 export const DEFAULT_CAPACITY = 1;
 export const MAX_CAPACITY = 10;
