@@ -134,11 +134,14 @@ export class Unlanded {
     return value;
   }
 
-  /** The agents in a checkout when all of them are idle (and not being switched), else null. */
-  private idleIn(state: WorldState, top: string, switching: ReadonlySet<string>): WorldAgent[] | null {
+  /**
+   * The agents in a checkout when all of them are idle (and not being switched), else null. `held`: one of them
+   * waits on the founder's answer, so it is not nagged, but the work is still the lead's to know about.
+   */
+  private idleIn(state: WorldState, top: string, switching: ReadonlySet<string>): { agents: WorldAgent[]; held: boolean } | null {
     const here = state.agents.filter((a) => a.paneId && a.cwd && this.deps.checkout(a.cwd)?.top === top);
-    if (!here.length || here.some((a) => !IDLE.has(a.status) || a.waitingOnYou || switching.has(a.id))) return null;
-    return here;
+    if (!here.length || here.some((a) => !IDLE.has(a.status) || switching.has(a.id))) return null;
+    return { agents: here, held: here.some((a) => a.waitingOnYou) };
   }
 
   /**
@@ -156,8 +159,8 @@ export class Unlanded {
     }
     const next: UnlandedWork[] = [];
     for (const [top, checkout] of checkouts) {
-      const here = this.idleIn(state, top, switching);
-      if (!here) {
+      const idle = this.idleIn(state, top, switching);
+      if (!idle) {
         this.idle.delete(top);
         continue;
       }
@@ -170,9 +173,10 @@ export class Unlanded {
       }
       let row = this.row(top);
       if (!row || row.state_key !== sample.key) row = this.begin(top, sample.key, now);
+      const { agents: here, held } = idle;
       const team = state.teams.find((t) => here.some((a) => a.teamId === t.id)) ?? null;
       const lead = team ? state.agents.find((a) => a.teamId === team.id && a.role === "lead") ?? null : null;
-      row = this.escalate({ top, checkout, here, team, lead, sample, row, since: this.idle.get(top)! }, now) ?? row;
+      row = this.escalate({ top, checkout, here, held, team, lead, sample, row, since: this.idle.get(top)! }, now) ?? row;
       next.push(...here.map((a): UnlandedWork => ({
         agentId: a.id, agentName: a.name, teamId: a.teamId, checkout: top, branch: sample.branch, landing: sample.landing,
         uncommitted: sample.uncommitted, ahead: sample.ahead, since: new Date(row.first_seen).toISOString(), stage: stageOf(row),
@@ -190,19 +194,23 @@ export class Unlanded {
   }
 
   /** Says what is due for this state, one stage at a time and each once. Returns the row as it is after. */
-  private escalate(c: { top: string; checkout: Checkout; here: WorldAgent[]; team: WorldTeam | null; lead: WorldAgent | null; sample: Sample; row: Row; since: number }, now: number): Row | null {
+  private escalate(c: { top: string; checkout: Checkout; here: WorldAgent[]; held: boolean; team: WorldTeam | null; lead: WorldAgent | null; sample: Sample; row: Row; since: number }, now: number): Row | null {
     const { top, row } = c;
-    const dueAgent = row.agent_at == null && now - c.since >= this.timing.agentAfterMs;
+    // Someone waiting on the founder is not nagged and the founder is not told what they are already holding;
+    // the lead hears of the unlanded work after the founder's hour.
+    const dueAgent = !c.held && row.agent_at == null && now - c.since >= this.timing.agentAfterMs;
     // The clocks of the later stages run from the agent being told, or from the latest idle stretch.
     const waited = row.agent_at == null ? 0 : now - Math.max(row.agent_at, c.since);
-    const dueLead = row.agent_at != null && row.lead_at == null && waited >= this.timing.leadAfterMs;
-    const dueFounder = row.agent_at != null && row.founder_at == null && waited >= this.timing.founderAfterMs;
+    const dueLead = c.held ? row.lead_at == null && now - c.since >= this.timing.founderAfterMs
+      : row.agent_at != null && row.lead_at == null && waited >= this.timing.leadAfterMs;
+    const dueFounder = !c.held && row.agent_at != null && row.founder_at == null && waited >= this.timing.founderAfterMs;
     if (!dueAgent && !dueLead && !dueFounder) return null;
     // The state may have changed, or someone started working, inside the polling window.
     const fresh = this.sample(c.checkout, now, true);
     const latest = this.deps.state();
-    const here = this.idleIn(latest, top, this.deps.switching(latest));
-    if (!fresh || fresh.key !== c.sample.key || !here) return null;
+    const idle = this.idleIn(latest, top, this.deps.switching(latest));
+    if (!fresh || fresh.key !== c.sample.key || !idle || idle.held !== c.held) return null;
+    const here = idle.agents;
     const runs = c.team ? this.deps.runs(c.team.id, top) : [];
     const run = runs.length ? ` Pipeline run ${runs.map((r) => `${r.id} (candidate ${r.head.slice(0, 7)}${r.next ? `; next step: ${r.next}` : ""})`).join(", ")} ${runs.length === 1 ? "is" : "are"} open with the candidate not delivered.` : "";
     const where = `${top} (branch ${fresh.branch ?? "detached"})`;
@@ -218,7 +226,10 @@ export class Unlanded {
     if (dueLead) {
       const lead = c.lead && !here.some((a) => a.id === c.lead!.id) ? c.lead : null;
       this.latch(top, "lead_at", lead ? now : 0);
-      if (lead) this.deps.tell(lead.id, withInboxPath(`Unlanded work on your team: ${names(here)} ${here.length === 1 ? "has" : "have"} been idle for ${minutes(waited)} minutes since being told to land it, and nothing has changed. ${where} holds ${what(fresh)}.${run} Get it landed, or find out why not: inbox say ${here[0]!.name} "…".`));
+      const have = here.length === 1 ? "has" : "have";
+      const intro = c.held ? `${names(here)} ${have} waited ${minutes(now - c.since)} minutes for the founder's answer with unlanded work.`
+        : `${names(here)} ${have} been idle for ${minutes(waited)} minutes since being told to land it, and nothing has changed.`;
+      if (lead) this.deps.tell(lead.id, withInboxPath(`Unlanded work on your team: ${intro} ${where} holds ${what(fresh)}.${run} Get it landed, or find out why not: inbox say ${here[0]!.name} "…".`));
     }
     if (dueFounder) {
       const told = this.row(top)?.lead_at;

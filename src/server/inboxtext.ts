@@ -11,9 +11,9 @@ import { inboxCommand } from "../shared/pipeline-cli.ts";
 const COMMANDS = "say|decide|milestone|handoff|review|team";
 const NAMED = new RegExp(`(?<![\\w/.'-])inbox (${COMMANDS})(?![\\w-])`, "g");
 
-/** A team's lead role file, delivered as the founder wrote it (leadrole.ts marks it). */
-const ROLE_FILE = /(--- begin lead role ---[\s\S]*?--- end lead role ---)/;
+/** A team's lead role file and merge instruction file, delivered as the founder wrote them (leadrole.ts and unlanded-merge.ts mark them). */
+const ROLE_FILE = /(--- begin lead role ---[\s\S]*?--- end lead role ---|--- begin merge instruction ---[\s\S]*?--- end merge instruction ---)/;
 
-/** `inbox say founder "…"` becomes `<path>/bin/inbox say founder "…"`; the rest of the line is as written, and a role file is left alone. */
+/** `inbox say founder "…"` becomes `<path>/bin/inbox say founder "…"`; the rest of the line is as written, and a role or merge file is left alone. */
 export const withInboxPath = (text: string): string =>
   text.split(ROLE_FILE).map((part, i) => (i % 2 ? part : part.replace(NAMED, (_all, command: string) => inboxCommand(command)))).join("");

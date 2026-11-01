@@ -10,6 +10,8 @@ import { openDatabase } from "../src/server/db.ts";
 import { Inbox, type PresenceSource } from "../src/server/inbox.ts";
 import { Unlanded, type UnlandedDeps } from "../src/server/unlanded.ts";
 import { World, type AgentSource, type LiveAgent } from "../src/server/world.ts";
+import { withInboxPath } from "../src/server/inboxtext.ts";
+import { inboxCommand } from "../src/shared/pipeline-cli.ts";
 
 const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 const MIN = 60_000;
@@ -301,6 +303,22 @@ test("the team's merge instruction, text and file, is in the nudge and in every 
   assert.throws(() => s.world.updateTeam(s.team.id, { mergeInstructionPath: "a\nb" }), /one path/);
 });
 
+test("the merge instruction file is delivered as written: commands in it are not given the CLI's path, those around it are", async () => {
+  const s = await scene();
+  const bin = inboxCommand("say").replace(/ say$/, "");
+  assert.equal(withInboxPath("run inbox say x\n--- begin merge instruction ---\nrun inbox say y\n--- end merge instruction ---\nthen inbox say z"),
+    `run ${bin} say x\n--- begin merge instruction ---\nrun inbox say y\n--- end merge instruction ---\nthen ${bin} say z`);
+  for (const checkout of [s.atoms, s.lane]) writeFileSync(join(checkout, ".claude", "commands", "worktree-sync.md"), "Land with land <checkout> <sha>, then tell inbox say founder.\n");
+  s.world.updateTeam(s.team.id, { mergeInstructionPath: ".claude/commands/worktree-sync.md" });
+  const crew = s.world.brief({ harness: "pi", sessionId: "s2", cwd: s.lane }).text;
+  assert.ok(crew.includes("Land with land <checkout> <sha>, then tell inbox say founder."), "the founder's file is as written");
+  assert.ok(crew.includes(`${bin} say`), "the rest of the brief still names a runnable command");
+  await s.at(0);
+  await s.at(5);
+  const nudge = s.said().find((m) => ids(m).includes(s.crew.id));
+  assert.ok(nudge!.text.includes("then tell inbox say founder."), "the nudge delivers it as written too");
+});
+
 test("the office lists agents with unlanded work for the team panel", async () => {
   const s = await scene();
   writeFileSync(join(s.lane, "b.txt"), "b\n");
@@ -393,11 +411,22 @@ test("when the unlanded agent is the lead, only the founder is escalated to", ()
   assert.doesNotMatch(d.founder[0]!, /was told/);
 });
 
-test("an agent that waits on the founder's answer is not nagged", () => {
+test("an agent that waits on the founder's answer is not nagged, but its lead hears of the unlanded work after an hour, and the founder is not told", () => {
   const d = direct();
   d.setAgents([d.agent("ada", "idle", { waitingOnYou: true }), d.agent("lee", "idle", { cwd: d.atoms, role: "lead" })]);
   d.watch.tick(d.state(), T0);
-  d.watch.tick(d.state(), T0 + 90 * MIN);
-  assert.deepEqual(d.told, []);
-  assert.deepEqual(d.founder, []);
+  d.watch.tick(d.state(), T0 + 59 * MIN);
+  assert.equal(d.told.length, 0, "not the agent, and not yet the lead");
+  d.watch.tick(d.state(), T0 + 60 * MIN);
+  assert.deepEqual(d.told.map((t) => t.to), ["lee"]);
+  assert.match(d.told[0]!.text, /ADA has waited 60 minutes for the founder's answer with unlanded work\./);
+  assert.match(d.told[0]!.text, /1 uncommitted file, not on dev/);
+  d.watch.tick(d.state(), T0 + 300 * MIN);
+  assert.equal(d.told.length, 1, "once");
+  assert.deepEqual(d.founder, [], "the founder already holds them");
+  // Answered and idle again: the agent is told as usual; the lead's stage for this state is already done.
+  d.setAgents([d.agent("ada", "idle"), d.agent("lee", "idle", { cwd: d.atoms, role: "lead" })]);
+  d.watch.tick(d.state(), T0 + 301 * MIN);
+  d.watch.tick(d.state(), T0 + 306 * MIN);
+  assert.deepEqual(d.told.map((t) => t.to), ["lee", "ada"]);
 });
