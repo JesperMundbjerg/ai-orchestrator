@@ -6,7 +6,7 @@ The checked agent contract is **protocol version 1**, `AGENT_PROTOCOL_VERSION` i
 
 The agent operations (including switch control), reply answer/claim/ack lifecycle, adapter queue read, change stream and evidence URLs are the integration surface. Other office/UI routes below are implementation-facing read models and controls, not a separate versioned SDK. Request/response TypeScript types and executable schemas are authoritative for exact fields.
 
-The service binds `127.0.0.1`; its default port is 4870 (`INBOX_PORT` overrides it). Allowed Hosts are `localhost:<port>` and `127.0.0.1:<port>`. Mutations require `Content-Type: application/json`. A supplied Origin must use an allowed loopback host and port; **no-Origin local CLI/server clients are accepted**. There is no token authentication: session identity isolates routing, not access by other local processes. Do not expose this service through a remote bind or reverse proxy.
+The service binds `127.0.0.1`; its default port is 4870 (`INBOX_PORT` overrides it). Allowed Hosts are `localhost:<port>` and `127.0.0.1:<port>`. Mutations require `Content-Type: application/json`. A supplied Origin must use an allowed loopback host and port; **no-Origin local CLI/server clients are accepted**. There is no token authentication: session identity isolates routing, not access by other local processes. Do not expose this service through a remote bind or reverse proxy. Pages on other origins reach the office only through the embedded widget ([Page comments](#page-comments)); the guard makes no exception for them.
 
 ## HTTP/error policy
 
@@ -295,10 +295,57 @@ Submission `evidence.path` explicitly copies a local file into the data director
 
 Pasted images use `POST /api/uploads`; bytes must really be PNG, JPEG, GIF or WebP and at most 10 MiB. Up to eight image ids can be attached to a message/answer. `GET /uploads/:id` serves the stored image with sandbox CSP and immutable private caching (no HEAD/range API). Agents receive absolute image paths, not image bytes in terminal text. There is no automatic retention/deletion API: back up SQLite, files and uploads together.
 
+## Page comments
+
+A stable, vendor-neutral surface for commenting from any web page to any team. The office owns team addressing: a page lists teams and names one **by id**, never by name. A comment is an ordinary founder instruction (`Messages.instruct`): it goes to the team's lead, queues while the lead is busy or offline, batches, retries and dedupes exactly like a message typed in the office, and shows in the office and the team panel as from the founder. Types and pure helpers: [`src/shared/pagecomments.ts`](../src/shared/pagecomments.ts); behavior: [`src/server/pagecomments.ts`](../src/server/pagecomments.ts); tests: `test/pagecomments.test.ts`.
+
+| Method/path | Purpose / request |
+|---|---|
+| `GET /api/page-comments/teams` | `{teams: PageTeam[]}` ordered by name: `{id, name, purpose, status: blocked \| working \| idle \| offline, lead: {name, online} \| null, leadPresent}`. No paths or branches |
+| `POST /api/page-comments/teams/:id/comments` | `{text?, page?, images?, clientId?}` → `{messageId, teamId, teamName, createdAt}`. Text or images required. `page` is `{url?, title?, selector?, anchor?, selectedText?, viewport?}`; unknown fields are dropped, each field is one line clipped to a short limit (`PAGE_CONTEXT_LIMITS`), `url` must be http(s). `images` are ids from `POST /api/uploads`. The same `clientId` returns the first message and sends nothing again; reused for a different comment it is 409 `replay_conflict`. Unknown team id: 404 |
+| `GET /api/page-comments/origins`; `PUT /api/page-comments/origins` | The page origins allowed to host the widget: `{origins: string[], default: boolean}`. Until the founder saves a list it is `http://localhost:*` and `http://127.0.0.1:*` (`default: true`). PUT `{origins}` replaces it; each entry is `scheme://host`, `scheme://host:port` or `scheme://host:*` (http/https; no paths, no host wildcards), else 400. Stored in `page-comments.json` in the data directory; a damaged file allows no page |
+
+The lead reads the context first, compactly, then the comment:
+
+```text
+[Page comment]
+On "Orbits" http://localhost:3000/lessons/orbits#chart
+At: element main .chart > button · #chart · viewport 390x844 phone
+Selected: "Launch"
+
+The button overlaps the chart on phones.
+```
+
+**From a backend** (no `Origin` header, like the CLI), call the routes above directly: read the team list once, keep the chosen team's **id**, then POST comments with a `clientId` per comment.
+
+**From a browser page on another origin**, the API is not callable: the Origin guard refuses it (403), and that does not change. Instead the page embeds the office's widget, served at the office's own origin, whose requests are then same-origin. Either include the loader:
+
+```html
+<script src="http://localhost:4870/embed/loader.js" data-default-team="TEAM_ID" async></script>
+```
+
+It adds a **Comment** button (`data-label` changes its text) that opens the widget in a panel and passes `location.href`, `document.title`, the hash, the current selection and the viewport size. `window.officeComment.open({selector, selectedText, title, anchor, viewport, url, screenshots})` opens it with more context; `window.officeComment.close()` closes it. The loader re-dispatches the widget's messages on `window` as `CustomEvent`s named by their `type` (e.g. `office-comment:sent`). Or frame it yourself:
+
+```html
+<iframe src="http://localhost:4870/embed/comment" title="Comment to a team" style="border:0;width:360px;height:420px"></iframe>
+```
+
+`GET /embed/comment` (also `/embed/comment.html`) serves the widget with `Content-Security-Policy: frame-ancestors 'self' <allowed origins>`, so only allowed pages can frame it. It shows a team picker (it remembers the last team per host page origin, in the widget's own storage), the page context it was given, a comment box and image attachments (through `POST /api/uploads`). Opened on its own (not framed), it also shows the allowed-origins editor.
+
+**postMessage contract** (version 1; `EMBED_VERSION`):
+
+| Direction | Message |
+|---|---|
+| widget → host | `{type: "office-comment:ready", version: 1}` once loaded, to any origin (it carries nothing) |
+| host → widget | `{type: "office-comment:context", version: 1, page?, defaultTeamId?, screenshots?}`; send it after `ready` and again whenever the context changes. Post it with the office's origin as `targetOrigin`. `defaultTeamId` preselects a team when this origin has no remembered choice; `screenshots` are up to eight `data:image/(png\|jpeg\|gif\|webp);base64,…` URLs, uploaded and attached |
+| widget → host | `{type: "office-comment:sent", version: 1, messageId, teamId, teamName}` after a send; `{type: "office-comment:error", version: 1, error}`; `{type: "office-comment:resize", version: 1, height}` as the content changes. Posted only to the accepted host origin |
+
+The widget accepts a context message only when `event.source` is its parent and `event.origin` is on the allowlist (`pageOriginAllowed`, `acceptEmbedMessage`): exact scheme and host, and the port exact or `*`. The first accepted origin stays the host for the widget's life. A `page.url` on another origin than the sender's is dropped, so a page speaks only for itself. A refused origin sees a note in the widget saying so; nothing it sent is used.
+
 ## Local CLI: write surface check
 
 `inbox surface-check --writes "GLOB,GLOB" --base SHA [--commit SHA]` runs in a repository checkout and calls no service. It lists the files changed from `--base` to `--commit` (default `HEAD`; `git diff --name-status -M`) and prints each one no glob covers, exiting 1 when there are any and 0 otherwise. `--writes` takes comma-separated globs and may be repeated. `**` spans any number of folders (none included), `*` and `?` stay within one path part, and a trailing `/` covers a whole folder. A rename counts both its old path (deleted) and its new one; a deletion is a change like any other; a copy counts only the copy. Matching lives in `src/shared/surface.ts` (`test/surface.test.ts`). First mates give each crew task a `Writes: <globs>` line and run this before landing; it is a check on a diff, not a sandbox.
 
 ## Checks
 
-`test/api-reference.test.ts` guards operation names/methods/paths against registry drift. Behavioral coverage: `test/http-contract.test.ts` (validation/methods/errors), `test/api-replay.test.ts` (keys/conflicts/atomic work), `test/typed-replies.test.ts` and `test/inbox.test.ts` (claim/recovery/revisions), `test/agent-client.test.ts` (typed client/errors), `test/undelivered-gone.test.ts` (queued deliveries to a gone agent fail with an error naming it, and the sender is told once), `test/pi-delivery.test.ts` (actual receipt boundary). These are isolated tests, not certification of every real harness/provider release.
+`test/api-reference.test.ts` guards operation names/methods/paths against registry drift. Behavioral coverage: `test/http-contract.test.ts` (validation/methods/errors), `test/api-replay.test.ts` (keys/conflicts/atomic work), `test/typed-replies.test.ts` and `test/inbox.test.ts` (claim/recovery/revisions), `test/agent-client.test.ts` (typed client/errors), `test/undelivered-gone.test.ts` (queued deliveries to a gone agent fail with an error naming it, and the sender is told once), `test/pi-delivery.test.ts` (actual receipt boundary), `test/pagecomments.test.ts` (page comments, the origin allowlist and the unchanged Origin guard). These are isolated tests, not certification of every real harness/provider release.

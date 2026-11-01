@@ -25,6 +25,7 @@ import type { Leases } from "./leases.ts";
 import { leaseSchemas } from "./leases-protocol.ts";
 import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
+import { pageCommentSchema, pageOriginsSchema, type PageComments } from "./pagecomments.ts";
 import { pipelineSchemas, waiverSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema, telemetryQuery, telemetryReportSchema } from "./pipelines/protocol.ts";
 
 const TYPES: Record<string, string> = {
@@ -40,7 +41,7 @@ function route<T>(method: string, pattern: RegExp, schema: Schema<T>, handler: (
   return [method, pattern, (req, body, params) => handler(req, schema.parse(body), params)];
 }
 
-export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove; standing?: StandingLanes; leases?: Leases }): Server {
+export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove; standing?: StandingLanes; leases?: Leases; pageComments?: PageComments }): Server {
   const clients = new Set<ServerResponse>();
   const broadcast = (reason: string) => {
     for (const res of clients) res.write(`event: changed\ndata: ${JSON.stringify({ reason })}\n\n`);
@@ -168,6 +169,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     // What agents left running on the machine; Close is refused for anything but a listed headless browser.
     route("GET", /^\/api\/machine$/, emptySchema, () => needMachine().state()),
     route("POST", /^\/api\/machine\/browsers\/(\d+)\/close$/, emptySchema, (_r, _b, [pid]) => needMachine().close(Number(pid))),
+    // Page comments: any page's comment to a team the office lists, by id; the founder's allowlist of hosting pages.
+    route("GET", /^\/api\/page-comments\/teams$/, emptySchema, () => needPageComments().teams()),
+    route("POST", /^\/api\/page-comments\/teams\/([\w-]+)\/comments$/, pageCommentSchema, (_r, b, [id]) => needPageComments().send(id!, b)),
+    route("GET", /^\/api\/page-comments\/origins$/, emptySchema, () => needPageComments().origins()),
+    route("PUT", /^\/api\/page-comments\/origins$/, pageOriginsSchema, (_r, b) => needPageComments().setOrigins(b)),
     // Agent protocol
     route("POST", /^\/api\/agent\/items$/, pipelineSubmitSchema, (r, b) => submitWithWarnings(r, b)),
     route("POST", /^\/api\/agent\/activity$/, protocol.activity.request, (_r, b) => inbox.activity(b)),
@@ -224,6 +230,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   function needLeases(): Leases {
     if (!opts.leases) throw new InboxError(404, "this service runs no capture leases");
     return opts.leases;
+  }
+
+  function needPageComments(): PageComments {
+    if (!opts.pageComments) throw new InboxError(404, "this service takes no page comments");
+    return opts.pageComments;
   }
 
   function needMachine(): Machine {
@@ -287,6 +298,13 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
         const path = inbox.uploads.path(upload[1]!);
         if (!path) throw new InboxError(404, "no such image");
         return sendFile(res, path, { "content-disposition": "inline", "x-content-type-options": "nosniff", "content-security-policy": "sandbox", "cache-control": "private, max-age=31536000, immutable" });
+      }
+
+      // The page-comment widget, framable only by the page origins the founder allowed.
+      if (/^\/embed\/comment(?:\.html)?$/.test(url.pathname) && method === "GET") {
+        const path = opts.staticDir ? join(opts.staticDir, "embed", "comment.html") : null;
+        if (!path || !existsSync(path)) throw new InboxError(404, "UI not built: run npm run build");
+        return sendFile(res, path, needPageComments().embedHeaders());
       }
 
       for (const [m, pattern, handler] of routes) {

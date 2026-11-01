@@ -19,6 +19,7 @@ import { LaneRouting, piPaused } from "./lanerouting.ts";
 import { startIntegrations, startupConfig } from "./startup-config.ts";
 import { Usage } from "./usage.ts";
 import { World } from "./world.ts";
+import { PageComments } from "./pagecomments.ts";
 
 export const DEFAULT_PORT = 4870;
 
@@ -75,6 +76,8 @@ const leases = new Leases(db, {
 // When disabled there is no process watcher or process-control HTTP surface at all.
 const machine = config.browserCleanup ? new Machine(() => world.state()) : undefined;
 if (machine) machine.tellLead = (teamId, text) => world.tellLead(teamId, text);
+// Comments from web pages go to a team by id as ordinary founder messages; hosting pages are the founder's setting.
+const pageComments = new PageComments({ state: () => world.state(), instruct: (teamId, input) => world.messages.instruct(teamId, input) }, join(dir, "page-comments.json"));
 const dist = fileURLToPath(new URL("../../dist", import.meta.url));
 
 startIntegrations(config, { herdr, machine, usage });
@@ -93,7 +96,7 @@ setInterval(() => {
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();
 
-createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches, usage, autoApprove, standing, leases }).listen(port, "127.0.0.1", () => {
+createInboxServer(inbox, herdr, { port, staticDir: existsSync(dist) ? dist : null, world, machine, switches, usage, autoApprove, standing, leases, pageComments }).listen(port, "127.0.0.1", () => {
   autoApprove.sweep();
   console.log(`Review inbox on http://localhost:${port}  (data: ${dir})`);
 });
