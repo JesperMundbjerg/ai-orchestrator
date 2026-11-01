@@ -380,7 +380,27 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
     override TEXT NOT NULL REFERENCES lane_routing_pauses(override), section TEXT NOT NULL CHECK (section IN ('runtimes', 'lanes')),
     lane TEXT NOT NULL, previous TEXT, written TEXT NOT NULL, PRIMARY KEY (override, section, lane)
   );`);
-}, migrateCaptureLeases];
+}, migrateCaptureLeases, (db) => {
+  // The QA agent feature was removed. Automation is Off or Approve all again, kept in `enabled`: a database that was in
+  // QA answers comes out Off. Its tables and columns go; every reply, item and event stays, and the history still
+  // tells an automatic answer from the founder's by its event. An automatic answer not yet delivered is never sent
+  // as the founder's own: it is marked stale and the item waits for the founder again.
+  const has = (table: string, column: string) => db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+  if (has("auto_approve", "mode")) db.exec("UPDATE auto_approve SET enabled = CASE WHEN mode = 'approve_all' THEN 1 ELSE 0 END");
+  if (has("replies", "answered_by")) {
+    const pending = db.prepare("SELECT DISTINCT item_id FROM replies WHERE answered_by = 'qa_agent' AND state = 'queued'").all().map((r) => String(r.item_id));
+    db.exec("UPDATE replies SET state = 'stale' WHERE answered_by = 'qa_agent' AND state = 'queued'");
+    for (const id of pending) {
+      if (!db.prepare("SELECT 1 FROM replies WHERE item_id = ? AND state = 'queued'").get(id)) {
+        db.prepare("UPDATE items SET state = 'needs_attention' WHERE id = ? AND state = 'answer_queued'").run(id);
+      }
+    }
+  }
+  db.exec("DROP TABLE IF EXISTS qa_predictions");
+  for (const [table, column] of [["auto_approve", "mode"], ["auto_approve", "qa_agent_id"], ["auto_approve", "qa_learned_through"], ["auto_approve", "qa_started"], ["replies", "answered_by"]] as const) {
+    if (has(table, column)) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+  }
+}];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) {

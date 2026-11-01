@@ -13,7 +13,6 @@ import { CrewTreeStore } from "./crewtree.ts";
 import { Inbox } from "./inbox.ts";
 import { Leases } from "./leases.ts";
 import { AutoApprove } from "./autoapprove.ts";
-import { QaAgents } from "./qa-agent.ts";
 import { Machine } from "./machine.ts";
 import { Switches } from "./switch.ts";
 import { LaneRouting, piPaused } from "./lanerouting.ts";
@@ -29,20 +28,10 @@ const dir = dataDir();
 const herdr = new Herdr();
 const db = openDatabase(join(dir, "inbox.sqlite"));
 const inbox = new Inbox(db, join(dir, "files"), herdr);
-// QA answers keep the QA agent's learnings in the data directory, an Open Knowledge Format bundle it writes itself.
-const autoApprove = new AutoApprove(db, inbox, join(dir, "learnings"));
+const autoApprove = new AutoApprove(db, inbox);
 const world = new World(db, herdr, () => inbox.state());
-const qaAgent = (a: { id: string; name: string; status: string; taskIds: string[] }) => ({ id: a.id, name: a.name, online: a.status !== "offline", taskIds: a.taskIds });
-autoApprove.qa.office = {
-  agent: (id) => { const found = world.state().agents.find((a) => a.id === id); return found ? qaAgent(found) : null; },
-  resolve: (session) => qaAgent(world.resolve(session)),
-  notice: (agentId, text) => void world.messages.notice(agentId, text),
-};
 world.crew = new CrewTreeStore(dir);
 world.crew.seed();
-// The founder picks the QA agent's model; the office starts it in herdr, like a project's lead, and designates it.
-const crew = world.crew;
-autoApprove.agents = new QaAgents(db, herdr, { catalog: () => crew.catalog(), learnings: autoApprove.qa.learnings });
 // The plan's limits and each agent's use; near Claude's 5-hour limit the crew guide gives Pi under Mix, and near Codex's limits Claude.
 const usage = new Usage(db);
 world.usage = usage;

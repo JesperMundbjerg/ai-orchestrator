@@ -11,7 +11,7 @@ const files = (...paths: string[]): ChangedFile[] => paths.map((path) => ({ path
 const stray = (paths: string[], writes: string) => strayFiles(files(...paths), parseWrites([writes])).map((f) => f.path);
 
 test("* stays within one folder; ** spans any number of folders, none included", () => {
-  assert.deepEqual(stray(["src/server/qa.ts", "src/server/qa-agent.ts", "src/server/pipelines/qa.ts"], "src/server/qa*.ts"), ["src/server/pipelines/qa.ts"]);
+  assert.deepEqual(stray(["src/server/leases.ts", "src/server/leases-schema.ts", "src/server/pipelines/leases.ts"], "src/server/leases*.ts"), ["src/server/pipelines/leases.ts"]);
   assert.deepEqual(stray(["src/a.ts", "src/x/y/b.ts", "srcx/c.ts"], "src/**"), ["srcx/c.ts"]);
   assert.deepEqual(stray(["test/a.test.ts", "test/deep/b.test.ts", "test/fixture.json"], "test/**/*.test.ts"), ["test/fixture.json"]);
   assert.deepEqual(stray(["a.md", "docs/b.md", "docs/c.txt"], "**/*.md"), ["docs/c.txt"]);
@@ -20,8 +20,8 @@ test("* stays within one folder; ** spans any number of folders, none included",
 });
 
 test("several globs, comma-separated or repeated, each widen the surface", () => {
-  assert.deepEqual(parseWrites(["src/server/qa*.ts, test/qa*", "", "docs/DESIGN.md,"]), ["src/server/qa*.ts", "test/qa*", "docs/DESIGN.md"]);
-  assert.deepEqual(stray(["src/server/qa.ts", "test/qa-agent.test.ts", "docs/DESIGN.md", "README.md"], "src/server/qa*.ts,test/qa*,docs/DESIGN.md"), ["README.md"]);
+  assert.deepEqual(parseWrites(["src/server/leases*.ts, test/lease*", "", "docs/DESIGN.md,"]), ["src/server/leases*.ts", "test/lease*", "docs/DESIGN.md"]);
+  assert.deepEqual(stray(["src/server/leases.ts", "test/lease.test.ts", "docs/DESIGN.md", "README.md"], "src/server/leases*.ts,test/lease*,docs/DESIGN.md"), ["README.md"]);
 });
 
 test("a rename touches both paths, a deletion counts as a write, and a copy leaves its source alone", () => {

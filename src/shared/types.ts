@@ -169,13 +169,7 @@ export interface Reply {
   error: string | null;
   createdAt: string;
   deliveredAt: string | null;
-  /** Who answered: the founder, Approve all, or the QA agent on the founder's behalf. Absent from older services. */
-  answeredBy?: AnsweredBy;
-  /** A founder answer that overrides the QA agent's answer to the same revision. */
-  overridesQa?: boolean;
 }
-
-export type AnsweredBy = "founder" | "approve_all" | "qa_agent";
 
 export interface HistoryEvent {
   id: number;
@@ -193,8 +187,6 @@ export interface ItemSummary extends Item {
   videoCount?: number;
   thumbnail: string | null;
   lastReply: Reply | null;
-  /** The QA agent has this item now, so it is out of Needs you; it comes back when the QA agent is offline or QA answers are off. */
-  withQa?: boolean;
 }
 
 export interface InboxState {
@@ -214,123 +206,7 @@ export interface ItemDetail {
   /** Present when a pipeline run presented this revision for its "Founder approves" step. Approve-all never
    * answers it; only the founder's own Accept counts, and a later message does not withdraw it. */
   pipelineApproval?: { runId: string; accepted: boolean };
-  /** The QA agent has this item now (see ItemSummary.withQa). */
-  withQa?: boolean;
-  /** What the QA agent predicted in manual mode, only for revisions the founder has already answered, so it never biases them. */
-  qaPredictions?: QaPrediction[];
 }
-
-// ── Inbox automation: Approve all, or the QA agent answering on the founder's behalf ─────────
-
-export const AUTOMATION_MODES = ["off", "approve_all", "qa"] as const;
-export type AutomationMode = (typeof AUTOMATION_MODES)[number];
-
-export interface AutoApproveState {
-  /** Approve all is on (kept for older clients; `mode` says which automation runs). */
-  enabled: boolean;
-  /** Revisions Approve all has answered, over its lifetime. */
-  count: number;
-  mode: AutomationMode;
-  /** The QA agent, when one is chosen (whatever the mode). */
-  qa: QaSummary | null;
-  /** What the office can start a QA agent on: the crew catalog's harness, model and effort entries. */
-  qaModels: QaModel[];
-  /** The QA agent the office started, or is starting; null when none (a QA agent chosen otherwise shows only in `qa`). */
-  qaAgent: QaAgentView | null;
-  /** Why the last QA agent the office tried to start is not running; nothing was designated. */
-  qaError: string | null;
-}
-
-/** A model a QA agent can run on, as the founder picks it. `label` is all the UI shows. */
-export interface QaModel {
-  harness: string;
-  model: string;
-  effort: string;
-  /** "Opus 5.5 · medium (Claude Code)" */
-  label: string;
-  /** The harness's label, to group the choices. */
-  group: string;
-}
-
-export interface QaAgentView {
-  model: QaModel;
-  /** Starting: the office is starting it, and nothing is designated yet. Offline: designated, but not running. */
-  status: "starting" | "online" | "offline";
-  /** The office agent it is, once designated. */
-  agentId: string | null;
-  /** While starting: the setting that applies once it runs (QA answers wait for their agent). */
-  mode?: AutomationMode;
-}
-
-export interface QaSummary {
-  agentId: string;
-  /** Null when the office no longer knows that agent. */
-  agentName: string | null;
-  online: boolean;
-  /** Items the QA agent has now, out of Needs you. Zero whenever it is offline or QA answers are off. */
-  withQa: number;
-  /** Revisions it answered, and how many of those the founder overrode, over its lifetime. */
-  answered: number;
-  overridden: number;
-  /** Manual mode: revisions it predicted; of those the founder has answered, how many it judged and agreed with; words still to judge. */
-  predicted?: number;
-  judged?: number;
-  agreed?: number;
-  toJudge?: number;
-}
-
-/** What `inbox qa next` hands the QA agent: one question, and where the learnings are. */
-export interface QaNext {
-  item: (Item & { project: string; taskTitle: string }) | null;
-  /** Questions it has now, including this one. */
-  waiting: number;
-  /** Founder answers it has not learned from yet (`inbox qa answers`). */
-  toLearn: number;
-  learnings: string;
-  /** Manual mode: an answer is recorded only as a prediction of the founder's, never sent. Absent from older services. */
-  predicting?: boolean;
-}
-
-/** A founder answer the QA agent learns from. Approve-all and QA answers are never in this feed. */
-export interface FounderAnswer {
-  /** The event id; `inbox qa learned --through` it once learned. */
-  seq: number;
-  at: string;
-  itemId: string;
-  revision: number;
-  project: string;
-  itemType: ItemType;
-  title: string;
-  request: string;
-  recommendation: string;
-  options: Option[];
-  action: ReplyAction;
-  choice: string | null;
-  choiceLabel: string | null;
-  text: string;
-  /** The QA agent's answer this one overrode, with the learnings it cited. */
-  overrode: { action: ReplyAction; choice: string | null; learnings: string[] } | null;
-  /** What the QA agent predicted for this revision in manual mode (never sent), and how it compares. Absent from older services. */
-  predicted?: QaPrediction | null;
-}
-
-/** In manual mode the QA agent's answer is only a prediction of the founder's: never a reply, never delivered. */
-export interface QaPrediction {
-  predicted: true;
-  itemId: string;
-  revision: number;
-  action: "choose" | "answer" | "accept" | "request_changes";
-  choice: string | null;
-  text: string;
-  reason: string;
-  learnings: string[];
-  at: string;
-  /** Null until the founder answers that revision. Same action and choice (or both accept, or both request changes) is a
-   * match; two answers in words need the QA agent's judgement (`inbox qa judge`) until it records one. */
-  verdict: QaVerdict | null;
-}
-
-export type QaVerdict = "match" | "mismatch" | "needs_judging";
 
 // ── Agent protocol inputs ────────────────────────────────────────────────────────────────
 
@@ -405,9 +281,6 @@ export interface PendingReply {
   /** Absolute paths of the images you attached, for the agent to read. */
   images: string[];
   createdAt: string;
-  /** Absent means the founder (older services did not say). */
-  answeredBy?: AnsweredBy;
-  overridesQa?: boolean;
 }
 
 // ── The office world ─────────────────────────────────────────────────────────────────────

@@ -169,23 +169,6 @@ test("approve all never answers a waiver request; it stays for the founder", t =
   assert.equal(o.gate().allowed, false);
 });
 
-test("the QA agent is never offered a waiver and cannot answer it; a QA answer that reached it grants nothing", t => {
-  const o = office(t);
-  const auto = new AutoApprove(o.db, o.inbox);
-  const qa = { id: "deckhand", name: "deckhand", online: true, taskIds: [] };
-  auto.qa.office = { agent: (id) => (id === qa.id ? qa : null), resolve: () => qa, notice: () => {} };
-  auto.setMode("qa", "deckhand");
-  const w = o.ask();
-  const session = { harness: "manual" as const, sessionId: "deckhand" };
-  assert.equal(auto.qa.next(session).item, null);
-  assert.throws(() => auto.qa.answer({ session, item: w.itemId!, revision: 1, action: "choose", choice: "allow", reason: "r" }), /stays with the founder: a repair waiver/);
-  assert.equal(o.inbox.item(w.itemId!).state, "needs_attention");
-  o.inbox.answer(w.itemId!, { id: `qa:${w.itemId}:1`, revision: 1, action: "choose", choice: "allow", text: "QA" }, "qa_agent");
-  o.waivers.sync();
-  assert.equal(o.waivers.list(o.repo)[0]!.state, "requested");
-  assert.equal(o.gate().allowed, false);
-});
-
 test("a message never revokes a granted waiver, and a message before deciding puts the request back in Needs you", t => {
   const o = office(t);
   const w = o.ask();

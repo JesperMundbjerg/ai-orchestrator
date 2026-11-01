@@ -99,12 +99,12 @@ const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
  * Keep word boundaries (including Unicode whitespace), strip other controls, and leave
  * quotes and Unicode intact: herdr, not this helper, does the shell quoting.
  */
-export function briefArgument(text: string): string {
+function briefArgument(text: string): string {
   return text.replace(/[\s\p{White_Space}]/gu, " ").replace(/\p{Cc}/gu, "").replace(/ +/g, " ").trim();
 }
 
 /** The CLI of the checkout the service runs from; a lead's pane need not have `inbox` on its PATH. */
-export const INBOX_BIN = fileURLToPath(new URL("../../bin/inbox", import.meta.url));
+const INBOX_BIN = fileURLToPath(new URL("../../bin/inbox", import.meta.url));
 
 /**
  * What a project's lead is, in the sense of firstmate (github.com/kunchenguid/firstmate): the
@@ -120,7 +120,7 @@ const FIRST_MATE = [
   "Choose each member's harness, model and effort by the founder's crew guide, a decision tree they edit: `inbox crew` prints it with the exact start command for each choice, and `inbox team` prints it too. Read it before you start each member, not once, since it changes while you work: take the first rule whose \"when\" fits the task.",
   "Never any other kind or model: crew run only as Claude Code or Pi, which have the permissions set up. The crew guide also carries the founder's switch, which can turn one of the two off for a while (its subscription is running out): `inbox crew` says so, and shows only the commands that run on the other; never start the harness it says is switched off.",
   '`herdr agent prompt <name> "<task>"` gives it its task.',
-  "Crew share this checkout, so give each one files of its own: put a `Writes: <globs>` line in its task (for example `Writes: src/server/qa*.ts, test/qa*`), and before you land its work run `inbox surface-check --writes \"<the same globs>\" --base <sha it started from> [--commit <sha>]` in the repository, which names every file changed outside them (exit 1); send each stray file back or to its owner.",
+  "Crew share this checkout, so give each one files of its own: put a `Writes: <globs>` line in its task (for example `Writes: src/server/leases*.ts, test/lease*`), and before you land its work run `inbox surface-check --writes \"<the same globs>\" --base <sha it started from> [--commit <sha>]` in the repository, which names every file changed outside them (exit 1); send each stray file back or to its owner.",
   'Tell each crew member to report to you with `inbox say <your office name> "…"` when done or stuck, and not to ask the founder; their reports arrive in your terminal.',
   "Ask for each report in six parts, so reports compare at a glance: Changed (files) / Why / Verified (commands with their result) / Left undone / Needs outside my surface / Questions.",
   "Do not answer acknowledgments or thanks, and tell your crew not to either; continue the work instead.",

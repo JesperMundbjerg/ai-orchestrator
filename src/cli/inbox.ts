@@ -15,10 +15,9 @@ import { acknowledge, call, fetchReplies, formatReply, get } from "../shared/age
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
 import { projectRoot } from "../shared/project.ts";
-import { QA_GUIDE } from "../shared/qa.ts";
 import { storyIntro } from "../shared/story.ts";
 import { changedFiles, parseWrites, strayFiles } from "../shared/surface.ts";
-import type { AgentSwitch, StandingLane, EvidenceInput, FounderAnswer, Item, ItemType, Message, Page, QaNext, QaPrediction, Reply, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
+import type { AgentSwitch, StandingLane, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, TeamBrief, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
 
@@ -123,15 +122,6 @@ ${LEASE_HELP}
                                   member's write surface; exits 1 when there are any. ** spans folders, * stays in one
   inbox pane [--cwd DIR]          open a pane in your herdr tab (a grid: 2x2 first, then it grows) and print its id: P=$(inbox pane)
 
-  QA answers (only the agent the founder chose as QA; \`inbox qa guide\` explains the loop and the learnings):
-  inbox qa next                   the next question to decide for the founder, and where the learnings are
-  inbox qa answer ITEM --revision N (--choice ID | --answer "words" | --accept | --request-changes "what") --reason "why" [--learning SLUG …]
-                                  in manual mode this only records your prediction of the founder's answer, never sent
-  inbox qa answers [--limit N]    the founder's own answers you have not learned from yet, beside what you predicted
-  inbox qa judge ITEM --revision N (--match | --mismatch)   whether your prediction in words agreed with the founder's words
-  inbox qa learned --through SEQ  you have learned from those answers up to SEQ
-  inbox qa guide                  how the QA agent decides and what a learning (OKF v0.2) looks like
-
 The session comes from CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or HERDR_PANE_ID, or --harness/--session.
   --session must be the id the harness registered its session under, or the reply goes to a session nobody listens to:
     claude   the value of CLAUDE_CODE_SESSION_ID
@@ -178,9 +168,6 @@ const OPTIONS = {
   "all-from": { type: "string" }, "no-handoff": { type: "boolean" },
   session: { type: "string" },
   help: { type: "boolean", short: "h" },
-  choice: { type: "string" }, answer: { type: "string" }, accept: { type: "boolean" }, "request-changes": { type: "string" },
-  learning: { type: "string", multiple: true }, through: { type: "string" }, limit: { type: "string" },
-  match: { type: "boolean" }, mismatch: { type: "boolean" },
   writes: { type: "string", multiple: true }, commit: { type: "string" },
 } as const;
 
@@ -453,8 +440,6 @@ async function main(argv: string[]): Promise<void> {
       return switchAgents(arg);
     case "lane":
       return laneCommand(parsed.positionals.slice(1));
-    case "qa":
-      return qaCommand(arg, parsed.positionals[2]);
     case "surface-check":
       return surfaceCheck();
     case "pane": {
@@ -491,80 +476,6 @@ function surfaceCheck(): void {
   process.exitCode = 1;
 }
 
-/** The QA agent's commands: it decides for the founder through the office, and learns from the founder's own answers. */
-async function qaCommand(sub: string | undefined, itemRef: string | undefined): Promise<void> {
-  switch (sub) {
-    case "guide":
-      return console.log(QA_GUIDE);
-    case "next": {
-      const next = await call<QaNext>("/api/agent/qa/next", { session: session() });
-      const learn = next.toLearn ? `\n${next.toLearn} founder ${next.toLearn === 1 ? "answer" : "answers"} to learn from first: inbox qa answers` : "";
-      if (!next.item) return console.log(`Nothing waits for you.${learn}\nLearnings: ${next.learnings}`);
-      const i = next.item;
-      const kind = i.type === "decide" ? (i.options.length ? "decision" : "open question") : i.type === "try" ? "try-it" : "milestone";
-      const how = i.type === "decide" ? (i.options.length ? "--choice ID" : '--answer "words"') : '--accept | --request-changes "what"';
-      return console.log([
-        `${next.waiting} waiting. Next: ${kind} ${i.id} revision ${i.revision} · ${i.project} · ${i.taskTitle}${i.blocking ? " · the agent is waiting on it" : ""}`,
-        `Title: ${i.title}`, i.request ? `Request: ${i.request}` : "", i.context ? `Context:\n${i.context}` : "", i.check ? `What to check: ${i.check}` : "",
-        ...i.options.map((o) => `  ${o.id}) ${o.label}${o.consequence ? ` — ${o.consequence}` : ""}`),
-        i.recommendation ? `Recommendation: ${i.recommendation}` : "",
-        ...i.pages.map((p) => `Page: ${p.label} ${p.url}${p.look ? ` (${p.look})` : ""}`),
-        "", `Learnings: ${next.learnings}`,
-        next.predicting ? "Manual mode: the founder answers this; your answer is recorded only as your prediction of theirs, never sent." : "",
-        `${next.predicting ? "Predict" : "Decide"}: inbox qa answer ${i.id} --revision ${i.revision} ${how} --reason "why" [--learning SLUG]`, learn,
-      ].filter((l) => l !== "").join("\n"));
-    }
-    case "answer": {
-      if (!itemRef || !flags.revision) throw new Error("inbox qa answer needs the item and its revision: inbox qa answer ITEM --revision N …");
-      const picked = [flags.choice !== undefined, flags.answer !== undefined, Boolean(flags.accept), flags["request-changes"] !== undefined].filter(Boolean).length;
-      if (picked !== 1) throw new Error('give exactly one of --choice ID, --answer "words", --accept or --request-changes "what"');
-      const action = flags.choice !== undefined ? "choose" : flags.answer !== undefined ? "answer" : flags.accept ? "accept" : "request_changes";
-      const reply = await call<Reply | QaPrediction>("/api/agent/qa/answer", {
-        session: session(), item: itemRef, revision: Number(flags.revision), action, choice: flags.choice,
-        text: flags.answer ?? flags["request-changes"], reason: flags.reason ?? "", learnings: flags.learning,
-      });
-      if ("predicted" in reply) return console.log(`Predicted (manual mode, not sent): ${reply.action}${reply.choice ? ` ${reply.choice}` : ""}. It is compared with the founder's own answer.`);
-      return console.log(`Answered for the founder (marked as yours): ${reply.action}${reply.choice ? ` ${reply.choice}` : ""}. The founder can override it.`);
-    }
-    case "answers": {
-      const feed = await call<{ answers: FounderAnswer[]; remaining: number; learnedThrough: number }>("/api/agent/qa/answers", { session: session(), limit: flags.limit ? Number(flags.limit) : undefined });
-      if (!feed.answers.length) return console.log("Nothing new: you have learned from every founder answer.");
-      for (const a of feed.answers) {
-        const said = a.action === "choose" ? `chose ${a.choiceLabel ?? a.choice}` : a.action === "accept" ? "accepted" : a.action === "request_changes" ? "asked for changes" : a.action === "answer" ? "answered in words" : "said (discuss)";
-        console.log([
-          `seq ${a.seq} · ${a.at} · ${a.project} · ${a.itemType} ${a.itemId} r${a.revision}: ${a.title}`,
-          a.request ? `  Request: ${a.request}` : "", ...a.options.map((o) => `    ${o.id}) ${o.label}`), a.recommendation ? `  Recommended: ${a.recommendation}` : "",
-          `  The founder ${said}${a.text ? `: ${a.text}` : ""}`,
-          a.overrode ? `  OVERRODE your ${a.overrode.action}${a.overrode.choice ? ` ${a.overrode.choice}` : ""}${a.overrode.learnings.length ? ` (learnings: ${a.overrode.learnings.join(", ")})` : ""}` : "",
-          a.predicted ? predictionLine(a, a.predicted) : "",
-        ].filter(Boolean).join("\n"));
-      }
-      return console.log(`\nOnce learned: inbox qa learned --through ${feed.answers.at(-1)!.seq}${feed.remaining ? ` (${feed.remaining} more after these)` : ""}`);
-    }
-    case "judge": {
-      if (!itemRef || !flags.revision || Boolean(flags.match) === Boolean(flags.mismatch)) throw new Error("inbox qa judge ITEM --revision N (--match | --mismatch)");
-      const judged = await call<QaPrediction>("/api/agent/qa/judge", { session: session(), item: itemRef, revision: Number(flags.revision), agrees: Boolean(flags.match) });
-      return console.log(`Judged your prediction for ${judged.itemId} r${judged.revision}: ${judged.verdict}.`);
-    }
-    case "learned": {
-      if (!flags.through) throw new Error("inbox qa learned needs --through SEQ");
-      const done = await call<{ learnedThrough: number; answersLearned?: number; consolidate?: boolean }>("/api/agent/qa/learned", { session: session(), through: Number(flags.through) });
-      console.log(`Learned through ${done.learnedThrough}.`);
-      if (done.consolidate) console.log(`\nConsolidate now: you have taken in ${done.answersLearned} founder answers. Rewrite your learnings as principles, merge overlaps, deprecate weak ones and keep every source (\`inbox qa guide\`, "Keep it general"); log it in log.md.`);
-      return;
-    }
-    default:
-      throw new Error("inbox qa next | answer | answers | judge | learned | guide");
-  }
-}
-
-/** Your prediction beside the founder's answer: a mismatch is as strong a signal as an override. */
-function predictionLine(a: FounderAnswer, p: QaPrediction): string {
-  const said = `${p.action}${p.choice ? ` ${p.choice}` : ""}${p.text ? `: ${p.text}` : ""}${p.learnings.length ? ` (learnings: ${p.learnings.join(", ")})` : ""}`;
-  if (p.verdict === "mismatch") return `  MISMATCH: you predicted ${said}`;
-  if (p.verdict === "needs_judging") return `  JUDGE: you predicted ${said}\n  Did it agree with the founder's words? inbox qa judge ${a.itemId} --revision ${a.revision} --match | --mismatch`;
-  return `  Matched your prediction: ${said}`;
-}
 
 export function run(argv = process.argv.slice(2)): void {
   main(argv).catch((err: Error) => {
