@@ -86,3 +86,14 @@ test("with nothing live in the pane, the checkout's agent is still found", async
   await herdr.refresh();
   assert.equal(world.resolve({ harness: "claude", sessionId: "unknown", cwd: CWD }).id, freja.id);
 });
+
+test("a failed herdr read registers and renames no one", async (t) => {
+  const { world, herdr, breakList, lead, freja } = await seat(t);
+  const people = () => world.state().agents.map((a) => `${a.id}:${a.name}:${a.paneId}`).sort();
+  const before = people();
+  breakList();
+  await herdr.refresh();
+  assert.deepEqual(people(), before);
+  const names = world.state().agents.map((a) => a.name);
+  assert.ok(names.includes(lead.name) && names.includes(freja.name));
+});
