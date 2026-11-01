@@ -77,7 +77,12 @@ const leases = new Leases(db, {
 const machine = config.browserCleanup ? new Machine(() => world.state()) : undefined;
 if (machine) machine.tellLead = (teamId, text) => world.tellLead(teamId, text);
 // Comments from web pages go to a team by id as ordinary founder messages; hosting pages are the founder's setting.
-const pageComments = new PageComments({ state: () => world.state(), instruct: (teamId, input) => world.messages.instruct(teamId, input) }, join(dir, "page-comments.json"));
+const pageComments = new PageComments(db, {
+  state: () => world.state(),
+  instruct: (teamId, input) => world.messages.instruct(teamId, input),
+  message: (id) => world.messages.message(id),
+  resolve: (session) => world.resolve({ ...session, cwd: session.cwd ?? undefined }),
+}, join(dir, "page-comments.json"));
 const dist = fileURLToPath(new URL("../../dist", import.meta.url));
 
 startIntegrations(config, { herdr, machine, usage });
@@ -92,6 +97,7 @@ setInterval(() => {
   }
   syncLaneRouting();
   try { leases.sweep(); } catch (err) { console.error(`capture leases: ${(err as Error).message}`); }
+  try { pageComments.sync(); } catch (err) { console.error(`page comments: ${(err as Error).message}`); }
   try { world.waivers.sync(); } catch (err) { console.error(`waivers: ${(err as Error).message}`); }
   void world.react().catch((err: Error) => console.error(`office: ${err.message}`));
 }, 30_000).unref();

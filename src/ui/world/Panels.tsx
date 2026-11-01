@@ -18,6 +18,7 @@ import { confirmRemove, LAMP, removable, TEAM_LAMP, teamLine } from "./status.ts
 import type { Waiting } from "./WorldView.tsx";
 import { PipelineButton } from "../pipelines/PipelineButton.tsx";
 import { stallLine } from "../components/StalledTeams.tsx";
+import { PageCommentsSection } from "../components/PageComments.tsx";
 import { leaseLine, type LeaseView } from "../../shared/leases.ts";
 
 /** The project list: where each stands, open one, start a project, change or finish one. */
@@ -226,6 +227,8 @@ export function TeamPanel({ team, world, agents, state, waiting, onAgent, onAnsw
       </div>
 
       <TellTeam team={team} members={members} autoFocus />
+
+      <PageCommentsSection teamId={team.id} />
 
       {work.length ? (
         <div>

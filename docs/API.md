@@ -297,50 +297,77 @@ Pasted images use `POST /api/uploads`; bytes must really be PNG, JPEG, GIF or We
 
 ## Page comments
 
-A stable, vendor-neutral surface for commenting from any web page to any team. The office owns team addressing: a page lists teams and names one **by id**, never by name. A comment is an ordinary founder instruction (`Messages.instruct`): it goes to the team's lead, queues while the lead is busy or offline, batches, retries and dedupes exactly like a message typed in the office, and shows in the office and the team panel as from the founder. Types and pure helpers: [`src/shared/pagecomments.ts`](../src/shared/pagecomments.ts); behavior: [`src/server/pagecomments.ts`](../src/server/pagecomments.ts); tests: `test/pagecomments.test.ts`.
+A stable, vendor-neutral surface for commenting from any web page to any team, owned end to end by the office. A page lists teams and names one **by id**, never by name. It makes **one call to queue a comment**; from then on the office owns it: it stores the comment in its own queue (`page_comments`), gives it to the team's lead as an ordinary founder instruction (`Messages.instruct`: queued while the lead is busy or away, batched with what else waits, never typed twice), tracks it, and tells the page every status change. The lead closes the loop with `inbox comment fixed|declined`. Types and pure helpers: [`src/shared/pagecomments.ts`](../src/shared/pagecomments.ts); behavior: [`src/server/pagecomments.ts`](../src/server/pagecomments.ts); tests: `test/pagecomments.test.ts`, `test/pagecomments.browser.mjs`.
+
+**Status:** `queued` → `delivered` → `working` → `fixed` | `declined`, or `failed` when it cannot be delivered.
+
+- `queued`: in the office's queue, or given to the lead and waiting until they are free or back. A team with nobody on it keeps it queued (`note` says why) until someone leads it.
+- `delivered`: the lead took the prompt up.
+- `working`, `fixed`, `declined`: set by the fixer. `fixed` and `declined` are final; repeating the same close is fine, a different one is 409 `comment_closed`. `declined` needs a note.
+- `failed`: the delivery failed in a way that may already have arrived (the office never replays those; the founder's Retry in the office delivers it and the comment moves on to `delivered`), the team is gone, or a lead that left before it arrived was tried three times (`MAX_ATTEMPTS`). A delivery that failed because its lead left is given to the team again.
 
 | Method/path | Purpose / request |
 |---|---|
 | `GET /api/page-comments/teams` | `{teams: PageTeam[]}` ordered by name: `{id, name, purpose, status: blocked \| working \| idle \| offline, lead: {name, online} \| null, leadPresent}`. No paths or branches |
-| `POST /api/page-comments/teams/:id/comments` | `{text?, page?, images?, clientId?}` → `{messageId, teamId, teamName, createdAt}`. Text or images required. `page` is `{url?, title?, selector?, anchor?, selectedText?, viewport?}`; unknown fields are dropped, each field is one line clipped to a short limit (`PAGE_CONTEXT_LIMITS`), `url` must be http(s). `images` are ids from `POST /api/uploads`. The same `clientId` returns the first message and sends nothing again; reused for a different comment it is 409 `replay_conflict`. Unknown team id: 404 |
+| `POST /api/page-comments/teams/:id/comments` | Queue one comment: `{text?, page?, openUrl?, meta?, images?, clientId?}` → the `PageComment`. Text or images required (text under 6000 characters). `page` is `{url?, title?, selector?, anchor?, selectedText?, viewport?}`; unknown fields are dropped and each is one line clipped to `PAGE_CONTEXT_LIMITS`; `url` must be http(s). `openUrl` (http(s), under 1000 characters) is where the page should go to show the fix. `meta` is a JSON object of at most 2048 bytes, stored and handed back untouched with every event (page-specific fields; the office never reads it). `images` are ids from `POST /api/uploads`. The same `clientId` returns the first comment and queues nothing; reused for a different comment it is 409 `replay_conflict`. Unknown team id: 404 |
+| `GET /api/page-comments` | `{comments: PageComment[]}`, newest first; query `team`, `origin`, `ids` (comma-separated), `status`, `limit` (default 100, at most 500) |
+| `GET /api/page-comments/:id` | One `PageComment`: `{id, teamId, teamName, text, page, origin, openUrl, meta, images, status, note, commit, by, messageId, attempts, createdAt, updatedAt}`. `origin` is the page's origin, from `page.url` or else `openUrl`. `openUrl` is the fixer's url when given, else the page's own |
+| `POST /api/page-comments/:id/status` | The fixer: `{status: working \| fixed \| declined, note?, url?, commit?, session?}`. `url` (http(s)) overrides `openUrl`; `commit` is a SHA; `session` records who (`by`). Returns the `PageComment` |
+| `GET /api/page-comments/events` | Server-sent events, `event: comment`, `data: PageCommentEvent` (`{id, teamId, status, openUrl, note, commit, meta, updatedAt}`), on every status change of a matching comment. Query `team`, `origin`, `ids` filter; on connect it first sends the current state of the newest `limit` (50) matches, so a reconnect catches up. Pings every 25 s |
 | `GET /api/page-comments/origins`; `PUT /api/page-comments/origins` | The page origins allowed to host the widget: `{origins: string[], default: boolean}`. Until the founder saves a list it is `http://localhost:*` and `http://127.0.0.1:*` (`default: true`). PUT `{origins}` replaces it; each entry is `scheme://host`, `scheme://host:port` or `scheme://host:*` (http/https; no paths, no host wildcards), else 400. Stored in `page-comments.json` in the data directory; a damaged file allows no page |
 
-The lead reads the context first, compactly, then the comment:
+The lead reads the context first, compactly, then the comment, where to open it and how to close it:
 
 ```text
+[From the founder to Mission Control] …
 [Page comment]
 On "Orbits" http://localhost:3000/lessons/orbits#chart
 At: element main .chart > button · #chart · viewport 390x844 phone
 Selected: "Launch"
 
 The button overlaps the chart on phones.
+
+Open to check: http://localhost:3000/lessons/orbits?step=2
+
+Page comment pc-3f9a1c2b7d. Say `inbox comment working pc-3f9a1c2b7d` when you start; when it is fixed, `inbox comment fixed pc-3f9a1c2b7d [--url URL] [--note "…"] [--commit SHA]` …; if it will not be fixed, `inbox comment declined pc-3f9a1c2b7d --note "why"`. The page that sent it is told.
 ```
 
-**From a backend** (no `Origin` header, like the CLI), call the routes above directly: read the team list once, keep the chosen team's **id**, then POST comments with a `clientId` per comment.
+The CLI (`inbox comment working|fixed|declined|show ID`) calls the status route with the agent's session; the founder may run it from any shell.
 
-**From a browser page on another origin**, the API is not callable: the Origin guard refuses it (403), and that does not change. Instead the page embeds the office's widget, served at the office's own origin, whose requests are then same-origin. Either include the loader:
+**From a backend** (no `Origin` header, like the CLI), call the routes above directly: read the team list once and keep the chosen team's **id**, POST each comment with a `clientId`, and listen on `GET /api/page-comments/events?origin=…` (or `?ids=…`).
+
+**From a browser page on another origin**, the API is not callable: the Origin guard refuses it (403), and that does not change; the page cannot read the event stream either (no CORS). Instead the page embeds the office's widget, served at the office's own origin, whose requests are then same-origin, and the widget relays events back by postMessage. Either include the loader:
 
 ```html
 <script src="http://localhost:4870/embed/loader.js" data-default-team="TEAM_ID" async></script>
+<script>
+  addEventListener("office-comment:status", (e) => {
+    const { id, status, openUrl, note, commit, meta } = e.detail;
+    if (status === "fixed" && openUrl) location.assign(openUrl);
+  });
+</script>
 ```
 
-It adds a **Comment** button (`data-label` changes its text) that opens the widget in a panel and passes `location.href`, `document.title`, the hash, the current selection and the viewport size. `window.officeComment.open({selector, selectedText, title, anchor, viewport, url, screenshots})` opens it with more context; `window.officeComment.close()` closes it. The loader re-dispatches the widget's messages on `window` as `CustomEvent`s named by their `type` (e.g. `office-comment:sent`). Or frame it yourself:
+It loads the widget hidden with the page, adds a **Comment** button (`data-label` changes its text) that opens it in a panel, and passes `location.href`, `document.title`, the hash, the current selection and the viewport size. `window.officeComment.open({openUrl, meta, selector, selectedText, title, anchor, viewport, url, screenshots})` opens it with more context; `close()` closes it; `watch(ids?)` narrows the relayed events to some comment ids (default: every comment from this page's origin). The loader re-dispatches every widget message on `window` as a `CustomEvent` named by its `type`, with the message as `detail`. Or frame it yourself:
 
 ```html
 <iframe src="http://localhost:4870/embed/comment" title="Comment to a team" style="border:0;width:360px;height:420px"></iframe>
 ```
 
-`GET /embed/comment` (also `/embed/comment.html`) serves the widget with `Content-Security-Policy: frame-ancestors 'self' <allowed origins>`, so only allowed pages can frame it. It shows a team picker (it remembers the last team per host page origin, in the widget's own storage), the page context it was given, a comment box and image attachments (through `POST /api/uploads`). Opened on its own (not framed), it also shows the allowed-origins editor.
+`GET /embed/comment` (also `/embed/comment.html`) serves the widget with `Content-Security-Policy: frame-ancestors 'self' <allowed origins>`, so only allowed pages can frame it. It shows a team picker (the last team for this page origin, else the page's `defaultTeamId`, else the first team with a lead), the page context, a comment box, image attachments (through `POST /api/uploads`) and the last comment's live status. Opened on its own (not framed), it also shows the allowed-origins editor.
 
 **postMessage contract** (version 1; `EMBED_VERSION`):
 
 | Direction | Message |
 |---|---|
 | widget → host | `{type: "office-comment:ready", version: 1}` once loaded, to any origin (it carries nothing) |
-| host → widget | `{type: "office-comment:context", version: 1, page?, defaultTeamId?, screenshots?}`; send it after `ready` and again whenever the context changes. Post it with the office's origin as `targetOrigin`. `defaultTeamId` preselects a team when this origin has no remembered choice; `screenshots` are up to eight `data:image/(png\|jpeg\|gif\|webp);base64,…` URLs, uploaded and attached |
-| widget → host | `{type: "office-comment:sent", version: 1, messageId, teamId, teamName}` after a send; `{type: "office-comment:error", version: 1, error}`; `{type: "office-comment:resize", version: 1, height}` as the content changes. Posted only to the accepted host origin |
+| host → widget | `{type: "office-comment:context", version: 1, page?, openUrl?, meta?, defaultTeamId?, screenshots?}`; send after `ready` and whenever the context changes, with the office's origin as `targetOrigin`. `openUrl` must be on the host's own origin (else dropped); `meta` as above; `screenshots` are up to eight `data:image/(png\|jpeg\|gif\|webp);base64,…` URLs, uploaded and attached |
+| host → widget | `{type: "office-comment:watch", version: 1, ids?}`: relay status events for this origin's comments, or only these ids. The office filters by the host's origin, so ids cannot reach another page's comments. Without it, the widget still relays the comments it sent |
+| widget → host | `{type: "office-comment:sent", version: 1, id, teamId, teamName, status}`; `{type: "office-comment:status", version: 1, id, teamId, status, openUrl, note, commit, meta, updatedAt}` on every change (and the current state when watching starts); `{type: "office-comment:error", version: 1, error}`; `{type: "office-comment:resize", version: 1, height}`. Posted only to the accepted host origin |
 
-The widget accepts a context message only when `event.source` is its parent and `event.origin` is on the allowlist (`pageOriginAllowed`, `acceptEmbedMessage`): exact scheme and host, and the port exact or `*`. The first accepted origin stays the host for the widget's life. A `page.url` on another origin than the sender's is dropped, so a page speaks only for itself. A refused origin sees a note in the widget saying so; nothing it sent is used.
+The widget accepts a host message only when `event.source` is its parent and `event.origin` is on the allowlist (`pageOriginAllowed`, `acceptEmbedMessage`): exact scheme and host, and the port exact or `*`. The first accepted origin stays the host for the widget's life. A `page.url` or `openUrl` on another origin than the sender's is dropped, so a page speaks only for itself. A refused origin sees a note in the widget saying so; nothing it sent is used.
+
+**In the office**, the team panel lists the team's latest page comments under **Page comments**: page, comment, age, status (with who set it and the note) and the open link.
 
 ## Local CLI: write surface check
 

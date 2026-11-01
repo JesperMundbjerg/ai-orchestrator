@@ -30,19 +30,67 @@ export interface PageTeam {
 export interface PageCommentInput {
   text?: string;
   page?: PageContext;
+  /** Where the page should go to show the fix (http/https); the fixer's `--url` overrides it. */
+  openUrl?: string;
+  /** Page-specific fields the office stores and hands back untouched (a JSON object, at most 2 KB). */
+  meta?: Record<string, unknown>;
   /** Upload ids from `POST /api/uploads`. */
   images?: string[];
   /** The same client id returns the first message instead of sending twice. */
   clientId?: string;
 }
 
-export interface PageCommentResult {
-  messageId: string;
+/** queued → delivered → working → fixed | declined; failed when it cannot be delivered. */
+export const PAGE_COMMENT_STATUSES = ["queued", "delivered", "working", "fixed", "declined", "failed"] as const;
+export type PageCommentStatus = (typeof PAGE_COMMENT_STATUSES)[number];
+/** What the fixer may set: the rest is the office's own delivery state. */
+export const AGENT_COMMENT_STATUSES = ["working", "fixed", "declined"] as const;
+export type AgentCommentStatus = (typeof AGENT_COMMENT_STATUSES)[number];
+
+/** A page comment the office queues, delivers and tracks until it is fixed or declined. */
+export interface PageComment {
+  id: string;
   teamId: string;
   teamName: string;
-  /** When the message was first stored; a retry with the same client id answers the same message. */
+  text: string;
+  page: PageContext;
+  /** The page origin it was made on (from its url or openUrl), for filtering; null when neither is given. */
+  origin: string | null;
+  /** Where to open the fix: the fixer's url when given, else the page's own openUrl. */
+  openUrl: string | null;
+  meta: Record<string, unknown> | null;
+  images: string[];
+  status: PageCommentStatus;
+  /** The fixer's note (required to decline), or why delivery failed. */
+  note: string | null;
+  commit: string | null;
+  /** Who set the last working/fixed/declined status, by office name; null for the office or the founder. */
+  by: string | null;
+  /** The office message that carried it to the lead (the latest one when it was sent again). */
+  messageId: string | null;
+  /** How many times the office has given it to the team. */
+  attempts: number;
   createdAt: string;
+  updatedAt: string;
 }
+
+/** What a page hears when a comment changes: the event the SSE stream and the widget relay carry. */
+export interface PageCommentEvent {
+  id: string;
+  teamId: string;
+  status: PageCommentStatus;
+  openUrl: string | null;
+  note: string | null;
+  commit: string | null;
+  meta: Record<string, unknown> | null;
+  updatedAt: string;
+}
+
+export const commentEvent = (c: PageComment): PageCommentEvent =>
+  ({ id: c.id, teamId: c.teamId, status: c.status, openUrl: c.openUrl, note: c.note, commit: c.commit, meta: c.meta, updatedAt: c.updatedAt });
+
+export const META_MAX_BYTES = 2048;
+export const COMMENT_ID = /^pc-[0-9a-f]{10}$/;
 
 export const PAGE_CONTEXT_LIMITS: Readonly<Record<keyof PageContext, number>> = {
   url: 500, title: 160, selector: 240, anchor: 120, selectedText: 600, viewport: 160,
@@ -129,33 +177,66 @@ export interface EmbedContextMessage {
   type: "office-comment:context";
   version: 1;
   page?: PageContext;
+  /** Where the page should go to show the fix; on the host's own origin, else dropped. */
+  openUrl?: string;
+  /** Page-specific fields handed back untouched with every status event. */
+  meta?: Record<string, unknown>;
   /** A team to preselect when this page origin has no remembered choice. */
   defaultTeamId?: string;
   /** PNG/JPEG/GIF/WebP data URLs the widget uploads and attaches (at most 8). */
   screenshots?: string[];
 }
 
-/** Widget → host page. `ready` goes to any origin (it carries nothing); the rest only to an allowed origin. */
+/** Host page → widget: relay status events for this page origin's comments (all of them, or only these ids). */
+export interface EmbedWatchMessage {
+  type: "office-comment:watch";
+  version: 1;
+  ids?: string[];
+}
+
+/** Widget → host page. `ready` goes to any origin (it carries nothing); the rest only to the accepted host origin. */
 export type EmbedOutMessage =
   | { type: "office-comment:ready"; version: 1 }
-  | { type: "office-comment:sent"; version: 1; messageId: string; teamId: string; teamName: string }
+  | { type: "office-comment:sent"; version: 1; id: string; teamId: string; teamName: string; status: PageCommentStatus }
+  | ({ type: "office-comment:status"; version: 1 } & PageCommentEvent)
   | { type: "office-comment:resize"; version: 1; height: number }
   | { type: "office-comment:error"; version: 1; error: string };
 
+export type AcceptedEmbedMessage =
+  | { type: "context"; page: PageContext; openUrl?: string; meta?: Record<string, unknown>; defaultTeamId?: string; screenshots: string[] }
+  | { type: "watch"; ids: string[] | null };
+
+const sameOrigin = (url: string, origin: string): boolean => {
+  try { return new URL(url).origin.toLowerCase() === origin.toLowerCase(); } catch { return false; }
+};
+
+/** A JSON object of at most META_MAX_BYTES, or undefined. */
+export function cleanMeta(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const json = JSON.stringify(value);
+  if (new TextEncoder().encode(json).length > META_MAX_BYTES) return undefined;
+  return JSON.parse(json) as Record<string, unknown>;
+}
+
 /** A host message the widget accepts: from an allowed origin and well formed; null otherwise. */
-export function acceptEmbedMessage(origin: string, data: unknown, allowlist: readonly string[]): { page: PageContext; defaultTeamId?: string; screenshots: string[] } | null {
+export function acceptEmbedMessage(origin: string, data: unknown, allowlist: readonly string[]): AcceptedEmbedMessage | null {
   if (!pageOriginAllowed(origin, allowlist)) return null;
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
-  if (d.type !== "office-comment:context" || d.version !== EMBED_VERSION) return null;
+  if (d.version !== EMBED_VERSION) return null;
+  if (d.type === "office-comment:watch") {
+    const ids = Array.isArray(d.ids) ? d.ids.filter((id): id is string => typeof id === "string" && COMMENT_ID.test(id)).slice(0, 200) : null;
+    return { type: "watch", ids };
+  }
+  if (d.type !== "office-comment:context") return null;
   const page = cleanPageContext(d.page);
   // A page speaks for itself: a url on another origin than the sender's is dropped.
-  if (page.url) {
-    try { if (new URL(page.url).origin.toLowerCase() !== origin.toLowerCase()) delete page.url; } catch { delete page.url; }
-  }
+  if (page.url && !sameOrigin(page.url, origin)) delete page.url;
+  const openUrl = typeof d.openUrl === "string" && /^https?:\/\//i.test(d.openUrl) && d.openUrl.length <= 1000 && sameOrigin(d.openUrl, origin) ? d.openUrl : undefined;
+  const meta = cleanMeta(d.meta);
   const screenshots = Array.isArray(d.screenshots)
     ? d.screenshots.filter((s): s is string => typeof s === "string" && /^data:image\/(png|jpeg|gif|webp);base64,/.test(s)).slice(0, 8)
     : [];
   const defaultTeamId = typeof d.defaultTeamId === "string" && /^[\w-]{1,64}$/.test(d.defaultTeamId) ? d.defaultTeamId : undefined;
-  return { page, ...(defaultTeamId ? { defaultTeamId } : {}), screenshots };
+  return { type: "context", page, ...(openUrl ? { openUrl } : {}), ...(meta ? { meta } : {}), ...(defaultTeamId ? { defaultTeamId } : {}), screenshots };
 }

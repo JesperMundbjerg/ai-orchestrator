@@ -25,7 +25,8 @@ import type { Leases } from "./leases.ts";
 import { leaseSchemas } from "./leases-protocol.ts";
 import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
-import { pageCommentSchema, pageOriginsSchema, type PageComments } from "./pagecomments.ts";
+import { commentStatusSchema, pageCommentSchema, pageOriginsSchema, type PageComments } from "./pagecomments.ts";
+import { COMMENT_ID, commentEvent } from "../shared/pagecomments.ts";
 import { pipelineSchemas, waiverSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema, telemetryQuery, telemetryReportSchema } from "./pipelines/protocol.ts";
 
 const TYPES: Record<string, string> = {
@@ -48,7 +49,12 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   };
   const world = opts.world;
   // Whatever changes in the inbox or in herdr may free an agent for an instruction or block a team.
-  const react = () => void world?.react().catch((err: Error) => console.error(`office: ${err.message}`));
+  const react = () => {
+    void world?.react().catch((err: Error) => console.error(`office: ${err.message}`));
+    // A delivery done or a lead back may move a page comment on.
+    try { opts.pageComments?.sync(); } catch (err) { console.error(`page comments: ${(err as Error).message}`); }
+  };
+  if (opts.pageComments) opts.pageComments.onChange = () => broadcast("page-comments");
   inbox.onChange = (reason) => {
     broadcast(reason);
     react();
@@ -171,7 +177,10 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/machine\/browsers\/(\d+)\/close$/, emptySchema, (_r, _b, [pid]) => needMachine().close(Number(pid))),
     // Page comments: any page's comment to a team the office lists, by id; the founder's allowlist of hosting pages.
     route("GET", /^\/api\/page-comments\/teams$/, emptySchema, () => needPageComments().teams()),
-    route("POST", /^\/api\/page-comments\/teams\/([\w-]+)\/comments$/, pageCommentSchema, (_r, b, [id]) => needPageComments().send(id!, b)),
+    route("POST", /^\/api\/page-comments\/teams\/([\w-]+)\/comments$/, pageCommentSchema, (_r, b, [id]) => needPageComments().enqueue(id!, b)),
+    route("GET", /^\/api\/page-comments$/, emptySchema, (r) => needPageComments().list(commentFilter(r))),
+    route("GET", /^\/api\/page-comments\/(pc-[0-9a-f]+)$/, emptySchema, (_r, _b, [id]) => needPageComments().get(id!)),
+    route("POST", /^\/api\/page-comments\/(pc-[0-9a-f]+)\/status$/, commentStatusSchema, (_r, b, [id]) => needPageComments().setStatus(id!, b)),
     route("GET", /^\/api\/page-comments\/origins$/, emptySchema, () => needPageComments().origins()),
     route("PUT", /^\/api\/page-comments\/origins$/, pageOriginsSchema, (_r, b) => needPageComments().setOrigins(b)),
     // Agent protocol
@@ -252,7 +261,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
       catch { throw new ValidationError("url", "invalid request URL"); }
       const method = req.method ?? "GET";
       const allowed = new Set(routes.filter(([, pattern]) => pattern.test(url.pathname)).map(([m]) => m));
-      if (url.pathname === "/api/events") allowed.add("GET");
+      if (url.pathname === "/api/events" || url.pathname === "/api/page-comments/events") allowed.add("GET");
       if (/^\/api\/pipeline\/evidence\/([\w-]+)$/.test(url.pathname)) { allowed.add("GET"); allowed.add("HEAD"); }
       if (/^\/files\/([\w-]+)$/.test(url.pathname)) { allowed.add("GET"); allowed.add("HEAD"); }
       if (/^\/uploads\/([\w.-]+)$/.test(url.pathname)) allowed.add("GET");
@@ -275,6 +284,27 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
         req.on("close", () => {
           clearInterval(ping);
           clients.delete(res);
+        });
+        return;
+      }
+
+      // Page-comment status changes, filtered by team, page origin or ids; first the current state of the newest `limit` (50) that match.
+      if (url.pathname === "/api/page-comments/events") {
+        const comments = needPageComments();
+        const filter = commentFilter(req);
+        const matches = (c: { id: string; teamId: string; origin: string | null }) =>
+          (!filter.team || c.teamId === filter.team) && (!filter.origin || c.origin === filter.origin.toLowerCase()) && (!filter.ids?.length || filter.ids.includes(c.id));
+        res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
+        res.write("retry: 2000\n\n");
+        for (const c of comments.list({ ...filter, limit: Math.min(filter.limit ?? 50, 200) }).comments.reverse()) res.write(`event: comment\ndata: ${JSON.stringify(commentEvent(c))}\n\n`);
+        const listener = (event: ReturnType<typeof commentEvent>, c: { id: string; teamId: string; origin: string | null }) => {
+          if (matches(c)) res.write(`event: comment\ndata: ${JSON.stringify(event)}\n\n`);
+        };
+        comments.listeners.add(listener);
+        const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
+        req.on("close", () => {
+          clearInterval(ping);
+          comments.listeners.delete(listener);
         });
         return;
       }
@@ -325,6 +355,20 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
       sendJson(res, status, errorBody(err, status));
     }
   });
+}
+
+/** `?team=ID&origin=ORIGIN&ids=a,b&status=S&limit=N` for the page-comment list and stream. */
+function commentFilter(req: IncomingMessage): { team?: string; origin?: string; ids?: string[]; status?: string; limit?: number } {
+  const q = new URL(req.url ?? "/", "http://localhost").searchParams;
+  const ids = q.get("ids")?.split(",").map((s) => s.trim()).filter((s) => COMMENT_ID.test(s));
+  const limit = Number(q.get("limit"));
+  return {
+    ...(q.get("team") ? { team: q.get("team")! } : {}),
+    ...(q.get("origin") ? { origin: q.get("origin")! } : {}),
+    ...(ids?.length ? { ids: ids.slice(0, 200) } : {}),
+    ...(q.get("status") ? { status: q.get("status")! } : {}),
+    ...(Number.isInteger(limit) && limit > 0 ? { limit } : {}),
+  };
 }
 
 function pickTaskPatch(b: Record<string, unknown>) {

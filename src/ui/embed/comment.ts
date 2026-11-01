@@ -7,7 +7,7 @@
 import "./comment.css";
 import {
   acceptEmbedMessage, pageContextLines, EMBED_VERSION,
-  type EmbedOutMessage, type PageContext, type PageTeam,
+  type EmbedOutMessage, type PageCommentEvent, type PageComment, type PageContext, type PageTeam,
 } from "../../shared/pagecomments.ts";
 
 const root = document.getElementById("comment")!;
@@ -29,7 +29,27 @@ async function api<T>(path: string, init?: { method: string; body: unknown }): P
 /** The host page this widget talks to, once one of its messages was accepted. */
 let host: string | null = null;
 let page: PageContext = {};
+let openUrl: string | undefined;
+let meta: Record<string, unknown> | undefined;
 let hostShots: string[] = [];
+/** The status stream relayed to the host: every comment from its origin (ids null), or only these. */
+let stream: { source: EventSource; ids: string[] | null } | null = null;
+let onStatus: (event: PageCommentEvent) => void = () => {};
+
+/** Relays status changes of the host origin's comments to the host; the office filters by that origin, so ids cannot reach another page's comments. */
+function watch(ids: string[] | null): void {
+  if (!host) return;
+  stream?.source.close();
+  const q = new URLSearchParams({ origin: host });
+  if (ids) q.set("ids", ids.join(","));
+  const source = new EventSource(`/api/page-comments/events?${q}`);
+  source.addEventListener("comment", (e) => {
+    const event = JSON.parse((e as MessageEvent<string>).data) as PageCommentEvent;
+    onStatus(event);
+    post({ type: "office-comment:status", version: EMBED_VERSION, ...event });
+  });
+  stream = { source, ids };
+}
 let allowlist: string[] = [];
 
 function post(message: EmbedOutMessage): void {
@@ -90,6 +110,13 @@ async function commentForm(): Promise<void> {
     note.textContent = "The office has no teams yet.";
   }
   let images: string[] = [];
+  let last: { id: string; teamName: string } | null = null;
+  const STATUS_WORDS: Record<string, string> = { queued: "queued", delivered: "delivered to the lead", working: "being worked on", fixed: "fixed", declined: "declined", failed: "not delivered" };
+  onStatus = (event) => {
+    if (event.id !== last?.id) return;
+    status.className = event.status === "failed" || event.status === "declined" ? "status error" : "status ok";
+    status.textContent = `Sent to ${last.teamName}: ${STATUS_WORDS[event.status] ?? event.status}${event.note ? ` (${event.note})` : ""}.`;
+  };
   let clientId = crypto.randomUUID();
 
   const pick = (preferred?: string) => {
@@ -134,13 +161,16 @@ async function commentForm(): Promise<void> {
     status.className = "status"; status.textContent = "Sending…";
     try {
       // The same client id on a retry after a lost answer sends nothing twice.
-      const out = await api<{ messageId: string; teamId: string; teamName: string }>(`/api/page-comments/teams/${encodeURIComponent(select.value)}/comments`, {
-        method: "POST", body: { text: textarea.value, page, images, clientId },
+      const out = await api<PageComment>(`/api/page-comments/teams/${encodeURIComponent(select.value)}/comments`, {
+        method: "POST", body: { text: textarea.value, page, images, clientId, ...(openUrl ? { openUrl } : {}), ...(meta ? { meta } : {}) },
       });
       remember(host, out.teamId);
-      status.className = "status ok"; status.textContent = `Sent to ${out.teamName}.`;
+      last = { id: out.id, teamName: out.teamName };
+      status.className = "status ok"; status.textContent = `Sent to ${out.teamName}: ${STATUS_WORDS[out.status] ?? out.status}.`;
       textarea.value = ""; images = []; showThumbs(); clientId = crypto.randomUUID();
-      post({ type: "office-comment:sent", version: EMBED_VERSION, messageId: out.messageId, teamId: out.teamId, teamName: out.teamName });
+      post({ type: "office-comment:sent", version: EMBED_VERSION, id: out.id, teamId: out.teamId, teamName: out.teamName, status: out.status });
+      // The host hears this comment's progress even if it never asked to watch.
+      if (host && (!stream || stream.ids)) watch([...(stream?.ids ?? []), out.id]);
     } catch (err) {
       status.className = "status error"; status.textContent = (err as Error).message;
       post({ type: "office-comment:error", version: EMBED_VERSION, error: (err as Error).message });
@@ -160,7 +190,10 @@ async function commentForm(): Promise<void> {
     // The first accepted origin is the host for the widget's life: another origin cannot take it over.
     if (host && host !== event.origin) return;
     host = event.origin;
+    if (accepted.type === "watch") return watch(accepted.ids);
     page = accepted.page;
+    openUrl = accepted.openUrl;
+    meta = accepted.meta;
     hostShots = accepted.screenshots;
     showContext();
     pick(accepted.defaultTeamId);
@@ -173,7 +206,8 @@ async function commentForm(): Promise<void> {
   pick();
   new ResizeObserver(() => post({ type: "office-comment:resize", version: EMBED_VERSION, height: Math.ceil(document.documentElement.scrollHeight) })).observe(document.body);
   post({ type: "office-comment:ready", version: EMBED_VERSION });
-  textarea.focus();
+  // Framed, it may load before anyone opens it, so it does not take the page's focus.
+  if (!framed) textarea.focus();
 }
 
 async function originsForm(): Promise<void> {

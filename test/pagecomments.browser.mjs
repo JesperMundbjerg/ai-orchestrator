@@ -32,7 +32,10 @@ await mkdir(shots, { recursive: true });
 const hostPage = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Orbits lesson</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:24px 28px;background:#fff;color:#1d1d1f;max-width:760px}h1{margin-top:0}.chart{height:180px;border:1px solid #ccd;border-radius:8px;background:linear-gradient(135deg,#eef3ff,#f9fbff);display:grid;place-items:center;color:#556}</style></head>
 <body><h1>Orbits</h1><p id="intro">A planet's orbit is an ellipse with the star at one focus.</p><div class="chart" id="chart">Orbit chart</div>
-<script>window.events=[];for(const t of ["office-comment:sent","office-comment:error"])addEventListener(t,(e)=>window.events.push(e.detail));</script>
+<p><button type="button" id="step">Comment on step 2</button></p><p id="fixed" hidden>Fixed: <a id="fixed-link"></a></p>
+<script>window.events=[];window.statuses=[];for(const t of ["office-comment:sent","office-comment:error"])addEventListener(t,(e)=>window.events.push(e.detail));
+addEventListener("office-comment:status",(e)=>{window.statuses.push(e.detail);if(e.detail.status==="fixed"){const a=document.getElementById("fixed-link");a.href=e.detail.openUrl;a.textContent=e.detail.openUrl+" ("+e.detail.note+", step "+e.detail.meta.step+")";document.getElementById("fixed").hidden=false;}});
+document.getElementById("step").onclick=()=>window.officeComment.open({openUrl:location.origin+"/lessons/orbits?step=2",meta:{lesson:"orbits",step:2},selector:"#chart"});</script>
 <script src="${url}/embed/loader.js" data-default-team="" async></script></body></html>`;
 const host = createHttp((req, res) => { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(hostPage); });
 await new Promise((resolve) => host.listen(hostPort, "127.0.0.1", resolve));
@@ -72,11 +75,11 @@ try {
     await page.goto(`${origin}/lessons/orbits#chart`);
     return page;
   };
-  const openWidget = async (page) => {
-    await page.getByRole("button", { name: "Comment" }).waitFor();
+  const openWidget = async (page, via = "Comment") => {
+    await page.getByRole("button", { name: "Comment", exact: true }).waitFor();
     // Select the intro sentence, then open: the loader takes the selection while the button is pressed.
     await page.evaluate(() => { const r = document.createRange(); r.selectNodeContents(document.getElementById("intro")); getSelection().removeAllRanges(); getSelection().addRange(r); });
-    await page.getByRole("button", { name: "Comment" }).click();
+    await page.getByRole("button", { name: via, exact: true }).click();
     const widget = page.frameLocator('iframe[title="Comment to a team"]');
     await widget.getByLabel("Team").waitFor();
     await widget.getByText(/^On "Orbits lesson"/).waitFor();
@@ -85,17 +88,19 @@ try {
 
   // Desktop: pick Dispatch, comment, send.
   const desk = await visit({ width: 1440, height: 900 });
-  let widget = await openWidget(desk);
+  let widget = await openWidget(desk, "Comment on step 2");
   await desk.screenshot({ path: join(shots, "01-desktop-open.png") });
   await widget.getByLabel("Team").selectOption({ label: `Dispatch (${lead.name}, offline)` });
   await widget.getByLabel("Comment").fill("The chart needs axis labels; students cannot tell what is plotted.");
   await widget.getByRole("button", { name: "Send" }).click();
-  await widget.getByText("Sent to Dispatch.").waitFor();
+  await widget.getByText(/^Sent to Dispatch: /).waitFor();
   await desk.screenshot({ path: join(shots, "02-desktop-sent.png") });
   const events = await desk.evaluate(() => window.events);
   assert.equal(events.length, 1);
   assert.equal(events[0].type, "office-comment:sent");
   assert.equal(events[0].teamId, dispatch.id);
+  const commentId = events[0].id;
+  assert.match(commentId, /^pc-[0-9a-f]{10}$/);
 
   // The message: one founder instruction to Dispatch's lead, with the page context on top.
   const after = await call("GET", "/api/world");
@@ -103,7 +108,20 @@ try {
   assert.equal(sent.length, 1);
   assert.equal(sent[0].fromAgentId, null);
   assert.deepEqual(sent[0].deliveries.map((d) => d.agentId), [lead.id]);
-  assert.match(sent[0].text, new RegExp(`^\\[Page comment\\]\\nOn "Orbits lesson" http://localhost:${hostPort}/lessons/orbits#chart\\nAt: #chart · viewport 1440x900\\nSelected: "A planet's orbit is an ellipse with the star at one focus\\."\\n\\nThe chart needs axis labels`));
+  assert.match(sent[0].text, new RegExp(`^\\[Page comment\\]\\nOn "Orbits lesson" http://localhost:${hostPort}/lessons/orbits#chart\\nAt: element #chart · #chart · viewport 1440x900\\n`));
+  assert.match(sent[0].text, new RegExp(`The chart needs axis labels[^]*Open to check: http://localhost:${hostPort}/lessons/orbits\\?step=2[^]*inbox comment fixed ${commentId}`));
+  const queued = await call("GET", `/api/page-comments/${commentId}`);
+  assert.deepEqual(queued.meta, { lesson: "orbits", step: 2 });
+  assert.equal(queued.status, "queued", "the lead is offline, so it waits in the office's queue");
+
+  // The lead fixes it (as the CLI would); the host page hears "fixed" with the fixer's url and shows it.
+  const fixUrl = `http://localhost:${hostPort}/lessons/orbits?step=2#axes`;
+  await call("POST", `/api/page-comments/${commentId}/status`, { status: "fixed", url: fixUrl, note: "Labelled both axes", commit: "abc1234" });
+  await desk.locator("#fixed").waitFor();
+  assert.equal(await desk.locator("#fixed-link").getAttribute("href"), fixUrl);
+  const statuses = await desk.evaluate(() => window.statuses);
+  assert.deepEqual(statuses.filter((e) => e.id === commentId).map((e) => e.status).slice(-1), ["fixed"]);
+  await desk.screenshot({ path: join(shots, "02b-desktop-fixed.png") });
 
   // The office shows it as from the founder: the team board lists the message.
   const officePage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -111,8 +129,10 @@ try {
   await officePage.goto(`${url}/#/world`);
   await officePage.locator(".world-top").waitFor();
   await officePage.getByText("Dispatch").first().click().catch(() => {});
-  await delay(800);
+  await officePage.getByText("Page comments").waitFor();
   const shownInOffice = await officePage.getByText("The chart needs axis labels", { exact: false }).count();
+  assert.ok(shownInOffice >= 2, "in the team's thread and in its page-comment queue");
+  assert.ok(await officePage.getByText("fixed: Labelled both axes").count(), "the queue shows its status and note");
   await officePage.screenshot({ path: join(shots, "03-office.png") });
   await officePage.close();
 
@@ -131,14 +151,14 @@ try {
   await widget.getByLabel("Comment").fill("On phones the chart is cut off at the right.");
   await phone.screenshot({ path: join(shots, "04-phone-open.png") });
   await widget.getByRole("button", { name: "Send" }).click();
-  await widget.getByText("Sent to Dispatch.").waitFor();
+  await widget.getByText(/^Sent to Dispatch: /).waitFor();
   await phone.screenshot({ path: join(shots, "05-phone-sent.png") });
   await phone.close();
 
   // A page origin the founder did not allow cannot frame the widget at all.
   await call("PUT", "/api/page-comments/origins", { origins: [`http://localhost:${hostPort}`] });
   const other = await visit({ width: 1440, height: 900 }, `http://127.0.0.1:${hostPort}`);
-  await other.getByRole("button", { name: "Comment" }).click();
+  await other.getByRole("button", { name: "Comment", exact: true }).click();
   await delay(1500);
   const blocked = await other.frameLocator('iframe[title="Comment to a team"]').getByLabel("Team").count();
   assert.equal(blocked, 0, "frame-ancestors keeps the widget out of a page that is not allowed");

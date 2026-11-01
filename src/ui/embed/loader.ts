@@ -2,9 +2,12 @@
 //   <script src="http://localhost:4870/embed/loader.js" data-default-team="TEAM_ID" async></script>
 // It adds a "Comment" button that opens the office's widget in an iframe and passes the page's
 // context to it with postMessage. No imports: the build emits it as one plain script.
-// `window.officeComment.open({ selector, selectedText, ... })` opens it with more context.
+// `window.officeComment.open({ selector, selectedText, openUrl, meta, ... })` opens it with more context.
+// The widget relays status changes of this page's comments: listen for "office-comment:status" on
+// window (detail: {id, status, openUrl, note, commit, meta}). `watch(ids)` narrows that to some ids.
 
 type Context = { url?: string; title?: string; selector?: string; anchor?: string; selectedText?: string; viewport?: string };
+type Extra = { openUrl?: string; meta?: Record<string, unknown> };
 
 (() => {
   const script = document.currentScript as HTMLScriptElement | null;
@@ -14,6 +17,8 @@ type Context = { url?: string; title?: string; selector?: string; anchor?: strin
   const label = script.dataset.label || "Comment";
   let frame: HTMLIFrameElement | null = null;
   let extra: Context = {};
+  let fields: Extra = {};
+  let watching: string[] | null = null;
   let screenshots: string[] = [];
 
   const panel = document.createElement("div");
@@ -32,19 +37,27 @@ type Context = { url?: string; title?: string; selector?: string; anchor?: strin
     viewport: `${innerWidth}x${innerHeight}`,
     ...extra,
   });
-  const send = () => frame?.contentWindow?.postMessage({ type: "office-comment:context", version: 1, page: context(), defaultTeamId, screenshots }, office);
+  const send = () => {
+    frame?.contentWindow?.postMessage({ type: "office-comment:context", version: 1, page: context(), defaultTeamId, screenshots, ...fields }, office);
+    frame?.contentWindow?.postMessage({ type: "office-comment:watch", version: 1, ...(watching ? { ids: watching } : {}) }, office);
+  };
+  // The widget loads with the page (hidden), so status events reach it before anyone opens the panel.
+  const ensureFrame = () => {
+    if (frame) return;
+    frame = document.createElement("iframe");
+    frame.src = `${office}/embed/comment`;
+    frame.title = "Comment to a team";
+    frame.style.cssText = "border:0;width:100%;height:100%";
+    panel.append(frame);
+  };
 
-  const open = (more: Context & { screenshots?: string[] } = {}) => {
-    const { screenshots: shots, ...rest } = more;
+  const open = (more: Context & Extra & { screenshots?: string[] } = {}) => {
+    const { screenshots: shots, openUrl, meta, ...rest } = more;
     extra = rest;
+    fields = { ...(openUrl ? { openUrl } : {}), ...(meta ? { meta } : {}) };
     screenshots = shots ?? [];
-    if (!frame) {
-      frame = document.createElement("iframe");
-      frame.src = `${office}/embed/comment`;
-      frame.title = "Comment to a team";
-      frame.style.cssText = "border:0;width:100%;height:100%";
-      panel.append(frame);
-    } else send();
+    ensureFrame();
+    send();
     panel.style.display = "block";
     button.setAttribute("aria-expanded", "true");
   };
@@ -62,7 +75,8 @@ type Context = { url?: string; title?: string; selector?: string; anchor?: strin
   button.addEventListener("pointerdown", () => { selected = String(getSelection() ?? ""); });
   button.addEventListener("click", () => (panel.style.display === "block" ? close() : open(selected ? { selectedText: selected } : {})));
 
-  const mount = () => document.body.append(panel, button);
+  const watch = (ids?: string[]) => { watching = ids?.length ? ids : null; ensureFrame(); send(); };
+  const mount = () => { document.body.append(panel, button); ensureFrame(); };
   if (document.body) mount(); else addEventListener("DOMContentLoaded", mount);
-  (window as unknown as { officeComment: unknown }).officeComment = { open, close };
+  (window as unknown as { officeComment: unknown }).officeComment = { open, close, watch };
 })();
