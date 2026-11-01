@@ -22,6 +22,8 @@ import type { PaneInfo, WorkspaceInfo } from "./finish-cleanup.ts";
 const run = promisify(execFile);
 const POLL_MS = 3000;
 const SUBSCRIBED_POLL_MS = 20_000;
+/** One slow or failed `agent list` must not make every agent vanish: the last good list stays this long. */
+const BLIND_GRACE_MS = 45_000;
 
 interface HerdrAgent {
   agent?: string;
@@ -38,6 +40,7 @@ interface HerdrAgent {
 export class Herdr implements PresenceSource, AgentSource {
   private agents: HerdrAgent[] = [];
   private ok = false;
+  private lastGoodAt = 0;
   private timer: NodeJS.Timeout | null = null;
   private bin: string;
   private socketPath: string;
@@ -143,6 +146,11 @@ export class Herdr implements PresenceSource, AgentSource {
     } catch {
       // herdr not installed or not running: no presence, which is a valid state.
     }
+    // A failed read says nothing about the agents: without it every pane would read as gone, and a session
+    // would be taken for the unnamed agent of its checkout. Keep the last good list for a short while;
+    // `available()` still tells that herdr is not answering.
+    if (ok) this.lastGoodAt = this.now();
+    else if (this.now() - this.lastGoodAt <= BLIND_GRACE_MS) next = this.agents;
     await this.stale.sample(next, this.queuedPanes(), (paneId) => this.readVisible(paneId), this.now);
     this.agents = next;
     this.ok = ok;

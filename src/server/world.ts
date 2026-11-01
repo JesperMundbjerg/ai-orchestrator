@@ -678,7 +678,12 @@ export class World {
     const live = this.source?.live() ?? [];
     const pane = session.paneId ?? live.find((a) => a.harness === session.harness && a.sessionId === session.sessionId)?.paneId;
     const task = this.inbox().tasks.find((t) => t.binding.harness === session.harness && t.binding.sessionId === session.sessionId);
-    const found = (pane ? state.agents.find((a) => a.paneId === pane) : undefined)
+    const seated = pane ? state.agents.find((a) => a.paneId === pane) : undefined;
+    // A pane a live agent holds is that agent's, even when the office does not seat it right now (a switch hides it):
+    // the checkout's unnamed agent, or a task's, would make the caller someone else.
+    const holder = !seated && pane ? live.find((a) => a.paneId === pane) : undefined;
+    if (holder) throw new InboxError(409, `pane ${pane} is held by ${holder.name ?? holder.harness} but is not seated in the office right now: try again in a moment`);
+    const found = seated
       ?? (session.harness && session.cwd ? state.agents.find((a) => a.identity === identityOf(session.harness!, session.cwd!, "")) : undefined)
       ?? (task ? state.agents.find((a) => a.taskIds.includes(task.id)) : undefined);
     if (!found) throw new InboxError(404, "the office does not know this session: run inside herdr, or post to the inbox first");
