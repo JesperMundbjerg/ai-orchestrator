@@ -77,6 +77,11 @@ export interface PipelinePathRule {
   require?: PipelineMatch;
   /** If true, ALL changed paths must match these prefixes when the rule applies. */
   only?: boolean;
+  /**
+   * Globs (`*`, `**`, `?`; matched against the repo-relative path) for paths this rule ignores, for both `require`
+   * and `only`: e.g. co-located tests. A path matching any pattern neither triggers the rule nor breaks `only`.
+   */
+  except?: string[];
   message: string;
 }
 export interface PipelineGraph {

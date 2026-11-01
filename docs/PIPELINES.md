@@ -199,6 +199,23 @@ A check step normally takes any check evidence that carries a command and an exi
 
 The service verifies command, exit code, candidate and round, not who typed the evidence: it never runs anything, so a hand-written payload with the same fields is accepted. This closes the “any exit-0 check” gap; it is not a sandbox.
 
+## Path rules, and files they ignore
+
+A graph's `pathRules` judge the run's changed paths (`candidate.changedPaths`) against repo-relative `prefixes` (a directory, or an exact file). A rule with `require` is flagged when any changed path is under a prefix while its field lacks the required value; `only: true` is flagged when any changed path is *outside* the prefixes. An optional `when` limits the rule to runs whose selection matches.
+
+`except` is an optional list of glob patterns for paths the rule ignores, for both `require` and `only`: a path that matches any pattern neither triggers the rule nor breaks its bound. This keeps a co-located, test-only fix from needing a visual check:
+
+```json
+{
+  "prefixes": ["space-app/app", "space-app/public", "space-app/messages"],
+  "require": { "field": "visible", "equals": true },
+  "except": ["**/*.test.mjs", "**/*.test.ts", "**/__tests__/**"],
+  "message": "Routes/public assets/locales are user-visible: choose the visible branch"
+}
+```
+
+Patterns match the whole repo-relative, forward-slash path, case-sensitively. `*` and `?` stay inside one path segment; `**` crosses segments, and `**/` also matches zero directories (`**/*.test.ts` covers `a.test.ts` and `x/y/a.test.ts`). Everything else is literal, including `[`, `]`, `{` and `}`, so `space-app/app/[locale]/` needs no escaping. A change that mixes an ignored test with a real route file is still flagged because the route file still counts. `except` must be a non-empty list of non-empty strings (at most 200 characters each; no leading `/`, `..` or `\`); anything else is refused with `pipeline_invalid`. Rules without `except` behave as before.
+
 ## Crew-only steps
 
 A step with `"by": "crew"` takes evidence only from an agent other than the team's first mate, who delegates and never builds or repairs. The first mate's own report, or evidence attached to its `done`, is refused with a message to assign a crew member:

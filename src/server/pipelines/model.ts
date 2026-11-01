@@ -24,6 +24,35 @@ function commandField(value: unknown, evidence: string[]): string | string[] {
   if (!commands.length || commands.length > 8 || new Set(commands).size !== commands.length) bad("a required command list names 1–8 distinct commands");
   return commands;
 }
+/** An `except` glob: repo-relative, at most 200 characters; `*`, `**` and `?` are the only wildcards. */
+function globPattern(v: unknown): string {
+  if (typeof v !== "string" || !v.trim()) return bad("path rule except patterns must be non-empty strings");
+  if (v.length > 200 || v.startsWith("/") || v.split("/").includes("..") || v.includes("\\") || v.includes("\0")) bad("path rule except patterns must be repo-relative globs of at most 200 characters");
+  return v;
+}
+const globCache = new Map<string, RegExp>();
+// Match a repo-relative, forward-slash path against a glob. `*` and `?` stay inside one path segment; `**` crosses
+// segments, and `**/` also matches zero directories (so **/*.test.ts covers a top-level test file). Every other
+// character is literal, including [ ] { }, so framework route folders such as app/[locale]/ match as written.
+export function globMatches(pattern: string, path: string): boolean {
+  let re = globCache.get(pattern);
+  if (!re) {
+    let source = "";
+    for (let i = 0; i < pattern.length; i++) {
+      const c = pattern[i]!;
+      if (c === "*") {
+        let j = i; while (pattern[j + 1] === "*") j++;
+        if (j > i) { // two or more stars
+          if (pattern[j + 1] === "/") { source += "(?:.*/)?"; j++; } else source += ".*";
+        } else source += "[^/]*";
+        i = j;
+      } else if (c === "?") source += "[^/]";
+      else source += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+    re = new RegExp(`^${source}$`); globCache.set(pattern, re);
+  }
+  return re.test(path);
+}
 export function validateLayout(input: unknown): PipelineLayout {
   const out: PipelineLayout = {};
   for (const [key, value] of Object.entries(obj(input))) {
@@ -101,7 +130,9 @@ export function validateGraph(input: unknown, options: { allowUnreferencedFields
     if (!prefixes.length || prefixes.some(p => p.startsWith("/") || p.split("/").includes("..") || p.includes("\\") || p.includes("\0"))) bad("path prefixes must be repo-relative");
     if (r.only !== undefined && typeof r.only !== "boolean") bad("only must be boolean");
     if (!r.only && r.require === undefined) bad("path rule needs only or require");
-    return { prefixes, message: text(r.message), ...(r.when !== undefined ? { when: match(r.when) } : {}), ...(r.require !== undefined ? { require: match(r.require) } : {}), ...(r.only !== undefined ? { only: r.only as boolean } : {}) };
+    const except = r.except === undefined ? undefined : arr(r.except).map(globPattern);
+    if (except && !except.length) bad("path rule except needs at least one glob pattern; omit it to exclude nothing");
+    return { prefixes, message: text(r.message), ...(except ? { except } : {}), ...(r.when !== undefined ? { when: match(r.when) } : {}), ...(r.require !== undefined ? { require: match(r.require) } : {}), ...(r.only !== undefined ? { only: r.only as boolean } : {}) };
   });
   if (!options.allowUnreferencedFields) {
     const details = orphanFieldProblems(graph);
@@ -167,7 +198,10 @@ export function activation(g: PipelineGraph, values: Record<string, PipelineValu
 }
 export function pathProblems(g: PipelineGraph, values: Record<string, PipelineValue>, paths: string[]): string[] {
   const match = (path: string, prefix: string) => path === prefix || path.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`);
-  return (g.pathRules ?? []).filter(r => !r.when || values[r.when.field] === r.when.equals).filter(r =>
-    (r.only && paths.some(p => !r.prefixes.some(prefix => match(p, prefix)))) ||
-    (r.require && paths.some(p => r.prefixes.some(prefix => match(p, prefix))) && values[r.require.field] !== r.require.equals)).map(r => r.message);
+  return (g.pathRules ?? []).filter(r => !r.when || values[r.when.field] === r.when.equals).filter(rule => {
+    // A path matching an `except` glob does not count for this rule, whether it requires or bounds.
+    const counted = rule.except?.length ? paths.filter(p => !rule.except!.some(glob => globMatches(glob, p))) : paths;
+    return (rule.only && counted.some(p => !rule.prefixes.some(prefix => match(p, prefix)))) ||
+      (rule.require && counted.some(p => rule.prefixes.some(prefix => match(p, prefix))) && values[rule.require.field] !== rule.require.equals);
+  }).map(r => r.message);
 }
