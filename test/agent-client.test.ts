@@ -106,7 +106,7 @@ test("request validation happens before fetch; response extensions are retained"
   }
   assert.equal(calls, 0);
   const withSession = createAgentClient({ session, fetch: fake(() => json({ itemId: "i", taskId: "t", revision: 1, changed: true, future: { useful: true } })) });
-  const result = await withSession.submit({ item: { title: "Done", type: "milestone" } });
+  const result = await withSession.submit({ item: { title: "Done", type: "milestone", fixed: "Fixed." } });
   assert.equal(result.itemId, "i");
   assert.deepEqual((result as typeof result & { future: unknown }).future, { useful: true });
 });

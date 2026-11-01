@@ -62,7 +62,7 @@ try {
   }
   // A lead for "Dispatch" (an agent that once submitted an item), and a second team to pick from.
   const leadCwd = join(home, "lead");
-  await call("POST", "/api/agent/items", { session: { harness: "claude", sessionId: "s-lead", cwd: leadCwd }, project: { name: "lessons" }, item: { type: "milestone", title: "Lesson ready" } });
+  await call("POST", "/api/agent/items", { session: { harness: "claude", sessionId: "s-lead", cwd: leadCwd }, project: { name: "lessons" }, item: { type: "milestone", fixed: "Fixed.", title: "Lesson ready" } });
   const dispatch = await call("POST", "/api/world/teams", { name: "Dispatch", standing: true, purpose: "Routes review comments to the crew" });
   await call("POST", "/api/world/teams", { name: "Atlas", standing: true, purpose: "Maps and charts" });
   const world = await call("GET", "/api/world");

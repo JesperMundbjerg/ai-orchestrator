@@ -61,7 +61,7 @@ test("restart releases interrupted sending batches without replaying them, then 
   at += 60 * 60_000;
   const queued = leads.flatMap((a, i) => Array.from({ length: i ? 15 : 24 }, (_, n) => o.world.messages.tell(a.id, { text: `Waiting ${n} for ${a.id}` })));
   const session = { harness: emil.harness, sessionId: emil.sessionId!, cwd: emil.cwd! };
-  const { itemId } = o.inbox.submit({ session, item: { type: "milestone", title: "Cosmology chapters built" } });
+  const { itemId } = o.inbox.submit({ session, item: { type: "milestone", fixed: "Fixed.", title: "Cosmology chapters built" } });
   const reply = o.inbox.answer(itemId, { revision: 1, action: "accept" });
   const control = o.world.messages.tell(agent(clara.paneId).id, { text: "Clara still receives messages" });
   await o.world.react();

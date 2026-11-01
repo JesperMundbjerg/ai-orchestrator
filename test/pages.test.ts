@@ -63,7 +63,7 @@ test("a preview alone is a walkthrough of one page", () => {
 
 test("decisions and milestones can carry pages too", () => {
   const { inbox } = setup();
-  const { itemId } = inbox.submit(walk({ type: "milestone", key: "m", pages: [STEP1, STEP2] }));
+  const { itemId } = inbox.submit(walk({ type: "milestone", fixed: "Fixed.", key: "m", pages: [STEP1, STEP2] }));
   assert.equal(inbox.item(itemId).pages.length, 2);
 });
 
@@ -143,7 +143,7 @@ test("a try-it request is approved or sent back like a milestone, and the agent 
 test("a milestone's wording is unchanged, and Tried it is no longer an answer but old ones stay readable", () => {
   const { db, inbox } = setup();
   const session = { harness: "claude" as const, sessionId: "uuid-sim", cwd: "/repo/sim" };
-  const milestone = inbox.submit({ ...walk({ type: "milestone", key: "m", title: "Hint shipped" }) });
+  const milestone = inbox.submit({ ...walk({ type: "milestone", fixed: "Fixed.", key: "m", title: "Hint shipped" }) });
   inbox.answer(milestone.itemId, { revision: 1, action: "accept" });
   assert.equal(inbox.task(inbox.item(milestone.itemId).taskId).lastAcceptedMilestone, "Hint shipped");
   assert.match(formatReply(inbox.pendingReplies(session, "pull")[0]!), /\nMilestone accepted\.\n/);

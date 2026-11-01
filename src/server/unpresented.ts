@@ -28,7 +28,7 @@ type History = { presented_head: string | null; reminded_head: string | null; re
 type Sample = { head: string; count: number; latest: string };
 type TeamIdleHistory = { members: string | null; message_after: number | null; notified: number; reminded_at: number | null; head: string | null };
 const MINUTE = 60_000;
-const WHOLE_TEAM_IDLE = "Your whole team has been idle for 5 minutes. If the work is done, present it now (inbox milestone). If you are waiting for something from the founder, ask for it (inbox decide, with options or an open question), and until it answers keep working on whatever does not depend on it. Otherwise tell the founder in one line what happens next (inbox say founder).";
+const WHOLE_TEAM_IDLE = "Your whole team has been idle for 5 minutes. If the work is done, present it now (inbox milestone, with a very short --context and --fixed). If you are waiting for something from the founder, ask for it (inbox decide, with options or an open question), and until it answers keep working on whatever does not depend on it. Otherwise tell the founder in one line what happens next (inbox say founder).";
 
 export class Unpresented {
   private db: DatabaseSync;
@@ -177,7 +177,7 @@ export class Unpresented {
             ON CONFLICT(path) DO UPDATE SET reminded_head = excluded.reminded_head, reminded_at = excluded.reminded_at,
             reminded_lead = excluded.reminded_lead, reminded_message = excluded.reminded_message`)
             .run(team.path, sample.head, now, lead.id, this.lastMessage());
-          reasons.push(`Unpresented work: ${sample.count} ${sample.count === 1 ? "commit" : "commits"} since you last showed the founder (${sample.latest}). Put it in front of the founder now with inbox milestone, even if the project is not finished (--screenshot, --page, or --video), or tell them in one line with inbox say founder why it is not ready yet.`);
+          reasons.push(`Unpresented work: ${sample.count} ${sample.count === 1 ? "commit" : "commits"} since you last showed the founder (${sample.latest}). Put it in front of the founder now with inbox milestone, even if the project is not finished: a very short --context, a very short --fixed (what changed), then --screenshot, --page or --video, or tell them in one line with inbox say founder why it is not ready yet.`);
         }
       }
       // Set both guards before enqueueing: its broadcast may re-enter office reactions.

@@ -67,7 +67,7 @@ test("nobody is called offline while herdr does not answer", async (t) => {
   const db = openDatabase(":memory:");
   const inbox = new Inbox(db, join(tmpdir(), "herdr-blind-files"), herdr);
   const world = new World(db, herdr, () => inbox.state(), () => new Date("2026-11-01T15:41:00Z"));
-  inbox.submit({ session: { harness: "claude", sessionId: "gone", cwd: "/work/elsewhere" }, item: { type: "milestone", title: "Earlier work" } });
+  inbox.submit({ session: { harness: "claude", sessionId: "gone", cwd: "/work/elsewhere" }, item: { type: "milestone", fixed: "Fixed.", title: "Earlier work" } });
   const [from] = world.state().agents.filter((a) => a.paneId === "w1:p15");
   const away = world.state().agents.find((a) => a.status === "offline")!;
   const warned: string[] = [];

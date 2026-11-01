@@ -380,7 +380,7 @@ test("an agent known only from the inbox appears offline with its project and it
   const { taskId } = inbox.submit({
     session: { harness: "codex", sessionId: "thread-1" },
     project: { name: "Accounts", root: "/demo/accounts" },
-    item: { type: "milestone", title: "Import works" },
+    item: { type: "milestone", fixed: "Fixed.", title: "Import works" },
   });
   const [agent] = world.state().agents;
   assert.equal(agent?.status, "offline");

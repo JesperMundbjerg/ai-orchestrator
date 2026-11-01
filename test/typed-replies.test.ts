@@ -81,7 +81,7 @@ test("the typed text is exactly what the hook hands over", async () => {
   await world.react();
   assert.equal(typed.length, 0);
   // A fresh reply, never collected, is typed as formatReply writes it.
-  const next = inbox.submit({ session: emil, item: { type: "milestone", title: "Fit done" } });
+  const next = inbox.submit({ session: emil, item: { type: "milestone", fixed: "Fixed.", title: "Fit done" } });
   inbox.answer(next.itemId, { revision: 1, action: "accept" });
   const [pending] = inbox.typeable().map((t) => t.reply);
   await world.react();
@@ -117,7 +117,7 @@ test("a live integration keeps its replies; nothing is typed for it", async () =
 
 test("an idle session with the hook is typed to too: it has no turn boundary until someone prompts it", async () => {
   const { inbox, world, typed, reply, at } = setup();
-  const later = inbox.submit({ session: emil, item: { type: "milestone", title: "Fit done" } });
+  const later = inbox.submit({ session: emil, item: { type: "milestone", fixed: "Fixed.", title: "Fit done" } });
   inbox.pendingReplies(emil, "boundary"); // the hook ran at the end of an earlier turn and took the first reply
   inbox.acknowledge(emil, reply.id);
   const second = inbox.answer(later.itemId, { revision: 1, action: "accept" });
@@ -198,7 +198,7 @@ for (const transport of ["pane", "integration", "legacy"] as const) {
     let db = openDatabase(file);
     try {
       const first = new Inbox(db, files, presence, now);
-      const submitted = first.submit({ session: emil, item: { type: "milestone", title: "Done" } });
+      const submitted = first.submit({ session: emil, item: { type: "milestone", fixed: "Fixed.", title: "Done" } });
       const reply = first.answer(submitted.itemId, { id: "delivery", revision: 1, action: "accept" });
       if (transport === "integration") {
         assert.equal(first.pendingReplies(emil, "boundary").length, 1);

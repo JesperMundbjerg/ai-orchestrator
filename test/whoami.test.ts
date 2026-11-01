@@ -34,7 +34,7 @@ const samir = { pane_id: "w1:p15", agent: "claude", agent_status: "working", cwd
 /** Freja, the unnamed agent that posted from the checkout earlier and is offline now, and Samir, the named lead who runs there. */
 async function seat(t: Parameters<typeof office>[0]) {
   const o = office(t);
-  o.inbox.submit({ session: { harness: "claude", sessionId: "old", cwd: CWD }, item: { type: "milestone", title: "Earlier work" } });
+  o.inbox.submit({ session: { harness: "claude", sessionId: "old", cwd: CWD }, item: { type: "milestone", fixed: "Fixed.", title: "Earlier work" } });
   o.show([samir]);
   await o.herdr.refresh();
   const agents = o.world.state().agents;

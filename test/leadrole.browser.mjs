@@ -48,7 +48,7 @@ try {
     await delay(100);
   }
   const session = { harness: "claude", sessionId: "s-lead", cwd: repo };
-  await call("POST", "/api/agent/items", { session, project: { name: "lessons" }, item: { type: "milestone", title: "Ready" } });
+  await call("POST", "/api/agent/items", { session, project: { name: "lessons" }, item: { type: "milestone", fixed: "Fixed.", title: "Ready" } });
   const team = await call("POST", "/api/world/teams", { name: "Mission Control", standing: true, purpose: "Routes comments to lanes" });
   const lead = (await call("GET", "/api/world")).agents.find((a) => a.cwd === repo);
   await call("PATCH", `/api/world/agents/${lead.id}`, { teamId: team.id, role: "lead" });

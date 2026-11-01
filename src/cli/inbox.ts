@@ -26,7 +26,7 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox decide  "The open question?" --request "…"        (no options: the founder answers in words)
   inbox try     "Title" --preview URL [--check "what to do and expect"] [--viewport phone] [--setup "…"]
   inbox try     "Title" --page "Label=URL" [--look "what to look at"] --page … [--check "…"]
-  inbox milestone "Title" [--context "what changed"] [--limitations "…"]
+  inbox milestone "Title" --context "why, in a sentence or two" --fixed "what changed, in a sentence or two" --screenshot FILE
       common: --request "what you need"  --context "…"  --screenshot FILE (repeat)  --video FILE (repeat)  --url URL (repeat)
               --key KEY (resubmitting a key revises that item)  --task "task name"  --nonblocking | --blocking
               --json FILE|-   (a full SubmitInput item; flags override)
@@ -48,6 +48,16 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   choice), and --recommend needs options, since it picks one. Resubmit with the same --key to revise either kind.
 
     inbox decide "Which lesson should the demo open on?" --request "I need it to finish the landing page; until you answer I'll use the pendulum." --key comment:42
+
+  A milestone is read in seconds, so keep it short: the context says why (one or two sentences), --fixed says
+  what was fixed or changed (one or two plain sentences), and the screenshots, pages or video carry everything else.
+  Each is at most 280 characters, --fixed is required, and a longer one is refused: move detail into the
+  screenshots or pages, or leave it out. For example:
+
+    inbox milestone "Camera stations share one framing" \\
+      --context "Stations framed the room differently, so the camera jumped between them." \\
+      --fixed "Every station now moves the camera through the same framing function." \\
+      --screenshot out/stations.png --page "Office=http://localhost:5173/world"
 
   To show what you did in the app itself, line up the pages to go through in order: the founder
   sees each one live in a frame and presses Next. --page works on decide and milestone too.
@@ -160,6 +170,7 @@ const OPTIONS = {
   recommend: { type: "string" },
   request: { type: "string" },
   context: { type: "string" },
+  fixed: { type: "string" },
   limitations: { type: "string" },
   check: { type: "string" },
   preview: { type: "string" },
@@ -239,6 +250,7 @@ async function submit(type: ItemType, title: string | undefined): Promise<void> 
     key: flags.key ?? base.key,
     request: flags.request ?? base.request,
     context: context || undefined,
+    fixed: flags.fixed ?? base.fixed,
     recommendation: flags.recommend ?? base.recommendation,
     options: flags.option ?? base.options,
     check: flags.check ?? base.check,

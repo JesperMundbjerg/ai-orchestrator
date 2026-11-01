@@ -49,7 +49,7 @@ try {
     await delay(100);
   }
   const session = { harness: "claude", sessionId: "s-lead", cwd: repo };
-  await call("POST", "/api/agent/items", { session, project: { name: "lessons" }, item: { type: "milestone", title: "Ready" } });
+  await call("POST", "/api/agent/items", { session, project: { name: "lessons" }, item: { type: "milestone", fixed: "Fixed.", title: "Ready" } });
   const team = await call("POST", "/api/world/teams", { name: "Space Shuttle", standing: true, purpose: "Lanes and a dispatcher" });
   const world = await call("GET", "/api/world");
   const lead = world.agents.find((a) => a.cwd === repo);

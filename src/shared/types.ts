@@ -140,6 +140,8 @@ export interface Item {
   title: string;
   request: string;
   context: string;
+  /** Milestones: what was fixed or changed, one or two plain sentences. Empty on older milestones and on other item types. */
+  fixed?: string;
   recommendation: string;
   options: Option[];
   check: string;
@@ -238,6 +240,8 @@ export interface SubmitInput {
     title: string;
     request?: string;
     context?: string;
+    /** Milestones: what was fixed or changed, one or two plain sentences (required for a new milestone). */
+    fixed?: string;
     recommendation?: string;
     options?: Array<string | Partial<Option>>;
     check?: string;

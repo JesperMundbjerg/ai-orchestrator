@@ -101,6 +101,8 @@ export function ItemDetailView({ detail, onNext, onDone, onAnswered, othersWaiti
         {item.request ? <p className="request">{item.request}</p> : null}
       </header>
 
+      <MilestoneSummary item={item} />
+
       <div className="tabs" role="tablist">
         {tabs.map((t) => (
           <button key={t.id} role="tab" aria-selected={activeTab === t.id} className={activeTab === t.id ? "tab on" : "tab"} onClick={() => setTab(t.id)}>
@@ -122,10 +124,21 @@ export function ItemDetailView({ detail, onNext, onDone, onAnswered, othersWaiti
   );
 }
 
+/** A milestone with a `fixed` shows its short context and what was fixed as two labelled lines above the evidence; older milestones keep their context in the Context tab. */
+function MilestoneSummary({ item }: { item: ItemDetail["item"] }) {
+  if (item.type !== "milestone" || !item.fixed) return null;
+  return (
+    <dl className="brief milestone-summary" aria-label="What this milestone is">
+      {item.context ? <div className="brief-row"><dt>Context</dt><dd>{item.context}</dd></div> : null}
+      <div className="brief-row"><dt>Fixed</dt><dd>{item.fixed}</dd></div>
+    </dl>
+  );
+}
+
 function ContextTab({ detail: { item, task } }: { detail: ItemDetail }) {
   return (
     <div className="context">
-      {item.context ? <Prose text={item.context} /> : null}
+      {item.context && !item.fixed ? <Prose text={item.context} /> : null}
       {item.check ? (
         <div className="callout">
           <div className="callout-label">What to try</div>

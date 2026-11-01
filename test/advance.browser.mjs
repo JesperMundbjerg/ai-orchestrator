@@ -41,12 +41,12 @@ try {
   })).itemId;
   const options = [{ id: "a", label: "Overlay", consequence: "Cover part of the note." }, { id: "b", label: "Docked", consequence: "Keep every control visible." }];
   const ids = {};
-  ids.m1 = await submit("Clara", "m1", { type: "milestone", title: "Launch cut one" });
+  ids.m1 = await submit("Clara", "m1", { type: "milestone", fixed: "Fixed.", title: "Launch cut one" });
   ids.t1 = await submit("Agnes", "t1", { type: "try", title: "Try notebook one", check: "Search for a note.", preview: { url, viewport: "desktop" } });
   ids.d1 = await submit("Theo", "d1", { type: "decide", title: "Where should the search panel sit?", options });
-  ids.m2 = await submit("Emil", "m2", { type: "milestone", title: "Launch cut two" });
+  ids.m2 = await submit("Emil", "m2", { type: "milestone", fixed: "Fixed.", title: "Launch cut two" });
   ids.t2 = await submit("Nora", "t2", { type: "try", title: "Try notebook two", check: "Open it.", preview: { url, viewport: "desktop" } });
-  ids.m3 = await submit("Wren", "m3", { type: "milestone", title: "Launch cut three" });
+  ids.m3 = await submit("Wren", "m3", { type: "milestone", fixed: "Fixed.", title: "Launch cut three" });
   ids.t3 = await submit("Ivy", "t3", { type: "try", title: "Try notebook three", check: "Open it.", preview: { url, viewport: "desktop" } });
   const open = async (id) => (await (await fetch(`${url}/api/items/${id}`)).json());
   const action = async (id) => (await open(id)).replies.at(-1)?.action;

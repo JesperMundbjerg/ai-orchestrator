@@ -99,7 +99,7 @@ export default function reviewInbox(pi: PiApi): void {
     description:
       "Put a result in front of the user in their Review Inbox and get their answer back in this conversation. " +
       "Use at a meaningful point, not for every turn: `decide` for a concrete question with 2-3 options (or none, for an open question the user answers in words: you get \"Answer: <text>\"; one option is refused), " +
-      "`try` for a preview the user should interact with (or `pages`, a walkthrough of live pages they step through), `milestone` for an increment to accept or send back. A `try` comes back as \"Approved\" or \"Needs changes\" with a note saying what. " +
+      "`try` for a preview the user should interact with (or `pages`, a walkthrough of live pages they step through), `milestone` for an increment to accept or send back: keep it short, a very short `context` (why, one or two sentences) and a very short `fixed` (what changed, one or two sentences), each at most 280 characters, with the detail in screenshots or pages. A `try` comes back as \"Approved\" or \"Needs changes\" with a note saying what. " +
       "Write a decision the way an engineer asks a colleague, e.g. title \"Should search cover the note or sit beside it?\", " +
       "request \"I need this to finish note search. Until you answer I'll keep it docked.\", " +
       "options [\"Overlay: search covers part of the draft\", \"Docked: the editor narrows; the draft stays visible\"], " +
@@ -109,7 +109,8 @@ export default function reviewInbox(pi: PiApi): void {
       type: Type.Union([Type.Literal("decide"), Type.Literal("try"), Type.Literal("milestone")]),
       title: Type.String({ description: `For decide, the question itself, ending in "?"; otherwise what this is. About ${SOFT_CAPS.title} characters` }),
       request: Type.Optional(Type.String({ description: `1-2 sentences: what you need from the user and what happens if nobody answers. About ${SOFT_CAPS.request} characters` })),
-      context: Type.Optional(Type.String({ description: "Only what matters for choosing or checking, not a report of what you did; a few sentences" })),
+      context: Type.Optional(Type.String({ description: "Only what matters for choosing or checking, not a report of what you did; a few sentences. For a milestone: why, one or two sentences, at most 280 characters" })),
+      fixed: Type.Optional(Type.String({ description: "Required for a new milestone: what was fixed or changed, one or two plain sentences, at most 280 characters; longer is refused, so put detail in screenshots or pages" })),
       recommendation: Type.Optional(Type.String({ description: "Your pick and the reason for it" })),
       options: Type.Optional(Type.Array(Type.String({ description: "\"Label: consequence in plain words\"" }), { description: "For decide: 2-3 options, or none for an open question answered in words. Never one; a recommendation needs options" })),
       check: Type.Optional(Type.String({ description: "For try: the interaction to perform and the expected behaviour" })),
@@ -143,6 +144,7 @@ export default function reviewInbox(pi: PiApi): void {
           key: p.key,
           request: p.request,
           context: p.context,
+          fixed: p.fixed,
           recommendation: p.recommendation,
           options: p.options,
           check: p.check,

@@ -43,9 +43,9 @@ try {
   })).itemId;
   const options = [{ id: "a", label: "Overlay", consequence: "Cover part of the note." }, { id: "b", label: "Docked", consequence: "Keep every control visible." }];
   const ids = {};
-  ids.m1 = await submit("Clara", "m1", { type: "milestone", title: "Launch cut one" });
+  ids.m1 = await submit("Clara", "m1", { type: "milestone", fixed: "Fixed.", title: "Launch cut one" });
   ids.t1 = await submit("Agnes", "t1", { type: "try", title: "Try notebook one", check: "Search for a note.", preview: { url, viewport: "desktop" } });
-  ids.m2 = await submit("Emil", "m2", { type: "milestone", title: "Launch cut two" });
+  ids.m2 = await submit("Emil", "m2", { type: "milestone", fixed: "Fixed.", title: "Launch cut two" });
   ids.d1 = await submit("Theo", "d1", { type: "decide", title: "Where should the search panel sit?", options });
   const open = async (id) => (await (await fetch(`${url}/api/items/${id}`)).json());
 

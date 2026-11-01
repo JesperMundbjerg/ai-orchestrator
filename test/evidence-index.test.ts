@@ -31,7 +31,7 @@ test("version-5 storage gains indexed evidence lookups without changing counts o
   let db = openDatabase(file);
   t.after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
   const inbox = new Inbox(db, join(dir, "files"), { available: () => false, forSession: () => null, resolvePane: () => null });
-  const input = { session: { harness: "manual" as const, sessionId: "evidence-index-fixture" }, item: { key: "work", type: "milestone" as const, title: "First" } };
+  const input = { session: { harness: "manual" as const, sessionId: "evidence-index-fixture" }, item: { key: "work", type: "milestone" as const, fixed: "Fixed.", title: "First" } };
   const { itemId } = inbox.submit(input);
   inbox.submit({ ...input, item: { ...input.item, title: "Revised" } });
   const insert = db.prepare(`INSERT INTO evidence (id, item_id, revision, kind, caption, source_revision, captured_at)

@@ -601,7 +601,7 @@ test("HTTP editor/agent routes validate locks, origins and malformed requests; C
 test("approval binds the submitted run candidate and rejects automatic/stale accepts", async t => {
   const g = graph("dev"); g.nodes[0] = { id: "checks", label: "Founder approval", kind: "approval", source: "builtin:founder-approval", evidence: ["approval"] };
   const f = fixture(t, g); const h = await httpFixture(t, f); let run = f.start();
-  const submit = (title: string) => h.request("POST", "/api/agent/items", { session: h.session(), pipeline: { runId: run.id }, item: { type: "milestone", title, context: "Owned candidate" } });
+  const submit = (title: string) => h.request("POST", "/api/agent/items", { session: h.session(), pipeline: { runId: run.id }, item: { type: "milestone", fixed: "Fixed.", title, context: "Owned candidate" } });
   const automatic = (await submit("Automatic does not satisfy explicit approval")).body;
   h.inbox.answer(automatic.itemId, { revision: automatic.revision, action: "accept" }, "approve_all");
   const done = (item: { itemId: string; revision: number }, key: string) => f.p.done(f.lead, { runId: run.id, expectedRevision: run.revision, clientId: key, nodeId: "checks", notes: "Founder accepted matching snapshot", evidence: [{ kind: "approval", summary: "Exact acceptance", approval: item }] });
@@ -610,7 +610,7 @@ test("approval binds the submitted run candidate and rejects automatic/stale acc
   assert.match(h.inbox.item(item.itemId).context, new RegExp(run.candidate.fingerprint));
   assert.equal((await h.request("POST", `/api/items/${item.itemId}/replies`, { revision: item.revision, action: "accept" })).status, 200);
   run = done({ itemId: item.itemId, revision: item.revision }, "explicit"); assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, true);
-  const revised = await h.request("POST", "/api/agent/items", { session: h.session(), pipeline: { runId: run.id }, item: { type: "milestone", key: h.inbox.item(item.itemId).key, title: "Founder explicitly accepts", context: "Changed presented context" } });
+  const revised = await h.request("POST", "/api/agent/items", { session: h.session(), pipeline: { runId: run.id }, item: { type: "milestone", fixed: "Fixed.", key: h.inbox.item(item.itemId).key, title: "Founder explicitly accepts", context: "Changed presented context" } });
   assert.equal(revised.body.revision, item.revision + 1); assert.equal(f.p.gate(f.lead, f.gate(run)).allowed, false);
 });
 

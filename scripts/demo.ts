@@ -52,7 +52,7 @@ export function demoSubmissions(previewUrl: string): SubmitInput[] {
       project: { name: "Pebble", root: "/demo/pebble", objective: "A fictional gentle daily planner" },
       task: { title: "Planner layouts", objective: "Review the week, day and category layouts" },
       item: {
-        key: "planner-layouts", type: "milestone", title: "Week, day and category layouts are ready for review",
+        key: "planner-layouts", type: "milestone", fixed: "Week, day and category layouts now exist.", title: "Week, day and category layouts are ready for review",
         request: "Accept the layouts, or say what should change before implementation.",
         context: "These are purpose-made mock interfaces with invented sample plans, not screenshots of a shipped app.",
         evidence: [shot("planner-week.png", "Week overview"), shot("planner-day.png", "Day plan"), shot("planner-tags.png", "Plans by category")],

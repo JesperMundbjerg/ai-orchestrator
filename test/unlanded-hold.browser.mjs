@@ -64,8 +64,8 @@ try {
     await delay(100);
   }
   // The agent of the snapshot worktree, and the first mate of another team that has no business with it.
-  await call("POST", "/api/agent/items", { session: { harness: "claude", sessionId: "s-snap", cwd: lane }, project: { name: "snapshot" }, item: { type: "milestone", title: "Ready" } });
-  await call("POST", "/api/agent/items", { session: { harness: "claude", sessionId: "s-main", cwd: repo }, project: { name: "main" }, item: { type: "milestone", title: "Ready" } });
+  await call("POST", "/api/agent/items", { session: { harness: "claude", sessionId: "s-snap", cwd: lane }, project: { name: "snapshot" }, item: { type: "milestone", fixed: "Fixed.", title: "Ready" } });
+  await call("POST", "/api/agent/items", { session: { harness: "claude", sessionId: "s-main", cwd: repo }, project: { name: "main" }, item: { type: "milestone", fixed: "Fixed.", title: "Ready" } });
   const team = await call("POST", "/api/world/teams", { name: "Snapshot Crew", standing: true, purpose: "Keeps an old snapshot" });
   const other = await call("POST", "/api/world/teams", { name: "Elsewhere", standing: true, purpose: "Another team" });
   const world0 = await call("GET", "/api/world");

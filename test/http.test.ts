@@ -34,7 +34,7 @@ async function withServer(fn: (base: string) => Promise<void>, live: LiveAgent[]
 
 const submission = JSON.stringify({
   session: { harness: "manual", sessionId: "s1" },
-  item: { type: "milestone", title: "Storyboard pass" },
+  item: { type: "milestone", fixed: "Fixed.", title: "Storyboard pass" },
 });
 
 test("the agent protocol accepts JSON from a local client", async () => {

@@ -401,7 +401,10 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
   for (const [table, column] of [["auto_approve", "mode"], ["auto_approve", "qa_agent_id"], ["auto_approve", "qa_learned_through"], ["auto_approve", "qa_started"], ["replies", "answered_by"]] as const) {
     if (has(table, column)) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
   }
-}, migratePageComments, migrateLeaseCapacity];
+}, migratePageComments, migrateLeaseCapacity, (db) => {
+  // A milestone says in one or two sentences what was fixed, apart from its short context. Empty for every existing item.
+  addColumn(db, "items", "fixed", "TEXT NOT NULL DEFAULT ''");
+}];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) {

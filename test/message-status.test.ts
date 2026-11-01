@@ -119,7 +119,7 @@ test("the pre-claim guard also holds a fallback inbox reply without claiming it"
   const s = setup(t); s.native.status = "idle"; s.save();
   await s.source.refresh();
   const item = s.inbox.submit({ session: { harness: "pi", sessionId: "s1" }, project: { root: "/scratch/fictional" },
-    item: { type: "milestone", key: "ready", title: "Ready" } });
+    item: { type: "milestone", fixed: "Fixed.", key: "ready", title: "Ready" } });
   s.inbox.answer(item.itemId, { revision: item.revision, action: "accept" });
   const snapshot = s.world.state();
   await s.world.messages.deliver(snapshot);

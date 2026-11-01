@@ -42,7 +42,7 @@ test("an identical resubmission changes nothing; a changed one is a new revision
 test("an answer is queued, delivered to the owning session only, and acknowledged once", () => {
   const { inbox } = setup();
   const { itemId } = inbox.submit(decision());
-  inbox.submit({ ...decision(), session: other, item: { type: "milestone", title: "Other work" } });
+  inbox.submit({ ...decision(), session: other, item: { type: "milestone", fixed: "Fixed.", title: "Other work" } });
   const reply = inbox.answer(itemId, { revision: 1, action: "choose", choice: "a" });
   assert.equal(inbox.item(itemId).state, "answer_queued");
   assert.equal(inbox.task(inbox.item(itemId).taskId).lastDecision, "Immediately (When should the teacher stop talking?)");

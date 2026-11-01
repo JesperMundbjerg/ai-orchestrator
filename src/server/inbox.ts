@@ -194,6 +194,7 @@ export class Inbox {
     if (!raw.title?.trim()) throw new InboxError(400, "item.title is required");
     const binding = this.resolveSession(input.session ?? {});
     const fields = normalizeItem(raw);
+    if (raw.type === "milestone") this.requireBriefMilestone(binding, raw.key?.trim() || slug(raw.title), fields);
     if (raw.type === "decide" && fields.options.length === 1) {
       throw new InboxError(400, "a decision with one option is not a choice: give two or more options, or none for an open question the user answers in words");
     }
@@ -207,7 +208,9 @@ export class Inbox {
     const point = presentedPoint(this.presentationPath({ ...binding, cwd: binding.cwd ?? nullable(this.taskRow(binding)?.cwd) }));
     const presenting = raw.type === "milestone" || raw.type === "try";
     // Showing a different commit is new evidence, even when the prose and attachments match.
-    const hash = sha256(JSON.stringify([fields, attachments.map((a) => [a.kind, a.sha256 ?? a.url, a.caption]), ...(presenting && point ? [point] : [])]));
+    // Items without a `fixed` hash as they always did, so resubmitting one is still no change.
+    const { fixed, ...unfixed } = fields;
+    const hash = sha256(JSON.stringify([fixed ? fields : unfixed, attachments.map((a) => [a.kind, a.sha256 ?? a.url, a.caption]), ...(presenting && point ? [point] : [])]));
 
     const write = () => {
       const taskId = this.upsertTask(binding, input.project, input.task, raw.title.trim());
@@ -219,12 +222,12 @@ export class Inbox {
       }
       const itemId = existing ? str(existing.id) : randomUUID();
       const revision = existing ? Number(existing.revision) + 1 : 1;
-      const values = [fields.type, revision, fields.title, fields.request, fields.context, fields.recommendation,
+      const values = [fields.type, revision, fields.title, fields.request, fields.context, fields.fixed ?? "", fields.recommendation,
         JSON.stringify(fields.options), fields.check, fields.preview ? JSON.stringify(fields.preview) : null,
         fields.pages.length ? JSON.stringify(fields.pages) : null, fields.blocking ? 1 : 0, hash] as const;
       if (existing) {
         this.db
-          .prepare(`UPDATE items SET type = ?, revision = ?, title = ?, request = ?, context = ?, recommendation = ?, options = ?,
+          .prepare(`UPDATE items SET type = ?, revision = ?, title = ?, request = ?, context = ?, fixed = ?, recommendation = ?, options = ?,
                     check_text = ?, preview = ?, pages = ?, blocking = ?, content_hash = ?, state = 'needs_attention', snoozed_until = NULL,
                     updated_at = ? WHERE id = ?`)
           .run(...values, now, itemId);
@@ -233,9 +236,9 @@ export class Inbox {
         this.log("agent", "item.revised", { taskId, itemId }, { revision, staleReplies: Number(staled.changes) });
       } else {
         this.db
-          .prepare(`INSERT INTO items (type, revision, title, request, context, recommendation, options, check_text, preview, pages, blocking,
+          .prepare(`INSERT INTO items (type, revision, title, request, context, fixed, recommendation, options, check_text, preview, pages, blocking,
                     content_hash, id, task_id, key, state, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?)`)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'needs_attention', ?, ?)`)
           .run(...values, itemId, taskId, key, now, now);
         this.log("agent", "item.submitted", { taskId, itemId }, { type: fields.type, title: fields.title });
       }
@@ -260,6 +263,18 @@ export class Inbox {
     this.onSubmitted(result.itemId);
     if (result.changed) this.onChange("item");
     return result;
+  }
+
+  /**
+   * A new milestone is short: a context and a `fixed` of at most MILESTONE_LIMIT characters each, and `fixed` is required.
+   * A revision of an older milestone that has no `fixed` and still gives none is left as it was.
+   */
+  private requireBriefMilestone(binding: Binding, key: string, fields: { context: string; fixed?: string }): void {
+    const task = this.taskRow(binding);
+    const existing = task ? this.db.prepare("SELECT type, fixed FROM items WHERE task_id = ? AND key = ?").get(str(task.id), key) as Row | undefined : undefined;
+    if (existing && str(existing.type) === "milestone" && !str(existing.fixed ?? "") && !fields.fixed) return;
+    const problem = milestoneProblem(fields);
+    if (problem) throw new InboxError(400, problem);
   }
 
   /** Copies an explicitly attached file into the inbox's storage; nothing else is read. */
@@ -720,6 +735,7 @@ function normalizeItem(raw: SubmitInput["item"]): Omit<Item, "id" | "taskId" | "
     title: raw.title.trim(),
     request: raw.request?.trim() ?? "",
     context: raw.context?.trim() ?? "",
+    fixed: raw.type === "milestone" ? fixedText(raw.fixed) : "",
     recommendation: raw.recommendation?.trim() ?? "",
     options,
     check: raw.check?.trim() ?? "",
@@ -727,6 +743,30 @@ function normalizeItem(raw: SubmitInput["item"]): Omit<Item, "id" | "taskId" | "
     pages,
     blocking: raw.blocking ?? raw.type === "decide",
   };
+}
+
+/** The most characters a new milestone's context and its `fixed` may each have. */
+export const MILESTONE_LIMIT = 280;
+const LONG_DETAIL = "move detail into the screenshots or pages, or leave it out";
+
+/** The pipeline gate appends its run snapshot to a lead's context (http.ts); it is the office's line, not the lead's. */
+const PIPELINE_SNAPSHOT = /(?:^|\n\n)Pipeline snapshot: run [^\n]*$/;
+
+/** Why a new milestone's context or `fixed` is refused, or null when both are short enough and `fixed` is there. */
+export function milestoneProblem(fields: { context: string; fixed?: string }): string | null {
+  const fixed = fields.fixed ?? "";
+  if (!fixed) return `a milestone needs "fixed": what was fixed or changed, one or two plain sentences of at most ${MILESTONE_LIMIT} characters (--fixed "…")`;
+  for (const [name, text] of [["context", fields.context.replace(PIPELINE_SNAPSHOT, "")], ["fixed", fixed]] as const) {
+    const length = Array.from(text).length;
+    if (length > MILESTONE_LIMIT) return `milestone ${name} is ${length} characters; the limit is ${MILESTONE_LIMIT}. Keep it to one or two plain sentences: ${LONG_DETAIL}`;
+  }
+  return null;
+}
+
+function fixedText(raw: unknown): string {
+  if (raw === undefined || raw === null) return "";
+  if (typeof raw !== "string") throw new InboxError(400, "item.fixed must be text");
+  return raw.trim();
 }
 
 function normalizePages(raw: SubmitInput["item"]["pages"]): Page[] {
@@ -773,6 +813,7 @@ function toItem(r: Row): Item {
     title: str(r.title),
     request: str(r.request),
     context: str(r.context),
+    fixed: str(r.fixed ?? ""),
     recommendation: str(r.recommendation),
     options: JSON.parse(str(r.options)) as Option[],
     check: str(r.check_text),

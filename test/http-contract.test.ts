@@ -45,7 +45,7 @@ function fixture(t: TestContext, staticUi = false) {
   return { request, inbox, world, db };
 }
 const session = { harness: "manual" as const, sessionId: "contract-session" };
-const submit = { session, item: { type: "milestone" as const, title: "A checked increment" } };
+const submit = { session, item: { type: "milestone" as const, fixed: "Fixed.", title: "A checked increment" } };
 const mutations: Array<[string, string]> = [
   ["POST", "/api/items/id/replies"], ["POST", "/api/items/id/snooze"], ["POST", "/api/items/id/back-of-queue"], ["POST", "/api/items/id/resolve"],
   ["POST", "/api/replies/id/retry"], ["PATCH", "/api/tasks/id"], ["POST", "/api/tasks/id/open"],
@@ -84,7 +84,7 @@ test("agent identity, nested fields, arrays, enums and URLs are checked before d
     ["/api/agent/replies", { session, mode: "not-a-mode" }, "mode"],
     ["/api/agent/activity", { session, activity: false }, "activity"],
     ["/api/agent/ack", { session, deliveryId: 5 }, "deliveryId"],
-    ["/api/agent/items", { session, item: { type: "milestone", title: 7 } }, "item.title"],
+    ["/api/agent/items", { session, item: { type: "milestone", fixed: "Fixed.", title: 7 } }, "item.title"],
     ["/api/agent/items", { session, item: { type: "decide", title: "Choose?", options: "one" } }, "item.options"],
     ["/api/agent/items", { session, item: { type: "decide", title: "Choose?", options: [null] } }, "item.options.0"],
     ["/api/agent/items", { session, item: { type: "decide", title: "Choose?", options: [{ label: 2 }] } }, "item.options.0.label"],

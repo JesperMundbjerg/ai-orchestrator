@@ -120,7 +120,7 @@ test("an answer with images reaches the agent with each image's path", async () 
     const session = { harness: "manual" as const, sessionId: "s1" };
     const submitted = await (await fetch(`${base}/api/agent/items`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ session, item: { type: "milestone", title: "Storyboard pass" } }),
+      body: JSON.stringify({ session, item: { type: "milestone", fixed: "Fixed.", title: "Storyboard pass" } }),
     })).json();
     const itemId = submitted.itemId;
     const { id } = await (await upload(base, PNG.toString("base64"))).json();

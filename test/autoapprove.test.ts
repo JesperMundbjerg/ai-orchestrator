@@ -28,7 +28,7 @@ for (const type of ["milestone", "try"] as const) {
   test(`Approve all accepts ${type}, marks history/text and keeps normal delivery/acks`, (t) => {
     const { inbox, auto, submit } = setup(t);
     auto.setEnabled(true);
-    const result = submit({ type, title: "Ready", ...(type === "try" ? { preview: "http://localhost:3000" } : {}) });
+    const result = submit({ type, fixed: "Fixed.", title: "Ready", ...(type === "try" ? { preview: "http://localhost:3000" } : {}) });
     const detail = inbox.detail(result.itemId);
     assert.equal(detail.replies.length, 1);
     const reply = detail.replies[0]!;
@@ -53,7 +53,7 @@ for (const type of ["milestone", "try"] as const) {
 test("auto-answer replay scope never collides with a founder's identical answer", (t) => {
   const { inbox, auto, submit } = setup(t);
   auto.setEnabled(true);
-  const { itemId } = submit({ type: "milestone", title: "Automatically accepted" });
+  const { itemId } = submit({ type: "milestone", fixed: "Fixed.", title: "Automatically accepted" });
   const reply = inbox.detail(itemId).replies[0]!;
   const payload = { id: reply.id, revision: reply.revision, action: reply.action, text: reply.text };
   assert.throws(() => inbox.answer(itemId, payload), { code: "replay_conflict" });
@@ -62,7 +62,7 @@ test("auto-answer replay scope never collides with a founder's identical answer"
   assert.equal(auto.state().count, 1);
 
   auto.setEnabled(false);
-  const manual = submit({ type: "milestone", title: "Founder accepted" });
+  const manual = submit({ type: "milestone", fixed: "Fixed.", title: "Founder accepted" });
   const founderPayload = { id: `approve-all:${manual.itemId}:1`, revision: 1, action: "accept" as const, text: "Auto-approved (approve all)." };
   const founder = inbox.answer(manual.itemId, founderPayload);
   assert.throws(() => inbox.answer(manual.itemId, founderPayload, "approve_all"), { code: "replay_conflict" });
@@ -74,7 +74,7 @@ test("auto-answer replay scope never collides with a founder's identical answer"
 for (const scope of ["founder", "approve_all"] as const) {
   test(`legacy replay scopes without a stored fingerprint preserve ${scope} ownership`, (t) => {
     const { db, inbox, auto, submit } = setup(t);
-    const { itemId } = submit({ type: "milestone", title: `Legacy ${scope} answer` });
+    const { itemId } = submit({ type: "milestone", fixed: "Fixed.", title: `Legacy ${scope} answer` });
     const payload = {
       id: scope === "approve_all" ? "approve-all:legacy-answer" : "legacy-founder-answer",
       revision: 1, action: "accept" as const, text: "Accepted.",
@@ -124,11 +124,11 @@ test("open questions, unrecommended, unrecognised and ambiguous recommendations 
 test("off by default and turning off stops new items and revisions", (t) => {
   const { inbox, auto, submit } = setup(t);
   assert.deepEqual(auto.state(), { enabled: false, count: 0 });
-  const { itemId } = submit({ key: "work", type: "milestone", title: "First" });
+  const { itemId } = submit({ key: "work", type: "milestone", fixed: "Fixed.", title: "First" });
   assert.deepEqual(inbox.detail(itemId).replies, []);
   auto.setEnabled(true);
   auto.setEnabled(false);
-  submit({ key: "work", type: "milestone", title: "Second" });
+  submit({ key: "work", type: "milestone", fixed: "Fixed.", title: "Second" });
   const other = submit({ type: "try", title: "Try", preview: "http://localhost:3000" });
   assert.equal(inbox.item(itemId).state, "needs_attention");
   assert.equal(inbox.detail(itemId).replies[0]!.state, "stale");
@@ -138,16 +138,16 @@ test("off by default and turning off stops new items and revisions", (t) => {
 
 test("enabling answers waiting, snoozed and parked items but not closed or already answered items", (t) => {
   const { inbox, auto, submit } = setup(t);
-  const waiting = submit({ type: "milestone", title: "Waiting" });
+  const waiting = submit({ type: "milestone", fixed: "Fixed.", title: "Waiting" });
   const snoozed = submit({ type: "try", title: "Later", preview: "http://localhost:3000" });
   inbox.snooze(snoozed.itemId, new Date(Date.now() + 60_000).toISOString());
   const recommended = submit({ type: "decide", title: "Pick?", options: choices, recommendation: "Docked" });
   const open = submit({ type: "decide", title: "Words?" });
-  const closed = submit({ type: "milestone", title: "Closed" });
+  const closed = submit({ type: "milestone", fixed: "Fixed.", title: "Closed" });
   inbox.resolve(closed.itemId);
-  const withdrawn = submit({ type: "milestone", title: "Withdrawn" });
+  const withdrawn = submit({ type: "milestone", fixed: "Fixed.", title: "Withdrawn" });
   inbox.closeItem(session, withdrawn.itemId, "withdrawn");
-  const manual = submit({ type: "milestone", title: "Already answered" });
+  const manual = submit({ type: "milestone", fixed: "Fixed.", title: "Already answered" });
   inbox.answer(manual.itemId, { id: "founder-answer", revision: 1, action: "accept" });
   inbox.updateTask(waiting.taskId, { parked: true });
   auto.setEnabled(true);
@@ -163,7 +163,7 @@ for (const type of ["milestone", "try", "decide"] as const) {
   test(`a revised ${type} is answered once at each revision and old queued answers go stale`, (t) => {
     const { inbox, auto, submit } = setup(t);
     auto.setEnabled(true);
-    const item = { key: "same", type, title: "First", ...(type === "try" ? { preview: "http://localhost:3000" } : {}), ...(type === "decide" ? { options: choices, recommendation: "Docked" } : {}) };
+    const item = { key: "same", type, fixed: "Fixed.", title: "First", ...(type === "try" ? { preview: "http://localhost:3000" } : {}), ...(type === "decide" ? { options: choices, recommendation: "Docked" } : {}) };
     const first = submit(item);
     const old = inbox.detail(first.itemId).replies[0]!;
     const second = submit({ ...item, title: "Revised", ...(type === "decide" ? { recommendation: "Overlay" } : {}) });
@@ -196,12 +196,12 @@ test("revising into an open or unrecommended decision stops automatic answering"
 test("failed delivery requires Retry; automation never duplicates it", (t) => {
   const { inbox, auto, submit } = setup(t);
   auto.setEnabled(true);
-  const { itemId } = submit({ type: "milestone", title: "Ready" });
+  const { itemId } = submit({ type: "milestone", fixed: "Fixed.", title: "Ready" });
   const reply = inbox.pendingReplies(session, "pull")[0]!;
   inbox.acknowledge(session, reply.deliveryId, "delivery failed");
   auto.setEnabled(true);
   auto.sweep();
-  submit({ type: "milestone", title: "Ready" });
+  submit({ type: "milestone", fixed: "Fixed.", title: "Ready" });
   assert.equal(inbox.item(itemId).state, "needs_attention");
   assert.equal(inbox.detail(itemId).replies.length, 1);
   inbox.retry(reply.deliveryId);
@@ -220,9 +220,9 @@ test("Approve all leaves waiting office work, switches, merges and message deliv
       VALUES ('switch', 'agent', 'Agent', '/scratch', 'pi', 'claude', 'model', 'high', 'waiting', 'Wait', 'now', 'now');`);
   const snapshot = () => ["teams", "world_agents", "messages", "message_deliveries", "work", "agent_switches"].map((table) => db.prepare(`SELECT * FROM ${table}`).all());
   const before = snapshot();
-  submit({ type: "milestone", title: "Inbox work" });
+  submit({ type: "milestone", fixed: "Fixed.", title: "Inbox work" });
   auto.setEnabled(true);
-  submit({ type: "milestone", title: "More inbox work" });
+  submit({ type: "milestone", fixed: "Fixed.", title: "More inbox work" });
   auto.sweep();
   assert.equal(auto.state().count, 2);
   assert.deepEqual(snapshot(), before);
@@ -236,9 +236,9 @@ test("persisted mode/count survive reopening the database; startup sweep repairs
   let inbox = new Inbox(db, join(dir, "files"), presence);
   let auto = new AutoApprove(db, inbox);
   auto.setEnabled(true);
-  const first = inbox.submit({ session, item: { type: "milestone", title: "Before restart" } });
+  const first = inbox.submit({ session, item: { type: "milestone", fixed: "Fixed.", title: "Before restart" } });
   inbox.onSubmitted = () => {}; // stopped after commit, before the auto-answer hook
-  const waiting = inbox.submit({ session, item: { type: "milestone", title: "Interrupted" } });
+  const waiting = inbox.submit({ session, item: { type: "milestone", fixed: "Fixed.", title: "Interrupted" } });
   db.close();
   db = openDatabase(path);
   inbox = new Inbox(db, join(dir, "files"), presence);
@@ -248,7 +248,7 @@ test("persisted mode/count survive reopening the database; startup sweep repairs
   assert.equal(inbox.detail(first.itemId).replies.length, 1);
   assert.equal(inbox.item(waiting.itemId).state, "answer_queued");
   assert.equal(auto.state().count, 2);
-  inbox.submit({ session, item: { type: "milestone", title: "After restart" } });
+  inbox.submit({ session, item: { type: "milestone", fixed: "Fixed.", title: "After restart" } });
   assert.equal(auto.state().count, 3);
   auto.setEnabled(false);
   db.close();

@@ -44,7 +44,7 @@ test("a read that times out twice fails with the timeout, after one retry only",
 test("a write is never retried: it may already have been done", async () => {
   const { calls, fetch } = stuckOnce();
   const client = createAgentClient({ fetch, baseUrl: "http://office.test", timeoutMs: 30, session: { harness: "claude", sessionId: "s1", cwd: "/work" } });
-  await assert.rejects(client.submit({ item: { type: "milestone", title: "Done" } }), (err: AgentClientError) => err.kind === "timeout");
+  await assert.rejects(client.submit({ item: { type: "milestone", fixed: "Fixed.", title: "Done" } }), (err: AgentClientError) => err.kind === "timeout");
   assert.equal(calls.length, 1);
 });
 

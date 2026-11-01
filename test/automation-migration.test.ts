@@ -22,7 +22,7 @@ function oldDatabase(t: TestContext, mode: "off" | "approve_all" | "qa") {
   const inbox = new Inbox(db, join(dir, "files"), presence);
   const delivered = inbox.submit({ session, item: { type: "decide", title: "Docked or overlay?", options: ["Docked", "Overlay"] } }).itemId;
   const queued = inbox.submit({ session, item: { type: "decide", title: "Wide or narrow?", options: ["Wide", "Narrow"] } }).itemId;
-  const founder = inbox.submit({ session, item: { type: "milestone", title: "Ready" } }).itemId;
+  const founder = inbox.submit({ session, item: { type: "milestone", fixed: "Fixed.", title: "Ready" } }).itemId;
   restoreOldSchema(db, mode);
   // An automatic answer the agent already has, one still waiting to be sent, and the founder's own.
   automaticAnswer(db, inbox, delivered, "a");

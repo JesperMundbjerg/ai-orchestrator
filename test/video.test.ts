@@ -15,7 +15,7 @@ import reviewInbox from "../integrations/pi/review-inbox.ts";
 const exec = promisify(execFile);
 const none = { available: () => false, forSession: () => null, resolvePane: () => null };
 const submission = (evidence: EvidenceInput[], type: ItemType = "milestone"): SubmitInput => ({
-  session: { harness: "manual", sessionId: "video-test" }, item: { type, title: "Animation pass", evidence },
+  session: { harness: "manual", sessionId: "video-test" }, item: { type, fixed: "Fixed.", title: "Animation pass", evidence },
 });
 
 async function fixture(run: (f: { dir: string; inbox: Inbox; base: string }) => Promise<void>) {
@@ -154,15 +154,15 @@ test("CLI --video is repeatable on every review type, preserves mixed evidence o
     writeFileSync(path, "first"); writeFileSync(second, "second"); writeFileSync(photo, "photo");
     const cli = (...args: string[]) => exec(process.execPath, [resolve("bin/inbox"), ...args, "--harness", "manual", "--session", "cli-video"], { env: { ...process.env, INBOX_URL: base } });
     for (const type of ["decide", "try", "milestone"]) {
-      const result = await cli(type, `Video ${type}`, "--video", path, "--screenshot", photo, "--video", second);
+      const result = await cli(type, `Video ${type}`, "--fixed", "Fixed.", "--video", path, "--screenshot", photo, "--video", second);
       assert.match(result.stdout, /Submitted/);
       const item = inbox.state().items.find((i) => i.title === `Video ${type}`)!;
       assert.equal(item.videoCount, 2);
       assert.deepEqual(inbox.detail(item.id).evidence.map((e) => e.kind), ["video", "image", "video"]);
     }
-    await assert.rejects(cli("milestone", "Wrong type", "--video", photo), /use MP4, WebM or MOV/);
+    await assert.rejects(cli("milestone", "Wrong type", "--fixed", "Fixed.", "--video", photo), /use MP4, WebM or MOV/);
     truncateSync(path, 200 * 1024 * 1024 + 1);
-    await assert.rejects(cli("milestone", "Too large", "--video", path), /larger than 200 MB/);
+    await assert.rejects(cli("milestone", "Too large", "--fixed", "Fixed.", "--video", path), /larger than 200 MB/);
     const help = await cli("--help");
     assert.match(help.stdout, /--video FILE/);
     assert.match(help.stdout, /200 MB/);
@@ -223,7 +223,7 @@ test("Pi review_submit advertises videos and forwards absolute paths in order al
     sent = JSON.parse(String(opts.body));
     return Response.json({ itemId: "item", taskId: "task", revision: 1, changed: true });
   });
-  await tool.execute("call", { type: "milestone", title: "Animation", screenshots: ["/tmp/photo.png"], videos: ["/tmp/first.mp4", "/tmp/second.mov"] }, undefined, undefined, {
+  await tool.execute("call", { type: "milestone", fixed: "Fixed.", title: "Animation", screenshots: ["/tmp/photo.png"], videos: ["/tmp/first.mp4", "/tmp/second.mov"] }, undefined, undefined, {
     cwd: tmpdir(), sessionManager: { getSessionFile: () => "/tmp/session.jsonl" }, isIdle: () => true,
   });
   assert.deepEqual(sent!.item.evidence, [{ path: "/tmp/photo.png" }, { path: "/tmp/first.mp4", kind: "video" }, { path: "/tmp/second.mov", kind: "video" }]);

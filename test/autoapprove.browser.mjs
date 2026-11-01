@@ -44,7 +44,7 @@ const submit = async (key, item) => (await post("/api/agent/items", {
 })).itemId;
 try {
   await start();
-  const milestone = await submit("milestone", { type: "milestone", title: "Release is ready", context: "The checks passed; accept this increment." });
+  const milestone = await submit("milestone", { type: "milestone", fixed: "Fixed.", title: "Release is ready", context: "The checks passed; accept this increment." });
   const preview = await submit("try", { type: "try", title: "Try the release", preview: "http://localhost:3000", check: "Check the release preview." });
   const decide = await submit("decision", { type: "decide", title: "Where should search sit?", options: ["Docked: keep the draft visible", "Overlay: keep the width"], recommendation: "Docked, because the draft should stay visible" });
   const manual = await submit("manual", { type: "decide", title: "Which release day?", options: ["Monday", "Friday"] });
@@ -81,20 +81,20 @@ try {
   assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 390);
   await page.screenshot({ path: join(shots, "05-phone.png") });
   await page.close(); // New/revised submissions need no UI to be open.
-  await submit("milestone", { type: "milestone", title: "Release revised after closing UI" });
+  await submit("milestone", { type: "milestone", fixed: "Fixed.", title: "Release revised after closing UI" });
   let detail = await get(`/api/items/${milestone}`);
   assert.deepEqual(detail.replies.map((r) => r.state), ["stale", "queued"]);
   await stop();
   await start();
   assert.deepEqual(await get("/api/auto-approve"), { enabled: true, count: 4 });
-  const after = await submit("after-restart", { type: "milestone", title: "Ready after restart" });
+  const after = await submit("after-restart", { type: "milestone", fixed: "Fixed.", title: "Ready after restart" });
   assert.equal((await get(`/api/items/${after}`)).replies[0].state, "queued");
   page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
   await page.goto(url);
   await page.getByRole("switch", { name: /Approve all · On.*5 auto-answered/ }).waitFor();
   await page.getByRole("switch", { name: /Approve all/ }).click();
   await page.getByRole("switch", { name: /Approve all · Off/ }).waitFor();
-  const off = await submit("after-off", { type: "milestone", title: "Wait for the founder" });
+  const off = await submit("after-off", { type: "milestone", fixed: "Fixed.", title: "Wait for the founder" });
   assert.equal((await get(`/api/items/${off}`)).replies.length, 0);
   const replies = await post("/api/agent/replies", { session, mode: "pull" });
   assert.ok(replies.length > 0 && replies.every((r) => r.text.includes("approve all")));

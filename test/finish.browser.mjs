@@ -52,7 +52,7 @@ try {
   // The project's lead, known to the office from the inbox (herdr is faked away, so it is offline).
   const response = await fetch(`${url}/api/agent/items`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session: { harness: "manual", sessionId: "clara", cwd: atoms }, project: { name: "Lantern", root: atoms }, task: { title: "Atoms", objective: "Light the atoms" }, item: { key: "m1", type: "milestone", title: "Atoms glow" } }),
+    body: JSON.stringify({ session: { harness: "manual", sessionId: "clara", cwd: atoms }, project: { name: "Lantern", root: atoms }, task: { title: "Atoms", objective: "Light the atoms" }, item: { key: "m1", type: "milestone", fixed: "Fixed.", title: "Atoms glow" } }),
   });
   assert.ok(response.ok, await response.text());
   const world = async () => (await fetch(`${url}/api/world`)).json();

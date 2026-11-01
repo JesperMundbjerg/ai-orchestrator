@@ -36,7 +36,7 @@ function setup(t: { after(fn: () => void): void }) {
   const commit = (title = "Tutor-free cut") => { git(path, "commit", "--allow-empty", "-qm", title); return git(path, "rev-parse", "HEAD"); };
   const post = (type: "milestone" | "try" | "decide" = "milestone", title = "Video checked", sessionId = "crew") => inbox.submit({
     session: { harness: "pi", sessionId, cwd: path },
-    item: { key: "video", type, title, blocking: false, ...(type === "try" ? { preview: { url: "http://localhost:4921/demo" } } : {}) },
+    item: { key: "video", type, fixed: "Fixed.", title, blocking: false, ...(type === "try" ? { preview: { url: "http://localhost:4921/demo" } } : {}) },
   });
   // The unlanded-work watch (unlanded.ts) speaks about the same idle worktrees; these tests are about presentation.
   const notices = () => world.state().messages.filter((m) => m.fromOffice && !m.text.startsWith("Unlanded work"));

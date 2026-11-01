@@ -109,7 +109,7 @@ try {
   await page.getByRole("button", { name: "Navigation", exact: true }).click();
   await page.getByRole("button", { name: /All repositories/ }).waitFor();
   // Non-decision items still open in their original detail views, from the sheet.
-  const milestone = await post("/api/agent/items", { ...submissions[0], item: { key: "cut", type: "milestone", title: "The launch cut is ready", context: "Checked both languages." } });
+  const milestone = await post("/api/agent/items", { ...submissions[0], item: { key: "cut", type: "milestone", fixed: "Fixed.", title: "The launch cut is ready", context: "Checked both languages." } });
   const preview = await post("/api/agent/items", { ...submissions[0], item: { key: "preview", type: "try", title: "Try the new notebook", check: "Search for a note.", preview: { url, viewport: "desktop" } } });
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("button", { name: /The launch cut is ready/ }).click();

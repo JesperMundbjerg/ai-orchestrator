@@ -60,7 +60,7 @@ async function office(t: TestContext, graph = approvalGraph) {
   };
   let n = 0;
   const present = async (run: PipelineRun, by = lead, key = `present-${++n}`) => {
-    const r = await request("POST", "/api/agent/items", { session: { harness: "manual", sessionId: by.id, cwd: by.cwd }, pipeline: { runId: run.id }, item: { type: "milestone", key, title: "Wave ready", context: "Pinned candidate" } });
+    const r = await request("POST", "/api/agent/items", { session: { harness: "manual", sessionId: by.id, cwd: by.cwd }, pipeline: { runId: run.id }, item: { type: "milestone", fixed: "Fixed.", key, title: "Wave ready", context: "Pinned candidate" } });
     assert.equal(r.status, 200, JSON.stringify(r.body)); return { itemId: r.body.itemId as string, revision: r.body.revision as number };
   };
   const reply = (item: { itemId: string; revision: number }, action: "accept" | "discuss" | "request_changes", text = "") => request("POST", `/api/items/${item.itemId}/replies`, { revision: item.revision, action, text });
@@ -133,7 +133,7 @@ test("approve-all leaves a pipeline's approval waiting for the founder; an expli
   assert.deepEqual(o.inbox.detail(item.itemId).replies, []);
   assert.deepEqual(o.inbox.detail(item.itemId).pipelineApproval, { runId: run.id, accepted: false });
   // Ordinary items are still auto-answered, and turning it on again sweeps nothing pipeline-bound.
-  const plain = o.inbox.submit({ session: { harness: "manual", sessionId: "someone-else" }, item: { type: "milestone", title: "Unrelated" } });
+  const plain = o.inbox.submit({ session: { harness: "manual", sessionId: "someone-else" }, item: { type: "milestone", fixed: "Fixed.", title: "Unrelated" } });
   assert.equal(o.inbox.item(plain.itemId).state, "answer_queued");
   o.auto.setEnabled(false); o.auto.setEnabled(true);
   assert.equal(o.inbox.item(item.itemId).state, "needs_attention");
