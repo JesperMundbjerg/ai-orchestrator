@@ -20,6 +20,7 @@ import { LaneRouting, piPaused } from "./lanerouting.ts";
 import { startIntegrations, startupConfig } from "./startup-config.ts";
 import { Usage } from "./usage.ts";
 import { World } from "./world.ts";
+import { configureGit } from "./gitcache.ts";
 import { PageComments } from "./pagecomments.ts";
 
 export const DEFAULT_PORT = 4870;
@@ -32,6 +33,8 @@ const db = openDatabase(join(dir, "inbox.sqlite"));
 const inbox = new Inbox(db, join(dir, "files"), herdr);
 const autoApprove = new AutoApprove(db, inbox);
 const world = new World(db, herdr, () => inbox.state());
+// Office requests and timers never wait on a git process (gitcache.ts); a refreshed fact redraws the office.
+configureGit({ nonblocking: true, changed: () => world.onChange("activity") });
 world.crew = new CrewTreeStore(dir);
 world.crew.seed();
 // The plan's limits and each agent's use; near Claude's 5-hour limit the crew guide gives Pi under Mix, and near Codex's limits Claude.

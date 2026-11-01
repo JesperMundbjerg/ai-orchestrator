@@ -40,6 +40,7 @@ Errors preserve the human-readable `error` string:
 | 422 | `invalid_request` | Recognized but unusable project adapter |
 | 500 | `internal_error` | Unexpected service failure |
 | 502 / 503 | `upstream_error` / `unavailable` | Upstream/service error mapping, when raised |
+| 503 | `git_pending` | The office is still reading a git fact the request needs (a busy machine; it never runs git on its event loop). Retryable: nothing was decided or written. Ask again in a few seconds. A pipeline gate answers this, never an allow, until it has read the checkout since it was asked. |
 
 File range responses have their own status policy (below).
 
@@ -180,7 +181,7 @@ Pipeline routes use domain decoders in `src/server/pipelines/protocol.ts` and DT
 | Method/path | Request / response |
 |---|---|
 | `GET /api/world/teams/:id/pipeline` | `PipelineTeamView`, including retained runs |
-| `POST /api/agent/pipeline/status` | `{session, runId?}` → `{team, run, text}`; omitted runId selects an open run only, or null |
+| `POST /api/agent/pipeline/status` | `{session, runId?}` → `{team, run, text}`; omitted runId selects an open run only, or null. While some git facts are still being read, the text and `team.problems` say so, and steps that depend on them may show as stale |
 | `POST /api/agent/pipeline/branch` | `{session, runId, clientId, selections, rationale, expectedRevision?, base?, candidate?}` → `PipelineRun` |
 | `POST /api/agent/pipeline/abandon` | `{session, runId, clientId, notes}` → `PipelineRun` |
 | `POST /api/agent/pipeline/gate` | `{session, runId, delivery, round, candidate, ...}` → `{allowed, runId, round, candidate, reasons}`; a `dev` gate with `operation` `land`, `publish` or `push` refuses a candidate behind the published integration branch (rebase first) |

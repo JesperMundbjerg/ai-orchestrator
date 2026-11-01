@@ -3,26 +3,70 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { PipelineCandidate } from "../../shared/pipeline.ts";
+import type { DatabaseSync } from "node:sqlite";
 import { InboxError } from "../inbox.ts";
+import { gitPending, isGitPending, gitNonblocking, gitOutput, inPass, punch, rethrowPending, runPass, settle, ticket } from "../gitcache.ts";
 import { within } from "./discovery.ts";
 
+/** Inside an office pass git is read from gitcache.ts (never a process on the event loop); outside one, synchronously. */
 export function git(cwd: string, args: string[]): string {
-  try { return execFileSync("git", ["-c", "core.fsmonitor=false", ...args], { cwd, encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }).trimEnd(); }
-  catch { throw new InboxError(409, "pipeline checkout or Git reference is unavailable", "pipeline_candidate_unavailable"); }
+  const full = ["-c", "core.fsmonitor=false", ...args];
+  try { return gitOutput({ cwd, args: full, timeout: 5000, maxBuffer: 16 * 1024 * 1024 }, () => execFileSync("git", full, { cwd, encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] })).trimEnd(); }
+  catch (err) { if (isGitPending(err)) throw err; throw new InboxError(409, "pipeline checkout or Git reference is unavailable", "pipeline_candidate_unavailable"); }
 }
 type Repo = { root: string; common: string; top: string };
 type Memo<T> = { value: T } | { error: unknown };
 /** One request's reads of the repository. Every office request is answered synchronously, so a scope never spans an
- * await or a second request: the next request reads the repository as it is then. Only the read paths open one. */
+ * await or a second request: the next request reads the repository as it is then. The read and decision paths open one. */
 let scope: { repositories: Map<string, Memo<Repo>>; captures: Map<string, Memo<PipelineCandidate>>; values: Map<string, Memo<unknown>> } | null = null;
-export function inRequest<T>(read: () => T): T {
-  if (scope) return read();
+function scoped<T>(read: () => T): T {
   scope = { repositories: new Map(), captures: new Map(), values: new Map() };
   try {
     const result = read();
     if (result instanceof Promise) throw new Error("a request scope is synchronous: it cannot span an await");
     return result;
   } finally { scope = null; }
+}
+/**
+ * How a request reads Git when the office runs non-blocking (gitcache.ts); without it, as before, synchronously.
+ * - `decide`: the request decides (the gate, an edit, a delivery). It uses only Git facts read since it was first
+ *   asked; a fact being read is never taken for "no" (rethrowPending), and a miss refuses with GitPending, which is
+ *   retryable. Meanwhile the decision is re-run in the background, inside a savepoint that is always rolled back and
+ *   with nothing noted, until it misses nothing, so the retry is answered.
+ * - `view`: the request only shows. It uses the last facts read; one never read yet counts as unavailable, the answer
+ *   says so (`note`), and once the facts are read the office redraws (`done`). With `wait`, a request that misses
+ *   facts waits briefly for them and only then answers its noted fallback.
+ */
+export interface RequestGit<T> {
+  decide?: string;
+  view?: { key: string; note?: (value: T) => T; wait?: boolean; done?: () => void };
+  db?: DatabaseSync;
+  /** Whether the request remembers its reads (a scope); false keeps a decision reading afresh after its own writes. */
+  memo?: boolean;
+}
+export function inRequest<T>(read: () => T, git: RequestGit<T> = {}): T {
+  const body = () => scope || git.memo === false ? read() : scoped(read);
+  if (!gitNonblocking() || inPass() || (!git.decide && !git.view)) return body();
+  const horizon = git.decide ? ticket(git.decide) : null;
+  const decide = Boolean(git.decide);
+  const pass = runPass(body, { horizon, decide });
+  if (!pass.waits.length) {
+    if (git.decide) punch(git.decide);
+    if ("error" in pass) throw pass.error;
+    return pass.value as T;
+  }
+  const again = () => speculatively(git.db, () => runPass(body, { horizon, decide, speculative: true }).waits);
+  const settled = settle(git.decide ?? git.view!.key, pass.waits, again, git.view?.done);
+  if (git.decide || "error" in pass) throw gitPending(settled);
+  const shown = git.view?.note ? git.view.note(pass.value as T) : pass.value as T;
+  if (git.view?.wait) throw gitPending(settled, shown);
+  return shown;
+}
+/** Runs a background rerun so that nothing it writes is kept. */
+function speculatively<T>(db: DatabaseSync | undefined, fn: () => T): T {
+  if (!db) return fn();
+  db.exec("SAVEPOINT git_speculation");
+  try { return fn(); } finally { db.exec("ROLLBACK TO git_speculation"); db.exec("RELEASE git_speculation"); }
 }
 function remembered<T>(memo: Map<string, Memo<T>> | undefined, key: string, read: () => T): T {
   const seen = memo?.get(key);
@@ -125,7 +169,8 @@ export function committedFingerprint(cwd: string, candidate: PipelineCandidate):
  * say: never "the same".
  */
 export function patchIdentity(cwd: string, base: string, head: string): string | null {
-  const run = (args: string[], input?: string) => execFileSync("git", ["-c", "core.fsmonitor=false", ...args], { cwd, encoding: "utf8", timeout: 5000, maxBuffer: 64 * 1024 * 1024, ...(input === undefined ? { stdio: ["ignore", "pipe", "pipe"] } : { input, stdio: ["pipe", "pipe", "pipe"] }) });
+  const run = (args: string[], input?: string) => { const full = ["-c", "core.fsmonitor=false", ...args]; return gitOutput({ cwd, args: full, ...(input === undefined ? {} : { input }), timeout: 5000, maxBuffer: 64 * 1024 * 1024 },
+    () => execFileSync("git", full, { cwd, encoding: "utf8", timeout: 5000, maxBuffer: 64 * 1024 * 1024, ...(input === undefined ? { stdio: ["ignore", "pipe", "pipe"] } : { input, stdio: ["pipe", "pipe", "pipe"] }) })); };
   try {
     const shape = ["--no-ext-diff", "--no-textconv", "--no-renames", "--no-relative", "--no-color", "--diff-algorithm=myers", "-O/dev/null"];
     const diff = run(["diff", ...shape, "--full-index", "--binary", "--src-prefix=a/", "--dst-prefix=b/", ref(base), ref(head), "--"]);
@@ -137,10 +182,10 @@ export function patchIdentity(cwd: string, base: string, head: string): string |
     const modes: string[] = [];
     for (let i = 0; i + 1 < raw.length; i += 2) { const [oldMode, newMode, , , status] = raw[i]!.replace(/^:/, "").split(" "); modes.push(`${oldMode} ${newMode} ${status} ${raw[i + 1]}`); }
     return `${id}:${createHash("sha256").update(modes.join("\n")).digest("hex").slice(0, 16)}`;
-  } catch { return null; }
+  } catch (err) { rethrowPending(err); return null; }
 }
 export function isAncestor(cwd: string, ancestor: string, descendant: string): boolean {
-  try { git(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]); return true; } catch { return false; }
+  try { git(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]); return true; } catch (err) { rethrowPending(err); return false; }
 }
 /**
  * Where a protected branch is published: `origin/<branch>` in a repository with remotes (a push updates
@@ -151,9 +196,9 @@ export function publishedBranch(cwd: string, branch: string, checkout: string): 
   let ref = `refs/remotes/origin/${branch}`;
   if (!git(cwd, ["remote"])) {
     ref = `refs/heads/${branch}`;
-    try { if (git(checkout, ["symbolic-ref", "-q", "HEAD"]) === ref) return null; } catch { /* detached, or the checkout is gone */ }
+    try { if (git(checkout, ["symbolic-ref", "-q", "HEAD"]) === ref) return null; } catch (err) { rethrowPending(err); /* detached, or the checkout is gone */ }
   }
-  try { return { ref, tip: git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]) }; } catch { return null; }
+  try { return { ref, tip: git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]) }; } catch (err) { rethrowPending(err); return null; }
 }
 /** No fetch or local-branch shortcut: publication is witnessed by remote-tracking refs. */
 export function requirePublishedBase(candidate: PipelineCandidate, integrationBranch: string): void {
@@ -165,7 +210,7 @@ export function requirePublishedBase(candidate: PipelineCandidate, integrationBr
 }
 export function sameCandidate(saved: PipelineCandidate): boolean {
   try { const current = capture(saved.checkout, saved.base, "HEAD", saved.fingerprintVersion ?? 1, saved.fingerprintPaths); return current.head === saved.head && current.fingerprint === saved.fingerprint; }
-  catch { return false; }
+  catch (err) { rethrowPending(err); return false; }
 }
 /** The lane whose worktree this checkout is, when `pipelineHooks.laneDelivery` lets that lane deliver outside
  * office runs. Such a checkout never holds a run: the hooks would treat its delivery as the lane's own. */

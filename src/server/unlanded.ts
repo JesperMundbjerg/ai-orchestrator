@@ -28,6 +28,7 @@ import { inboxCommand } from "../shared/pipeline-cli.ts";
 import { InboxError } from "./inbox.ts";
 import { withInboxPath } from "./inboxtext.ts";
 import { currentBranch, dirtyState, git, notLanded, type Checkout } from "./worktrees.ts";
+import { gitPending, gitNonblocking, runPass, settle } from "./gitcache.ts";
 
 const MINUTE = 60_000;
 
@@ -92,7 +93,10 @@ export class Unlanded {
   private db: DatabaseSync;
   private deps: UnlandedDeps;
   private timing: UnlandedTiming;
-  private samples = new Map<string, { at: number; value: Sample | null }>();
+  private samples = new Map<string, { at: number; value: Sample | null; readAt?: number }>();
+  /** Non-blocking office (gitcache.ts): the sample being read per checkout, and since when a fresh one is wanted. */
+  private reading = new Map<string, { since: number; done: Promise<void> }>();
+  private wanted = new Map<string, number>();
   /** When every agent in a checkout was first seen idle, this stretch. */
   private idle = new Map<string, number>();
   private current: UnlandedWork[] = [];
@@ -140,20 +144,57 @@ export class Unlanded {
     this.db.prepare(`UPDATE unlanded_watch SET ${column} = ? WHERE checkout = ?`).run(at, top);
   }
 
-  /** The checkout as git says it now; at most every few seconds unless `force`. Null when git cannot say. */
-  private sample(checkout: Checkout, now: number, force = false): Sample | null {
+  /**
+   * The checkout as git says it now; at most every few seconds unless `force`. Null when git cannot say.
+   * In the non-blocking office git is never run here: the sample is read in the background (read), a plain
+   * sample is the last one read, and a forced one only one read since it was first asked for. Until then a
+   * forced sample is null (nothing is said yet), or with `wait` a retryable GitPending for a request.
+   */
+  private sample(checkout: Checkout, now: number, force = false, wait = false): Sample | null {
     const cached = this.samples.get(checkout.top);
+    if (gitNonblocking()) {
+      if (!force) {
+        if ((!cached || now - cached.at >= this.timing.sampleMs) && !this.reading.has(checkout.top)) void this.read(checkout, now, Date.now());
+        return cached?.value ?? null;
+      }
+      const since = this.wanted.get(checkout.top) ?? Date.now();
+      this.wanted.set(checkout.top, since);
+      if (cached?.readAt !== undefined && cached.readAt >= since) { this.wanted.delete(checkout.top); return cached.value; }
+      const done = this.read(checkout, now, since);
+      if (wait) throw gitPending(done);
+      return null;
+    }
     if (!force && cached && now - cached.at < this.timing.sampleMs) return cached.value;
     let value: Sample | null = null;
-    try {
-      const head = git(checkout.top, ["rev-parse", "HEAD"]);
-      const dirty = dirtyState(checkout.top);
-      const landing = this.deps.landing(checkout);
-      const ahead = notLanded(checkout.repoRoot, checkout.top, landing.ref);
-      value = { key: `${head}:${dirty.fingerprint}`, head, branch: currentBranch(checkout), uncommitted: dirty.count, ahead, landing: landing.name };
-    } catch { /* A checkout git cannot read has nothing to say about. */ }
+    try { value = this.measure(checkout); } catch { /* A checkout git cannot read has nothing to say about. */ }
     this.samples.set(checkout.top, { at: now, value });
     return value;
+  }
+
+  private measure(checkout: Checkout): Sample {
+    const head = git(checkout.top, ["rev-parse", "HEAD"]);
+    const dirty = dirtyState(checkout.top);
+    const landing = this.deps.landing(checkout);
+    const ahead = notLanded(checkout.repoRoot, checkout.top, landing.ref);
+    return { key: `${head}:${dirty.fingerprint}`, head, branch: currentBranch(checkout), uncommitted: dirty.count, ahead, landing: landing.name };
+  }
+
+  /** Reads a sample in the background from git facts read since `since` (gitcache.ts); resolves once it is kept. */
+  private read(checkout: Checkout, now: number, since: number): Promise<void> {
+    const top = checkout.top;
+    const busy = this.reading.get(top);
+    if (busy && busy.since >= since) return busy.done;
+    const attempt = () => runPass(() => this.measure(checkout), { horizon: since, decide: true });
+    const keep = (pass: ReturnType<typeof attempt>): boolean => {
+      if (pass.waits.length) return false;
+      this.samples.set(top, { at: now, value: "error" in pass ? null : pass.value!, readAt: since });
+      return true;
+    };
+    const first = attempt();
+    const done = keep(first) ? Promise.resolve() : settle(`unlanded:${top}:${since}`, first.waits, () => attempt().waits, () => { keep(attempt()); });
+    const entry = { since, done: done.finally(() => { if (this.reading.get(top) === entry) this.reading.delete(top); }) };
+    this.reading.set(top, entry);
+    return entry.done;
   }
 
   /** The agents with a pane in a checkout. */
@@ -225,6 +266,7 @@ export class Unlanded {
     }
     for (const top of this.idle.keys()) if (!checkouts.has(top)) this.idle.delete(top);
     for (const top of this.samples.keys()) if (!checkouts.has(top)) this.samples.delete(top);
+    for (const top of this.wanted.keys()) if (!checkouts.has(top)) this.wanted.delete(top);
     const changed = JSON.stringify(next) !== JSON.stringify(this.current);
     this.current = next;
     return changed;
@@ -339,7 +381,7 @@ export class Unlanded {
     if (!why) throw new InboxError(400, 'say why it must wait: inbox unlanded hold "why"', "unlanded_reason");
     if (Array.from(why).length > HOLD_REASON_MAX_CHARS) throw new InboxError(400, `the reason is one line of at most ${HOLD_REASON_MAX_CHARS} characters`, "unlanded_reason");
     const { top, checkout, team } = this.target(me, path);
-    const sample = this.sample(checkout, now, true);
+    const sample = this.sample(checkout, now, true, true);
     if (!sample) throw new InboxError(409, `git cannot say what ${top} holds right now`, "unlanded_unreadable");
     if (!sample.uncommitted && !sample.ahead) throw new InboxError(409, `${top} holds nothing unlanded, so there is nothing to hold`, "unlanded_nothing");
     this.atomic(() => {

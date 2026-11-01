@@ -12,6 +12,7 @@ import { Adapters } from "../adapter.ts";
 import { activation, pathProblems, policyHash, selected, topological, validateGraph, validateLayout } from "./model.ts";
 import { BUILTINS, discover, within } from "./discovery.ts";
 import { capture, committedFingerprint, inRequest, inScope, isAncestor, laneCheckout, patchIdentity, publishedBranch, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
+import { isGitPending, outsidePass, rethrowPending, speculating } from "../gitcache.ts";
 import { founderDecision, presentedBy } from "./approval.ts";
 import { PipelineTelemetry } from "./telemetry.ts";
 
@@ -30,6 +31,8 @@ type Carried = { head: string; base: string; patch: string; evidenceId: string }
 type CarriedEvidence = PipelineEvidence & { carriedFrom?: Carried };
 type CarriedProvenance = PipelineProvenance & { carriedFrom?: string };
 type Rebase = NonNullable<PipelineRun["rebases"]>[number] & { approval?: { carried: boolean; from: string; onto: string; items: { itemId: string; revision: number }[]; text: string } };
+/** Added to what a view shows while some of its Git facts are still being read (gitcache.ts). */
+const READING = "Some Git facts are still being read (the machine is busy): until they are, a step may show as stale or the repository as unavailable. Ask again in a few seconds.";
 type Config = { team_id: string; repo_root: string | null; graph: string | null; layout: string; revision: number; layout_revision: number; protected: number; observed_hash: string | null };
 export class Pipelines {
   private db: DatabaseSync;
@@ -41,9 +44,20 @@ export class Pipelines {
   /** Read-only delivery telemetry; never consulted by any decision here. */
   readonly telemetry: PipelineTelemetry;
   constructor(db: DatabaseSync, world: () => WorldState, options: { evidenceDir?: string; now?: () => Date; changed?: () => void } = {}) {
-    this.db = db; this.world = () => inScope("world", world); this.evidenceDir = options.evidenceDir ?? join(dataDir(), "pipeline-evidence");
+    this.db = db; this.world = () => inScope("world", () => outsidePass(world)); this.evidenceDir = options.evidenceDir ?? join(dataDir(), "pipeline-evidence");
     this.now = options.now ?? (() => new Date()); this.changed = options.changed ?? (() => {});
     this.telemetry = new PipelineTelemetry(db, this.now);
+    // A decision re-run in the background only to find its Git facts (gitcache.ts) notes nothing.
+    const note = this.telemetry.note.bind(this.telemetry);
+    this.telemetry.note = (...args: Parameters<PipelineTelemetry["note"]>) => { if (!speculating()) note(...args); };
+  }
+  /** A request that decides: Git facts read since it was first asked, or a retryable refusal (inRequest). */
+  private decide<T>(question: unknown[], fn: () => T, memo = false): T {
+    return inRequest(fn, { decide: requestFingerprint(question), db: this.db, memo });
+  }
+  /** A request that shows: the last Git facts read, and a note while some are still being read (inRequest). */
+  private show<T>(key: string, fn: () => T, options: { note?: (value: T) => T; wait?: boolean; memo?: boolean } = {}): T {
+    return inRequest(fn, { view: { key, ...(options.note ? { note: options.note } : {}), wait: options.wait ?? false, done: () => this.changed() }, db: this.db, memo: options.memo ?? true });
   }
   private context(teamId: string): { team: Team; state: WorldState; lead: WorldAgent | null } {
     const state = this.world(); const team = state.teams.find(t => t.id === teamId);
@@ -59,13 +73,15 @@ export class Pipelines {
   }
   private binding(teamId: string, config: Config): { root: string | null; problems: string[] } {
     const { team, state, lead } = this.context(teamId);
-    if (config.repo_root) { try { return { root: repository(config.repo_root).root, problems: [] }; } catch { return { root: config.repo_root, problems: ["Bound repository is unavailable."] }; } }
+    if (config.repo_root) { try { return { root: repository(config.repo_root).root, problems: [] }; } catch (err) { rethrowPending(err); return { root: config.repo_root, problems: ["Bound repository is unavailable."] }; } }
     const paths = team.path ? [team.path] : [...team.worktrees, ...(lead?.cwd ? [lead.cwd] : []), ...state.agents.filter(a => a.teamId === teamId && a.cwd).map(a => a.cwd!)];
     const roots = new Set<string>();
-    for (const path of paths) try { roots.add(repository(path).root); } catch { /* disappearing/offline checkouts do not invent a binding */ }
+    for (const path of paths) try { roots.add(repository(path).root); } catch (err) { rethrowPending(err); /* disappearing/offline checkouts do not invent a binding */ }
     return roots.size === 1 ? { root: [...roots][0]!, problems: [] } : { root: null, problems: roots.size ? ["Team spans repositories; choose an explicit repository binding."] : ["Team has no available repository checkout."] };
   }
-  teamView(teamId: string): PipelineTeamView { return inRequest(() => inScope(`team:${teamId}`, () => this.readTeamView(teamId))); }
+  teamView(teamId: string): PipelineTeamView {
+    return this.show(`team:${teamId}`, () => inScope(`team:${teamId}`, () => this.readTeamView(teamId)), { note: (view) => ({ ...view, problems: [...view.problems, READING] }) });
+  }
   private readTeamView(teamId: string): PipelineTeamView {
     this.context(teamId); const config = this.config(teamId); const binding = this.binding(teamId, config);
     const problems = [...binding.problems]; let graph: PipelineGraph | null = null;
@@ -92,38 +108,40 @@ export class Pipelines {
     const layout = { ...(graph?.positions ?? {}), ...JSON.parse(config.layout) };
     return { teamId, repoRoot: binding.root, source, graph, revision: config.revision, layoutRevision: config.layout_revision, policyHash: hash, layout, problems: [...new Set(problems)], protected: protectedTeam, runs: this.list(teamId) };
   }
-  palette(teamId: string): PipelinePalette {
+  palette(teamId: string): PipelinePalette { return this.show(`palette:${teamId}`, () => this.readPalette(teamId), { memo: false }); }
+  private readPalette(teamId: string): PipelinePalette {
     const config = this.config(teamId); const b = this.binding(teamId, config);
     const result = b.root && !b.problems.length ? discover(b.root) : { entries: BUILTINS, problems: [] };
     return { teamId, repoRoot: b.root, entries: result.entries, problems: [...b.problems, ...result.problems] };
   }
   saveOverride(teamId: string, input: PipelineOverrideInput): PipelineTeamView {
     const graph = input.graph === null ? null : validateGraph(input.graph);
-    return this.atomic(() => {
+    return this.decide(["override", teamId, input], () => this.atomic(() => {
       this.context(teamId); const config = this.config(teamId);
       if (config.revision !== input.expectedRevision) throw new InboxError(409, "pipeline changed; reload before saving", "pipeline_revision_conflict");
       const repo = input.repoRoot ? repository(input.repoRoot).root : config.repo_root;
       this.db.prepare("UPDATE team_pipelines SET graph = ?, repo_root = ?, revision = revision + 1, protected = ?, observed_hash = ? WHERE team_id = ?")
         .run(graph ? JSON.stringify(graph) : null, repo, graph ? 1 : 0, graph ? policyHash(graph) : null, teamId);
       return this.teamView(teamId);
-    });
+    }));
   }
   saveLayout(teamId: string, input: PipelineLayoutInput): PipelineTeamView {
     const positions = validateLayout(input.positions);
-    return this.atomic(() => {
+    return this.decide(["layout", teamId, input], () => this.atomic(() => {
       const view = this.teamView(teamId);
       if (view.layoutRevision !== input.expectedRevision) throw new InboxError(409, "pipeline layout changed; reload before saving", "pipeline_layout_conflict");
       if (!view.graph || Object.keys(positions).some(k => !view.graph!.nodes.some(n => n.id === k))) throw new InboxError(422, "layout references a missing node");
       this.db.prepare("UPDATE team_pipelines SET layout = ?, layout_revision = layout_revision + 1 WHERE team_id = ?").run(JSON.stringify(positions), teamId);
       return this.teamView(teamId);
-    });
+    }));
   }
   private raw(id: string): PipelineRun {
     const row = this.db.prepare("SELECT snapshot FROM pipeline_runs WHERE id = ?").get(id);
     if (!row) throw new InboxError(404, `no pipeline run ${id}`);
     return JSON.parse(String(row.snapshot)) as PipelineRun;
   }
-  get(id: string): PipelineRun {
+  get(id: string): PipelineRun { return this.show(`run:${id}`, () => this.readRun(id), { memo: false }); }
+  private readRun(id: string): PipelineRun {
     const run = this.raw(id);
     // A run whose team is gone is history: it keeps its last first mate and is projected from its
     // recorded evidence alone, as a delivered run is, since its checkout may be gone too.
@@ -158,7 +176,7 @@ export class Pipelines {
       // A candidate with nothing past its base (a run pinned before its work) has delivered nothing.
       if (!target || isAncestor(repoRoot, head, base) || !isAncestor(repoRoot, head, target.tip)) return null;
       return committedFingerprint(repoRoot, run.candidate) === fingerprint ? target : null;
-    } catch { return null; }
+    } catch (err) { rethrowPending(err); return null; }
   }
   /** Closes a run whose candidate landed, unless it changed since it was read. */
   private deliver(seen: PipelineRun, landed: { ref: string; tip: string }): PipelineRun {
@@ -252,7 +270,7 @@ export class Pipelines {
     });
   }
   start(actor: WorldAgent, input: PipelineStartInput): PipelineRun {
-    return this.replay(actor, "start", input, () => {
+    return this.decide(["start", actor.id, input], () => this.replay(actor, "start", input, () => {
       if (!actor.teamId) throw new InboxError(409, "join a team before starting a pipeline");
       this.lead(actor, actor.teamId); const view = this.teamView(actor.teamId);
       if (!view.graph || !view.repoRoot) throw new InboxError(409, "no usable pipeline; configure the team graph and repository first");
@@ -263,7 +281,7 @@ export class Pipelines {
       if (lane) throw new InboxError(409, `${lane}'s worktree is a lane checkout, which delivers outside office runs; start the run in the team's own checkout`, "pipeline_lane_checkout");
       const { team, state } = this.context(actor.teamId);
       const owned = [team.path, ...team.worktrees, ...state.agents.filter(a => a.teamId === actor.teamId).map(a => a.cwd)].filter((p): p is string => Boolean(p));
-      if (!owned.some(p => { try { return repository(p).top === candidate.checkout; } catch { return false; } })) throw new InboxError(403, "use a checkout owned by this team");
+      if (!owned.some(p => { try { return repository(p).top === candidate.checkout; } catch (err) { rethrowPending(err); return false; } })) throw new InboxError(403, "use a checkout owned by this team");
       if (input.workId) this.checkWork(input.workId, input.workRound, actor.teamId, candidate.fingerprint);
       const definitions = Object.fromEntries(this.palette(actor.teamId).entries.map(d => [d.id, d.hash]));
       for (const node of view.graph.nodes) if (node.source && !Object.hasOwn(definitions, node.source)) {
@@ -273,7 +291,7 @@ export class Pipelines {
       const run: PipelineRun = { id: randomUUID(), teamId: actor.teamId, leadId: actor.id, graph: view.graph, policyHash: view.policyHash!, definitionHashes: definitions, revision: 0, round: 1, candidate,
         selections: {}, rationale: "", steps: view.graph.nodes.map(n => ({ nodeId: n.id, state: "inactive", assignedTo: null, completedBy: null, evidence: [], notes: "" })), state: "open", workId: input.workId ?? null, workRound: input.workRound ?? null, createdAt: at, updatedAt: at };
       return this.persist(run);
-    });
+    }));
   }
   private editable(actor: WorldAgent, runId: string, expectedRevision: number | undefined, lead = true): PipelineRun {
     // A landed candidate closes its run before any edit could reopen or re-pin it.
@@ -285,7 +303,8 @@ export class Pipelines {
     if (expectedRevision !== undefined && run.revision !== expectedRevision) throw new InboxError(409, `run changed; refresh status before editing: ${inboxCommand("pipeline status")}`, "pipeline_revision_conflict");
     return run;
   }
-  branch(actor: WorldAgent, input: PipelineBranchInput): PipelineRun {
+  branch(actor: WorldAgent, input: PipelineBranchInput): PipelineRun { return this.decide(["branch", actor.id, input], () => this.edit(actor, input)); }
+  private edit(actor: WorldAgent, input: PipelineBranchInput): PipelineRun {
     // A former first mate may not retrieve an earlier re-base receipt.
     this.lead(actor, this.unarchived(this.raw(input.runId)).teamId);
     let changed: { before: PipelineRun; after: PipelineRun } | null = null;
@@ -376,7 +395,8 @@ export class Pipelines {
       if (after.candidate.head !== before.candidate.head) this.telemetry.note("publication", after.id, after.teamId, { how: "superseded", candidate: before.candidate.head });
     } catch { /* telemetry never fails an edit */ }
   }
-  abandon(actor: WorldAgent, input: PipelineAbandonInput): PipelineRun {
+  abandon(actor: WorldAgent, input: PipelineAbandonInput): PipelineRun { return this.decide(["abandon", actor.id, input], () => this.close(actor, input)); }
+  private close(actor: WorldAgent, input: PipelineAbandonInput): PipelineRun {
     // Even receipt retrieval is restricted to the team's current first mate.
     this.lead(actor, this.unarchived(this.raw(input.runId)).teamId);
     let closed = false;
@@ -393,18 +413,20 @@ export class Pipelines {
     return result;
   }
   assign(actor: WorldAgent, input: PipelineAssignInput): PipelineRun {
-    return this.replay(actor, "assign", input, () => {
+    return this.decide(["assign", actor.id, input], () => this.replay(actor, "assign", input, () => {
       const run = this.editable(actor, input.runId, input.expectedRevision); const step = run.steps.find(s => s.nodeId === input.nodeId);
       if (!step) throw new InboxError(404, "no such pipeline step");
       if (!this.context(run.teamId).state.agents.some(a => a.id === input.agentId && a.teamId === run.teamId)) throw new InboxError(403, "assign a member of this team");
       step.assignedTo = input.agentId; return this.persist(run);
-    });
+    }));
   }
-  report(actor: WorldAgent, input: PipelineReportInput): PipelineRun { return this.record(actor, input, false); }
-  done(actor: WorldAgent, input: PipelineDoneInput): PipelineRun { return this.record(actor, input, true); }
+  report(actor: WorldAgent, input: PipelineReportInput): PipelineRun { return this.decide(["report", actor.id, input], () => this.record(actor, input, false)); }
+  done(actor: WorldAgent, input: PipelineDoneInput): PipelineRun { return this.decide(["done", actor.id, input], () => this.record(actor, input, true)); }
   private record(actor: WorldAgent, input: PipelineDoneInput, done: boolean): PipelineRun {
     const created: string[] = [];
-    try { return this.replay(actor, done ? "done" : "report", input, () => {
+    // A background rerun (gitcache.ts) keeps nothing: not its rows, which roll back, nor the files it copied.
+    const discard = () => { for (const file of created) try { unlinkSync(file); } catch { /* already gone */ } };
+    try { const recorded = this.replay(actor, done ? "done" : "report", input, () => {
       const run = this.editable(actor, input.runId, input.expectedRevision, done);
       const live = this.get(run.id); const step = run.steps.find(s => s.nodeId === input.nodeId); const status = live.steps.find(s => s.nodeId === input.nodeId);
       const node = run.graph.nodes.find(n => n.id === input.nodeId);
@@ -432,7 +454,7 @@ export class Pipelines {
         step.evidence = endorsed; step.completedBy = actor.id;
       } else step.evidence.push(...additions);
       step.notes = input.notes; return this.persist(run);
-    }); } catch (err) { for (const file of created) try { unlinkSync(file); } catch { /* transaction rolled back; cleanup only our copied files */ } throw err; }
+    }); if (speculating()) discard(); return recorded; } catch (err) { for (const file of created) try { unlinkSync(file); } catch { /* transaction rolled back; cleanup only our copied files */ } throw err; }
   }
   private siblings(run: PipelineRun, node: PipelineNode): PipelineEvidence[] {
     return run.steps.find(s => s.nodeId === node.id)?.evidence ?? [];
@@ -573,7 +595,7 @@ export class Pipelines {
     if (binding && fingerprint && binding.fingerprint !== fingerprint) throw new InboxError(409, "review candidate differs from the handed-over candidate", "pipeline_stale_candidate");
   }
   /** Every result is noted as telemetry, refusals included; the note never changes, delays or fails the result. */
-  gate(actor: WorldAgent, input: PipelineGateInput): PipelineGateResult { return inRequest(() => this.readGate(actor, input)); }
+  gate(actor: WorldAgent, input: PipelineGateInput): PipelineGateResult { return this.decide(["gate", actor.id, input], () => this.readGate(actor, input), true); }
   private readGate(actor: WorldAgent, input: PipelineGateInput): PipelineGateResult {
     const codes: PipelineGateReason[] = [];
     try {
@@ -581,7 +603,8 @@ export class Pipelines {
       this.noteGate(actor, input, result.allowed ? "allowed" : "refused", codes, result.reasons);
       return result;
     } catch (err) {
-      this.noteGate(actor, input, "refused", [...codes, { code: thrownCode(err) }], [err instanceof Error ? err.message : String(err)]);
+      // Git facts still being read are no decision: the retry is (gitcache.ts).
+      if (!isGitPending(err)) this.noteGate(actor, input, "refused", [...codes, { code: thrownCode(err) }], [err instanceof Error ? err.message : String(err)]);
       throw err;
     }
   }
@@ -604,7 +627,7 @@ export class Pipelines {
     if (run.candidate.head !== input.candidate || !sameCandidate(run.candidate)) refuse("stale_candidate", "stale candidate");
     if (input.delivery === "dev") try {
       if (capture(run.candidate.checkout, run.candidate.head, run.candidate.head).changedPaths.length) refuse("uncommitted_candidate", `commit intended bytes and refresh the candidate pin before dev delivery (${repin(run.id)}); never sweep unrelated dirt`);
-    } catch { refuse("candidate_unavailable", "committed dev candidate is unavailable"); }
+    } catch (err) { rethrowPending(err); refuse("candidate_unavailable", "committed dev candidate is unavailable"); }
     // Only a Git delivery would turn a behind candidate into another commit; a readiness preflight names no operation.
     if (input.delivery === "dev" && run.state === "open" && input.operation && ["land", "publish", "push"].includes(input.operation)) { const behind = this.behind(run); if (behind) refuse("candidate_behind", behind); }
     const view = this.teamView(run.teamId);
@@ -632,7 +655,7 @@ export class Pipelines {
     if (input.operation) {
       if (input.delivery !== "dev" || !input.repo || !input.ref) refuse("operation_incomplete", "protected Git operation needs dev boundary, repository and ref");
       if (["pr", "merge"].includes(input.operation)) refuse("operation_unsupported", "v1 has no authorized release/PR/merge boundary");
-      if (input.repo) try { if (repository(input.repo).common !== repository(run.candidate.repoRoot).common) refuse("operation_repo_mismatch", "operation repository does not match run"); } catch { refuse("operation_repo_unavailable", "operation repository unavailable"); }
+      if (input.repo) try { if (repository(input.repo).common !== repository(run.candidate.repoRoot).common) refuse("operation_repo_mismatch", "operation repository does not match run"); } catch (err) { rethrowPending(err); refuse("operation_repo_unavailable", "operation repository unavailable"); }
       const branch = view.repoRoot ? this.adapters.read(view.repoRoot, basename(view.repoRoot)).adapter?.integrationBranch ?? "dev" : "dev";
       const target = input.ref?.replace(/^refs\/heads\//, "").replace(/^origin\//, "");
       if (target !== branch || target === "main" || target === "master") refuse("ref_not_protected", "ref is not the run repository's protected dev delivery branch");
@@ -654,7 +677,7 @@ export class Pipelines {
       const remote = target.ref.startsWith("refs/remotes/"); const name = remote ? `origin/${branch}` : branch;
       const move = remote ? `pipeline branch ${run.id} --base ${name} --candidate HEAD --notes "rebased onto ${name}"` : `pipeline branch ${run.id} --candidate HEAD --notes "rebased onto ${name}"`;
       return `candidate ${short(head)} is behind ${name} (now at ${short(target.tip)}): landing it would make a new commit (a cherry-pick or merge) that this run never sees as delivered, since a dev run is delivered only when its exact candidate is on ${name}. Rebase first: in ${checkout} run \`${remote ? `git fetch origin ${branch} && git rebase origin/${branch}` : `git rebase ${branch}`}\`, move this run to the rebased candidate with ${inboxCommand(move)}, then re-run its checks (${inboxCommand(`pipeline status ${run.id}`)} lists what is stale) and gate the new candidate before landing it. The founder's approval carries over only if the change is identical; otherwise present it again.`;
-    } catch { return null; }
+    } catch (err) { rethrowPending(err); return null; }
   }
   /**
    * An externally reported capture lease or attempt, recorded beside the reporting agent. A named
@@ -669,6 +692,9 @@ export class Pipelines {
   }
   /** Called INSIDE Messages' transaction. Ungoverned teams retain their existing behavior. */
   requireDelivery(actor: WorldAgent, delivery: "handoff" | "review", input?: PipelineGateInput): PipelineRun | null {
+    return this.decide(["deliver", delivery, actor.id, input ?? null], () => this.deliverable(actor, delivery, input));
+  }
+  private deliverable(actor: WorldAgent, delivery: "handoff" | "review", input?: PipelineGateInput): PipelineRun | null {
     if (!actor.teamId) return null;
     const view = this.teamView(actor.teamId);
     if (!view.protected) return null;
@@ -690,7 +716,8 @@ export class Pipelines {
     if (!internal) { if (handed.changes) (run.provenance ??= []).push(entry); run.state = "delivered"; run.workId = workId; run.workRound = workRound; this.persist(run); }
     else if (handed.changes) this.remember(run.id, entry);
   }
-  presentation(actor: WorldAgent, runId: string): string {
+  presentation(actor: WorldAgent, runId: string): string { return this.decide(["present", actor.id, runId], () => this.presentable(actor, runId)); }
+  private presentable(actor: WorldAgent, runId: string): string {
     const run = this.unarchived(this.get(runId)); this.lead(actor, run.teamId);
     if (run.state !== "open" || !sameCandidate(run.candidate)) throw new InboxError(409, "cannot present a stale or closed candidate");
     return `Pipeline snapshot: run ${run.id}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}, intended bytes ${run.candidate.fingerprint}.`;
@@ -702,13 +729,17 @@ export class Pipelines {
     if (!lstatSync(file).isFile() || lstatSync(file).isSymbolicLink() || !within(realpathSync(this.evidenceDir), realpathSync(file)) || createHash("sha256").update(readFileSync(file)).digest("hex") !== row.sha256) throw new InboxError(409, "pipeline attachment changed or escaped storage");
     return file;
   }
-  bindItem(actor: WorldAgent, runId: string, itemId: string, revision: number): void {
+  bindItem(actor: WorldAgent, runId: string, itemId: string, revision: number): void { this.decide(["bind", actor.id, runId, itemId, revision], () => this.bind(actor, runId, itemId, revision)); }
+  private bind(actor: WorldAgent, runId: string, itemId: string, revision: number): void {
     const run = this.unarchived(this.get(runId)); this.lead(actor, run.teamId);
     if (!sameCandidate(run.candidate)) throw new InboxError(409, "cannot present a stale candidate");
     const bound = this.db.prepare("INSERT INTO pipeline_item_bindings (item_id, revision, run_id, fingerprint) VALUES (?, ?, ?, ?) ON CONFLICT(item_id,revision) DO NOTHING").run(itemId, revision, run.id, run.candidate.fingerprint);
     if (bound.changes) this.remember(run.id, { kind: "approval", id: itemId, revision, round: run.round, scopeRevision: run.scopeRevision ?? 0, fingerprint: run.candidate.fingerprint });
   }
-  status(actor: WorldAgent, runId?: string): PipelineStatus { return inRequest(() => this.readStatus(actor, runId)); }
+  status(actor: WorldAgent, runId?: string): PipelineStatus {
+    return this.show(`status:${actor.id}:${runId ?? ""}`, () => this.readStatus(actor, runId),
+      { note: (status) => ({ ...status, team: { ...status.team, problems: [...status.team.problems, READING] }, text: `${READING}\n${status.text}` }), wait: true });
+  }
   private readStatus(actor: WorldAgent, runId?: string): PipelineStatus {
     if (!actor.teamId) throw new InboxError(409, "join a team to view its pipeline");
     const team = this.teamView(actor.teamId); const run = runId ? this.get(runId) : team.runs.find(r => r.state === "open" && !r.archived) ?? null;
@@ -716,7 +747,9 @@ export class Pipelines {
     if (run && run.teamId !== actor.teamId && !run.archived) throw new InboxError(403, "this run belongs to another team");
     return { team, run, text: this.brief(actor.teamId, actor.id, run) };
   }
-  brief(teamId: string, actorId?: string, given?: PipelineRun | null): string { return inRequest(() => this.readBrief(teamId, actorId, given)); }
+  brief(teamId: string, actorId?: string, given?: PipelineRun | null): string {
+    return this.show(`brief:${teamId}:${actorId ?? ""}:${given?.id ?? String(given)}`, () => this.readBrief(teamId, actorId, given), { note: (text) => `${text}\n${READING}` });
+  }
   private readBrief(teamId: string, actorId?: string, given?: PipelineRun | null): string {
     const view = this.teamView(teamId);
     if (!view.protected) return "Pipeline: no default or team override yet.";

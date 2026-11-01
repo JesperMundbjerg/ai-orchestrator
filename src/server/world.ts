@@ -1184,7 +1184,7 @@ export class World {
       await cleanup.closePanes();
       if (top) {
         // Whatever still runs there (a dev server outlives its pane) would keep writing into the folder being removed.
-        const left = processesIn(checkout.top);
+        const left = await processesIn(checkout.top);
         await stopProcesses(left);
         stopped = [...new Set(left.map((p) => p.command))];
         await this.source.removeWorktree(checkout.repoRoot, checkout.top);

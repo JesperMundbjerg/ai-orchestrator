@@ -13,6 +13,7 @@ import {
 import * as validation from "./request-validation.ts";
 import { claudeHookEvents, claudeModel } from "./activity.ts";
 import { Inbox, InboxError } from "./inbox.ts";
+import { answerWithGit } from "./gitcache.ts";
 import { sendEvidence } from "./evidence.ts";
 import { projectQueue } from "./queue.ts";
 import { UPLOAD_BODY_LIMIT } from "./uploads.ts";
@@ -370,7 +371,8 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
         const match = m === method ? url.pathname.match(pattern) : null;
         if (!match) continue;
         const body = method === "GET" ? {} : await readJson(req, url.pathname === "/api/uploads" ? UPLOAD_BODY_LIMIT : undefined);
-        const out = await handler(req, body, match.slice(1));
+        // A request missing Git facts waits briefly for them, then answers "retry" (gitcache.ts): never git on the event loop.
+        const out = await answerWithGit(() => handler(req, body, match.slice(1)));
         return sendJson(res, 200, out);
       }
 

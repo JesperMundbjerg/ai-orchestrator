@@ -1,12 +1,13 @@
 // What git says about a checkout: the worktree it is, the repository it belongs to and the
 // branch it is on, and whether finishing a project there would lose anything.
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { projectSlug } from "../shared/slug.ts";
+import { gitOutput, rethrowPending } from "./gitcache.ts";
 
 export interface Checkout {
   /** The top of the worktree. */
@@ -21,8 +22,9 @@ export interface Checkout {
   linked: boolean;
 }
 
+/** Inside a pass (the unlanded watch's samples) git is read from gitcache.ts, never a process on the event loop; outside one, synchronously. */
 export function git(cwd: string, args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 }).trim();
+  return gitOutput({ cwd, args, timeout: 5000 }, () => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 })).trim();
 }
 
 export function checkoutOf(cwd: string): Checkout | null {
@@ -31,7 +33,8 @@ export function checkoutOf(cwd: string): Checkout | null {
     if (!top || !common || !gitDir) return null;
     const repoRoot = basename(common) === ".git" ? dirname(common) : common;
     return { top, repoName: basename(repoRoot), repoRoot, branch: branch && branch !== "HEAD" ? branch : null, gitDir, linked: top !== repoRoot };
-  } catch {
+  } catch (err) {
+    rethrowPending(err);
     return null;
   }
 }
@@ -50,7 +53,8 @@ export function linkedWorktrees(repoRoot: string): string[] {
   try {
     const tops = git(repoRoot, ["worktree", "list", "--porcelain"]).split("\n").filter((l) => l.startsWith("worktree ")).map((l) => l.slice(9));
     return tops.filter((top) => top !== repoRoot);
-  } catch {
+  } catch (err) {
+    rethrowPending(err);
     return [];
   }
 }
@@ -66,7 +70,8 @@ export function uncommitted(path: string): number {
  * count is that of `uncommitted`.
  */
 export function dirtyState(top: string): { count: number; fingerprint: string } {
-  const out = execFileSync("git", ["status", "--porcelain=v1", "-z"], { cwd: top, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, maxBuffer: 20_000_000 });
+  const args = ["status", "--porcelain=v1", "-z"];
+  const out = gitOutput({ cwd: top, args, timeout: 5000, maxBuffer: 20_000_000 }, () => execFileSync("git", args, { cwd: top, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, maxBuffer: 20_000_000 }));
   const tokens = out.split("\0").filter(Boolean);
   const paths: string[] = [];
   const entries: string[] = [];
@@ -91,15 +96,13 @@ export function dirtyState(top: string): { count: number; fingerprint: string } 
 /**
  * Processes running inside a worktree (their working directory is in it), such as a dev server
  * an agent left behind: closing its panes does not stop them, and they keep writing into it.
+ * lsof reads every process on the machine, so it runs asynchronously, off the event loop.
  */
-export function processesIn(path: string): Array<{ pid: number; command: string }> {
-  let out: string;
-  try {
-    out = execFileSync("lsof", ["-a", "-d", "cwd", "-F", "pcn"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000, maxBuffer: 20_000_000 });
-  } catch (err) {
-    // lsof exits 1 when some processes could not be read, but still prints the rest.
-    out = String((err as { stdout?: string }).stdout ?? "");
-  }
+export async function processesIn(path: string): Promise<Array<{ pid: number; command: string }>> {
+  // lsof exits 1 when some processes could not be read, but still prints the rest.
+  const out = await new Promise<string>((resolve) => {
+    execFile("lsof", ["-a", "-d", "cwd", "-F", "pcn"], { encoding: "utf8", timeout: 10_000, maxBuffer: 20_000_000 }, (_err, stdout) => resolve(String(stdout ?? "")));
+  });
   const found: Array<{ pid: number; command: string }> = [];
   let pid = 0;
   let command = "";
@@ -136,7 +139,8 @@ export function landingRef(repoRoot: string, integrationBranch: string | null): 
     try {
       git(repoRoot, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
       return true;
-    } catch {
+    } catch (err) {
+      rethrowPending(err);
       return false;
     }
   };
@@ -147,7 +151,7 @@ export function landingRef(repoRoot: string, integrationBranch: string | null): 
   try {
     const branch = git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
     if (branch && branch !== "HEAD") name = branch;
-  } catch { /* An unborn or unreadable HEAD keeps the generic name. */ }
+  } catch (err) { rethrowPending(err); /* An unborn or unreadable HEAD keeps the generic name. */ }
   return { ref: "HEAD", name };
 }
 
@@ -156,7 +160,8 @@ export function notLanded(repoRoot: string, top: string, ref: string): number {
   try {
     const target = git(repoRoot, ["rev-parse", "--verify", `${ref}^{commit}`]);
     return Number(git(top, ["rev-list", "--count", `${target}..HEAD`]));
-  } catch {
+  } catch (err) {
+    rethrowPending(err);
     return 0;
   }
 }
