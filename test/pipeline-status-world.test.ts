@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, mock } from "node:test";
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -47,4 +47,13 @@ test("the next read sees the office as it is then, not the last request's", (t) 
   assert.equal(computed(), 1);
   p.status(lead);
   assert.equal(computed(), 2, "nothing is kept between requests");
+});
+
+test("a status read loads each run once: the briefing reuses the team view the read already built", (t) => {
+  const { p, lead } = office(t, 6);
+  const get = mock.method(p, "get");
+  t.after(() => mock.restoreAll());
+  const status = p.status(lead);
+  assert.equal(get.mock.callCount(), status.team.runs.length, "one load per listed run, not two");
+  assert.match(status.text, /^Pipeline:/);
 });

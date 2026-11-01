@@ -56,7 +56,7 @@ export class Pipelines {
     for (const path of paths) try { roots.add(repository(path).root); } catch { /* disappearing/offline checkouts do not invent a binding */ }
     return roots.size === 1 ? { root: [...roots][0]!, problems: [] } : { root: null, problems: roots.size ? ["Team spans repositories; choose an explicit repository binding."] : ["Team has no available repository checkout."] };
   }
-  teamView(teamId: string): PipelineTeamView { return inRequest(() => this.readTeamView(teamId)); }
+  teamView(teamId: string): PipelineTeamView { return inRequest(() => inScope(`team:${teamId}`, () => this.readTeamView(teamId))); }
   private readTeamView(teamId: string): PipelineTeamView {
     this.context(teamId); const config = this.config(teamId); const binding = this.binding(teamId, config);
     const problems = [...binding.problems]; let graph: PipelineGraph | null = null;
