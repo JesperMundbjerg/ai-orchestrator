@@ -72,7 +72,7 @@ async function office(t: TestContext) {
   const check = (run: PipelineRun) => p.done(lead, { runId: run.id, clientId: `check-${++n}`, expectedRevision: p.get(run.id).revision, nodeId: "checks", notes: "Verified", evidence: [{ kind: "check", summary: "passed", command: "npm test", exitCode: 0 }] });
   /** The founder is shown the run's current candidate and accepts it; the lead records the acceptance. */
   const approve = async (run: PipelineRun) => {
-    const presented = await request("POST", "/api/agent/items", { session: { harness: "manual", sessionId: lead.id, cwd: root }, pipeline: { runId: run.id }, item: { type: "milestone", key: `present-${++n}`, title: "Wave ready", context: "Pinned candidate" } });
+    const presented = await request("POST", "/api/agent/items", { session: { harness: "manual", sessionId: lead.id, cwd: root }, pipeline: { runId: run.id }, item: { type: "milestone", fixed: "Fixed.", key: `present-${++n}`, title: "Wave ready", context: "Pinned candidate" } });
     assert.equal(presented.status, 200, JSON.stringify(presented.body));
     const item = { itemId: presented.body.itemId as string, revision: presented.body.revision as number };
     assert.equal((await request("POST", `/api/items/${item.itemId}/replies`, { revision: item.revision, action: "accept", text: "" })).status, 200);

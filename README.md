@@ -115,8 +115,8 @@ inbox try "Check the import summary" --preview http://localhost:3000/import \
   --check "Check the three sample categories"
 inbox try "Import walkthrough" --page "Upload=http://localhost:3000/import" \
   --look "Three sample rows" --page "Review=http://localhost:3000/import/review"
-inbox milestone "Planner layouts ready" --screenshot out/week.png
-inbox milestone "Animation pass" --video out/intro.mp4
+inbox milestone "Planner layouts ready" --fixed "Week, day and category layouts now exist." --screenshot out/week.png
+inbox milestone "Animation pass" --fixed "The intro now animates in." --video out/intro.mp4
 inbox activity "Tuning the walkthrough" --next "Import review"
 inbox replies --ack
 ```

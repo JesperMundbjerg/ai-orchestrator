@@ -114,7 +114,7 @@ export const submitSchema: Schema<SubmitInput> = object({
   project: optional(object({ name: maybeText, root: maybeText, objective: maybeText })),
   task: optional(object({ title: maybeText, objective: maybeText })),
   item: object({
-    key: maybeText, type: oneOf(ITEM_TYPES), title: nonempty, request: maybeText, context: maybeText,
+    key: maybeText, type: oneOf(ITEM_TYPES), title: nonempty, request: maybeText, context: maybeText, fixed: maybeText,
     recommendation: maybeText, check: maybeText, blocking: optional(boolean),
     options: optional(list(stringOr(object({ id: maybeText, label: maybeText, consequence: maybeText })))),
     preview: optional(stringOr(object({ url: optional(httpUrl), viewport: optional(nullable(oneOf(["desktop", "phone"]))), setup: maybeText }), httpUrl)),
@@ -174,7 +174,7 @@ const pageSchema = object({ url: text, label: text, look: text });
 const previewSchema = object({ url: text, viewport: nullable(oneOf(["desktop", "phone"])), setup: text });
 export const itemResponse: Schema<Item> = object({
   id: text, taskId: text, key: text, type: oneOf(ITEM_TYPES), revision: positiveInteger,
-  title: text, request: text, context: text, recommendation: text, options: list(optionSchema), check: text,
+  title: text, request: text, context: text, fixed: optional(text), recommendation: text, options: list(optionSchema), check: text,
   preview: nullable(previewSchema), pages: list(pageSchema), blocking: boolean, state: oneOf(ITEM_STATES),
   snoozedUntil: nullText, backedAt: nullText, createdAt: text, updatedAt: text, presentedHead: optional(nullText),
 });
