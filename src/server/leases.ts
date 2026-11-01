@@ -1,8 +1,11 @@
 // The office-run capture lease: one per repository (its Git common dir), shared by all of its
 // checkouts, lanes and teams. It enforces the founder's rule of one headless checker at a time
 // (probe/take captures, npm run check, full browser tests), so it is mutual exclusion, not a port.
-// Whoever asks while it is held joins a FIFO queue and gets an answer at once; when the lease
-// passes on, the office tells the next in line through the ordinary delivery path. A hold expires
+// Its capacity is how many agents may hold it at once (1 unless the lead raises it). Whoever asks
+// while every slot is taken joins a FIFO queue and gets an answer at once; when a slot frees, the
+// office tells the next in line through the ordinary delivery path. Each hold has its own expiry,
+// renewal and release; lowering the capacity never revokes a holder, it only stops granting until
+// the holders are below it. A hold expires
 // after the project's limit (holder and lead are told), a holder whose pane is gone for good loses
 // it, and only the repository's standing-team lead can revoke. State is in SQLite, so a restart
 // keeps holder and queue. Telemetry and notices go out after the commit and can never change,
@@ -12,7 +15,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
-import { DEFAULT_HOLD_MINUTES, MAX_HOLD_MINUTES, type LeaseResource, type LeaseResult, type LeaseView } from "../shared/leases.ts";
+import { DEFAULT_HOLD_MINUTES, MAX_CAPACITY, MAX_HOLD_MINUTES, type LeaseResource, type LeaseResult, type LeaseView } from "../shared/leases.ts";
 import type { Team, WorldAgent } from "../shared/types.ts";
 import { InboxError } from "./inbox.ts";
 import { repository } from "./pipelines/candidate.ts";
@@ -72,10 +75,11 @@ export class Leases {
     const run = input.run ? this.runFor(actor, input.run) : null;
     return this.op(state, place, (fx) => {
       const lease = this.lease(place);
-      if (str(lease.holder_id) === actor.id || this.entry(place, actor.id)) return;
+      if (this.holderRow(place, actor.id) || this.entry(place, actor.id)) return;
       const who: Who = { leaseId: `cl_${randomUUID()}`, agentId: actor.id, name: actor.name, runId: run?.id ?? null, runTeamId: run?.teamId ?? null, reason: input.reason?.trim() || null };
       const at = this.now().toISOString();
-      if (!lease.holder_id) return this.grant(fx, place, who, at, false);
+      // The queue is first come first served: a free slot with someone waiting is filled by the sweep above, so it is free only when nobody waits.
+      if (this.holders(place).length < this.capacityOf(lease)) return this.grant(fx, place, who, at, false);
       this.db.prepare(`INSERT INTO capture_lease_queue (repo, resource, lease_id, agent_id, agent_name, run_id, run_team_id, reason, joined_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(place.repo, place.resource, who.leaseId, who.agentId, who.name, who.runId, who.runTeamId, who.reason, at);
       this.note(fx, place, "join", who, { position: this.queue(place).length });
@@ -87,10 +91,11 @@ export class Leases {
     const state = this.office.state();
     const place = this.place(actor, input);
     return this.op(state, place, (fx) => {
-      const lease = this.lease(place);
-      if (str(lease.holder_id) !== actor.id) this.notHolder(place, lease, actor, "release");
-      this.note(fx, place, "release", this.holder(lease), { heldMs: this.since(lease.granted_at) });
-      this.passOn(fx, place);
+      const mine = this.holderRow(place, actor.id);
+      if (!mine) this.notHolder(place, actor, "release");
+      this.note(fx, place, "release", this.who(mine!), { heldMs: this.since(mine!.granted_at) });
+      this.removeHolder(place, mine!);
+      this.fill(fx, place);
     }, actor);
   }
 
@@ -99,7 +104,7 @@ export class Leases {
     const state = this.office.state();
     const place = this.place(actor, input);
     return this.op(state, place, (fx) => {
-      if (str(this.lease(place).holder_id) === actor.id) throw new InboxError(409, "you hold the capture lease: release it with inbox lease release capture", "lease_held");
+      if (this.holderRow(place, actor.id)) throw new InboxError(409, "you hold the capture lease: release it with inbox lease release capture", "lease_held");
       const entry = this.entry(place, actor.id);
       if (entry) this.dropEntry(fx, place, entry, "left");
     }, actor);
@@ -110,29 +115,36 @@ export class Leases {
     const state = this.office.state();
     const place = this.place(actor, input);
     return this.op(state, place, (fx) => {
-      const lease = this.lease(place);
-      if (str(lease.holder_id) !== actor.id) this.notHolder(place, lease, actor, "renew");
-      const expiresAt = new Date(this.now().getTime() + this.holdMs(lease)).toISOString();
-      this.db.prepare("UPDATE capture_leases SET expires_at = ? WHERE repo = ? AND resource = ?").run(expiresAt, place.repo, place.resource);
-      this.note(fx, place, "renew", this.holder(lease), { expiresAt });
+      const mine = this.holderRow(place, actor.id);
+      if (!mine) this.notHolder(place, actor, "renew");
+      const expiresAt = new Date(this.now().getTime() + this.holdMs(this.lease(place))).toISOString();
+      this.db.prepare("UPDATE capture_lease_holders SET expires_at = ? WHERE seq = ?").run(expiresAt, Number(mine!.seq));
+      this.note(fx, place, "renew", this.who(mine!), { expiresAt });
     }, actor);
   }
 
-  /** The repository's lead takes the lease from its holder; holder and queue are told, the next is granted. */
-  revoke(actor: WorldAgent, input: LeaseInput & { reason: string }): LeaseResult {
+  /**
+   * The repository's lead takes the lease from a holder; holder and queue are told, the next is granted.
+   * With several holders the lead names one (agent id or name); with one it is that one.
+   */
+  revoke(actor: WorldAgent, input: LeaseInput & { reason: string; holder?: string }): LeaseResult {
     const state = this.office.state();
     const place = this.place(actor, input);
     this.requireLead(actor, place, state, "revoke");
     const reason = input.reason.trim();
     return this.op(state, place, (fx) => {
-      const lease = this.lease(place);
-      if (!lease.holder_id) throw new InboxError(409, `nobody holds ${this.project(place)}'s capture lease`, "lease_free");
-      const holder = this.holder(lease);
-      this.note(fx, place, "revoke", holder, { heldMs: this.since(lease.granted_at), reason, by: actor.name, byAgentId: actor.id });
+      const all = this.holders(place);
+      if (!all.length) throw new InboxError(409, `nobody holds ${this.project(place)}'s capture lease`, "lease_free");
+      const named = input.holder?.trim().toLowerCase();
+      const target = named ? all.find((h) => str(h.agent_id) === input.holder!.trim() || str(h.agent_name).toLowerCase() === named) : all.length === 1 ? all[0] : undefined;
+      if (!target) throw new InboxError(named ? 404 : 400, named ? `${input.holder} does not hold ${this.project(place)}'s capture lease; it is held by ${all.map((h) => str(h.agent_name)).join(", ")}` : `${all.length} agents hold ${this.project(place)}'s capture lease (${all.map((h) => str(h.agent_name)).join(", ")}): name the one to revoke with --holder NAME`, named ? "lease_holder_unknown" : "lease_holder_required");
+      const holder = this.who(target);
+      this.note(fx, place, "revoke", holder, { heldMs: this.since(target.granted_at), reason, by: actor.name, byAgentId: actor.id });
       if (holder.agentId !== actor.id) fx.notices.push([holder.agentId, `${actor.name} revoked your capture lease on ${this.project(place)}: ${reason}. Stop capturing now; ask again with inbox lease acquire capture when you need it.`]);
-      const next = this.passOn(fx, place);
+      this.removeHolder(place, target);
+      const next = this.fill(fx, place);
       for (const w of this.queue(place)) {
-        fx.notices.push([str(w.agent_id), `${actor.name} revoked ${holder.name}'s capture lease on ${this.project(place)} (${reason}). ${next ? `${next.name} has it now` : "It is free"}; you are #${this.position(place, str(w.agent_id))} in line, and the office tells you when it is yours.`]);
+        fx.notices.push([str(w.agent_id), `${actor.name} revoked ${holder.name}'s capture lease on ${this.project(place)} (${reason}). ${this.after(place, next, "has it now", "It is free")}; you are #${this.position(place, str(w.agent_id))} in line, and the office tells you when it is yours.`]);
       }
     }, actor);
   }
@@ -147,6 +159,23 @@ export class Leases {
       this.lease(place);
       this.db.prepare("UPDATE capture_leases SET hold_ms = ? WHERE repo = ? AND resource = ?").run(input.minutes * 60_000, place.repo, place.resource);
       fx.changed = true;
+    }, actor);
+  }
+
+  /**
+   * The repository's lead sets how many agents may hold the lease at once. Raising it grants waiters at
+   * once; lowering it never revokes a holder, it only stops granting until the holders are below it.
+   */
+  setCapacity(actor: WorldAgent, input: LeaseInput & { capacity: number }): LeaseResult {
+    const state = this.office.state();
+    const place = this.place(actor, input);
+    this.requireLead(actor, place, state, "set the capacity of");
+    if (!Number.isInteger(input.capacity) || input.capacity < 1 || input.capacity > MAX_CAPACITY) throw new InboxError(400, `the capacity is 1–${MAX_CAPACITY} holders`);
+    return this.op(state, place, (fx) => {
+      this.lease(place);
+      this.db.prepare("UPDATE capture_leases SET capacity = ? WHERE repo = ? AND resource = ?").run(input.capacity, place.repo, place.resource);
+      fx.changed = true;
+      this.fill(fx, place);
     }, actor);
   }
 
@@ -170,7 +199,7 @@ export class Leases {
 
   /** Expiry and gone holders/waiters for every lease; the service runs it on its 30 s tick. */
   sweep(): void {
-    const places = (this.db.prepare("SELECT repo, root, resource FROM capture_leases WHERE holder_id IS NOT NULL OR EXISTS (SELECT 1 FROM capture_lease_queue q WHERE q.repo = capture_leases.repo AND q.resource = capture_leases.resource)").all() as Row[])
+    const places = (this.db.prepare("SELECT repo, root, resource FROM capture_leases WHERE EXISTS (SELECT 1 FROM capture_lease_holders h WHERE h.repo = capture_leases.repo AND h.resource = capture_leases.resource) OR EXISTS (SELECT 1 FROM capture_lease_queue q WHERE q.repo = capture_leases.repo AND q.resource = capture_leases.resource)").all() as Row[])
       .map((r) => ({ repo: str(r.repo), root: str(r.root), resource: str(r.resource) as LeaseResource }));
     if (!places.length) return;
     const state = this.office.state();
@@ -221,25 +250,26 @@ export class Leases {
 
   private sweepOne(fx: Effects, place: Place, state: Office): void {
     const at = this.now().getTime();
-    const lease = this.lease(place);
+    this.lease(place);
     for (const w of this.queue(place)) if (this.gone(str(w.agent_id), state, at)) this.dropEntry(fx, place, w, "gone");
-    if (lease.holder_id) {
-      const holder = this.holder(lease);
+    for (const row of this.holders(place)) {
+      const holder = this.who(row);
       if (this.gone(holder.agentId, state, at)) {
-        this.note(fx, place, "release", holder, { heldMs: this.since(lease.granted_at), reason: "gone" });
-        this.passOn(fx, place);
-      } else if (Date.parse(str(lease.expires_at)) <= at) {
-        const minutes = Math.round(this.since(lease.granted_at) / 60_000);
-        this.note(fx, place, "expire", holder, { heldMs: this.since(lease.granted_at) });
-        const next = this.passOn(fx, place);
-        const after = next ? `it passed to ${next.name}` : "it is free";
+        this.note(fx, place, "release", holder, { heldMs: this.since(row.granted_at), reason: "gone" });
+        this.removeHolder(place, row);
+        this.fill(fx, place);
+      } else if (Date.parse(str(row.expires_at)) <= at) {
+        const minutes = Math.round(this.since(row.granted_at) / 60_000);
+        this.note(fx, place, "expire", holder, { heldMs: this.since(row.granted_at) });
+        this.removeHolder(place, row);
+        const after = this.after(place, this.fill(fx, place), "", "it is free");
         fx.notices.push([holder.agentId, `Your capture lease on ${this.project(place)} expired after ${minutes} min without a release or renewal, and ${after}. Stop capturing now; ask again with inbox lease acquire capture.`]);
         const lead = this.leadFor(place, state);
         if (lead && lead.agentId !== holder.agentId) fx.notices.push([lead.agentId, `Capture lease: ${holder.name}'s hold on ${this.project(place)} expired after ${minutes} min without a release; ${after}.`]);
       }
-    } else if (this.queue(place).length) {
-      this.passOn(fx, place);
     }
+    // Free slots with someone waiting (a raised capacity, a restart): the queue moves on.
+    if (this.queue(place).length) this.fill(fx, place);
   }
 
   /** The office's offline rule (no pane while herdr answers), held for GONE_MS so a restart or switch does not lose a lease. */
@@ -252,37 +282,55 @@ export class Leases {
     return at - since >= GONE_MS;
   }
 
-  /** Frees the lease and grants the first in line, telling them; returns who got it. */
-  private passOn(fx: Effects, place: Place): Who | null {
-    const next = this.db.prepare("SELECT * FROM capture_lease_queue WHERE repo = ? AND resource = ? ORDER BY seq LIMIT 1").get(place.repo, place.resource) as Row | undefined;
-    if (!next) {
-      this.db.prepare(`UPDATE capture_leases SET lease_id = NULL, holder_id = NULL, holder_name = NULL, run_id = NULL, run_team_id = NULL, reason = NULL,
-        queued_at = NULL, granted_at = NULL, expires_at = NULL WHERE repo = ? AND resource = ?`).run(place.repo, place.resource);
-      fx.changed = true;
-      return null;
+  /** Grants the first in line while a slot is free, telling each; returns who got one, in order. */
+  private fill(fx: Effects, place: Place): Who[] {
+    const granted: Who[] = [];
+    for (;;) {
+      if (this.holders(place).length >= this.capacityOf(this.lease(place))) break;
+      const next = this.db.prepare("SELECT * FROM capture_lease_queue WHERE repo = ? AND resource = ? ORDER BY seq LIMIT 1").get(place.repo, place.resource) as Row | undefined;
+      if (!next) break;
+      this.db.prepare("DELETE FROM capture_lease_queue WHERE seq = ?").run(Number(next.seq));
+      const who = this.who(next);
+      this.grant(fx, place, who, str(next.joined_at), true);
+      granted.push(who);
     }
-    this.db.prepare("DELETE FROM capture_lease_queue WHERE seq = ?").run(Number(next.seq));
-    const who = this.waiter(next);
-    this.grant(fx, place, who, str(next.joined_at), true);
-    return who;
+    fx.changed = true;
+    return granted;
+  }
+
+  /** What happened to the freed slot, for a notice: "it passed to Bo" / "<free>". */
+  private after(place: Place, granted: Who[], passed: string, free: string): string {
+    if (!granted.length) {
+      if (this.capacityOf(this.lease(place)) === 1 || !this.holders(place).length) return free;
+      return free[0] === free[0]!.toUpperCase() ? "A slot is free" : "a slot is free";
+    }
+    const names = granted.map((g) => g.name).join(" and ");
+    return passed ? `${names} ${passed}` : `it passed to ${names}`;
+  }
+
+  private removeHolder(place: Place, row: Row): void {
+    this.db.prepare("DELETE FROM capture_lease_holders WHERE seq = ?").run(Number(row.seq));
   }
 
   private grant(fx: Effects, place: Place, who: Who, queuedAt: string, tell: boolean): void {
     const now = this.now();
-    const expiresAt = new Date(now.getTime() + this.holdMs(this.lease(place))).toISOString();
-    this.db.prepare(`UPDATE capture_leases SET lease_id = ?, holder_id = ?, holder_name = ?, run_id = ?, run_team_id = ?, reason = ?,
-      queued_at = ?, granted_at = ?, expires_at = ? WHERE repo = ? AND resource = ?`)
-      .run(who.leaseId, who.agentId, who.name, who.runId, who.runTeamId, who.reason, queuedAt, now.toISOString(), expiresAt, place.repo, place.resource);
+    const lease = this.lease(place);
+    const expiresAt = new Date(now.getTime() + this.holdMs(lease)).toISOString();
+    this.db.prepare(`INSERT INTO capture_lease_holders (repo, resource, lease_id, agent_id, agent_name, run_id, run_team_id, reason, queued_at, granted_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(place.repo, place.resource, who.leaseId, who.agentId, who.name, who.runId, who.runTeamId, who.reason, queuedAt, now.toISOString(), expiresAt);
     this.note(fx, place, "grant", who, { waitMs: Math.max(0, now.getTime() - Date.parse(queuedAt)), expiresAt });
     if (tell) {
-      const minutes = Math.round(this.holdMs(this.lease(place)) / 60_000);
-      fx.notices.push([who.agentId, `Capture lease granted: go ahead; ${RELEASE}. It is ${this.project(place)}'s one headless checker (captures, npm run check, browser tests), yours for ${minutes} min until ${clock(expiresAt)}${who.runId ? ` for run ${who.runId}` : ""}; extend with inbox lease renew capture.`]);
+      const minutes = Math.round(this.holdMs(lease) / 60_000);
+      const capacity = this.capacityOf(lease);
+      const slots = capacity > 1 ? ` (${this.holders(place).length} of ${capacity} slots in use)` : "";
+      fx.notices.push([who.agentId, `Capture lease granted: go ahead; ${RELEASE}. It is ${this.project(place)}'s ${capacity > 1 ? `headless checker, open to ${capacity} holders at once` : "one headless checker"} (captures, npm run check, browser tests), yours for ${minutes} min until ${clock(expiresAt)}${who.runId ? ` for run ${who.runId}` : ""}${slots}; extend with inbox lease renew capture.`]);
     }
   }
 
   private dropEntry(fx: Effects, place: Place, entry: Row, reason: "left" | "gone"): void {
     this.db.prepare("DELETE FROM capture_lease_queue WHERE seq = ?").run(Number(entry.seq));
-    this.note(fx, place, "leave", this.waiter(entry), { reason, waitedMs: this.since(entry.joined_at) });
+    this.note(fx, place, "leave", this.who(entry), { reason, waitedMs: this.since(entry.joined_at) });
   }
 
   private note(fx: Effects, place: Place, action: string, who: Who, extra: Record<string, unknown>): void {
@@ -291,9 +339,10 @@ export class Leases {
     } });
   }
 
-  private notHolder(place: Place, lease: Row, actor: WorldAgent, what: string): never {
+  private notHolder(place: Place, actor: WorldAgent, what: string): never {
     const position = this.position(place, actor.id);
-    const holder = lease.holder_id ? `${str(lease.holder_name)} holds it` : "nobody holds it";
+    const names = this.holders(place).map((h) => str(h.agent_name));
+    const holder = names.length ? `${names.join(" and ")} ${names.length > 1 ? "hold" : "holds"} it` : "nobody holds it";
     throw new InboxError(403, `only the holder can ${what} ${this.project(place)}'s capture lease, and ${holder}${position ? `; you are #${position} in line (leave with inbox lease leave capture)` : ""}`, "lease_not_holder");
   }
 
@@ -360,11 +409,21 @@ export class Leases {
     return i < 0 ? null : i + 1;
   }
 
-  private holder(lease: Row): Who {
-    return { leaseId: str(lease.lease_id), agentId: str(lease.holder_id), name: str(lease.holder_name), runId: opt(lease.run_id), runTeamId: opt(lease.run_team_id), reason: opt(lease.reason) };
+  /** Everyone holding the lease, in grant order. */
+  private holders(place: Place): Row[] {
+    return this.db.prepare("SELECT * FROM capture_lease_holders WHERE repo = ? AND resource = ? ORDER BY seq").all(place.repo, place.resource) as Row[];
   }
 
-  private waiter(row: Row): Who {
+  private holderRow(place: Place, agentId: string): Row | undefined {
+    return this.db.prepare("SELECT * FROM capture_lease_holders WHERE repo = ? AND resource = ? AND agent_id = ?").get(place.repo, place.resource, agentId) as Row | undefined;
+  }
+
+  private capacityOf(lease: Row): number {
+    return Math.max(1, Number(lease.capacity ?? 1));
+  }
+
+  /** A holder row and a queue row name the same things. */
+  private who(row: Row): Who {
     return { leaseId: str(row.lease_id), agentId: str(row.agent_id), name: str(row.agent_name), runId: opt(row.run_id), runTeamId: opt(row.run_team_id), reason: opt(row.reason) };
   }
 
@@ -383,10 +442,11 @@ export class Leases {
   private view(place: Place, state: Office): LeaseView {
     const lease = this.lease(place);
     const name = (id: string, stored: string) => state.agents.find((a) => a.id === id)?.name ?? stored;
+    const holders = this.holders(place).map((h) => ({ agentId: str(h.agent_id), name: name(str(h.agent_id), str(h.agent_name)), leaseId: str(h.lease_id),
+      since: str(h.granted_at), expiresAt: str(h.expires_at), runId: opt(h.run_id), reason: opt(h.reason) }));
     return {
       resource: place.resource, repo: place.repo, root: place.root, project: this.project(place),
-      holder: lease.holder_id ? { agentId: str(lease.holder_id), name: name(str(lease.holder_id), str(lease.holder_name)), leaseId: str(lease.lease_id),
-        since: str(lease.granted_at), expiresAt: str(lease.expires_at), runId: opt(lease.run_id), reason: opt(lease.reason) } : null,
+      holder: holders[0] ?? null, holders, capacity: this.capacityOf(lease),
       queue: this.queue(place).map((w, i) => ({ agentId: str(w.agent_id), name: name(str(w.agent_id), str(w.agent_name)), leaseId: str(w.lease_id),
         position: i + 1, since: str(w.joined_at), runId: opt(w.run_id), reason: opt(w.reason) })),
       holdMinutes: Math.round(this.holdMs(lease) / 60_000),
@@ -396,18 +456,22 @@ export class Leases {
 
   private result(place: Place, state: Office, actor: WorldAgent): LeaseResult {
     const view = this.view(place, state);
-    const mine = view.holder?.agentId === actor.id;
+    const mine = view.holders.find((h) => h.agentId === actor.id);
     const waiting = view.queue.find((w) => w.agentId === actor.id);
-    const you: LeaseResult["you"] = mine ? { state: "held", position: null, leaseId: view.holder!.leaseId }
+    const you: LeaseResult["you"] = mine ? { state: "held", position: null, leaseId: mine.leaseId }
       : waiting ? { state: "queued", position: waiting.position, leaseId: waiting.leaseId } : { state: "none", position: null, leaseId: null };
     const line = (w: { name: string; runId: string | null }) => `${w.name}${w.runId ? ` (run ${w.runId})` : ""}`;
     const queue = view.queue.length ? ` In line: ${view.queue.map((w) => `${w.position}. ${line(w)}`).join(", ")}.` : " Nobody is waiting.";
-    const held = view.holder ? `${line(view.holder)} holds ${view.project}'s capture lease since ${clock(view.holder.since)}, until ${clock(view.holder.expiresAt)}.` : `${view.project}'s capture lease is free.`;
+    const taken = `${view.holders.length} of ${view.capacity} slots in use`;
+    const held = view.holders.length === 0 ? `${view.project}'s capture lease is free.`
+      : view.capacity === 1 && view.holders.length === 1 ? `${line(view.holder!)} holds ${view.project}'s capture lease since ${clock(view.holder!.since)}, until ${clock(view.holder!.expiresAt)}.`
+      : `${view.holders.map((h) => `${line(h)} (since ${clock(h.since)}, until ${clock(h.expiresAt)})`).join(", ")} ${view.holders.length > 1 ? "hold" : "holds"} ${view.project}'s capture lease (${taken}).`;
+    const slots = view.capacity > 1 && mine ? ` (${taken})` : "";
     const text = mine
-      ? `You hold ${view.project}'s capture lease (since ${clock(view.holder!.since)}, until ${clock(view.holder!.expiresAt)}${view.holder!.runId ? `, run ${view.holder!.runId}` : ""}): go ahead; ${RELEASE} as soon as you are done, or extend with inbox lease renew capture.${queue}`
+      ? `You hold ${view.project}'s capture lease (since ${clock(mine.since)}, until ${clock(mine.expiresAt)}${mine.runId ? `, run ${mine.runId}` : ""})${slots}: go ahead; ${RELEASE} as soon as you are done, or extend with inbox lease renew capture.${queue}`
       : waiting
         ? `${held} You are #${waiting.position} in line: do not capture or run checks yet; the office tells you when it is yours.${queue}`
         : `${held}${queue}`;
-    return { ...view, you, text: `${text} Hold limit ${view.holdMinutes} min${view.lead ? `; lead ${view.lead.name}` : ""}.` };
+    return { ...view, you, text: `${text} Hold limit ${view.holdMinutes} min${view.capacity > 1 ? `; capacity ${view.capacity}` : ""}${view.lead ? `; lead ${view.lead.name}` : ""}.` };
   }
 }

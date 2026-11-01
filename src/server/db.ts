@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { migratePipelines, retainPipelineHistory } from "./pipelines/migration.ts";
 import { migrateWaivers } from "./pipelines/waiver.ts";
-import { migrateCaptureLeases } from "./leases-schema.ts";
+import { migrateCaptureLeases, migrateLeaseCapacity } from "./leases-schema.ts";
 import { migratePageComments } from "./pagecomments-schema.ts";
 
 export function dataDir(): string {
@@ -401,7 +401,7 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
   for (const [table, column] of [["auto_approve", "mode"], ["auto_approve", "qa_agent_id"], ["auto_approve", "qa_learned_through"], ["auto_approve", "qa_started"], ["replies", "answered_by"]] as const) {
     if (has(table, column)) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
   }
-}, migratePageComments];
+}, migratePageComments, migrateLeaseCapacity];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) {

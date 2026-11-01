@@ -4,9 +4,11 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { openDatabase } from "../src/server/db.ts";
 import { GONE_MS, Leases, type LeaseOffice } from "../src/server/leases.ts";
 import { leaseSchemas } from "../src/server/leases-protocol.ts";
+import { migrateCaptureLeases, migrateLeaseCapacity } from "../src/server/leases-schema.ts";
 import { PipelineTelemetry } from "../src/server/pipelines/telemetry.ts";
 import { leaseLine } from "../src/shared/leases.ts";
 import type { Team, WorldAgent } from "../src/shared/types.ts";
@@ -290,4 +292,181 @@ test("lease requests are strictly decoded", () => {
   assert.throws(() => leaseSchemas.acquire.parse({ session, resource: "port" }), /resource/);
   assert.throws(() => leaseSchemas.release.parse({ session, resource: "capture", run: "r1" }), /run/);
   assert.throws(() => leaseSchemas.revoke.parse({ session, resource: "capture" }), /reason/);
+});
+
+// Capacity: how many agents may hold one lease at once.
+
+test("capacity defaults to 1: one holder, the rest queue, and nothing in the answer changes shape", () => {
+  const s = setup();
+  try {
+    const first = s.leases.acquire(s.who("ada"), s.capture);
+    assert.equal(first.capacity, 1);
+    assert.deepEqual(first.holders.map((h) => h.name), ["Ada"]);
+    assert.equal(first.holder?.name, "Ada");
+    assert.equal(s.leases.acquire(s.who("bo"), s.capture).you.state, "queued");
+    assert.doesNotMatch(first.text, /slots|capacity/);
+    assert.equal(leaseLine(s.leases.status(s.who("ada"), s.capture)), "Capture: Ada · 1 waiting");
+  } finally { s.done(); }
+});
+
+test("capacity 2 grants two holders and queues the third; each release or expiry grants the next waiter", () => {
+  const s = setup();
+  try {
+    assert.equal(s.leases.setCapacity(s.who("jens"), { ...s.capture, capacity: 2 }).capacity, 2);
+    assert.equal(s.leases.acquire(s.who("ada"), s.capture).you.state, "held");
+    const bo = s.leases.acquire(s.who("bo"), s.capture);
+    assert.equal(bo.you.state, "held", "a free slot is granted at once");
+    assert.deepEqual(bo.holders.map((h) => h.name), ["Ada", "Bo"]);
+    assert.notEqual(bo.holders[0]!.leaseId, bo.holders[1]!.leaseId);
+    assert.match(bo.text, /You hold fysiklab's capture lease.*\(2 of 2 slots in use\)/);
+    const cy = s.leases.acquire(s.who("cy"), s.capture);
+    assert.deepEqual(cy.you, { state: "queued", position: 1, leaseId: cy.you.leaseId });
+    assert.match(cy.text, /Ada .* Bo .* hold fysiklab's capture lease \(2 of 2 slots in use\)\. You are #1 in line/);
+    assert.equal(leaseLine(cy), "Capture: Ada, Bo · 2 of 2 slots · 1 waiting");
+    assert.equal(s.o.notices.length, 0);
+
+    // Releasing one frees one slot: the waiter gets it, told with the slot count; the other holder is untouched.
+    s.clock.advance(10 * 60_000);
+    const afterRelease = s.leases.release(s.who("ada"), s.capture);
+    assert.deepEqual(afterRelease.holders.map((h) => h.name), ["Bo", "Cy"]);
+    assert.equal(afterRelease.queue.length, 0);
+    assert.equal(afterRelease.holders[0]!.leaseId, bo.you.leaseId);
+    assert.equal(afterRelease.holders[1]!.leaseId, cy.you.leaseId);
+    assert.equal(s.o.notices.length, 1);
+    assert.equal(s.o.notices[0]!.to, "cy");
+    assert.ok(s.o.notices[0]!.text.startsWith(GRANTED));
+    assert.match(s.o.notices[0]!.text, /\(2 of 2 slots in use\)/);
+    assert.throws(() => s.leases.release(s.who("ada"), s.capture), /only the holder.*Bo and Cy hold it/);
+
+    // Expiry is per holder: Bo (granted first) runs out while Cy (granted 10 min later) does not; Jens, queued, takes Bo's slot.
+    s.leases.acquire(s.who("jens"), s.capture);
+    s.clock.advance(21 * 60_000);
+    s.leases.renew(s.who("cy"), s.capture);
+    const expired = s.leases.status(s.who("jens"), s.capture);
+    assert.deepEqual(expired.holders.map((h) => h.name), ["Cy", "Jens"], "Bo's hold ended at 30 min and Jens took the slot");
+    assert.ok(s.o.notices.some((n) => n.to === "bo" && /expired after 31 min.*it passed to Jens/.test(n.text)));
+    assert.ok(s.o.notices.some((n) => n.to === "jens" && n.text.startsWith(GRANTED)));
+    assert.deepEqual(s.o.notes.filter((n) => n.detail.action === "expire").map((n) => n.detail.holder), ["Bo"]);
+  } finally { s.done(); }
+});
+
+test("renew and release act on the caller's own hold only", () => {
+  const s = setup();
+  try {
+    s.leases.setCapacity(s.who("jens"), { ...s.capture, capacity: 2 });
+    s.leases.acquire(s.who("ada"), s.capture);
+    s.clock.advance(10 * 60_000);
+    const bo = s.leases.acquire(s.who("bo"), s.capture);
+    const adaExpires = bo.holders[0]!.expiresAt;
+    s.clock.advance(5 * 60_000);
+    const renewed = s.leases.renew(s.who("bo"), s.capture);
+    assert.equal(renewed.holders[0]!.expiresAt, adaExpires, "Ada's expiry is not Bo's to move");
+    assert.ok(renewed.holders[1]!.expiresAt > bo.holders[1]!.expiresAt);
+    assert.throws(() => s.leases.renew(s.who("cy"), s.capture), /only the holder/);
+    s.leases.release(s.who("bo"), s.capture);
+    assert.deepEqual(s.leases.status(s.who("ada"), s.capture).holders.map((h) => h.name), ["Ada"]);
+    assert.throws(() => s.leases.leave(s.who("ada"), s.capture), /you hold the capture lease/);
+  } finally { s.done(); }
+});
+
+test("raising the capacity grants waiters at once, in queue order, and tells them", () => {
+  const s = setup();
+  try {
+    s.leases.acquire(s.who("ada"), s.capture);
+    s.leases.acquire(s.who("bo"), s.capture);
+    s.leases.acquire(s.who("cy"), s.capture);
+    s.leases.acquire(s.who("dee"), { ...s.capture, path: s.paths.b });
+    assert.equal(s.o.notices.length, 0);
+    const raised = s.leases.setCapacity(s.who("jens"), { ...s.capture, capacity: 2 });
+    assert.deepEqual(raised.holders.map((h) => h.name), ["Ada", "Bo"]);
+    assert.deepEqual(raised.queue.map((w) => w.name), ["Cy"]);
+    assert.deepEqual(s.o.notices.map((n) => n.to), ["bo"]);
+    s.leases.setCapacity(s.who("jens"), { ...s.capture, capacity: 5 });
+    assert.deepEqual(s.o.notices.map((n) => n.to), ["bo", "cy"]);
+    assert.deepEqual(s.leases.status(s.who("ada"), s.capture).holders.map((h) => h.name), ["Ada", "Bo", "Cy"]);
+    assert.equal(s.leases.status(s.who("dee"), { ...s.capture, path: s.paths.b }).capacity, 1, "another repository keeps its own capacity");
+  } finally { s.done(); }
+});
+
+test("lowering the capacity never revokes a holder; it only stops granting until the holders are below it", () => {
+  const s = setup();
+  try {
+    s.leases.setCapacity(s.who("jens"), { ...s.capture, capacity: 3 });
+    for (const id of ["ada", "bo", "cy"]) s.leases.acquire(s.who(id), s.capture);
+    const lowered = s.leases.setCapacity(s.who("jens"), { ...s.capture, capacity: 1 });
+    assert.equal(lowered.capacity, 1);
+    assert.deepEqual(lowered.holders.map((h) => h.name), ["Ada", "Bo", "Cy"], "all three keep their holds");
+    assert.equal(s.leases.acquire(s.who("jens"), s.capture).you.state, "queued");
+    s.leases.release(s.who("ada"), s.capture);
+    s.leases.release(s.who("bo"), s.capture);
+    assert.equal(s.leases.status(s.who("jens"), s.capture).you.state, "queued", "one holder is still at the new capacity");
+    assert.equal(s.o.notices.length, 0);
+    s.leases.release(s.who("cy"), s.capture);
+    assert.deepEqual(s.leases.status(s.who("jens"), s.capture).holders.map((h) => h.name), ["Jens"]);
+    assert.equal(s.o.notices.length, 1);
+    assert.equal(s.o.notices[0]!.to, "jens");
+  } finally { s.done(); }
+});
+
+test("only the lead sets the capacity, within 1–10; revoking among several holders names one", () => {
+  const s = setup();
+  try {
+    assert.throws(() => s.leases.setCapacity(s.who("ada"), { ...s.capture, capacity: 2 }), /only Jens/);
+    for (const capacity of [0, 11, 1.5]) assert.throws(() => s.leases.setCapacity(s.who("jens"), { ...s.capture, capacity }), /capacity is 1–10/);
+    s.leases.setCapacity(s.who("jens"), { ...s.capture, capacity: 2 });
+    s.leases.acquire(s.who("ada"), s.capture);
+    s.leases.acquire(s.who("bo"), s.capture);
+    s.leases.acquire(s.who("cy"), s.capture);
+    assert.throws(() => s.leases.revoke(s.who("jens"), { ...s.capture, reason: "cpu" }), /name the one to revoke with --holder/);
+    assert.throws(() => s.leases.revoke(s.who("jens"), { ...s.capture, reason: "cpu", holder: "Cy" }), /Cy does not hold/);
+    const after = s.leases.revoke(s.who("jens"), { ...s.capture, reason: "cpu", holder: "bo" });
+    assert.deepEqual(after.holders.map((h) => h.name), ["Ada", "Cy"], "the named holder lost it and the waiter took the slot");
+    assert.ok(s.o.notices.some((n) => n.to === "bo" && /revoked your capture lease/.test(n.text)));
+  } finally { s.done(); }
+});
+
+test("an office restart keeps every holder and the capacity", () => {
+  const s = setup("inbox.sqlite");
+  try {
+    s.leases.setCapacity(s.who("jens"), { ...s.capture, capacity: 2 });
+    s.leases.acquire(s.who("ada"), s.capture);
+    s.leases.acquire(s.who("bo"), s.capture);
+    s.leases.acquire(s.who("cy"), s.capture);
+    const before = s.leases.status(s.who("jens"), s.capture);
+    s.db.close();
+    const db = openDatabase(join(s.paths.dir, "inbox.sqlite"));
+    try {
+      const after = new Leases(db, s.port, s.clock.now).status(s.who("jens"), s.capture);
+      assert.equal(after.capacity, 2);
+      assert.deepEqual(after.holders, before.holders);
+      assert.deepEqual(after.queue, before.queue);
+    } finally { db.close(); }
+  } finally { s.done(); }
+});
+
+test("the capacity migration carries a current holder over, defaults to 1, and runs twice harmlessly", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    migrateCaptureLeases(db);
+    db.exec(`INSERT INTO capture_leases (repo, resource, root, hold_ms, lease_id, holder_id, holder_name, run_id, reason, queued_at, granted_at, expires_at)
+      VALUES ('/r/.git', 'capture', '/r', 600000, 'cl_1', 'ada', 'Ada', 'run-1', 'probe', '2026-10-04T09:59:00.000Z', '2026-10-04T10:00:00.000Z', '2026-10-04T10:10:00.000Z');
+      INSERT INTO capture_leases (repo, resource, root) VALUES ('/s/.git', 'capture', '/s')`);
+    migrateLeaseCapacity(db);
+    migrateLeaseCapacity(db);
+    const rows = db.prepare("SELECT repo, capacity, hold_ms FROM capture_leases ORDER BY repo").all().map((r) => ({ ...r }));
+    assert.deepEqual(rows, [{ repo: "/r/.git", capacity: 1, hold_ms: 600000 }, { repo: "/s/.git", capacity: 1, hold_ms: null }]);
+    const holders = db.prepare("SELECT repo, lease_id, agent_id, agent_name, run_id, reason, queued_at, granted_at, expires_at FROM capture_lease_holders").all().map((r) => ({ ...r }));
+    assert.deepEqual(holders, [{ repo: "/r/.git", lease_id: "cl_1", agent_id: "ada", agent_name: "Ada", run_id: "run-1", reason: "probe",
+      queued_at: "2026-10-04T09:59:00.000Z", granted_at: "2026-10-04T10:00:00.000Z", expires_at: "2026-10-04T10:10:00.000Z" }]);
+    assert.ok(!db.prepare("PRAGMA table_info(capture_leases)").all().some((c) => c.name === "holder_id"), "the single-holder columns are gone");
+  } finally { db.close(); }
+});
+
+test("capacity requests are strictly decoded", () => {
+  const session = { harness: "claude", sessionId: "s" };
+  assert.deepEqual(leaseSchemas.capacity.parse({ session, resource: "capture", capacity: 2 }), { session, resource: "capture", capacity: 2 });
+  assert.throws(() => leaseSchemas.capacity.parse({ session, resource: "capture" }), /capacity/);
+  assert.throws(() => leaseSchemas.capacity.parse({ session, resource: "capture", capacity: 0 }), /capacity/);
+  assert.throws(() => leaseSchemas.capacity.parse({ session, resource: "capture", capacity: 2, minutes: 3 }), /minutes/);
+  assert.deepEqual(leaseSchemas.revoke.parse({ session, resource: "capture", reason: "x", holder: "Bo" }), { session, resource: "capture", reason: "x", holder: "Bo" });
 });

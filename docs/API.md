@@ -252,17 +252,18 @@ A `run` that does not exist is a 404. An unknown session is refused as for any a
 
 ### Capture lease
 
-One office-run lease per repository and resource, keyed by the repository's Git common dir, so every checkout, lane and team of it shares it (`src/server/leases.ts`, decoders in `src/server/leases-protocol.ts`, DTOs in `src/shared/leases.ts`; not in the `agentOperations` registry). The only resource is `capture`: the project's one headless checker (probe/take captures, `npm run check`, full browser tests). The caller is resolved by session; the repository from `repo` (any path inside a checkout) or else the session's `cwd`. Every request runs expiry and gone-holder checks for that lease first, and answers `LeaseResult` = `LeaseView & {you: {state: "held"|"queued"|"none", position, leaseId}, text}`, where `LeaseView` = `{resource, repo, root, project, holder: {agentId, name, leaseId, since, expiresAt, runId, reason} | null, queue: [{agentId, name, leaseId, position, since, runId, reason}], holdMinutes, lead: {agentId, name} | null}`. Any field not listed is a 400.
+One office-run lease per repository and resource, keyed by the repository's Git common dir, so every checkout, lane and team of it shares it (`src/server/leases.ts`, decoders in `src/server/leases-protocol.ts`, DTOs in `src/shared/leases.ts`; not in the `agentOperations` registry). The only resource is `capture`: the project's headless checker (probe/take captures, `npm run check`, full browser tests). Its **capacity** is how many agents may hold it at once: 1 unless the lead sets 2–10, so with the default it is one checker at a time. The caller is resolved by session; the repository from `repo` (any path inside a checkout) or else the session's `cwd`. Every request runs expiry and gone-holder checks for that lease first, and answers `LeaseResult` = `LeaseView & {you: {state: "held"|"queued"|"none", position, leaseId}, text}`, where `LeaseView` = `{resource, repo, root, project, holder: {agentId, name, leaseId, since, expiresAt, runId, reason} | null, holders: [the same, in grant order], capacity, queue: [{agentId, name, leaseId, position, since, runId, reason}], holdMinutes, lead: {agentId, name} | null}`. `holder` is the first of `holders` (null when it is empty); `holders` has at most `capacity` entries, or more only after the capacity was lowered below the number of holders. Any field not listed is a 400.
 
 | Method/path | Request / response |
 |---|---|
-| `POST /api/agent/lease/acquire` | `{session, resource, repo?, run?, reason?}` → `LeaseResult`; granted at once when free, else the caller joins the FIFO queue. Idempotent while held or queued. `run` must exist (404 `lease_run_unknown`) and belong to the caller's team (403 `lease_run_other_team`) |
-| `POST /api/agent/lease/release` | `{session, resource, repo?}` → `LeaseResult`; the holder only (403 `lease_not_holder`); the first in line is granted and told |
+| `POST /api/agent/lease/acquire` | `{session, resource, repo?, run?, reason?}` → `LeaseResult`; granted at once when fewer than `capacity` hold it, else the caller joins the FIFO queue. Idempotent while held or queued. `run` must exist (404 `lease_run_unknown`) and belong to the caller's team (403 `lease_run_other_team`) |
+| `POST /api/agent/lease/release` | `{session, resource, repo?}` → `LeaseResult`; a holder only (403 `lease_not_holder`), and only its own hold; the first in line is granted the freed slot and told |
 | `POST /api/agent/lease/leave` | `{session, resource, repo?}` → `LeaseResult`; leaves the queue (no-op when not in it; 409 `lease_held` for the holder) |
-| `POST /api/agent/lease/renew` | `{session, resource, repo?}` → `LeaseResult`; the holder only; expiry becomes now + the hold limit |
+| `POST /api/agent/lease/renew` | `{session, resource, repo?}` → `LeaseResult`; a holder only, for its own hold; its expiry becomes now + the hold limit |
 | `POST /api/agent/lease/status` | `{session, resource, repo?}` → `LeaseResult` |
-| `POST /api/agent/lease/revoke` | `{session, resource, repo?, reason}` → `LeaseResult`; the repository's lead only (403 `lease_lead_required`); 409 `lease_free` when nobody holds it |
+| `POST /api/agent/lease/revoke` | `{session, resource, repo?, reason, holder?}` → `LeaseResult`; the repository's lead only (403 `lease_lead_required`); 409 `lease_free` when nobody holds it. `holder` (an agent id or name) names whose hold to take; it is required when several hold it (400 `lease_holder_required`) and must be one of them (404 `lease_holder_unknown`) |
 | `POST /api/agent/lease/limit` | `{session, resource, repo?, minutes}` → `LeaseResult`; the repository's lead only; 1–240 minutes, applied from the next grant or renewal (default 30) |
+| `POST /api/agent/lease/capacity` | `{session, resource, repo?, capacity}` → `LeaseResult`; the repository's lead only; a whole number 1–10 (default 1). Takes effect in the same transaction: raising it grants waiters at once, in queue order, and tells them; lowering it never revokes a holder, it only stops granting until fewer than `capacity` hold it |
 | `GET /api/world/teams/:id/lease` | `{lease: LeaseView \| null}` for the team's repository; read-only, null when it has never been used |
 
 CLI (exits 0 when you hold it, 3 while you wait in line; `--json` prints the result):
@@ -270,8 +271,9 @@ CLI (exits 0 when you hold it, 3 while you wait in line; `--json` prints the res
 ```sh
 inbox lease acquire capture [--run RUN] [--reason TEXT] [--wait SEC]   # --wait polls by re-acquiring, at most 120 s
 inbox lease release|renew|leave|status capture
-inbox lease revoke capture --reason TEXT
+inbox lease revoke capture --reason TEXT [--holder NAME]   # --holder when several hold it
 inbox lease limit capture --minutes N
+inbox lease capacity capture N                # how many may hold it at once, 1–10
 #   common: --repo PATH
 ```
 

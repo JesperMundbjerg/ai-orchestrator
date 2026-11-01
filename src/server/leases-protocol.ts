@@ -16,6 +16,8 @@ export const leaseSchemas = {
   leave: plain,
   renew: plain,
   status: plain,
-  revoke: only(object({ ...base, reason: bounded(500) }), ["session", "resource", "repo", "reason"]) as Schema<LeaseRequest & { reason: string }>,
+  revoke: only(object({ ...base, reason: bounded(500), holder: optional(bounded(200)) }), ["session", "resource", "repo", "reason", "holder"]) as Schema<LeaseRequest & { reason: string; holder?: string }>,
+  capacity: only(object({ ...base, capacity: positiveInteger }), ["session", "resource", "repo", "capacity"]) as Schema<LeaseRequest & { capacity: number }>,
   limit: only(object({ ...base, minutes: positiveInteger }), ["session", "resource", "repo", "minutes"]) as Schema<LeaseRequest & { minutes: number }>,
 };
+
