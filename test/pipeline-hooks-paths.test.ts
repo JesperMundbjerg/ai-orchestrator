@@ -248,3 +248,12 @@ test("reinstall replaces the earlier commands that failed open and adds no dupli
     assert.deepEqual(commands, [HARNESS_COMMANDS[mode]]);
   }
 });
+
+test("installed harness hooks outlast the gate's git_pending retries (about 12 s) with room to spare", (t) => {
+  const s = scratch(t);
+  s.install();
+  for (const file of [".claude/settings.json", ".codex/hooks.json"]) {
+    const timeouts = JSON.parse(readFileSync(join(s.repo, file), "utf8")).hooks.PreToolUse.flatMap((g: any) => g.hooks.map((h: any) => h.timeout));
+    assert.ok(timeouts.length && timeouts.every((n: number) => n >= 30), `${file}: ${timeouts}`);
+  }
+});

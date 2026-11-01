@@ -35,6 +35,10 @@ export interface AgentClientOptions {
   timeoutMs?: number;
   /** The limit of the one retry a read that timed out gets; at least three times the first limit. */
   retryTimeoutMs?: number;
+  /** A 503 `git_pending` (the office is still reading the checkout from Git) is asked again this often, in ms. */
+  gitPendingRetryMs?: number;
+  /** ...for at most this long in all, in ms; then the office's own message is the error. */
+  gitPendingBudgetMs?: number;
 }
 type ClientInput<K extends keyof AgentOperations> = OperationInput<K> extends { session: SessionInput }
   ? Omit<OperationInput<K>, "session"> & { session?: SessionInput } : OperationInput<K>;
@@ -54,6 +58,20 @@ function errorDetails(v: unknown): FieldProblem[] | undefined {
 const READ_ONLY_POSTS = new Set(["/api/agent/team", "/api/agent/crew"]);
 /** A read that timed out is tried once more with at least this long, as a loaded office answers late rather than not at all. */
 const RETRY_TIMEOUT_MS = 15_000;
+/** Nothing was decided or written on a `git_pending` answer, so any call (a write too) is asked again, the same body and clientId. */
+const GIT_PENDING_RETRY_MS = 2_000;
+/** 12 s, so the retries end inside an older install's 15 s harness hook. */
+const GIT_PENDING_BUDGET_MS = 12_000;
+const gitPendingAnswer = (err: unknown) => err instanceof AgentClientError && err.kind === "http" && err.status === 503 && err.code === "git_pending";
+/** Waits ms, or rejects at once when the caller cancels. */
+function pause(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((done, fail) => {
+    if (signal?.aborted) return fail(new AgentClientError("inbox request cancelled", { kind: "cancelled", code: "cancelled", cause: signal.reason }));
+    const stop = () => { clearTimeout(timer); fail(new AgentClientError("inbox request cancelled", { kind: "cancelled", code: "cancelled", cause: signal!.reason })); };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", stop); done(); }, ms);
+    signal?.addEventListener("abort", stop, { once: true });
+  });
+}
 
 function transport(options: AgentClientOptions) {
   // Resolve once, not a process-global environment lookup on each request.
@@ -98,9 +116,7 @@ function transport(options: AgentClientOptions) {
       });
     }
   };
-  return async (method: string, path: string, body: unknown, request: RequestOptions = {}, responseSchema?: Schema<unknown>): Promise<unknown> => {
-    const ms = request.timeoutMs ?? timeoutMs;
-    if (!Number.isSafeInteger(ms) || ms < 0) throw new AgentClientError("timeoutMs: must be a non-negative integer", { kind: "validation", code: "invalid_request" });
+  const once = async (method: string, path: string, body: unknown, request: RequestOptions, responseSchema: Schema<unknown> | undefined, ms: number): Promise<unknown> => {
     try {
       return await attempt(method, path, body, request, responseSchema, ms);
     } catch (err) {
@@ -110,6 +126,21 @@ function transport(options: AgentClientOptions) {
         return attempt(method, path, body, request, responseSchema, Math.max(options.retryTimeoutMs ?? RETRY_TIMEOUT_MS, ms * 3));
       }
       throw err;
+    }
+  };
+  const retryMs = options.gitPendingRetryMs ?? GIT_PENDING_RETRY_MS;
+  const budgetMs = options.gitPendingBudgetMs ?? GIT_PENDING_BUDGET_MS;
+  return async (method: string, path: string, body: unknown, request: RequestOptions = {}, responseSchema?: Schema<unknown>): Promise<unknown> => {
+    const ms = request.timeoutMs ?? timeoutMs;
+    if (!Number.isSafeInteger(ms) || ms < 0) throw new AgentClientError("timeoutMs: must be a non-negative integer", { kind: "validation", code: "invalid_request" });
+    const until = Date.now() + budgetMs;
+    for (;;) {
+      try { return await once(method, path, body, request, responseSchema, ms); }
+      catch (err) {
+        // A cold office cache: ask again shortly; past the budget the office's own message is the answer.
+        if (!gitPendingAnswer(err) || Date.now() + retryMs > until) throw err;
+        await pause(retryMs, request.signal);
+      }
     }
   };
 }

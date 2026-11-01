@@ -40,7 +40,7 @@ Errors preserve the human-readable `error` string:
 | 422 | `invalid_request` | Recognized but unusable project adapter |
 | 500 | `internal_error` | Unexpected service failure |
 | 502 / 503 | `upstream_error` / `unavailable` | Upstream/service error mapping, when raised |
-| 503 | `git_pending` | The office is still reading a git fact the request needs (a busy machine; it never runs git on its event loop). Retryable: nothing was decided or written. Ask again in a few seconds. A pipeline gate answers this, never an allow, until it has read the checkout since it was asked. |
+| 503 | `git_pending` | The office is still reading a git fact the request needs (a busy machine; it never runs git on its event loop). Retryable: nothing was decided or written. Ask again in a few seconds; the shared agent client (and so the CLI and the pipeline gate hooks) does this itself, every 2 s for up to 12 s, then fails with this message. A pipeline gate answers this, never an allow, until it has read the checkout since it was asked. |
 
 File range responses have their own status policy (below).
 

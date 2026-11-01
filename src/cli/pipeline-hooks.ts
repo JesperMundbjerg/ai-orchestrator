@@ -44,6 +44,10 @@ const PREVIOUS_COMMANDS = [
   `sh "$(git rev-parse --show-toplevel)/${LAUNCHER}" codex`,
 ];
 const OUTAGE = "Protected delivery blocked: the Review Inbox gate is unavailable or invalid. Restart the office and retry; editing, tests and local commits remain available.";
+/** The gate CLI asks again for ~12 s while the office is still reading the checkout from Git (503 git_pending);
+ * the spawn must outlast that plus one answer, and the harness hook must outlast the spawn. */
+const GATE_TIMEOUT_MS = 30_000;
+const HOOK_TIMEOUT_S = 45;
 type Operation = "push" | "pr" | "merge" | "land" | "publish";
 export type GuardedCommand = { command: string; operation: Operation; ref: string; candidateArgument?: number; checkoutArgument?: number };
 /** A fix-comments lane that delivers its own fixes outside office runs, from exactly this checkout (a realpath). */
@@ -274,7 +278,7 @@ function gate(boundary: Boundary, config: HookConfig, identity: Json): string | 
   if (round) args.push("--round", round);
   if (identity.harness && identity.session) args.push("--harness", identity.harness, "--session", identity.session);
   const [exe, ...prefix] = config.inboxCommand;
-  const result = spawnSync(exe!, [...prefix, ...args], { cwd: boundary.repo, encoding: "utf8", timeout: 10000, maxBuffer: 128 * 1024 });
+  const result = spawnSync(exe!, [...prefix, ...args], { cwd: boundary.repo, encoding: "utf8", timeout: GATE_TIMEOUT_MS, maxBuffer: 128 * 1024 });
   if (result.status === 0 && !result.error) return null;
   if (result.status === 1) {
     const reason = result.stderr?.trim() || result.stdout?.trim() || "Protected delivery refused by the office pipeline gate.";
@@ -454,7 +458,7 @@ function mergeSettings(path: string, command: string, remove: boolean, original:
     const remaining = group.hooks.filter((h: Json) => h.command !== command && !owns(h.command));
     if (remaining.length || !group.hooks.length) pre.push({ ...group, hooks: remaining });
   }
-  if (!remove) pre.push({ matcher: ".*", hooks: [{ type: "command", command, timeout: 15 }] });
+  if (!remove) pre.push({ matcher: ".*", hooks: [{ type: "command", command, timeout: HOOK_TIMEOUT_S }] });
   if (pre.length || original?.pre) hooks.PreToolUse = pre; else delete hooks.PreToolUse;
   if (Object.keys(hooks).length || original?.hooks) settings.hooks = hooks; else delete settings.hooks;
   return remove && !original?.existed && !Object.keys(settings).length ? null : serialized(settings);
