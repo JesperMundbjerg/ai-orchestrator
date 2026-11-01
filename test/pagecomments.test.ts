@@ -302,3 +302,9 @@ test("`inbox comment fixed` closes a comment as the agent running it, with its u
     assert.match(shown.out, /open: http:\/\/localhost:3000\/a\?step=3/);
   }, live);
 });
+
+test("the page-comment table is migration 18", () => {
+  const db = openDatabase(":memory:");
+  assert.equal(Number(db.prepare("PRAGMA user_version").get()!.user_version), 18);
+  assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'page_comments'").get());
+});

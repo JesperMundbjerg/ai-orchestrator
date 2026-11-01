@@ -55,35 +55,6 @@ type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? "" : String(v));
 const opt = (v: unknown): string | null => (v == null ? null : String(v));
 
-/** The page-comment table. Self-contained and IF NOT EXISTS, so a numbered migration can call it later. */
-export function migratePageComments(db: DatabaseSync): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS page_comments (
-      id TEXT PRIMARY KEY,
-      team_id TEXT NOT NULL,
-      text TEXT NOT NULL,
-      page TEXT NOT NULL,
-      origin TEXT,
-      open_url TEXT,
-      fixed_url TEXT,
-      meta TEXT,
-      images TEXT,
-      status TEXT NOT NULL,
-      note TEXT,
-      commit_sha TEXT,
-      by_name TEXT,
-      message_id TEXT,
-      attempts INTEGER NOT NULL DEFAULT 0,
-      client_id TEXT UNIQUE,
-      fingerprint TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS page_comments_team ON page_comments (team_id, created_at);
-    CREATE INDEX IF NOT EXISTS page_comments_open ON page_comments (status);
-  `);
-}
-
 export class PageComments {
   /** Told of every status change (the SSE stream listens here). */
   readonly listeners = new Set<(event: PageCommentEvent, comment: PageComment) => void>();
@@ -100,7 +71,6 @@ export class PageComments {
     this.office = office;
     this.settingsPath = settingsPath;
     this.now = now;
-    migratePageComments(db);
   }
 
   /** Every team, ordered by name, with only what a page needs to pick one. */

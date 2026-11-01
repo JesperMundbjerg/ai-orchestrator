@@ -75,7 +75,8 @@ test("a database that answered with the removed QA agent comes out Off, without 
   const old = oldDatabase(t, "qa");
   const db = openDatabase(old.file);
   t.after(() => db.close());
-  assert.equal(Number(db.prepare("PRAGMA user_version").get()!.user_version), LAST_BEFORE_REMOVAL + 1);
+  // The removal ran; later migrations may follow it.
+  assert.ok(Number(db.prepare("PRAGMA user_version").get()!.user_version) >= LAST_BEFORE_REMOVAL + 1);
   assert.deepEqual(rowCounts(db), old.counts, "replies, items and events are all kept");
   assert.deepEqual(columns(db, "auto_approve"), ["singleton", "enabled"]);
   assert.ok(!columns(db, "replies").includes("answered_by"));
