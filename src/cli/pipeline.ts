@@ -6,12 +6,14 @@ import { call, get } from "../shared/agent-client.ts";
 import type { SessionInput, WorldState } from "../shared/types.ts";
 import type { PipelineGateInput, PipelineGateResult, PipelineRun, PipelineStatus, PipelineTelemetryView, PipelineValue } from "../shared/pipeline.ts";
 import type { PipelineWaiver, WaiverGateResult } from "../shared/waiver.ts";
+import { inboxCommand } from "../shared/pipeline-cli.ts";
+import { checkEvidence, checkPlan, requirePinnedCheckout, runCommand } from "./pipeline-check.ts";
 
 interface Flags {
   json?: string; run?: string; base?: string; candidate?: string; checkout?: string; revision?: string; round?: string;
   select?: string[]; notes?: string; report?: string[]; screenshot?: string[]; url?: string[]; check?: string; "exit-code"?: string; "on-base"?: boolean;
   work?: string; "work-round"?: string; "client-id"?: string; operation?: string; repo?: string; ref?: string; delivery?: string; node?: string; reason?: string;
-  team?: string; kind?: string; since?: string; limit?: string;
+  team?: string; kind?: string; since?: string; limit?: string; complete?: boolean;
 }
 const integer = (v: unknown, name: string): number | undefined => {
   if (v === undefined) return undefined;
@@ -20,8 +22,8 @@ const integer = (v: unknown, name: string): number | undefined => {
   return n;
 };
 export async function pipelineCommand(args: string[], flags: Flags, session: SessionInput): Promise<void> {
-  const [operation, positionalRun, node, agent] = args;
-  if (!["start", "branch", "abandon", "assign", "done", "report", "status", "gate", "waiver", "telemetry"].includes(operation ?? "")) throw new Error("inbox pipeline start|branch|abandon|assign|done|report|status|gate|waiver|telemetry; --json FILE accepts a full operation payload");
+  let [operation, positionalRun, node, agent] = args;
+  if (!["start", "branch", "abandon", "assign", "done", "report", "check", "status", "gate", "waiver", "telemetry"].includes(operation ?? "")) throw new Error(`${inboxCommand("pipeline")} start|branch|abandon|assign|done|report|check|status|gate|waiver|telemetry; --json FILE accepts a full operation payload`);
   if (operation === "telemetry") {
     // Read-only, for any agent: it names no session and changes nothing.
     const query = new URLSearchParams();
@@ -54,6 +56,27 @@ export async function pipelineCommand(args: string[], flags: Flags, session: Ses
   }
   const status = operation === "start" ? null : await call<PipelineStatus>("/api/agent/pipeline/status", { session, runId });
   const run = status?.run;
+  let checkFailed: string | null = null;
+  if (operation === "check") {
+    // The office never runs a command: this process does, in the candidate's checkout, and submits what happened.
+    const nodeId = flags.node ?? node ?? payload.nodeId as string | undefined;
+    const commands = checkPlan(run!, nodeId, inboxCommand("pipeline check RUN NODE [--complete] --notes \"result\""));
+    requirePinnedCheckout(run!, inboxCommand(`pipeline branch ${run!.id} --candidate HEAD --notes "why"`));
+    const evidence = []; const failed: string[] = [];
+    for (const command of commands) {
+      console.error(`$ ${command}   (in ${run!.candidate.checkout})`);
+      const result = await runCommand(command, run!.candidate.checkout, { echo: chunk => process.stderr.write(chunk) });
+      evidence.push(checkEvidence(result, run!.candidate.head));
+      console.error(`-> exit ${result.exitCode} in ${(result.durationMs / 1000).toFixed(1)}s`);
+      if (result.exitCode !== 0) { failed.push(`\`${command}\` exited ${result.exitCode}`); break; }
+    }
+    payload.evidence = [...(payload.evidence as unknown[] ?? []), ...evidence];
+    flags.notes ??= payload.notes as string | undefined ?? `Ran ${commands.join("; ")} at ${run!.candidate.head.slice(0, 10)}`;
+    node = nodeId;
+    // A failing run is still recorded (as evidence that does not count); only a full pass may complete the step.
+    operation = flags.complete && !failed.length ? "done" : "report";
+    if (failed.length) checkFailed = failed.join("; ");
+  }
   const body: Record<string, unknown> = { ...payload, session, runId };
   if (operation === "gate") {
     const input = { ...body, round: integer(flags.round ?? payload.round, "round") ?? run!.round,
@@ -105,6 +128,7 @@ export async function pipelineCommand(args: string[], flags: Flags, session: Ses
   }
   const result = await call<PipelineRun>(`/api/agent/pipeline/${operation}`, body);
   console.log(JSON.stringify(result, null, 2));
+  if (checkFailed) throw new Error(`check failed: ${checkFailed}. Recorded, but it does not count; fix it and run ${inboxCommand(`pipeline check ${runId} ${node}`)} again.`);
 }
 export async function deliveryBinding(session: SessionInput, runId: string | undefined, delivery: "handoff" | "review", options: { candidate?: string; round?: string; node?: string } = {}): Promise<PipelineGateInput | undefined> {
   if (!runId) return undefined;

@@ -93,6 +93,10 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox pipeline assign RUN NODE AGENT
   inbox pipeline report RUN NODE --report FILE --notes "result"
   inbox pipeline done RUN NODE [--report FILE --check "command" --exit-code 0] --notes "disposition"
+  inbox pipeline check RUN NODE [--complete] [--notes "result"]
+      for a step that names its required command(s): runs each in the run's candidate checkout (this process, never the office),
+      records command, exit code, duration, the output's end and the candidate SHA, and submits it as a report (--complete: as
+      the first mate's done, only if every command exits 0). Free-form --check evidence is refused for such a step.
       a failing check counts only as "fails as on base": first record the same command on the run's base
       with report|done ... --check "command" --exit-code N --on-base, then the candidate's run with the same N
   inbox pipeline status [RUN]
@@ -160,7 +164,7 @@ const OPTIONS = {
   summary: { type: "string" },
   run: { type: "string" }, base: { type: "string" }, candidate: { type: "string" }, checkout: { type: "string" },
   revision: { type: "string" }, round: { type: "string" }, select: { type: "string", multiple: true },
-  report: { type: "string", multiple: true }, "exit-code": { type: "string" }, "on-base": { type: "boolean" }, "work-round": { type: "string" },
+  report: { type: "string", multiple: true }, "exit-code": { type: "string" }, "on-base": { type: "boolean" }, complete: { type: "boolean" }, "work-round": { type: "string" },
   "client-id": { type: "string" }, operation: { type: "string" }, repo: { type: "string" }, ref: { type: "string" },
   delivery: { type: "string" }, node: { type: "string" }, reason: { type: "string" }, team: { type: "string" }, kind: { type: "string" }, since: { type: "string" },
   to: { type: "string" },

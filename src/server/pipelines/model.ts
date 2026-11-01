@@ -12,6 +12,18 @@ const obj = (v: unknown): Record<string, unknown> => {
 const id = (v: unknown): string => typeof v === "string" && /^[a-zA-Z][\w.-]{0,79}$/.test(v) ? v : bad("ids must start with a letter and contain at most 80 letters, digits, dashes, dots or underscores");
 const text = (v: unknown): string => typeof v === "string" && v.trim() && v.length <= 4000 ? v : bad("expected non-empty text (at most 4000 characters)");
 const arr = (v: unknown): unknown[] => Array.isArray(v) && v.length <= 250 ? v : bad("expected a list (at most 250 entries)");
+/** A required check command: one line of at most 500 characters. A list names every command the step needs. */
+function commandField(value: unknown, evidence: string[]): string | string[] {
+  const one = (v: unknown): string => {
+    if (typeof v !== "string" || !v.trim() || v.length > 500 || /[\r\n\0]/.test(v)) bad("a required command is one non-empty line of at most 500 characters");
+    return (v as string).trim();
+  };
+  if (!evidence.includes("check")) bad("a required command belongs to a step that needs check evidence");
+  if (!Array.isArray(value)) return one(value);
+  const commands = arr(value).map(one);
+  if (!commands.length || commands.length > 8 || new Set(commands).size !== commands.length) bad("a required command list names 1–8 distinct commands");
+  return commands;
+}
 export function validateLayout(input: unknown): PipelineLayout {
   const out: PipelineLayout = {};
   for (const [key, value] of Object.entries(obj(input))) {
@@ -49,6 +61,7 @@ export function validateGraph(input: unknown, options: { allowUnreferencedFields
     if (new Set(evidence).size !== evidence.length) bad("duplicate evidence requirement");
     if (n.binding !== undefined && n.binding !== "run" && n.binding !== "candidate") bad("binding must be run or candidate");
     if (n.binding === "run" && (kind === "approval" || kind === "delivery" || evidence.some(e => ["check", "review", "approval"].includes(e)))) bad("checks, reviews, approvals and delivery must remain candidate-bound");
+    if (n.by !== undefined && (n.by !== "crew" || kind !== "step")) bad('"by" is "crew" and belongs to a step');
     if (kind === "condition" && !fieldMap.has(n.field as string)) bad("condition needs a declared field");
     if (kind === "delivery" ? !["handoff", "review", "dev"].includes(n.delivery as string) : n.delivery !== undefined) bad("only delivery nodes may name a delivery boundary");
     if ((kind === "step" || kind === "approval") && (typeof n.source !== "string" || !n.source.trim())) bad("step/approval needs a palette source");
@@ -57,7 +70,9 @@ export function validateGraph(input: unknown, options: { allowUnreferencedFields
     return { id: id(n.id), label: text(n.label), kind: kind as "step" | "condition" | "approval" | "delivery", evidence,
       ...(n.binding !== undefined ? { binding: n.binding as "run" | "candidate" } : {}),
       ...(n.source !== undefined ? { source: text(n.source) } : {}), ...(n.field !== undefined ? { field: id(n.field) } : {}),
-      ...(kind === "delivery" ? { delivery: n.delivery as "handoff" | "review" | "dev" } : {}), ...(n.instructions !== undefined ? { instructions: text(n.instructions) } : {}) };
+      ...(kind === "delivery" ? { delivery: n.delivery as "handoff" | "review" | "dev" } : {}), ...(n.instructions !== undefined ? { instructions: text(n.instructions) } : {}),
+      ...(n.by !== undefined ? { by: "crew" as const } : {}),
+      ...(n.command !== undefined ? { command: commandField(n.command, evidence) } : {}) };
   });
   const nodeMap = new Map(nodes.map(n => [n.id, n]));
   if (!nodes.length || nodeMap.size !== nodes.length) bad("missing or duplicate nodes");

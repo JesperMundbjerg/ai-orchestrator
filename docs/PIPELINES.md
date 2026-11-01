@@ -180,6 +180,37 @@ inbox pipeline done RUN checks --check "npm test" --exit-code 1 --notes "Fails e
 
 The office compares only what was recorded: the same trimmed command, the same exit code and a base record taken against exactly the run's `candidate.base`. It runs nothing. A base that passes while the candidate fails stays refused, and so does another command or exit code. A changed base needs a new base record, even when unchanged reviewed bytes retain the round; a changed-bytes re-pin also starts a new round. A base record alone never completes a step that requires a check. Runs marks the step and the check “fails as on base”, the briefing lists it, and the gate result carries `baselineFailures` even when it allows delivery.
 
+## Checks that name their command
+
+A check step normally takes any check evidence that carries a command and an exit code, so a step whose prose says “run `npm run typecheck`” is satisfied by any exit-0 check. A node with `check` evidence can instead name what it requires:
+
+```json
+{ "id": "typecheck", "label": "Typecheck", "kind": "step", "source": "builtin:check", "evidence": ["check"], "command": "npm run typecheck" }
+```
+
+`command` is one line of at most 500 characters, or a list of up to 8 (all required). The step then completes only with check evidence for exactly that command, exit 0, recorded at the run's current candidate commit. The agent runs it, never the office service:
+
+```bash
+/path/to/review-inbox/bin/inbox pipeline check RUN typecheck --notes "typecheck on the candidate"            # records a report
+/path/to/review-inbox/bin/inbox pipeline check RUN typecheck --complete --notes "typecheck passes"        # first mate: also completes the step if every command exits 0
+```
+
+`inbox pipeline check` runs each declared command through the shell in the run's candidate checkout (which must be at the pinned commit; it stops after 30 minutes), echoes the output to stderr, and submits command, exit code, duration, the last 4000 characters of output and the candidate SHA. A failing run is still recorded, but does not count and is never completed by `--complete`; the command exits nonzero. Free-form `--check "cmd" --exit-code 0` evidence is refused for such a step, with a message naming the command and the exact `inbox pipeline check` line. Re-pinning to another commit (even with identical bytes) makes the recorded run stale, so rerun it. “Fails as on base” does not apply to a step that names its command. Status, the briefing and gate refusals name the required command. Nodes without `command` are unchanged.
+
+The service verifies command, exit code, candidate and round, not who typed the evidence: it never runs anything, so a hand-written payload with the same fields is accepted. This closes the “any exit-0 check” gap; it is not a sandbox.
+
+## Crew-only steps
+
+A step with `"by": "crew"` takes evidence only from an agent other than the team's first mate, who delegates and never builds or repairs. The first mate's own report, or evidence attached to its `done`, is refused with a message to assign a crew member:
+
+```bash
+/path/to/review-inbox/bin/inbox pipeline assign RUN build CREW-MEMBER     # first mate
+/path/to/review-inbox/bin/inbox pipeline report RUN build --report FILE --notes "result"   # the crew member
+/path/to/review-inbox/bin/inbox pipeline done RUN build --notes "disposition"              # first mate: endorses their report
+```
+
+Graphs without `by` keep working as before. The pipeline editor offers “Evidence comes from: Crew only” on steps and defaults new Assigned-work steps to it.
+
 ## Closing an undeliverable run
 
 The team's **current first mate** can close an open wave that will not be delivered:

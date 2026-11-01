@@ -3,7 +3,8 @@ import { randomUUID, createHash } from "node:crypto";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, extname, join } from "node:path";
 import type { PipelineAbandonInput, PipelineArchive, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateReason, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineProvenance, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView, PipelineTelemetryReport } from "../../shared/pipeline.ts";
-import { archivedText, nodeBinding } from "../../shared/pipeline.ts";
+import { archivedText, CHECK_OUTPUT_TAIL_MAX, nodeBinding, requiredCommands } from "../../shared/pipeline.ts";
+import { inboxCommand } from "../../shared/pipeline-cli.ts";
 import type { Team, WorldAgent, WorldState } from "../../shared/types.ts";
 import { InboxError } from "../inbox.ts";
 import { dataDir, requestFingerprint } from "../db.ts";
@@ -17,6 +18,9 @@ import { PipelineTelemetry } from "./telemetry.ts";
 const short = (sha = "") => sha.slice(0, 10);
 /** A refusal thrown rather than returned, as a telemetry reason code. */
 const thrownCode = (err: unknown): string => err instanceof InboxError ? err.code ?? `http_${err.status}` : "error";
+/** How an agent re-pins a run to the checkout's committed work; named by absolute path, since a cold pane may lack `inbox` on its PATH. */
+const repin = (runId: string) => inboxCommand(`pipeline branch ${runId} --candidate HEAD --notes "why"`);
+const quoted = (commands: string[]) => commands.map(c => `\`${c}\``).join(", ");
 type Config = { team_id: string; repo_root: string | null; graph: string | null; layout: string; revision: number; layout_revision: number; protected: number; observed_hash: string | null };
 export class Pipelines {
   private db: DatabaseSync;
@@ -169,7 +173,7 @@ export class Pipelines {
       if (!active.has(key)) { step.state = "inactive"; continue; }
       // The gate and done() judge evidence with this same evaluator, so Runs never shows done when delivery would refuse.
       const problem = (e: PipelineEvidence) => this.evidenceProblem(run, node, e, fresh);
-      const unpinned = nodeBinding(node) === "candidate" && !fresh ? ["the checkout no longer matches the pinned candidate; refresh the pin"] : [];
+      const unpinned = nodeBinding(node) === "candidate" && !fresh ? [`the checkout no longer matches the pinned candidate; refresh the pin: ${repin(run.id)}`] : [];
       delete step.problems; delete step.baselineFailures;
       const failures = step.evidence.filter(e => e.kind === "check" && !e.onBase && e.exitCode !== 0 && !problem(e))
         .map(e => `\`${e.command?.trim()}\` exit ${e.exitCode} (base ${short(run.candidate.base)})`);
@@ -218,7 +222,7 @@ export class Pipelines {
   /** Refuses any change, presentation or delivery of a run whose team is gone. */
   private unarchived(run: PipelineRun): PipelineRun {
     const archived = run.archived ?? (this.world().teams.some(t => t.id === run.teamId) ? undefined : { reason: "missing" as const, teamName: run.teamId, at: run.updatedAt });
-    if (archived) throw new InboxError(409, `pipeline run is archived: ${archivedText(archived)}. It stays readable but is never edited, presented or delivered; start a new run.`, "pipeline_run_archived");
+    if (archived) throw new InboxError(409, `pipeline run is archived: ${archivedText(archived)}. It stays readable but is never edited, presented or delivered; start a new run: ${inboxCommand("pipeline start --base BASE --candidate HEAD")}`, "pipeline_run_archived");
     return run;
   }
   private replay<T>(actor: WorldAgent, operation: string, input: { clientId: string }, fn: () => T): T {
@@ -268,7 +272,7 @@ export class Pipelines {
     if (lead) this.lead(actor, run.teamId);
     else if (actor.teamId !== run.teamId) throw new InboxError(403, "only this team's crew may report pipeline evidence");
     if (run.state !== "open") throw new InboxError(409, `pipeline run is already ${run.state}`);
-    if (expectedRevision !== undefined && run.revision !== expectedRevision) throw new InboxError(409, "run changed; refresh status before editing", "pipeline_revision_conflict");
+    if (expectedRevision !== undefined && run.revision !== expectedRevision) throw new InboxError(409, `run changed; refresh status before editing: ${inboxCommand("pipeline status")}`, "pipeline_revision_conflict");
     return run;
   }
   branch(actor: WorldAgent, input: PipelineBranchInput): PipelineRun {
@@ -358,6 +362,7 @@ export class Pipelines {
       if (!["ready", "reported", "stale"].includes(status.state) || blocked || (nodeBinding(node) === "candidate" && !sameCandidate(run.candidate))) throw new InboxError(409, "step is inactive, blocked or candidate is stale", "pipeline_step_blocked");
       if (!done && actor.id !== live.leadId && step.assignedTo !== actor.id) throw new InboxError(403, "report only your assigned step");
       if (!input.notes?.trim()) throw new InboxError(400, "record the result or lead disposition");
+      if (node.by === "crew" && actor.id === live.leadId && (input.evidence ?? []).length) throw new InboxError(403, `${node.label} (${node.id}) is crew work: the first mate delegates and does not build or repair, so evidence you submit for it is refused. Hand it to a crew member (${inboxCommand(`pipeline assign ${run.id} ${node.id} AGENT`)}); they report with ${inboxCommand(`pipeline report ${run.id} ${node.id} --report FILE --notes "result"`)}, and you then complete it with done, endorsing their report.`, "pipeline_crew_work");
       const additions = (input.evidence ?? []).map(e => this.evidence(actor, run, e, created, node));
       if (done) {
         const offered = [...step.evidence, ...additions];
@@ -366,6 +371,9 @@ export class Pipelines {
         const endorsed = [...step.evidence.filter(e => ids.includes(e.id)), ...additions];
         const invalid = endorsed.map(e => this.evidenceProblem(run, node, e, true, endorsed)).find(p => p !== null);
         if (invalid) throw new InboxError(409, `cannot endorse evidence that no longer counts: ${invalid}`, "pipeline_evidence_required");
+        // A step that names its command is satisfied by that command, passing on the current candidate, and nothing else.
+        for (const command of requiredCommands(node)) if (!endorsed.some(e => e.kind === "check" && !e.onBase && e.command?.trim() === command && e.exitCode === 0))
+          throw new InboxError(409, `${node.label} (${node.id}) needs check evidence for \`${command}\` with exit 0 at candidate ${short(run.candidate.head)}; run ${this.checkCommand(run, node)}`, "pipeline_check_command");
         // A base record only explains a candidate failure; the candidate itself must be checked.
         if ((node.evidence ?? []).some(kind => !endorsed.some(e => e.kind === kind && !e.onBase))) throw new InboxError(409, "required evidence is missing or stale", "pipeline_evidence_required");
         step.evidence = endorsed; step.completedBy = actor.id;
@@ -390,18 +398,45 @@ export class Pipelines {
   private currentEvidence(run: PipelineRun, node: PipelineNode, evidence: PipelineEvidence): boolean {
     return (evidence.binding ?? "candidate") === nodeBinding(node) && evidence.round === run.round && evidence.fingerprint === this.evidenceFingerprint(run, node);
   }
+  /** The team's first mate now, or the last one recorded when the team is gone. */
+  private leadOf(run: PipelineRun): string | null {
+    return this.world().teams.some(t => t.id === run.teamId) ? this.context(run.teamId).lead?.id ?? null : run.leadId;
+  }
+  /** The CLI line that runs a node's required command(s) in the candidate's checkout and records the evidence. */
+  private checkCommand(run: PipelineRun, node: PipelineNode): string { return inboxCommand(`pipeline check ${run.id} ${node.id}`); }
+  /**
+   * Why check evidence cannot count for a node that names its command(s), apart from its exit code, or null:
+   * only a run of exactly that command on the run's current candidate, recorded by the agent-side CLI.
+   * Nodes that name no command accept any check evidence, as before.
+   */
+  private commandProblem(run: PipelineRun, node: PipelineNode, evidence: PipelineEvidenceInput): string | null {
+    const commands = requiredCommands(node);
+    if (!commands.length || evidence.kind !== "check") return null;
+    const rerun = `run ${this.checkCommand(run, node)}`;
+    if (evidence.onBase) return `${node.label} (${node.id}) takes only a passing run of its required command ${quoted(commands)} on the candidate, not a base record; ${rerun}`;
+    const command = evidence.command?.trim() ?? "";
+    if (!commands.includes(command)) return `\`${command}\` is not ${node.label}'s (${node.id}) required command; it needs check evidence for ${quoted(commands)}; ${rerun}`;
+    if (!evidence.candidate) return `\`${command}\` was not recorded against a candidate; ${node.label} (${node.id}) takes only the office CLI's own run of it; ${rerun}`;
+    if (evidence.candidate !== run.candidate.head) return `\`${command}\` ran at ${short(evidence.candidate)}, not the run's current candidate ${short(run.candidate.head)}; ${rerun}`;
+    return null;
+  }
   /**
    * The one validity evaluator: why this evidence does not count now, or null. Runs (get), done()
    * and the gate all ask it. A closed run is history, so only an open run re-checks the founder's
    * decision, a review's provenance and attachments.
    */
   private evidenceProblem(run: PipelineRun, node: PipelineNode, evidence: PipelineEvidence, fresh: boolean, siblings = this.siblings(run, node)): string | null {
-    if (nodeBinding(node) === "candidate" && !fresh) return "the checkout no longer matches the pinned candidate; refresh the pin";
+    if (nodeBinding(node) === "candidate" && !fresh) return `the checkout no longer matches the pinned candidate; refresh the pin: ${repin(run.id)}`;
     if (!this.currentEvidence(run, node, evidence)) return "recorded for an earlier round, selection scope or intended bytes";
     if (evidence.onBase && evidence.ranOn !== run.candidate.base) return `\`${evidence.command}\` was recorded on base ${short(evidence.ranOn)}, not this run's base ${short(run.candidate.base)}`;
-    if (evidence.kind === "check" && !evidence.onBase && evidence.exitCode !== 0 && !this.baseline(run, node, evidence, siblings))
+    if (evidence.kind === "check" && requiredCommands(node).length) {
+      const wrong = this.commandProblem(run, node, evidence);
+      if (wrong) return wrong;
+      if (evidence.exitCode !== 0) return `\`${evidence.command}\` exited ${evidence.exitCode} at candidate ${short(run.candidate.head)}; ${node.label} (${node.id}) needs exit 0 (no failure counts as on base here). Fix it and run ${this.checkCommand(run, node)}`;
+    } else if (evidence.kind === "check" && !evidence.onBase && evidence.exitCode !== 0 && !this.baseline(run, node, evidence, siblings))
       return `\`${evidence.command}\` exited ${evidence.exitCode} on the candidate; a failing check counts only when the same command failed with exit ${evidence.exitCode} on base ${short(run.candidate.base)}`;
     if (run.state !== "open") return null;
+    if (node.by === "crew" && evidence.byAgentId === this.leadOf(run)) return `${node.label} (${node.id}) is crew work and this was recorded by the first mate, whose own evidence never counts for it; a crew member must report it (${inboxCommand(`pipeline assign ${run.id} ${node.id} AGENT`)})`;
     const provenance = this.provenanceProblem(run, evidence);
     if (provenance) return provenance;
     if (evidence.storedPath) try { if (this.evidenceFile(evidence.id) !== evidence.storedPath) return "attachment changed"; } catch { return "attachment changed or is unavailable"; }
@@ -454,12 +489,14 @@ export class Pipelines {
     // A nonzero exit is recorded as-is; it counts only beside a base record of the same failure (evidenceProblem).
     if (input.kind === "check" && (!input.command?.trim() || !Number.isSafeInteger(input.exitCode))) throw new InboxError(409, "check evidence needs its command and exit code");
     if (input.onBase && input.kind !== "check") throw new InboxError(422, "only check evidence can be recorded on the base");
+    if (node) { const wrong = this.commandProblem(run, node, input); if (wrong) throw new InboxError(409, wrong, "pipeline_check_command"); }
     if (input.kind === "review" && !input.review) throw new InboxError(422, "review evidence needs work id and round");
     if (input.kind === "approval" && !input.approval) throw new InboxError(422, "approval needs item id and revision");
     const provenance = this.provenanceProblem(run, input);
     if (provenance) throw new InboxError(409, provenance, "pipeline_evidence_provenance");
     const evidence: PipelineEvidence = { kind: input.kind, summary: input.summary, id: randomUUID(), byAgentId: actor.id, fingerprint: this.evidenceFingerprint(run, node), ...(node && nodeBinding(node) === "run" ? { binding: "run" as const } : {}), round: run.round, createdAt: this.now().toISOString(),
-      ...(input.path ? { path: input.path } : {}), ...(input.url ? { url: input.url } : {}), ...(input.command ? { command: input.command, exitCode: input.exitCode } : {}), ...(input.onBase ? { onBase: true, ranOn: run.candidate.base } : {}),
+      ...(input.path ? { path: input.path } : {}), ...(input.url ? { url: input.url } : {}), ...(input.command ? { command: input.command, exitCode: input.exitCode } : {}),
+      ...(input.candidate ? { candidate: input.candidate } : {}), ...(input.durationMs !== undefined ? { durationMs: input.durationMs } : {}), ...(input.outputTail !== undefined ? { outputTail: input.outputTail.slice(-CHECK_OUTPUT_TAIL_MAX) } : {}), ...(input.onBase ? { onBase: true, ranOn: run.candidate.base } : {}),
       ...(input.review ? { review: input.review } : {}), ...(input.approval ? { approval: input.approval } : {}) };
     if (input.path) {
       const original = input.path; const file = realpathSync(original); const s = lstatSync(original);
@@ -510,7 +547,7 @@ export class Pipelines {
     if (run.round !== input.round) refuse("stale_round", "stale run round");
     if (run.candidate.head !== input.candidate || !sameCandidate(run.candidate)) refuse("stale_candidate", "stale candidate");
     if (input.delivery === "dev") try {
-      if (capture(run.candidate.checkout, run.candidate.head, run.candidate.head).changedPaths.length) refuse("uncommitted_candidate", "commit intended bytes and refresh the candidate pin before dev delivery; never sweep unrelated dirt");
+      if (capture(run.candidate.checkout, run.candidate.head, run.candidate.head).changedPaths.length) refuse("uncommitted_candidate", `commit intended bytes and refresh the candidate pin before dev delivery (${repin(run.id)}); never sweep unrelated dirt`);
     } catch { refuse("candidate_unavailable", "committed dev candidate is unavailable"); }
     const view = this.teamView(run.teamId);
     if (!view.graph || !view.repoRoot) refuse("pipeline_unavailable", "protected pipeline or repository is unavailable");
@@ -526,7 +563,7 @@ export class Pipelines {
       if (node) visit(node.id);
     } else if (!run.graph.nodes.some(n => n.kind === "delivery" && n.delivery === input.delivery && active.has(n.id))) refuse("no_boundary", `no active ${input.delivery} boundary`);
     // Step states come from get()'s evidence evaluator, the same one Runs shows; its reasons travel with the refusal.
-    for (const step of run.steps) if (required.has(step.nodeId) && step.state !== "done") refuse(`step_${step.state}`, `${step.nodeId}: ${step.state}${step.problems?.length ? ` (${step.problems.join("; ")})` : ""}`, step.nodeId);
+    for (const step of run.steps) if (required.has(step.nodeId) && step.state !== "done") refuse(`step_${step.state}`, `${step.nodeId}: ${step.state}${step.problems?.length ? ` (${step.problems.join("; ")})` : ""}${this.needs(run, step.nodeId, step.state)}`, step.nodeId);
     const baselineFailures = run.steps.filter(s => required.has(s.nodeId) && s.state === "done" && s.baselineFailures?.length).map(s => `${s.nodeId}: fails as on base: ${s.baselineFailures!.join("; ")}`);
     // The graph and source versions are the contract captured at start. Updating a skill for
     // future runs must not invalidate completed work; candidate evidence is still checked above.
@@ -607,10 +644,20 @@ export class Pipelines {
     const view = this.teamView(teamId);
     if (!view.protected) return "Pipeline: no default or team override yet.";
     const run = given === undefined ? view.runs.find(r => r.state === "open" && !r.archived) ?? null : given;
-    const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : "Do your assigned step and use inbox pipeline report; only your first mate may complete steps or deliver.";
+    const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : `Do your assigned step and use ${inboxCommand("pipeline report RUN NODE --report FILE --notes \"result\"")}; only your first mate may complete steps or deliver.`;
     return [`Pipeline: ${view.graph?.label ?? "unavailable"} (${view.source}, policy ${view.policyHash?.slice(0, 12) ?? "missing"}). ${role}`,
-      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.landed ? `: on ${run.landed.ref.replace(/^refs\/(remotes|heads)\//, "")} at ${short(run.landed.tip)}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}${s.baselineFailures?.length ? `; fails as on base, not a pass: ${s.baselineFailures.join("; ")}` : ""}`)] : ["Start a bounded wave: inbox pipeline start --base BASE --candidate HEAD."]),
-      "Commands: inbox pipeline start|branch|abandon|assign|done|report|status|gate. No model is called; a gate allow is preflight, never a publication receipt."].join("\n");
+      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.landed ? `: on ${run.landed.ref.replace(/^refs\/(remotes|heads)\//, "")} at ${short(run.landed.tip)}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map(r => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}${s.state === "done" ? this.named(run, s.nodeId) : this.needs(run, s.nodeId, s.state)}${s.baselineFailures?.length ? `; fails as on base, not a pass: ${s.baselineFailures.join("; ")}` : ""}`)] : [`Start a bounded wave: ${inboxCommand("pipeline start --base BASE --candidate HEAD")}`]),
+      `Commands: ${inboxCommand("pipeline start|branch|abandon|assign|done|report|check|status|gate")}. No model is called; a gate allow is preflight, never a publication receipt.`].join("\n");
+  }
+  /** What a step that names its command still needs, for refusals and the briefing; empty for any other step. */
+  private needs(run: PipelineRun, nodeId: string, state: string): string {
+    const node = run.graph.nodes.find(n => n.id === nodeId); const commands = node ? requiredCommands(node) : [];
+    const crew = node?.by === "crew" && state !== "reported" ? `; crew work: the first mate does not build or repair it, so assign a crew member (${inboxCommand(`pipeline assign ${run.id} ${nodeId} AGENT`)}) who reports it` : "";
+    return crew + (node && commands.length ? `; requires check evidence for ${quoted(commands)} with exit 0 at candidate ${short(run.candidate.head)}: run ${this.checkCommand(run, node)}` : "");
+  }
+  private named(run: PipelineRun, nodeId: string): string {
+    const node = run.graph.nodes.find(n => n.id === nodeId); const commands = node ? requiredCommands(node) : [];
+    return `${node?.by === "crew" ? "; crew work" : ""}${commands.length ? `; required command${commands.length > 1 ? "s" : ""}: ${quoted(commands)}` : ""}`;
   }
   private atomic<T>(fn: () => T): T {
     const own = !this.db.isTransaction;

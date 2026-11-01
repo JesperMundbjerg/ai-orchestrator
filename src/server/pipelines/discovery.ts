@@ -6,7 +6,7 @@ import type { PipelineDefinition } from "../../shared/pipeline.ts";
 
 export const BUILTINS: PipelineDefinition[] = [
   ["work", "Assigned work", "A bounded crew task; the first mate records its scoped report."],
-  ["check", "Run a check", "Evidence needs the command, exit status and result. The office runs nothing."],
+  ["check", "Run a check", "Evidence needs the command, exit status and result. The office runs nothing; a step that names its required command is run and recorded by the agent-side check runner."],
   ["founder-approval", "Founder approves", "An accept at the exact item revision and candidate."],
   ["condition", "Choose a branch", "The first mate selects a declared enum or boolean with a rationale."],
   ["handoff", "Hand off to a team", "Create office work in review, not a Git delivery."],

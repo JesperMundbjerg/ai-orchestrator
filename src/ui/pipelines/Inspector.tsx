@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { PipelineEvidenceKind, PipelineField, PipelineGraph, PipelineLayout, PipelineNode } from "../../shared/pipeline.ts";
-import { ports } from "./model.ts";
+import { commandFromText, commandText, ports } from "./model.ts";
 import { nodeBinding } from "../../shared/pipeline.ts";
 
 const evidenceKinds: PipelineEvidenceKind[] = ["report", "check", "artifact", "review", "approval"];
@@ -38,7 +38,17 @@ export function Inspector({ graph, node, layout, disabled, onGraph, onLayout, on
       </>}
     </> : <>
       <h4>Evidence rule · all of</h4>
-      {evidenceKinds.map((kind) => <label key={kind}><input type="checkbox" disabled={node.kind === "approval" && kind === "approval"} checked={node.evidence?.includes(kind) ?? false} onChange={(event) => update({ evidence: event.target.checked ? [...(node.evidence ?? []), kind] : node.evidence?.filter((k) => k !== kind) })} /> {kind}</label>)}
+      {evidenceKinds.map((kind) => <label key={kind}><input type="checkbox" disabled={node.kind === "approval" && kind === "approval"} checked={node.evidence?.includes(kind) ?? false} onChange={(event) => update({ evidence: event.target.checked ? [...(node.evidence ?? []), kind] : node.evidence?.filter((k) => k !== kind), ...(kind === "check" && !event.target.checked ? { command: undefined } : {}) })} /> {kind}</label>)}
+    </>}
+    {node.kind === "step" && <label>Evidence comes from<select aria-label="Evidence comes from" value={node.by ?? "anyone"} onChange={(event) => update({ by: event.target.value === "crew" ? "crew" : undefined })}>
+      <option value="anyone">Anyone on the team</option>
+      <option value="crew">Crew only · never the first mate</option>
+    </select></label>}
+    {node.kind === "step" && node.by === "crew" && <p className="pipeline-help">The first mate only delegates: its own evidence for this step is refused. It assigns a crew member, who reports; the first mate then completes the step.</p>}
+    {node.kind !== "condition" && node.evidence?.includes("check") && <>
+      <label>Required command · one per line<textarea aria-label="Required command" rows={2} key={`${node.id}-command`} defaultValue={commandText(node)} placeholder="npm run typecheck"
+        onBlur={(event) => update({ command: commandFromText(event.target.value) })} /></label>
+      <p className="pipeline-help">Optional. When set, the step completes only with a passing run of exactly this command on the current candidate, recorded by <code>inbox pipeline check</code>. Empty: any check evidence with a command and exit code.</p>
     </>}
     {node.kind === "step" && <label>Evidence binding<select aria-label="Evidence binding" value={nodeBinding(node)} onChange={(event) => update({ binding: event.target.value as PipelineNode["binding"] })}>
       <option value="candidate">Candidate · final intended bytes</option>

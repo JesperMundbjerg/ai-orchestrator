@@ -35,7 +35,27 @@ export interface PipelineNode {
   delivery?: "handoff" | "review" | "dev";
   /** Human guidance only: the service NEVER runs this command. */
   instructions?: string;
+  /**
+   * Required command(s) of a node that needs `check` evidence. When set, the step completes only with
+   * check evidence for exactly each named command (trimmed), exit code 0, recorded against the run's
+   * current candidate by the agent-side `inbox pipeline check`. The service never runs them. A list
+   * means every command is required. Absent: any check evidence with a command and exit code counts.
+   */
+  command?: string | string[];
+  /**
+   * Who may produce this step's evidence. `"crew"`: an agent other than the team's first mate, who only
+   * delegates (founder's rule). The first mate's own evidence is refused and never counts; it assigns the
+   * step to a crew member, who reports, and the first mate completes it by endorsing that report.
+   * Absent: anyone on the team, as before. Steps only.
+   */
+  by?: "crew";
 }
+/** The commands a node requires, trimmed; empty when the node does not name one. */
+export function requiredCommands(node: Pick<PipelineNode, "command">): string[] {
+  return (Array.isArray(node.command) ? node.command : node.command === undefined ? [] : [node.command]).map(c => c.trim()).filter(Boolean);
+}
+/** How much of a check's output the CLI records and the service accepts: the end, where failures are. */
+export const CHECK_OUTPUT_TAIL_MAX = 4000;
 /** Names, prose and generic report/work sources do not identify planning unambiguously. */
 export function nodeBinding(node: PipelineNode): "run" | "candidate" {
   return node.binding ?? (node.kind === "condition" ? "run" : "candidate");
@@ -162,6 +182,11 @@ export interface PipelineEvidenceInput {
   /** Check evidence must include the command and exit status. */
   command?: string;
   exitCode?: number;
+  /** Recorded by `inbox pipeline check`: how long the command ran, and the end of its combined output (at most CHECK_OUTPUT_TAIL_MAX characters). */
+  durationMs?: number;
+  outputTail?: string;
+  /** Recorded by `inbox pipeline check`: the commit the command ran at. A node that names its command counts only evidence recorded at the run's current candidate. */
+  candidate?: string;
   /**
    * A check run on the run's base, not the candidate. It records how the base behaves, so a
    * candidate check that fails the same way (same command, same exit code) can count as

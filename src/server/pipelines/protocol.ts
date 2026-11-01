@@ -1,13 +1,17 @@
 // Pipeline HTTP decoders stay beside the domain. Additions to existing requests remain optional.
-import { object, optional, boolean, nonempty, positiveInteger, number, list, record, refine, oneOf, sessionSchema, fail, handoffSchema, reviewSchema, submitSchema, type Schema, type SessionInput } from "../../shared/agent-protocol.ts";
+import { object, optional, text, boolean, nonempty, positiveInteger, number, list, record, refine, oneOf, sessionSchema, fail, handoffSchema, reviewSchema, submitSchema, type Schema, type SessionInput } from "../../shared/agent-protocol.ts";
 import type { PipelineAbandonInput, PipelineAgentRequest, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidenceInput, PipelineGateInput, PipelineLayoutInput, PipelineOverrideInput, PipelineReportInput, PipelineStartInput, PipelineTelemetryQuery, PipelineTelemetryReport, PipelineStatusInput } from "../../shared/pipeline.ts";
+import { CHECK_OUTPUT_TAIL_MAX } from "../../shared/pipeline.ts";
 import type { WaiverGateInput, WaiverRequestInput } from "../../shared/waiver.ts";
 import { validateGraph, validateLayout } from "./model.ts";
 
 const revision = refine(number, (n, p) => { if (!Number.isSafeInteger(n) || n < 0) fail(p, "must be a non-negative integer"); });
 const values = refine(record, (v, p) => { for (const [k, x] of Object.entries(v)) if (typeof x !== "boolean" && typeof x !== "string") fail(`${p}.${k}`, "must be a boolean or string"); });
+const outputTail = refine(text, (v, p) => { if (v.length > CHECK_OUTPUT_TAIL_MAX) fail(p, `must be at most ${CHECK_OUTPUT_TAIL_MAX} characters`); });
+const duration = refine(number, (n, p) => { if (!Number.isFinite(n) || n < 0) fail(p, "must be a non-negative number of milliseconds"); });
 const evidence: Schema<PipelineEvidenceInput> = object({ kind: oneOf(["report", "check", "artifact", "review", "approval"]), summary: nonempty,
   path: optional(nonempty), url: optional(nonempty), command: optional(nonempty), exitCode: optional(number), onBase: optional(boolean),
+  durationMs: optional(duration), outputTail: optional(outputTail), candidate: optional(nonempty),
   review: optional(object({ workId: nonempty, round: positiveInteger })), approval: optional(object({ itemId: nonempty, revision: positiveInteger })),
 });
 export const gateSchema: Schema<PipelineGateInput> = object({ runId: nonempty, delivery: oneOf(["handoff", "review", "dev"]), round: positiveInteger, candidate: nonempty,

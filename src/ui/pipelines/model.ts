@@ -1,3 +1,4 @@
+import { requiredCommands } from "../../shared/pipeline.ts";
 import type { PipelineDefinition, PipelineEdge, PipelineGraph, PipelineLayout, PipelineNode, PipelineRun, PipelineStep } from "../../shared/pipeline.ts";
 
 export function ports(graph: PipelineGraph, node: PipelineNode): string[] {
@@ -91,6 +92,7 @@ export function runSummary(run: PipelineRun): string {
 }
 
 export const builtins: PipelineDefinition[] = [
+  { id: "builtin:work", label: "Assigned work", description: "A bounded crew task; crew only by default", kind: "builtin", path: null, hash: null },
   { id: "builtin:check", label: "Run a check", description: "Command, exit status and log", kind: "builtin", path: null, hash: null },
   { id: "builtin:condition", label: "Condition", description: "First mate selects a labelled branch", kind: "builtin", path: null, hash: null },
   { id: "builtin:founder-approval", label: "Founder approves", description: "Acceptance at the matching revision", kind: "builtin", path: null, hash: null },
@@ -106,8 +108,17 @@ export function nodeFromDefinition(definition: PipelineDefinition, id: string): 
     case "builtin:handoff": return { ...base, kind: "delivery", delivery: "handoff" };
     case "builtin:deliver": return { ...base, kind: "delivery", delivery: "dev" };
     case "builtin:review": return { ...base, kind: "delivery", delivery: "review" };
+    // The first mate only delegates, so a new build/repair step starts as crew work; the inspector can widen it.
+    case "builtin:work": return { ...base, kind: "step", evidence: ["report"], by: "crew" };
     default: return { ...base, kind: "step", evidence: [definition.id === "builtin:check" ? "check" : "report"] };
   }
+}
+
+/** The required-command input: one command per line. One line is saved as a string, several as a list, none as no field. */
+export function commandText(node: Pick<PipelineNode, "command">): string { return requiredCommands(node).join("\n"); }
+export function commandFromText(text: string): PipelineNode["command"] {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  return lines.length > 1 ? [...new Set(lines)] : lines[0];
 }
 
 /** The team view and the palette both report e.g. a missing checkout; show each problem once. */
