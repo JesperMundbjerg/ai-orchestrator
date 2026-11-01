@@ -11,7 +11,7 @@ import { dataDir, requestFingerprint } from "../db.ts";
 import { Adapters } from "../adapter.ts";
 import { activation, pathProblems, policyHash, selected, topological, validateGraph, validateLayout } from "./model.ts";
 import { BUILTINS, discover, within } from "./discovery.ts";
-import { capture, committedFingerprint, inRequest, isAncestor, laneCheckout, publishedBranch, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
+import { capture, committedFingerprint, inRequest, inScope, isAncestor, laneCheckout, publishedBranch, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
 import { founderDecision, presentedBy } from "./approval.ts";
 import { PipelineTelemetry } from "./telemetry.ts";
 
@@ -32,7 +32,7 @@ export class Pipelines {
   /** Read-only delivery telemetry; never consulted by any decision here. */
   readonly telemetry: PipelineTelemetry;
   constructor(db: DatabaseSync, world: () => WorldState, options: { evidenceDir?: string; now?: () => Date; changed?: () => void } = {}) {
-    this.db = db; this.world = world; this.evidenceDir = options.evidenceDir ?? join(dataDir(), "pipeline-evidence");
+    this.db = db; this.world = () => inScope("world", world); this.evidenceDir = options.evidenceDir ?? join(dataDir(), "pipeline-evidence");
     this.now = options.now ?? (() => new Date()); this.changed = options.changed ?? (() => {});
     this.telemetry = new PipelineTelemetry(db, this.now);
   }

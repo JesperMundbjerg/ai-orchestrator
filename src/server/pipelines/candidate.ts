@@ -14,10 +14,10 @@ type Repo = { root: string; common: string; top: string };
 type Memo<T> = { value: T } | { error: unknown };
 /** One request's reads of the repository. Every office request is answered synchronously, so a scope never spans an
  * await or a second request: the next request reads the repository as it is then. Only the read paths open one. */
-let scope: { repositories: Map<string, Memo<Repo>>; captures: Map<string, Memo<PipelineCandidate>> } | null = null;
+let scope: { repositories: Map<string, Memo<Repo>>; captures: Map<string, Memo<PipelineCandidate>>; values: Map<string, Memo<unknown>> } | null = null;
 export function inRequest<T>(read: () => T): T {
   if (scope) return read();
-  scope = { repositories: new Map(), captures: new Map() };
+  scope = { repositories: new Map(), captures: new Map(), values: new Map() };
   try {
     const result = read();
     if (result instanceof Promise) throw new Error("a request scope is synchronous: it cannot span an await");
@@ -32,6 +32,11 @@ function remembered<T>(memo: Map<string, Memo<T>> | undefined, key: string, read
   memo?.set(key, entry);
   if ("error" in entry) throw entry.error;
   return entry.value;
+}
+/** Reads `read` once for the whole request when one is open, and every time otherwise. For what is costly to compute
+ * and cannot change while a synchronous request runs, such as the office's world. */
+export function inScope<T>(key: string, read: () => T): T {
+  return remembered(scope?.values as Map<string, Memo<T>> | undefined, key, read);
 }
 export function repository(checkout: string): Repo {
   return remembered(scope?.repositories, checkout, () => readRepository(checkout));
