@@ -18,7 +18,8 @@ const sinceText = (iso: string) => {
 /**
  * Agents that went idle with work that has not reached the team's landing branch: who, in which
  * checkout, how much is uncommitted, how many commits are ahead of the landing branch, since when,
- * and whether the office has told them, their lead or you. Nothing when all is landed.
+ * and whether the office has told them, their lead or you. A state an agent put on hold says so and
+ * why, and nothing more is sent about it. Nothing when all is landed.
  */
 export function UnlandedList({ items }: { items: UnlandedWork[] }) {
   if (!items.length) return null;
@@ -36,7 +37,13 @@ export function UnlandedList({ items }: { items: UnlandedWork[] }) {
             {u.uncommitted ? `${u.uncommitted} uncommitted` : ""}
             {u.uncommitted && u.ahead ? ", " : ""}
             {u.ahead ? `${u.ahead} ahead of ${u.landing}` : ""}
-            <span className="muted"> · since {sinceText(u.since)} · {TOLD[u.stage]}</span>
+            {u.held ? (
+              <span className="muted" data-held>
+                {" · "}since {sinceText(u.since)} · <strong>held</strong> by {u.held.by || "an agent"}: {u.held.reason}
+              </span>
+            ) : (
+              <span className="muted"> · since {sinceText(u.since)} · {TOLD[u.stage]}</span>
+            )}
           </li>
         ))}
       </ul>

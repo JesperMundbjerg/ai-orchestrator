@@ -6,7 +6,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { frameAllowed, inlineProblem, ownAppPage } from "../shared/pages.ts";
-import type { AgentModel, PageCheck, SubmitInput } from "../shared/types.ts";
+import type { AgentModel, PageCheck, SessionInput, SubmitInput } from "../shared/types.ts";
 import {
   agentOperations as protocol, emptySchema, ValidationError, type Schema, type ApiErrorBody,
 } from "../shared/agent-protocol.ts";
@@ -132,6 +132,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("GET", /^\/api\/world\/teams\/([\w-]+)\/pipeline$/, emptySchema, (_r, _b, [id]) => needWorld().pipelines.teamView(id!)),
     route("PUT", /^\/api\/world\/teams\/([\w-]+)\/pipeline$/, overrideSchema, (_r, b, [id]) => needWorld().pipelines.saveOverride(id!, b)),
     route("PUT", /^\/api\/world\/teams\/([\w-]+)\/pipeline\/layout$/, layoutSchema, (_r, b, [id]) => needWorld().pipelines.saveLayout(id!, b)),
+    route("POST", /^\/api\/agent\/unlanded$/, validation.unlandedSchema, (_r, b) => unlanded(needWorld(), b)),
     route("POST", /^\/api\/agent\/pipeline\/start$/, pipelineSchemas.start, (_r, b) => needWorld().pipelines.start(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/pipeline\/branch$/, pipelineSchemas.branch, (_r, b) => needWorld().pipelines.branch(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/pipeline\/abandon$/, pipelineSchemas.abandon, (_r, b) => needWorld().pipelines.abandon(needWorld().resolve(b.session), b)),
@@ -228,6 +229,15 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   function needAutoApprove(): AutoApprove {
     if (!opts.autoApprove) throw new InboxError(404, "this service has no approve-all setting");
     return opts.autoApprove;
+  }
+
+  /** `inbox unlanded`: the caller is the agent its session resolves to; the rules are the watch's (unlanded.ts). */
+  function unlanded(w: World, b: { session: SessionInput; action: "list" | "hold" | "release"; reason?: string; path?: string }) {
+    const me = w.resolve(b.session);
+    if (b.action === "list") return w.unlanded.answer(me);
+    const answer = b.action === "hold" ? w.unlanded.hold(me, b.reason ?? "", b.path) : w.unlanded.release(me, b.path);
+    w.onChange("world");
+    return answer;
   }
 
   function needWorld(): World {

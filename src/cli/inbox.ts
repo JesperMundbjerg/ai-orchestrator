@@ -18,7 +18,7 @@ import { projectRoot } from "../shared/project.ts";
 import { AGENT_COMMENT_STATUSES, type PageComment } from "../shared/pagecomments.ts";
 import { storyIntro } from "../shared/story.ts";
 import { changedFiles, parseWrites, strayFiles } from "../shared/surface.ts";
-import type { AgentSwitch, StandingLane, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, Team, TeamBrief, Work } from "../shared/types.ts";
+import type { AgentSwitch, StandingLane, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, Team, TeamBrief, UnlandedAnswer, UnlandedWork, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
 
@@ -82,6 +82,14 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox team merge TEAM [--merge "text"] [--merge-file PATH]
                                   how a team lands work, e.g. "land <checkout> <sha>" or .claude/commands/worktree-sync.md: shown, or set (an empty value
                                   clears it). Given to every lead and crew brief and to an agent that goes idle with work that never landed
+  inbox unlanded                  the unlanded work the office watches or holds for your team: where, how much, how far it has told
+  inbox unlanded hold "why" [--path DIR]
+                                  for work that must not land yet (a snapshot that lands from elsewhere, say): hold the reminders for
+                                  the worktree's state as it is now (default: your own worktree). The founder is told the reason once as
+                                  one notice line; nobody is told more about it until a commit or an edit changes the state
+  inbox unlanded release [--path DIR]
+                                  end the hold: the reminders go on, their clocks starting again now
+                                  (your own worktree, or any worktree of the team you lead)
   inbox story "…"                 save your own short personal story (plain text, capped at 800 characters)
   ${storyIntro()}
   inbox crew                      the active crew preset and guide: which harness and model to start, under the founder's switch
@@ -177,6 +185,7 @@ const OPTIONS = {
   to: { type: "string" },
   work: { type: "string" },
   cwd: { type: "string" },
+  path: { type: "string" },
   notes: { type: "string" },
   note: { type: "string" },
   ack: { type: "boolean" },
@@ -312,6 +321,29 @@ async function switchAgents(name: string | undefined): Promise<void> {
     }
   }
   if (failed) throw new Error(`${failed} of ${ids.length} not switched`);
+}
+
+const when = (iso: string) => new Date(iso).toISOString().slice(0, 16).replace("T", " ");
+
+/** `inbox unlanded [hold "why" | release] [--path DIR]`: the unlanded-work watch for your team's worktrees. */
+async function unlandedCommand(sub: string | undefined, reason: string | undefined): Promise<void> {
+  const action = sub ?? "list";
+  if (action !== "list" && action !== "hold" && action !== "release") throw new Error(`unknown unlanded command "${sub}": use inbox unlanded, inbox unlanded hold "why" or inbox unlanded release`);
+  if (action === "hold" && !reason?.trim()) throw new Error('inbox unlanded hold needs the reason, in one line: inbox unlanded hold "why it must not land yet" [--path DIR]');
+  const path = resolve(flags.path ?? process.cwd());
+  const out = await call<UnlandedAnswer>("/api/agent/unlanded", { session: session(), action, ...(action === "hold" ? { reason } : {}), ...(action === "list" ? {} : { path }) });
+  if (action === "hold") console.log(`On hold: ${out.checkout}\n  ${out.held?.reason}\nThe founder is told this once. Nobody is told more about this state until a commit or an edit changes it, or you run inbox unlanded release.`);
+  if (action === "release") console.log(`Released: ${out.checkout}. The reminders go on, their clocks starting again now.`);
+  const byCheckout = new Map<string, UnlandedWork[]>();
+  for (const w of out.items) byCheckout.set(w.checkout, [...(byCheckout.get(w.checkout) ?? []), w]);
+  if (!byCheckout.size) return action === "list" ? console.log("Nothing unlanded is watched or held for your team.") : undefined;
+  const told = { watching: "being watched", agent: "agent told", lead: "lead told", founder: "founder told" } as const;
+  console.log(action === "list" ? "Unlanded work watched or held for your team:" : "Unlanded work for your team now:");
+  for (const [checkout, items] of byCheckout) {
+    const w = items[0]!;
+    const amount = [w.uncommitted ? `${w.uncommitted} uncommitted` : "", w.ahead ? `${w.ahead} ahead of ${w.landing}` : ""].filter(Boolean).join(", ");
+    console.log(`  ${checkout}${w.branch ? ` (${w.branch})` : ""}: ${amount} — ${items.map((i) => i.agentName).join(", ")} — ${w.held ? `HELD by ${w.held.by} since ${when(w.held.at)}: ${w.held.reason}` : `since ${when(w.since)}, ${told[w.stage]}`}`);
+  }
 }
 
 /** A team's lead role: shown, or set with --role "text" and/or --role-file PATH (an empty value clears it). */
@@ -464,6 +496,8 @@ async function main(argv: string[]): Promise<void> {
       const item = await call<Item>(`/api/agent/${command}`, { session: session(), item: arg });
       return console.log(`"${item.title}" is ${item.state}.`);
     }
+    case "unlanded":
+      return unlandedCommand(arg, parsed.positionals[2]);
     case "story": {
       if (!arg) throw new Error('inbox story needs your story: inbox story "…"');
       const saved = await call<{ story: string }>("/api/agent/story", { session: session(), text: arg });

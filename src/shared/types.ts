@@ -837,3 +837,22 @@ export interface SwitchesView {
   /** Switches under way, and those finished in the last few minutes. */
   recent: AgentSwitch[];
 }
+
+/** A hold on the unlanded-work watch for the state a checkout was in when it was placed: why, who said so, when (ISO). Any change to the state ends it. */
+export interface UnlandedHold {
+  reason: string;
+  by: string;
+  at: string;
+}
+
+/** Declaration merging, so this stays an addition: set while the entry's state is on hold, and then the office says nothing more about it. */
+export interface UnlandedWork {
+  held?: UnlandedHold;
+}
+
+/** The answer to `inbox unlanded` (list, hold, release): the checkout acted on and its hold now, and what is watched or held for the caller's team. */
+export interface UnlandedAnswer {
+  checkout: string | null;
+  held: UnlandedHold | null;
+  items: UnlandedWork[];
+}

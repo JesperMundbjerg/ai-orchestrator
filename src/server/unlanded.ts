@@ -13,12 +13,19 @@
 // to another harness) restarts the idle clocks, but never repeats what was already said about the same
 // state. The main checkout is not watched: only worktrees made beside it, which is where agents work.
 //
+// An agent, or the lead of the team whose worktree it is, may put the watch on hold for the state as it is
+// now, with a reason (`inbox unlanded hold "why"`): the founder is told the reason once, and nothing more
+// is said to anyone about that state. A hold is only ever on one state: any change to it ends the hold and
+// starts over, and so does releasing it (`inbox unlanded release`), which restarts the clocks.
+//
 // The setting that says how to land is the team's merge instruction (unlanded-merge.ts).
 
 import type { DatabaseSync } from "node:sqlite";
-import { basename } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { existsSync } from "node:fs";
-import type { UnlandedStage, UnlandedWork, WorldAgent, WorldState, WorldTeam } from "../shared/types.ts";
+import type { UnlandedAnswer, UnlandedHold, UnlandedStage, UnlandedWork, WorldAgent, WorldState, WorldTeam } from "../shared/types.ts";
+import { inboxCommand } from "../shared/pipeline-cli.ts";
+import { InboxError } from "./inbox.ts";
 import { withInboxPath } from "./inboxtext.ts";
 import { currentBranch, dirtyState, git, notLanded, type Checkout } from "./worktrees.ts";
 
@@ -60,7 +67,16 @@ export interface UnlandedDeps {
 }
 
 interface Sample { key: string; head: string; branch: string | null; uncommitted: number; ahead: number; landing: string }
-interface Row { checkout: string; state_key: string; first_seen: number; agent_at: number | null; lead_at: number | null; founder_at: number | null }
+interface Row {
+  checkout: string; state_key: string; first_seen: number; agent_at: number | null; lead_at: number | null; founder_at: number | null;
+  /** Set while the state is on hold: why, who said so (their name) and when. Gone with the state. */
+  hold_reason: string | null; hold_by: string | null; held_at: number | null;
+  /** When the hold on this state was released; the clocks of the stages run from no earlier than this. */
+  resume_at: number | null;
+}
+
+/** The longest hold reason; it is one line in the founder's notices and the team panel. */
+export const HOLD_REASON_MAX_CHARS = 300;
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 const names = (agents: Pick<WorldAgent, "name">[]) => agents.map((a) => a.name).join(" and ");
@@ -93,6 +109,11 @@ export class Unlanded {
       lead_at INTEGER,
       founder_at INTEGER
     )`);
+    // The hold on a state: columns of this table, added once, so nothing outside this file migrates.
+    const have = new Set((db.prepare("PRAGMA table_info(unlanded_watch)").all() as Array<{ name: string }>).map((c) => c.name));
+    for (const [name, type] of [["hold_reason", "TEXT"], ["hold_by", "TEXT"], ["held_at", "INTEGER"], ["resume_at", "INTEGER"]] as const) {
+      if (!have.has(name)) db.exec(`ALTER TABLE unlanded_watch ADD COLUMN ${name} ${type}`);
+    }
   }
 
   /** The idle agents' checkouts that hold unlanded work now, for the team panel. */
@@ -106,7 +127,8 @@ export class Unlanded {
 
   private begin(top: string, key: string, now: number): Row {
     this.db.prepare(`INSERT INTO unlanded_watch (checkout, state_key, first_seen) VALUES (?, ?, ?)
-      ON CONFLICT(checkout) DO UPDATE SET state_key = excluded.state_key, first_seen = excluded.first_seen, agent_at = NULL, lead_at = NULL, founder_at = NULL`).run(top, key, now);
+      ON CONFLICT(checkout) DO UPDATE SET state_key = excluded.state_key, first_seen = excluded.first_seen, agent_at = NULL, lead_at = NULL, founder_at = NULL,
+        hold_reason = NULL, hold_by = NULL, held_at = NULL, resume_at = NULL`).run(top, key, now);
     return this.row(top)!;
   }
 
@@ -134,14 +156,29 @@ export class Unlanded {
     return value;
   }
 
+  /** The agents with a pane in a checkout. */
+  private agentsIn(state: WorldState, top: string): WorldAgent[] {
+    return state.agents.filter((a) => a.paneId && a.cwd && this.deps.checkout(a.cwd)?.top === top);
+  }
+
   /**
    * The agents in a checkout when all of them are idle (and not being switched), else null. `held`: one of them
    * waits on the founder's answer, so it is not nagged, but the work is still the lead's to know about.
    */
   private idleIn(state: WorldState, top: string, switching: ReadonlySet<string>): { agents: WorldAgent[]; held: boolean } | null {
-    const here = state.agents.filter((a) => a.paneId && a.cwd && this.deps.checkout(a.cwd)?.top === top);
+    const here = this.agentsIn(state, top);
     if (!here.length || here.some((a) => !IDLE.has(a.status) || switching.has(a.id))) return null;
     return { agents: here, held: here.some((a) => a.waitingOnYou) };
+  }
+
+  /** One agent's entry for the team panel. */
+  private entry(a: WorldAgent, top: string, sample: Sample, row: Row): UnlandedWork {
+    const hold = holdOf(row);
+    return {
+      agentId: a.id, agentName: a.name, teamId: a.teamId, checkout: top, branch: sample.branch, landing: sample.landing,
+      uncommitted: sample.uncommitted, ahead: sample.ahead, since: new Date(row.first_seen).toISOString(), stage: stageOf(row),
+      ...(hold ? { held: hold } : {}),
+    };
   }
 
   /**
@@ -162,6 +199,7 @@ export class Unlanded {
       const idle = this.idleIn(state, top, switching);
       if (!idle) {
         this.idle.delete(top);
+        next.push(...this.listHeld(state, top, checkout, now));
         continue;
       }
       if (!this.idle.has(top)) this.idle.set(top, now);
@@ -176,11 +214,10 @@ export class Unlanded {
       const { agents: here, held } = idle;
       const team = state.teams.find((t) => here.some((a) => a.teamId === t.id)) ?? null;
       const lead = team ? state.agents.find((a) => a.teamId === team.id && a.role === "lead") ?? null : null;
-      row = this.escalate({ top, checkout, here, held, team, lead, sample, row, since: this.idle.get(top)! }, now) ?? row;
-      next.push(...here.map((a): UnlandedWork => ({
-        agentId: a.id, agentName: a.name, teamId: a.teamId, checkout: top, branch: sample.branch, landing: sample.landing,
-        uncommitted: sample.uncommitted, ahead: sample.ahead, since: new Date(row.first_seen).toISOString(), stage: stageOf(row),
-      })));
+      const idleSince = this.idle.get(top)!;
+      // A state on hold is listed, and nothing is said about it to anyone.
+      if (row.hold_reason == null) row = this.escalate({ top, checkout, here, held, team, lead, sample, row, since: Math.max(idleSince, row.resume_at ?? 0), idleSince }, now) ?? row;
+      next.push(...here.map((a) => this.entry(a, top, sample, row)));
     }
     // A checkout that is gone leaves nothing to say.
     for (const r of this.db.prepare("SELECT checkout FROM unlanded_watch").all() as Array<{ checkout: string }>) {
@@ -194,7 +231,7 @@ export class Unlanded {
   }
 
   /** Says what is due for this state, one stage at a time and each once. Returns the row as it is after. */
-  private escalate(c: { top: string; checkout: Checkout; here: WorldAgent[]; held: boolean; team: WorldTeam | null; lead: WorldAgent | null; sample: Sample; row: Row; since: number }, now: number): Row | null {
+  private escalate(c: { top: string; checkout: Checkout; here: WorldAgent[]; held: boolean; team: WorldTeam | null; lead: WorldAgent | null; sample: Sample; row: Row; since: number; idleSince: number }, now: number): Row | null {
     const { top, row } = c;
     // Someone waiting on the founder is not nagged and the founder is not told what they are already holding;
     // the lead hears of the unlanded work after the founder's hour.
@@ -219,17 +256,18 @@ export class Unlanded {
       this.latch(top, "agent_at", now);
       const merge = this.deps.merge(c.team, top);
       const who = c.lead && !here.some((a) => a.id === c.lead!.id) ? c.lead.name : "founder";
+      const hold = inboxCommand('unlanded hold "why"');
       const how = merge ? `Commit it and land it now with ${c.team?.name ?? "your team"}'s merge instruction:\n${merge}\n` : `Commit it and land it on ${fresh.landing} the way your team lands work. `;
-      const text = `Unlanded work: you have been idle for ${minutes(now - c.since)} minutes and ${where} holds ${what(fresh)}.${run} ${how}If it must not land yet, say why in one line: inbox say ${who} "…".`;
+      const text = `Unlanded work: you have been idle for ${minutes(now - c.idleSince)} minutes and ${where} holds ${what(fresh)}.${run} ${how}If it must not land yet, hold these reminders for this state with the reason in one line: ${hold}. The founder is told the reason once and nothing more is sent about this state until it changes. To ask for a decision instead: inbox say ${who} "…".`;
       for (const a of here) this.deps.tell(a.id, withInboxPath(text));
     }
     if (dueLead) {
       const lead = c.lead && !here.some((a) => a.id === c.lead!.id) ? c.lead : null;
       this.latch(top, "lead_at", lead ? now : 0);
       const have = here.length === 1 ? "has" : "have";
-      const intro = c.held ? `${names(here)} ${have} waited ${minutes(now - c.since)} minutes for the founder's answer with unlanded work.`
+      const intro = c.held ? `${names(here)} ${have} waited ${minutes(now - c.idleSince)} minutes for the founder's answer with unlanded work.`
         : `${names(here)} ${have} been idle for ${minutes(waited)} minutes since being told to land it, and nothing has changed.`;
-      if (lead) this.deps.tell(lead.id, withInboxPath(`Unlanded work on your team: ${intro} ${where} holds ${what(fresh)}.${run} Get it landed, or find out why not: inbox say ${here[0]!.name} "…".`));
+      if (lead) this.deps.tell(lead.id, withInboxPath(`Unlanded work on your team: ${intro} ${where} holds ${what(fresh)}.${run} Get it landed, or find out why not: inbox say ${here[0]!.name} "…". If it must stay as it is, you can hold the reminders for this state: ${inboxCommand(`unlanded hold "why" --path ${top}`)}.`));
     }
     if (dueFounder) {
       const told = this.row(top)?.lead_at;
@@ -242,11 +280,107 @@ export class Unlanded {
     return this.row(top) ?? null;
   }
 
+  /** The entries for every agent in a checkout whose state is on hold, whatever they are doing; none when it is not (or no longer). */
+  private listHeld(state: WorldState, top: string, checkout: Checkout, now: number): UnlandedWork[] {
+    const row = this.row(top);
+    if (!row || row.hold_reason == null) return [];
+    const sample = this.sample(checkout, now);
+    if (!sample) return [];
+    // Landed or changed: the hold is over, and the next idle stretch begins afresh.
+    if ((!sample.uncommitted && !sample.ahead) || sample.key !== row.state_key) {
+      this.clear(top);
+      return [];
+    }
+    return this.agentsIn(state, top).map((a) => this.entry(a, top, sample, row));
+  }
+
+  /** Brings the list up to date for one checkout right after a hold or release, so the answer and the panel agree at once. */
+  private refresh(top: string, checkout: Checkout, now: number): void {
+    const state = this.deps.state();
+    const row = this.row(top);
+    const sample = this.sample(checkout, now);
+    // Listed as the tick lists it: all its agents idle, or its state on hold.
+    const listed = !!row && !!sample && sample.key === row.state_key && (row.hold_reason != null || !!this.idleIn(state, top, this.deps.switching(state)));
+    const entries = listed ? this.agentsIn(state, top).map((a) => this.entry(a, top, sample!, row!)) : [];
+    this.current = [...this.current.filter((w) => w.checkout !== top), ...entries];
+  }
+
+  /** The team whose worktree this is: its own, one of its lanes, or one its agents work in. */
+  private ownerOf(state: WorldState, top: string): WorldTeam | null {
+    const tops = (paths: Array<string | null | undefined>) => paths.some((p) => p && this.deps.checkout(p)?.top === top);
+    return state.teams.find((t) => tops([t.path, ...(t.worktrees ?? [])]) || state.agents.some((a) => a.teamId === t.id && tops([a.cwd]))) ?? null;
+  }
+
+  /** The checkout a hold or release is about, once the caller is allowed to speak for it. */
+  private target(me: WorldAgent, path: string | undefined): { top: string; checkout: Checkout; team: WorldTeam | null } {
+    const where = path?.trim() || me.cwd;
+    if (!where) throw new InboxError(400, "which worktree? Run it inside the worktree, or pass --path DIR", "unlanded_path");
+    if (!isAbsolute(where)) throw new InboxError(400, `${where} is not an absolute path`, "unlanded_path");
+    const checkout = this.deps.checkout(where);
+    if (!checkout) throw new InboxError(404, `${where} is not inside a git checkout`, "unlanded_path");
+    if (!checkout.linked) throw new InboxError(409, `${checkout.top} is the main checkout, where work lands; only worktrees beside it are watched`, "unlanded_main");
+    const state = this.deps.state();
+    const team = this.ownerOf(state, checkout.top);
+    const mine = me.cwd ? this.deps.checkout(me.cwd)?.top : null;
+    if (mine !== checkout.top && !(me.role === "lead" && me.teamId && team?.id === me.teamId)) {
+      throw new InboxError(403, `${checkout.top} is not yours: only an agent working there, or the lead of the team whose worktree it is, may hold or release its unlanded-work reminders${team ? ` (it is ${team.name}'s)` : ""}`, "unlanded_not_yours");
+    }
+    return { top: checkout.top, checkout, team };
+  }
+
+  /**
+   * Puts the reminders for this worktree's state on hold, with a reason: the founder is told it once (one office
+   * notice line), and the agent, the lead and the founder hear nothing more about this state. A different
+   * state, from any change to the head or to what is uncommitted, ends the hold. Holding again with the same
+   * reason changes nothing and says nothing; with another reason it replaces it and tells the founder that.
+   */
+  hold(me: WorldAgent, reason: string, path: string | undefined, now = Date.now()): UnlandedAnswer {
+    const why = String(reason ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+    if (!why) throw new InboxError(400, 'say why it must wait: inbox unlanded hold "why"', "unlanded_reason");
+    if (Array.from(why).length > HOLD_REASON_MAX_CHARS) throw new InboxError(400, `the reason is one line of at most ${HOLD_REASON_MAX_CHARS} characters`, "unlanded_reason");
+    const { top, checkout, team } = this.target(me, path);
+    const sample = this.sample(checkout, now, true);
+    if (!sample) throw new InboxError(409, `git cannot say what ${top} holds right now`, "unlanded_unreadable");
+    if (!sample.uncommitted && !sample.ahead) throw new InboxError(409, `${top} holds nothing unlanded, so there is nothing to hold`, "unlanded_nothing");
+    this.atomic(() => {
+      let row = this.row(top);
+      if (!row || row.state_key !== sample.key) row = this.begin(top, sample.key, now);
+      if (row.hold_reason === why) return;
+      this.db.prepare("UPDATE unlanded_watch SET hold_reason = ?, hold_by = ?, held_at = ?, resume_at = NULL WHERE checkout = ?").run(why, me.name, now, top);
+      const whose = team?.name ?? this.deps.state().teams.find((t) => t.id === me.teamId)?.name ?? me.name;
+      this.deps.tellFounder(`${whose}: ${top} held unlanded: ${why}`, [me.id], now);
+    });
+    this.refresh(top, checkout, now);
+    return this.answer(me, top);
+  }
+
+  /** Ends the hold on this worktree's state: the reminders go on, their clocks starting again from now. */
+  release(me: WorldAgent, path: string | undefined, now = Date.now()): UnlandedAnswer {
+    const { top, checkout } = this.target(me, path);
+    const row = this.row(top);
+    if (!row || row.hold_reason == null) throw new InboxError(409, `nothing is on hold in ${top}`, "unlanded_not_held");
+    this.db.prepare("UPDATE unlanded_watch SET hold_reason = NULL, hold_by = NULL, held_at = NULL, resume_at = ? WHERE checkout = ?").run(now, top);
+    this.refresh(top, checkout, now);
+    return this.answer(me, top);
+  }
+
+  /** What is watched or held for the caller's team (or, without one, the caller's own worktree). */
+  answer(me: WorldAgent, top: string | null = null): UnlandedAnswer {
+    const mine = me.cwd ? this.deps.checkout(me.cwd)?.top : null;
+    const items = this.current.filter((w) => (me.teamId ? w.teamId === me.teamId : w.checkout === mine));
+    const row = top ? this.row(top) : undefined;
+    return { checkout: top, held: row ? holdOf(row) : null, items };
+  }
+
   private atomic(fn: () => void): void {
     if (this.db.isTransaction) return fn();
     this.db.exec("BEGIN IMMEDIATE");
     try { fn(); this.db.exec("COMMIT"); } catch (err) { this.db.exec("ROLLBACK"); throw err; }
   }
+}
+
+function holdOf(row: Row): UnlandedHold | null {
+  return row.hold_reason == null ? null : { reason: row.hold_reason, by: row.hold_by ?? "", at: new Date(row.held_at ?? row.first_seen).toISOString() };
 }
 
 function stageOf(row: Row): UnlandedStage {

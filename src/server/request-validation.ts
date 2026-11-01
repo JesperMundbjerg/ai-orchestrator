@@ -2,7 +2,7 @@
 // start from unknown. Syntax/type checks belong here, state/revision rules stay in the domain.
 import {
   object, optional, nullable, list, text, nonempty, boolean, positiveInteger, oneOf,
-  timestamp, record, refine, fail, validateToolInput, type Schema,
+  timestamp, record, refine, fail, validateToolInput, sessionSchema, type Schema,
 } from "../shared/agent-protocol.ts";
 import type { CrewRule, CrewTree, CrewTreeUpdate } from "../shared/crewtree.ts";
 
@@ -74,4 +74,12 @@ export const claudeHookSchema = refine(object({
   agent_type: maybeText, model: maybeText, transcript_path: maybeText, tool_name: maybeText, tool_input: optional(record),
 }), (hook, path) => {
   if (hook.hook_event_name === "PreToolUse") validateToolInput(hook.tool_name, hook.tool_input, path ? `${path}.tool_input` : "tool_input");
+});
+
+// `inbox unlanded`: hold or release the unlanded-work reminders for a worktree's state, or list what is watched.
+// `path` defaults to the caller's own worktree; who may speak for it is the domain's rule (unlanded.ts).
+export const unlandedSchema = refine(object({
+  session: sessionSchema, action: oneOf(["list", "hold", "release"]), reason: maybeText, path: maybeText,
+}), (body, path) => {
+  if (body.action === "hold" && !body.reason?.trim()) fail(path ? `${path}.reason` : "reason", "say why it must wait");
 });
