@@ -45,6 +45,24 @@ export interface StallState {
   windows: Window[];
 }
 
+/** The CPU profiler the watch rolls; a test gives it a stand-in. */
+export interface Profiler {
+  start(): Promise<void>;
+  stop(): Promise<CpuProfile>;
+  close(): void;
+}
+
+/** What the watch needs of an event-loop delay histogram, in nanoseconds. */
+export interface DelayHistogram {
+  enable(): unknown;
+  disable(): unknown;
+  reset(): void;
+  readonly count: number;
+  readonly max: number;
+  readonly mean: number;
+  percentile(p: number): number;
+}
+
 export interface StallOptions {
   dir: string;
   thresholdMs?: number;
@@ -52,14 +70,21 @@ export interface StallOptions {
   keep?: number;
   tickMs?: number;
   log?: (line: string) => void;
+  /** The loop's monotonic clock in ms, and the wall clock in ms. */
+  now?: () => number;
+  wall?: () => number;
+  profiler?: Profiler;
+  histogram?: DelayHistogram;
+  /** No timers of its own: the caller runs `tick()` and `roll()`. For tests, which then wait for nothing. */
+  manual?: boolean;
 }
 
-interface ProfileNode {
+export interface ProfileNode {
   id: number;
   callFrame: { functionName: string; url: string; lineNumber: number };
   children?: number[];
 }
-interface CpuProfile {
+export interface CpuProfile {
   nodes: ProfileNode[];
   samples?: number[];
   timeDeltas?: number[];
@@ -77,11 +102,14 @@ export class StallWatch {
   private keep: number;
   private tickMs: number;
   private log: (line: string) => void;
-  private startedAt = new Date().toISOString();
+  private now: () => number;
+  private wall: () => number;
+  private manual: boolean;
+  private startedAt: string;
   private blocks: Block[] = [];
   private windows: Window[] = [];
-  private histogram: ReturnType<typeof monitorEventLoopDelay> = monitorEventLoopDelay({ resolution: 10 });
-  private session: Session | null = null;
+  private histogram: DelayHistogram;
+  private profiler: Profiler;
   private profiling = false;
   private ticker: NodeJS.Timeout | null = null;
   private roller: NodeJS.Timeout | null = null;
@@ -99,6 +127,12 @@ export class StallWatch {
     this.keep = options.keep ?? 10;
     this.tickMs = options.tickMs ?? 100;
     this.log = options.log ?? ((line) => console.error(line));
+    this.now = options.now ?? (() => performance.now());
+    this.wall = options.wall ?? Date.now;
+    this.manual = options.manual ?? false;
+    this.histogram = options.histogram ?? monitorEventLoopDelay({ resolution: 10 });
+    this.profiler = options.profiler ?? inspectorProfiler();
+    this.startedAt = new Date(this.wall()).toISOString();
   }
 
   async start(): Promise<void> {
@@ -106,8 +140,9 @@ export class StallWatch {
     this.load();
     this.histogram.enable();
     await this.beginProfile();
-    this.expected = performance.now() + this.tickMs;
-    this.ticker = setInterval(() => this.check(), this.tickMs);
+    this.expected = this.now() + this.tickMs;
+    if (this.manual) return;
+    this.ticker = setInterval(() => this.tick(), this.tickMs);
     this.ticker.unref();
     this.schedule();
   }
@@ -117,8 +152,7 @@ export class StallWatch {
     if (this.ticker) clearInterval(this.ticker);
     if (this.roller) clearTimeout(this.roller);
     this.histogram.disable();
-    try { this.session?.disconnect(); } catch { /* already gone */ }
-    this.session = null;
+    this.profiler.close();
   }
 
   state(): StallState {
@@ -126,12 +160,12 @@ export class StallWatch {
   }
 
   /** A tick that arrives much later than it was due means nothing else ran in between. */
-  private check(): void {
-    const now = performance.now();
+  tick(): void {
+    const now = this.now();
     const late = now - this.expected;
     this.expected = now + this.tickMs;
     if (late < this.thresholdMs) return;
-    const block: Block = { at: new Date(Date.now() - late).toISOString(), ms: Math.round(late), profile: null, hotspots: [] };
+    const block: Block = { at: new Date(this.wall() - late).toISOString(), ms: Math.round(late), profile: null, hotspots: [] };
     this.inWindow.push({ block, began: now - late });
     this.blocks.unshift(block);
     this.blocks.length = Math.min(this.blocks.length, BLOCKS_KEPT);
@@ -145,24 +179,11 @@ export class StallWatch {
   }
 
   private async beginProfile(): Promise<void> {
-    this.windowStart = performance.now();
-    this.windowWall = Date.now();
+    this.windowStart = this.now();
+    this.windowWall = this.wall();
     this.inWindow = [];
-    if (!this.session) {
-      try {
-        this.session = new Session();
-        this.session.connect();
-        await this.session.post("Profiler.enable");
-        await this.session.post("Profiler.setSamplingInterval", { interval: 2000 });
-      } catch (err) {
-        this.log(`stall watch: no CPU profile (${(err as Error).message}); blocks are still listed`);
-        this.session = null;
-        this.profiling = false;
-        return;
-      }
-    }
     try {
-      await this.session.post("Profiler.start");
+      await this.profiler.start();
       this.profiling = true;
     } catch (err) {
       this.log(`stall watch: no CPU profile (${(err as Error).message}); blocks are still listed`);
@@ -171,19 +192,20 @@ export class StallWatch {
   }
 
   /** Closes the window: its loop delay is recorded, its profile kept only if the loop was blocked in it. */
-  private async roll(): Promise<void> {
-    this.check();
+  async roll(): Promise<void> {
+    this.tick();
     const h = this.histogram;
-    const ms = (ns: number) => Math.round((ns / 1e6) * 10) / 10;
+    // An empty histogram reports an enormous max and a NaN mean: no sample, no delay.
+    const ms = (ns: number) => (h.count && Number.isFinite(ns) ? Math.round((ns / 1e6) * 10) / 10 : 0);
     this.windows.unshift({ at: new Date(this.windowWall).toISOString(), maxMs: ms(h.max), p99Ms: ms(h.percentile(99)), meanMs: ms(h.mean) });
     this.windows.length = Math.min(this.windows.length, WINDOWS_KEPT);
     h.reset();
     const blocked = this.inWindow;
     const startedAt = this.windowStart;
     let profile: CpuProfile | null = null;
-    if (this.session && this.profiling) {
+    if (this.profiling) {
       try {
-        profile = (await this.session.post("Profiler.stop")).profile as CpuProfile;
+        profile = await this.profiler.stop();
       } catch (err) {
         this.log(`stall watch: profile stop failed: ${(err as Error).message}`);
       }
@@ -231,6 +253,35 @@ export class StallWatch {
   }
 }
 
+/** The V8 profiler of this process, reached through an in-process inspector session. */
+export function inspectorProfiler(): Profiler {
+  let session: Session | null = null;
+  return {
+    async start() {
+      if (!session) {
+        session = new Session();
+        try {
+          session.connect();
+          await session.post("Profiler.enable");
+          await session.post("Profiler.setSamplingInterval", { interval: 2000 });
+        } catch (err) {
+          session = null;
+          throw err;
+        }
+      }
+      await session.post("Profiler.start");
+    },
+    async stop() {
+      if (!session) throw new Error("the profiler is not running");
+      return (await session.post("Profiler.stop")).profile as CpuProfile;
+    },
+    close() {
+      try { session?.disconnect(); } catch { /* already gone */ }
+      session = null;
+    },
+  };
+}
+
 /** The stacks that held the loop during [from, to] microseconds into the profile, longest first. */
 export function hotspots(profile: CpuProfile, from: number, to: number): Hotspot[] {
   const { nodes, samples, timeDeltas } = profile;
@@ -249,7 +300,7 @@ export function hotspots(profile: CpuProfile, from: number, to: number): Hotspot
     if (!node || IGNORED.has(node.callFrame.functionName)) continue;
     total.set(node.id, (total.get(node.id) ?? 0) + next);
   }
-  return [...total.entries()].sort((a, b) => b[1] - a[1]).slice(0, HOTSPOTS).map(([id, micro]) => {
+  return [...total.entries()].filter(([, micro]) => micro > 0).sort((a, b) => b[1] - a[1]).slice(0, HOTSPOTS).map(([id, micro]) => {
     const frame = byId.get(id)!.callFrame;
     const via: string[] = [];
     for (let up = parent.get(id); up !== undefined && via.length < 6; up = parent.get(up)) {

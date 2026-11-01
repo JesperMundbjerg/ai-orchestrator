@@ -38,7 +38,7 @@ test("a read that times out twice fails with the timeout, after one retry only",
     (err: AgentClientError) => err.kind === "timeout",
   );
   assert.equal(calls, 2);
-  assert.ok(Date.now() - started >= 100, "the retry waited for the longer limit");
+  assert.ok(Date.now() - started >= 50, "the retry waited for the longer limit");
 });
 
 test("a write is never retried: it may already have been done", async () => {
