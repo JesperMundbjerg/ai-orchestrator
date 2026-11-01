@@ -729,7 +729,9 @@ export class Pipelines {
     if (!lstatSync(file).isFile() || lstatSync(file).isSymbolicLink() || !within(realpathSync(this.evidenceDir), realpathSync(file)) || createHash("sha256").update(readFileSync(file)).digest("hex") !== row.sha256) throw new InboxError(409, "pipeline attachment changed or escaped storage");
     return file;
   }
-  bindItem(actor: WorldAgent, runId: string, itemId: string, revision: number): void { this.decide(["bind", actor.id, runId, itemId, revision], () => this.bind(actor, runId, itemId, revision)); }
+  // Asked as the same question on every try: a submit refused git_pending rolls its item back, so the next try
+  // binds a new item id, and a question keyed by it would be new each time, read nothing in time and never converge.
+  bindItem(actor: WorldAgent, runId: string, itemId: string, revision: number): void { this.decide(["bind", actor.id, runId], () => this.bind(actor, runId, itemId, revision)); }
   private bind(actor: WorldAgent, runId: string, itemId: string, revision: number): void {
     const run = this.unarchived(this.get(runId)); this.lead(actor, run.teamId);
     if (!sameCandidate(run.candidate)) throw new InboxError(409, "cannot present a stale candidate");

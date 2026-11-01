@@ -48,6 +48,8 @@ export const REFRESH_MS = 5_000;
 export const TICKET_MS = 120_000;
 /** How long an office request waits for missing facts before answering "retry" (or its fallback). */
 let waitMs = 150;
+/** How long a decision may keep answering git_pending for the same question before it reads git synchronously. */
+let pendingLimitMs = 60_000;
 let concurrency = 4;
 let nonblocking = false;
 let changed: (() => void) | null = null;
@@ -62,8 +64,9 @@ const defaultRunner: GitRunner = (call) => new Promise((resolve, reject) => {
 let runner: GitRunner = defaultRunner;
 
 /** Opts the office in (main.ts), and lets tests inject a runner, the wait or the concurrency. */
-export function configureGit(options: { nonblocking?: boolean; runner?: GitRunner | null; waitMs?: number; concurrency?: number; changed?: (() => void) | null }): void {
+export function configureGit(options: { nonblocking?: boolean; runner?: GitRunner | null; waitMs?: number; concurrency?: number; changed?: (() => void) | null; pendingLimitMs?: number }): void {
   if (options.nonblocking !== undefined) nonblocking = options.nonblocking;
+  if (options.pendingLimitMs !== undefined) pendingLimitMs = options.pendingLimitMs;
   if (options.runner !== undefined) runner = options.runner ?? defaultRunner;
   if (options.waitMs !== undefined) waitMs = options.waitMs;
   if (options.concurrency !== undefined) concurrency = Math.max(1, options.concurrency);
@@ -149,6 +152,7 @@ function sweep(now: number): void {
   if (++inserts % 200) return;
   for (const [key, e] of entries) if (!e.flight && now - e.usedAt > 10 * 60_000) entries.delete(key);
   for (const [key, t] of tickets) if (now - t > TICKET_MS) tickets.delete(key);
+  for (const [key, s] of stuck) if (now - s.last > TICKET_MS) stuck.delete(key);
 }
 
 /**
@@ -192,7 +196,30 @@ export function ticket(key: string): number {
   return now;
 }
 /** The decision was answered: the next time it is asked, it reads again. */
-export function punch(key: string): void { tickets.delete(key); }
+export function punch(key: string): void { tickets.delete(key); stuck.delete(key); }
+
+// The safety net. A decision is meant to converge: its background rerun (settle) reads what it misses, and the
+// retry is answered from that. Should it not (a git read that never comes back, a fact this file never lets the
+// decision use, a bug here), an agent retrying would be refused git_pending forever with nothing saying why. So a
+// question answered only git_pending for longer than pendingLimitMs is answered once with git read synchronously,
+// as before this file existed: one slow request on a loaded machine is better than a decision that can never be
+// made. It still decides only on facts read after it was asked, and a git that fails there is a real refusal,
+// never git_pending. The net is per question, so a decision's key must be the same on every try: one keyed by
+// something a refused try makes afresh (the item id of a submit that was rolled back) is a new question each time,
+// is never caught here, and never converges either (store.ts bindItem once did exactly that for 45 minutes).
+const stuck = new Map<string, { since: number; last: number }>();
+/** This decision is answered git_pending. The first such answer starts its clock; a question not asked again
+ * within TICKET_MS is a new one. */
+export function refused(key: string): void {
+  const now = Date.now(); const s = stuck.get(key);
+  if (!s || now - s.last > TICKET_MS) stuck.set(key, { since: now, last: now });
+  else s.last = now;
+}
+/** True when this decision has been answered only git_pending, while being asked, for longer than the bound. */
+export function stalled(key: string): boolean {
+  const s = stuck.get(key); const now = Date.now();
+  return s !== undefined && now - s.last <= TICKET_MS && now - s.since > pendingLimitMs;
+}
 
 const jobs = new Map<string, Promise<void>>();
 /**
@@ -236,4 +263,4 @@ export async function answerWithGit<T>(run: () => T | Promise<T>): Promise<T> {
 }
 
 /** For tests: forget every fact, ticket and job. */
-export function resetGitCache(): void { entries.clear(); tickets.clear(); jobs.clear(); }
+export function resetGitCache(): void { entries.clear(); tickets.clear(); jobs.clear(); stuck.clear(); }

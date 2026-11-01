@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import type { PipelineCandidate } from "../../shared/pipeline.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { InboxError } from "../inbox.ts";
-import { gitPending, isGitPending, gitNonblocking, gitOutput, inPass, punch, rethrowPending, runPass, settle, ticket } from "../gitcache.ts";
+import { gitPending, isGitPending, gitNonblocking, gitOutput, inPass, outsidePass, punch, refused, rethrowPending, runPass, settle, stalled, ticket } from "../gitcache.ts";
 import { within } from "./discovery.ts";
 
 /** Inside an office pass git is read from gitcache.ts (never a process on the event loop); outside one, synchronously. */
@@ -47,6 +47,9 @@ export interface RequestGit<T> {
 export function inRequest<T>(read: () => T, git: RequestGit<T> = {}): T {
   const body = () => scope || git.memo === false ? read() : scoped(read);
   if (!gitNonblocking() || inPass() || (!git.decide && !git.view)) return body();
+  // Answered only git_pending for too long: read git synchronously this once rather than refuse forever (gitcache.ts).
+  // The office's dispatcher runs a refused request again within its wait, so the request past the bound is answered.
+  if (git.decide && stalled(git.decide)) { try { return outsidePass(body); } finally { punch(git.decide); } }
   const horizon = git.decide ? ticket(git.decide) : null;
   const decide = Boolean(git.decide);
   const pass = runPass(body, { horizon, decide });
@@ -57,6 +60,7 @@ export function inRequest<T>(read: () => T, git: RequestGit<T> = {}): T {
   }
   const again = () => speculatively(git.db, () => runPass(body, { horizon, decide, speculative: true }).waits);
   const settled = settle(git.decide ?? git.view!.key, pass.waits, again, git.view?.done);
+  if (git.decide) refused(git.decide);
   if (git.decide || "error" in pass) throw gitPending(settled);
   const shown = git.view?.note ? git.view.note(pass.value as T) : pass.value as T;
   if (git.view?.wait) throw gitPending(settled, shown);
