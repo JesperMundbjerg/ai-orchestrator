@@ -11,7 +11,7 @@ import { dataDir, requestFingerprint } from "../db.ts";
 import { Adapters } from "../adapter.ts";
 import { activation, pathProblems, policyHash, selected, topological, validateGraph, validateLayout } from "./model.ts";
 import { BUILTINS, discover, within } from "./discovery.ts";
-import { capture, committedFingerprint, isAncestor, laneCheckout, publishedBranch, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
+import { capture, committedFingerprint, inRequest, isAncestor, laneCheckout, publishedBranch, repository, requirePublishedBase, sameCandidate } from "./candidate.ts";
 import { founderDecision, presentedBy } from "./approval.ts";
 import { PipelineTelemetry } from "./telemetry.ts";
 
@@ -56,7 +56,8 @@ export class Pipelines {
     for (const path of paths) try { roots.add(repository(path).root); } catch { /* disappearing/offline checkouts do not invent a binding */ }
     return roots.size === 1 ? { root: [...roots][0]!, problems: [] } : { root: null, problems: roots.size ? ["Team spans repositories; choose an explicit repository binding."] : ["Team has no available repository checkout."] };
   }
-  teamView(teamId: string): PipelineTeamView {
+  teamView(teamId: string): PipelineTeamView { return inRequest(() => this.readTeamView(teamId)); }
+  private readTeamView(teamId: string): PipelineTeamView {
     this.context(teamId); const config = this.config(teamId); const binding = this.binding(teamId, config);
     const problems = [...binding.problems]; let graph: PipelineGraph | null = null;
     let source: PipelineTeamView["source"] = "none";
@@ -518,7 +519,8 @@ export class Pipelines {
     if (binding && fingerprint && binding.fingerprint !== fingerprint) throw new InboxError(409, "review candidate differs from the handed-over candidate", "pipeline_stale_candidate");
   }
   /** Every result is noted as telemetry, refusals included; the note never changes, delays or fails the result. */
-  gate(actor: WorldAgent, input: PipelineGateInput): PipelineGateResult {
+  gate(actor: WorldAgent, input: PipelineGateInput): PipelineGateResult { return inRequest(() => this.readGate(actor, input)); }
+  private readGate(actor: WorldAgent, input: PipelineGateInput): PipelineGateResult {
     const codes: PipelineGateReason[] = [];
     try {
       const result = this.evaluate(actor, input, codes);
@@ -633,14 +635,16 @@ export class Pipelines {
     const bound = this.db.prepare("INSERT INTO pipeline_item_bindings (item_id, revision, run_id, fingerprint) VALUES (?, ?, ?, ?) ON CONFLICT(item_id,revision) DO NOTHING").run(itemId, revision, run.id, run.candidate.fingerprint);
     if (bound.changes) this.remember(run.id, { kind: "approval", id: itemId, revision, round: run.round, scopeRevision: run.scopeRevision ?? 0, fingerprint: run.candidate.fingerprint });
   }
-  status(actor: WorldAgent, runId?: string): PipelineStatus {
+  status(actor: WorldAgent, runId?: string): PipelineStatus { return inRequest(() => this.readStatus(actor, runId)); }
+  private readStatus(actor: WorldAgent, runId?: string): PipelineStatus {
     if (!actor.teamId) throw new InboxError(409, "join a team to view its pipeline");
     const team = this.teamView(actor.teamId); const run = runId ? this.get(runId) : team.runs.find(r => r.state === "open" && !r.archived) ?? null;
     // An archived run belongs to no team any more; its record is readable, never actionable.
     if (run && run.teamId !== actor.teamId && !run.archived) throw new InboxError(403, "this run belongs to another team");
     return { team, run, text: this.brief(actor.teamId, actor.id, run) };
   }
-  brief(teamId: string, actorId?: string, given?: PipelineRun | null): string {
+  brief(teamId: string, actorId?: string, given?: PipelineRun | null): string { return inRequest(() => this.readBrief(teamId, actorId, given)); }
+  private readBrief(teamId: string, actorId?: string, given?: PipelineRun | null): string {
     const view = this.teamView(teamId);
     if (!view.protected) return "Pipeline: no default or team override yet.";
     const run = given === undefined ? view.runs.find(r => r.state === "open" && !r.archived) ?? null : given;

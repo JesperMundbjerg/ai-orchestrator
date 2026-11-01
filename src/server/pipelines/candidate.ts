@@ -10,9 +10,37 @@ export function git(cwd: string, args: string[]): string {
   try { return execFileSync("git", ["-c", "core.fsmonitor=false", ...args], { cwd, encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }).trimEnd(); }
   catch { throw new InboxError(409, "pipeline checkout or Git reference is unavailable", "pipeline_candidate_unavailable"); }
 }
-export function repository(checkout: string): { root: string; common: string; top: string } {
-  const top = realpathSync(git(checkout, ["rev-parse", "--show-toplevel"]));
-  const common = realpathSync(git(top, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+type Repo = { root: string; common: string; top: string };
+type Memo<T> = { value: T } | { error: unknown };
+/** One request's reads of the repository. Every office request is answered synchronously, so a scope never spans an
+ * await or a second request: the next request reads the repository as it is then. Only the read paths open one. */
+let scope: { repositories: Map<string, Memo<Repo>>; captures: Map<string, Memo<PipelineCandidate>> } | null = null;
+export function inRequest<T>(read: () => T): T {
+  if (scope) return read();
+  scope = { repositories: new Map(), captures: new Map() };
+  try {
+    const result = read();
+    if (result instanceof Promise) throw new Error("a request scope is synchronous: it cannot span an await");
+    return result;
+  } finally { scope = null; }
+}
+function remembered<T>(memo: Map<string, Memo<T>> | undefined, key: string, read: () => T): T {
+  const seen = memo?.get(key);
+  if (seen) { if ("error" in seen) throw seen.error; return seen.value; }
+  let entry: Memo<T>;
+  try { entry = { value: read() }; } catch (error) { entry = { error }; }
+  memo?.set(key, entry);
+  if ("error" in entry) throw entry.error;
+  return entry.value;
+}
+export function repository(checkout: string): Repo {
+  return remembered(scope?.repositories, checkout, () => readRepository(checkout));
+}
+function readRepository(checkout: string): Repo {
+  const [toplevel, commonDir] = git(checkout, ["rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir"]).split("\n");
+  if (!toplevel || !commonDir) throw new InboxError(409, "pipeline checkout or Git reference is unavailable", "pipeline_candidate_unavailable");
+  const top = realpathSync(toplevel);
+  const common = realpathSync(commonDir);
   const trees = git(top, ["worktree", "list", "--porcelain"]);
   const main = /^worktree (.+)$/m.exec(trees)?.[1];
   return { top, common, root: main ? realpathSync(main) : dirname(common) };
@@ -22,15 +50,18 @@ function ref(value: string): string {
   return value;
 }
 export function capture(checkout: string, base = "HEAD", candidate = "HEAD", fingerprintVersion: 1 | 2 = 2, priorPaths?: string[]): PipelineCandidate {
+  const key = JSON.stringify([checkout, base, candidate, fingerprintVersion, priorPaths ?? null]);
+  return structuredClone(remembered(scope?.captures, key, () => readCapture(checkout, base, candidate, fingerprintVersion, priorPaths)));
+}
+function readCapture(checkout: string, base: string, candidate: string, fingerprintVersion: 1 | 2, priorPaths?: string[]): PipelineCandidate {
   const repo = repository(checkout);
-  const head = git(repo.top, ["rev-parse", "--verify", `${ref(candidate)}^{commit}`]);
-  if (head !== git(repo.top, ["rev-parse", "HEAD"])) throw new InboxError(409, "candidate must be checked out; use an owned checkout at the pinned candidate", "pipeline_stale_candidate");
-  const baseSha = git(repo.top, ["rev-parse", "--verify", `${ref(base)}^{commit}`]);
+  const [head, current, baseSha, format, treeId] = git(repo.top, ["rev-parse", `${ref(candidate)}^{commit}`, "HEAD", `${ref(base)}^{commit}`, "--show-object-format", `${ref(candidate)}^{tree}`]).split("\n");
+  if (!head || !current || !baseSha || !format || !treeId) throw new InboxError(409, "pipeline checkout or Git reference is unavailable", "pipeline_candidate_unavailable");
+  if (head !== current) throw new InboxError(409, "candidate must be checked out; use an owned checkout at the pinned candidate", "pipeline_stale_candidate");
   const paths = git(repo.top, ["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", baseSha, "--"]).split("\0").filter(Boolean);
   const untracked = git(repo.top, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(Boolean);
   const changedPaths = [...new Set([...paths, ...untracked])].sort();
   const tree = treeEntries(repo.top, baseSha);
-  const format = git(repo.top, ["rev-parse", "--show-object-format"]);
   let bytes = 0;
   for (const path of changedPaths) {
     const file = resolve(repo.top, path);
@@ -51,7 +82,7 @@ export function capture(checkout: string, base = "HEAD", candidate = "HEAD", fin
   // receipts after a protected re-base; additions, deletions and modes still count.
   const fingerprintPaths = [...new Set([...changedPaths, ...(fingerprintVersion === 2 ? priorPaths ?? [] : [])])].sort();
   const fingerprint = intendedBytes(tree, fingerprintPaths, fingerprintVersion);
-  return { checkout: repo.top, repoRoot: repo.root, base: baseSha, head, tree: git(repo.top, ["rev-parse", `${head}^{tree}`]), fingerprint, changedPaths,
+  return { checkout: repo.top, repoRoot: repo.root, base: baseSha, head, tree: treeId, fingerprint, changedPaths,
     ...(fingerprintVersion === 2 ? { fingerprintVersion: 2 as const } : {}),
     ...(fingerprintPaths.length > changedPaths.length ? { fingerprintPaths } : {}) };
 }

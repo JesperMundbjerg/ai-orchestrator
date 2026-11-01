@@ -482,7 +482,11 @@ test("autonomous installed fallbacks never let main writes through when the runn
   assert.equal(await handler({ input: { command: "git status" } }, ctx), undefined);
 });
 
-test("installed guards call the real office CLI gate end to end in a scratch repo", { timeout: 60000 }, async (t) => {
+// Budget: ~25 gated hook/CLI calls, each answered by the in-process office, whose pipeline capture runs
+// ~30 synchronous `git` spawns per call (~800 per test; it was ~2600 before a request read the repository once).
+// That is ~17 s idle and ~35 s on a loaded machine. The time is git spawn cost, not waiting (no sleeps, polls or
+// retries), so it scales with machine load; the limit is slack for a suite sharing the CPU, not a target.
+test("installed guards call the real office CLI gate end to end in a scratch repo", { timeout: 120000 }, async (t) => {
   const s = scratch(t); const home = join(s.root, "office-home"); mkdirSync(home);
   const keys = ["HOME", "INBOX_DATA_DIR", "HERDR_SOCKET_PATH", "HERDR_BIN_PATH", "INBOX_CODEX_ACCOUNT_POLLING", "INBOX_PRESENCE_DISCOVERY", "INBOX_BROWSER_CLEANUP"];
   const saved = keys.map(k => process.env[k]);
