@@ -71,7 +71,8 @@ function project() {
   const [lead, crew] = o.world.state().agents;
   o.world.updateAgent(lead!.id, { teamId: team.id, role: "lead" });
   o.world.updateAgent(crew!.id, { teamId: team.id, role: "member" });
-  const fromOffice = () => o.world.messages.list().filter((m) => m.fromOffice);
+  // The notice to the founder about what finishing closed is not a message to the team (test/finish-herdr.test.ts).
+  const fromOffice = () => o.world.messages.list().filter((m) => m.fromOffice && !m.toFounder);
   return { ...repo, ...o, team, lead: o.world.state().agents.find((a) => a.id === lead!.id)!, crew: crew!, fromOffice };
 }
 

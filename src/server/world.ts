@@ -40,6 +40,7 @@ import { LeadRoles, ROLE_PATH_MAX_CHARS, ROLE_TEXT_MAX_CHARS, leadBrief, roleFil
 import { MERGE_PATH_MAX_CHARS, MERGE_TEXT_MAX_CHARS, MergeInstructions, mergeBrief, mergeFileProblem, mergeInstructionBody } from "./unlanded-merge.ts";
 import { Unlanded } from "./unlanded.ts";
 import { withOffline } from "../shared/waiting.ts";
+import { ensureWorkspaceRecords, FinishCleanup, type FinishScope, type PaneInfo, type WorkspaceInfo } from "./finish-cleanup.ts";
 import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, landingRef, linkedWorktrees, nameFor, notLanded, placeFor, processesIn, stopProcesses, uncommitted, type Checkout } from "./worktrees.ts";
 
 /** An agent a terminal multiplexer reports as running. */
@@ -64,12 +65,17 @@ export interface AgentSource {
   /** Tells you something, wherever you are working. */
   notify(title: string, body: string): Promise<void>;
   /** Makes a worktree with a workspace of its own and resolves with the pane a lead can start in. */
-  createWorktree(repoRoot: string, place: { path: string; branch: string; base: string | null; label: string }): Promise<{ paneId: string }>;
+  createWorktree(repoRoot: string, place: { path: string; branch: string; base: string | null; label: string }): Promise<{ paneId: string; alsoOpened?: string[] }>;
   /** Starts an agent in a pane. One stopped at a question while starting still counts: it is there, waiting on you. */
   startAgent(paneId: string, name: string, harness: Harness, args: string[]): Promise<void>;
   /** Reads the agent list again now, rather than waiting for the next change or poll. */
   refresh?(): Promise<void>;
   closePane(paneId: string): Promise<void>;
+  /** Every pane herdr has, plain shells included (`live` has only the agents); finishing a project looks for shells with it. */
+  panes?(): Promise<PaneInfo[]>;
+  workspaces?(): Promise<WorkspaceInfo[]>;
+  /** Closes one workspace, never its repository's whole group. */
+  closeWorkspace?(workspaceId: string): Promise<void>;
   /** Sets the label herdr shows for a pane: its office name (panenames.ts). */
   renamePane?(paneId: string, label: string): Promise<void>;
   /** Removes a worktree and closes its workspace. It refuses a worktree with uncommitted changes. */
@@ -208,6 +214,7 @@ export class World {
 
   constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date(), files = new SessionFiles()) {
     this.db = db;
+    ensureWorkspaceRecords(db);
     this.unpresented = new Unpresented(db);
     this.leadRoles = new LeadRoles(db);
     this.mergeInstructions = new MergeInstructions(db);
@@ -904,13 +911,15 @@ export class World {
     if (existsSync(place.path)) throw new InboxError(409, `${place.path} already exists`);
     const base = checkoutOf(repository.root)?.branch ?? null;
     let paneId: string;
+    let alsoOpened: string[] = [];
     try {
-      ({ paneId } = await this.source.createWorktree(repository.root, { path: place.path, branch: place.branch, base, label: name }));
+      ({ paneId, alsoOpened = [] } = await this.source.createWorktree(repository.root, { path: place.path, branch: place.branch, base, label: name }));
     } catch (err) {
       throw new InboxError(502, `herdr could not make the worktree: ${(err as Error).message}`);
     }
     const team = this.insertTeam({ name, purpose, handsTo, path: checkoutOf(place.path)?.top ?? place.path, branch: place.branch, standing: false });
     this.db.prepare("UPDATE teams SET lead_pane = ? WHERE id = ?").run(paneId, team.id);
+    for (const workspace of alsoOpened) this.recordWorkspace(workspace, team.id, repository.root);
     this.onChange("world");
     const next = handsTo ? this.team(handsTo).name : null;
     const brief = [
@@ -1111,23 +1120,42 @@ export class World {
   }
 
   /**
-   * Finishes a project: closes the agents working in its worktree and removes the worktree, and
-   * its branch once that is merged (an unmerged branch is kept, so no commit is lost). It refuses
+   * Finishes a project: closes what is the project's in herdr and removes the worktree, and its
+   * branch once that is merged (an unmerged branch is kept, so no commit is lost). It refuses
    * while someone is working there, and before closing anything while work has not landed:
    * anything uncommitted, or commits its integration branch lacks. Then the project's lead (or,
    * without one, whoever works in the worktree) is told to land it. `force` finishes past
-   * unlanded commits only, keeping the branch; uncommitted changes always refuse. A standing team
-   * is disbanded: its members go back to the lounge. Its lanes are never removed, only let go.
+   * unlanded commits only, keeping the branch; uncommitted changes always refuse. In herdr it
+   * closes the panes the office knows are the team's (lead, crew, panes opened for them), every
+   * pane working in the worktree, and the workspaces that leaves empty or that herdr opened
+   * beside the worktree when the office made it (`finish-cleanup.ts`); the result and a
+   * notice to the founder list what was closed and what was left. A standing team is
+   * disbanded: its members go back to the lounge. Its lanes are never removed, only let go.
    */
-  async deleteTeam(id: string, opts: { force?: boolean } = {}): Promise<{ ok: true; note: string }> {
+  async deleteTeam(id: string, opts: { force?: boolean } = {}): Promise<{ ok: true; note: string; closed: string[]; left: string[] }> {
     const team = this.team(id);
     if (this.db.prepare("SELECT 1 FROM work WHERE to_team_id = ? AND state = 'in_review'").get(id)) {
       throw new InboxError(409, `${team.name} still has work under review`);
     }
     const checkout = team.path ? checkoutOf(team.path) : null;
     if (!checkout) {
+      // Its worktree is gone, but the panes and workspace it had may not be.
+      let cleanup: FinishCleanup | null = null;
+      const nothing = { closed: [] as string[], left: [] as string[] };
+      if (!team.standing && team.path) {
+        if (this.source?.available()) {
+          cleanup = await FinishCleanup.plan(this.source, this.finishScope(team, team.path, null));
+          if (!cleanup.refusal) { await cleanup.closePanes().catch((err) => cleanup!.left.push(`its panes could not be closed: ${(err as Error).message}`)); await this.closeWorkspaces(team, cleanup); }
+          else cleanup.left.push(`nothing was closed: ${cleanup.refusal}`);
+        } else nothing.left.push("herdr is not running, so none of its panes or workspaces was looked at");
+      }
+      const done = cleanup ?? nothing;
+      const result = { closed: done.closed, left: done.left };
+      const detail = cleanup ? cleanup.summary() : result.left.length ? ` Left in herdr: ${result.left.join("; ")}.` : "";
       this.forget(team, { reason: "deleted" });
-      return { ok: true, note: team.standing ? `${team.name} is disbanded.` : `${team.name} is finished; its worktree was already gone.` };
+      const note = `${team.standing ? `${team.name} is disbanded.` : `${team.name} is finished; its worktree was already gone.`}${detail}`;
+      if (!team.standing) this.tellFounder(team, note);
+      return { ok: true, note, ...result };
     }
     const working = this.state().agents.filter((a) => a.teamId === id && a.status === "working");
     if (working.length) throw new InboxError(409, `${working.map((a) => a.name).join(" and ")} ${working.length === 1 ? "is" : "are"} still working on ${team.name}`);
@@ -1136,30 +1164,75 @@ export class World {
     const changes = uncommitted(checkout.top);
     const ahead = notLanded(checkout.repoRoot, checkout.top, landing.ref);
     if (changes || (ahead && !opts.force)) this.refuseUnlanded(team, checkout, inside, landing.name, changes, ahead);
-    if (!this.source?.available()) throw new InboxError(409, "herdr closes the project's agents and removes its worktree, and herdr is not running");
-    for (const a of this.state().agents.filter((x) => inside(x.cwd) && x.paneId)) {
+    if (!this.source?.available()) throw new InboxError(409, `herdr closes the project's agents and removes its worktree, and herdr is not running: nothing was closed or removed, and ${team.name}'s panes and workspaces stay as they are`);
+    // The team's own worktree is the only folder whose panes are the team's by place; a main checkout is shared.
+    const top = checkout.linked ? checkout.top : null;
+    const cleanup = await FinishCleanup.plan(this.source, this.finishScope(team, top, checkout.repoRoot));
+    if (cleanup.refusal) throw new InboxError(409, `${team.name} cannot be finished: ${cleanup.refusal}`);
+    const inLane = (cwd: string | null) => team.worktrees.some((l) => cwd === l || !!cwd?.startsWith(`${l}/`));
+    for (const a of this.state().agents.filter((x) => (top && inside(x.cwd)) || (x.teamId === id && !inLane(x.cwd))).filter((x) => x.paneId)) {
       const why = this.standingGuard(a);
       if (why) throw new InboxError(409, `${team.name} cannot be finished: ${why}`);
     }
     let stopped: string[] = [];
     try {
-      for (const a of this.source.live().filter((l) => inside(l.cwd))) await this.source.closePane(a.paneId);
-      // Whatever still runs there (a dev server outlives its pane) would keep writing into the folder being removed.
-      const left = processesIn(checkout.top);
-      await stopProcesses(left);
-      stopped = [...new Set(left.map((p) => p.command))];
-      await this.source.removeWorktree(checkout.repoRoot, checkout.top);
+      await cleanup.closePanes();
+      if (top) {
+        // Whatever still runs there (a dev server outlives its pane) would keep writing into the folder being removed.
+        const left = processesIn(checkout.top);
+        await stopProcesses(left);
+        stopped = [...new Set(left.map((p) => p.command))];
+        await this.source.removeWorktree(checkout.repoRoot, checkout.top);
+      }
     } catch (err) {
       throw new InboxError(502, `herdr could not remove ${checkout.top}: ${(err as Error).message}`);
     }
+    await this.closeWorkspaces(team, cleanup);
     const branch = team.branch ?? checkout.branch;
     // A branch with commits not on the integration branch stays, even when the main checkout has them.
-    const deleted = branch && !ahead ? deleteMergedBranch(checkout.repoRoot, branch) : false;
+    const deleted = top && branch && !ahead ? deleteMergedBranch(checkout.repoRoot, branch) : false;
     this.forget(team, { reason: "deleted" });
-    const about = !branch ? "" : deleted ? ` Branch ${branch} was merged and is deleted.`
+    const about = !branch || !top ? "" : deleted ? ` Branch ${branch} was merged and is deleted.`
       : ahead ? ` Branch ${branch} is kept: ${count(ahead, "commit is", "commits are")} not on ${landing.name} yet.` : ` Branch ${branch} is kept; its commits are on ${landing.name}.`;
     const also = stopped.length ? ` Stopped what was still running there: ${stopped.join(", ")}.` : "";
-    return { ok: true, note: `${team.name} is finished and ${checkout.top} removed.${also}${about}` };
+    const note = `${team.name} is finished and ${checkout.top} ${top ? "removed" : "kept (it is the repository's main checkout)"}.${also}${about}${cleanup.summary()}`;
+    this.tellFounder(team, cleanup.onlyWorktree() ? `${team.name} is finished: ${top ? "its worktree removed" : "its folder kept"}${cleanup.closed.length ? `, ${count(cleanup.closed.length, "pane")} closed` : ""}.` : note);
+    return { ok: true, note, closed: cleanup.closed, left: cleanup.left };
+  }
+
+  /** The records finishing `team` goes by: what the office knows is its own in herdr. */
+  private finishScope(team: Team, top: string | null, repoRoot: string | null): FinishScope {
+    const state = this.state();
+    return {
+      team: { id: team.id, name: team.name },
+      top,
+      repoRoot,
+      lanes: team.worktrees,
+      agents: state.agents.map((a) => ({ name: a.name, teamId: a.teamId, role: a.role, paneId: a.paneId, cwd: a.cwd })),
+      teamNames: new Map(state.teams.map((t) => [t.id, t.name])),
+      leadPane: (this.db.prepare("SELECT lead_pane FROM teams WHERE id = ?").get(team.id) as Row | undefined)?.lead_pane as string | null ?? null,
+      openedPanes: (this.db.prepare("SELECT pane_id, team_id FROM pane_teams").all() as Row[]).map((r) => ({ paneId: str(r.pane_id), teamId: str(r.team_id) })),
+      openedWorkspaces: (this.db.prepare("SELECT workspace_id, team_id, repo_root FROM office_workspaces").all() as Row[]).map((r) => ({ workspaceId: str(r.workspace_id), teamId: str(r.team_id), repoRoot: str(r.repo_root) })),
+      ownPane: process.env.HERDR_PANE_ID || null,
+    };
+  }
+
+  /** Closes the workspaces finishing leaves empty or that the office opened, then hands one still shared on to the repository's other projects. */
+  private async closeWorkspaces(team: Team, cleanup: FinishCleanup): Promise<void> {
+    const { handOn } = await cleanup.closeWorkspaces();
+    for (const { workspaceId, repoRoot } of handOn) {
+      for (const other of this.teams()) if (other.id !== team.id && !other.standing && this.repoOf(other) === repoRoot) this.recordWorkspace(workspaceId, other.id, repoRoot);
+    }
+  }
+
+  private recordWorkspace(workspaceId: string, teamId: string, repoRoot: string): void {
+    this.db.prepare("INSERT OR IGNORE INTO office_workspaces (workspace_id, team_id, repo_root, opened_at) VALUES (?, ?, ?, ?)").run(workspaceId, teamId, repoRoot, this.now().toISOString());
+  }
+
+  /** A line in the founder's messages saying what finishing closed and left, since the dialog that showed it is gone. */
+  private tellFounder(team: Team, note: string): void {
+    this.tx(() => this.messages.founderNotices.record(`${team.name} is finished`, note, [], this.now().getTime()));
+    this.onChange("world");
   }
 
   /**

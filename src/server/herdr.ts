@@ -17,6 +17,7 @@ import type { AgentSource, LiveAgent } from "./world.ts";
 import { StaleWorking } from "./stale.ts";
 import { AgentStartingError, agentIsStarting } from "./agent-starting.ts";
 import { nextSplit, type PaneRect } from "../shared/panes.ts";
+import type { PaneInfo, WorkspaceInfo } from "./finish-cleanup.ts";
 
 const run = promisify(execFile);
 const POLL_MS = 3000;
@@ -245,10 +246,16 @@ export class Herdr implements PresenceSource, AgentSource {
     }
   }
 
-  async createWorktree(repoRoot: string, place: { path: string; branch: string; base: string | null; label: string }): Promise<{ paneId: string }> {
+  async createWorktree(repoRoot: string, place: { path: string; branch: string; base: string | null; label: string }): Promise<{ paneId: string; alsoOpened: string[] }> {
     const base = place.base ? ["--base", place.base] : [];
+    // herdr groups a repository's worktree workspaces under the workspace of its main checkout and opens that too when it is not open yet:
+    // a workspace that appears beside the new one is the office's doing, which finishing the project must undo.
+    const before = await this.workspaces().catch(() => null);
     const created = await this.call<{ root_pane: { pane_id: string } }>(["worktree", "create", "--cwd", repoRoot, "--branch", place.branch, ...base, "--path", place.path, "--label", place.label, "--no-focus"]);
-    return { paneId: created.root_pane.pane_id };
+    const after = before ? await this.workspaces().catch(() => null) : null;
+    const known = new Set(before?.map((w) => w.workspaceId));
+    const alsoOpened = (after ?? []).filter((w) => !known.has(w.workspaceId) && !w.linked && w.checkoutPath === repoRoot).map((w) => w.workspaceId);
+    return { paneId: created.root_pane.pane_id, alsoOpened };
   }
 
   async startAgent(paneId: string, name: string, harness: Harness, args: string[]): Promise<void> {
@@ -264,6 +271,25 @@ export class Herdr implements PresenceSource, AgentSource {
 
   async closePane(paneId: string): Promise<void> {
     await this.call(["pane", "close", paneId]);
+  }
+
+  /** Every pane herdr has, shells included: `agent list` shows only the agents. */
+  async panes(): Promise<PaneInfo[]> {
+    const { panes } = await this.call<{ panes: Array<{ pane_id: string; workspace_id: string; tab_id?: string; cwd?: string; foreground_cwd?: string }> }>(["pane", "list"]);
+    return panes.map((p) => ({ paneId: p.pane_id, workspaceId: p.workspace_id, tabId: p.tab_id ?? null, cwd: p.cwd ?? null, foregroundCwd: p.foreground_cwd ?? null }));
+  }
+
+  async workspaces(): Promise<WorkspaceInfo[]> {
+    const { workspaces } = await this.call<{ workspaces: Array<{ workspace_id: string; label?: string; pane_count?: number; worktree?: { checkout_path?: string; repo_root?: string; is_linked_worktree?: boolean } | null }> }>(["workspace", "list"]);
+    return workspaces.map((w) => ({
+      workspaceId: w.workspace_id, label: w.label ?? "", paneCount: w.pane_count ?? 0,
+      checkoutPath: w.worktree?.checkout_path ?? null, repoRoot: w.worktree?.repo_root ?? null, linked: !!w.worktree?.is_linked_worktree,
+    }));
+  }
+
+  /** Closes one workspace. Never with `--group`, which would take the repository's other worktree workspaces with it. */
+  async closeWorkspace(workspaceId: string): Promise<void> {
+    await this.call(["workspace", "close", workspaceId]);
   }
 
   /**
