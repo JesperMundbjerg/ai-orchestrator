@@ -147,6 +147,16 @@ Changed paths and the intended-bytes fingerprint are recomputed against the new 
 
 Runs and the team briefing retain an append-only history with old/new base, reason, actor and time. Delivered or abandoned runs cannot be re-based. Keep `--client-id` before sending: exact retries return the original receipt after restart; changing caller/content conflicts. Base edits do not infer a revision from status, so retrying the same command/id is safe; an explicit `--revision` remains an optional optimistic lock. Re-base, history and replay receipt commit together, and an exact old receipt never authorizes delivery of a newer candidate.
 
+### Reviews of an identical patch carry over
+
+When the re-base moves the run to a new round and its change is identical (the same `git patch-id --verbatim` of the whole `base..candidate` diff, with the same paths, statuses and modes), the founder's acceptance carries over, and so do the reports of every step that declares `"carry": "same-patch"` in the graph. Nobody re-files a review with "patch-id identical" any more. Declare it only on steps that judge the diff alone, such as an architecture, code or design review:
+
+```json
+{ "id": "architecture", "label": "Architecture review of the diff", "kind": "step", "source": "agent:.claude/agents/architecture-reviewer.md", "evidence": ["report"], "carry": "same-patch" }
+```
+
+Only a step whose evidence is reports alone may declare it. Checks (with or without `command`), builds, visual captures and anything else that describes the merged tree are always done again, since that tree differs even when the patch is the same. A step whose reports alone completed it stays done; a report that was only reported stays reported, for the first mate to endorse. Each copy is a new record marked "Carried from round N · <old sha> · same change" in Runs, and the re-base history and briefing say "reports carried over from round N …" or "reports asked again: the change differs …". A run keeps the graph it started with, so the declaration applies to runs started after the graph has it.
+
 ## Planning evidence binds to the run, not changing implementation bytes
 
 A graph step may set `"binding": "run"` for a planning report or scope/assignment artifact. In the editor, select the step and choose **Evidence binding → Run · planning for this round and scope**. Omitted binding remains `candidate`; names such as `plan`, human instructions, `builtin:work` and generic reports are not reliable planning types and are never guessed. Conditions already describe declared run selections and are intrinsically run concepts. For example:
@@ -228,6 +238,10 @@ A step with `"by": "crew"` takes evidence only from an agent other than the team
 
 Graphs without `by` keep working as before. The pipeline editor offers “Evidence comes from: Crew only” on steps and defaults new Assigned-work steps to it.
 
+## Starting a run twice
+
+`inbox pipeline start` is safe to retry. A start for the same checkout, base, candidate commit and intended bytes, work round and workflow as a run that is still open returns that run, printing `pipeline: already started: run … is open …` on stderr, instead of a second run, also when several retries arrive at once. Another base or candidate, a changed workflow, or a closed run starts a new run. To start afresh on the same candidate, abandon the open run first.
+
 ## Closing an undeliverable run
 
 The team's **current first mate** can close an open wave that will not be delivered:
@@ -261,7 +275,7 @@ The team's lead asks, or any member while the team has no lead online. The found
 `inbox pipeline telemetry [RUN] [--team TEAM --kind gate|integration|publication|lease|attempt --since ISO]` prints read-only JSON (`GET /api/pipeline/telemetry`; fields in [API](API.md#pipeline-telemetry-read-only)):
 
 - **Gate results**: every pipeline gate answer, allowed or refused, with stable reason codes and the step concerned (`step_ready` on `checks`, `stale_candidate`, `pipeline_lead_required`, …), from hooks, the CLI and protected handoffs/reviews alike. A gate repeated with the same result within 10 minutes counts up `repeats` on one row.
-- **Integration**: each committed `branch` edit, as `rebase`, `repin` and/or `rebranch` (changed selections), with old and new base/head and whether the round moved.
+- **Integration**: each committed `branch` edit, as `rebase`, `repin` and/or `rebranch` (changed selections), with old and new base/head and whether the round moved, and on a re-base what an identical patch carried over (`carried`: the approval and the `same-patch` steps' reports, with their source round).
 - **Publication pending**: a gate allowed a dev push/land/publish for the candidate, but the office has not yet seen it on the published branch. It resolves as `landed` (with the wait), `superseded` (re-pinned) or `abandoned`. The office cannot see a failed push; an unresolved pending row is what that looks like.
 - **Coverage start**: one `pipeline.telemetry.started` marker (with the schema version), written the first time an office runs with telemetry and kept. Before it, the logged kinds are *not measured*, not zero; decision waits are derived from history and hold before it too.
 - **Decision waits**: for each founder approval a run presented, the time from that item revision to the founder's first Accept or Needs changes, and the step that endorses it.

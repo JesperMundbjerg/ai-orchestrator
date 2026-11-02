@@ -163,6 +163,8 @@ test("the unlanded watch never waits on git: a tick returns at once, and the sam
 
 test("an edit that waits for git keeps nothing from its background reruns: one run, one copied file, one answer", async (t) => {
   const o = await office(t);
+  // The setup's run is closed first: a start for an open run's candidate would return that run, not make this one.
+  o.p.abandon(o.lead, { runId: o.run.id, clientId: "drop-setup", notes: "a second run for the same candidate" });
   const slow = slowGit(t);
   slow.ms = 100;
   const retried = async (path: string, body: unknown) => {

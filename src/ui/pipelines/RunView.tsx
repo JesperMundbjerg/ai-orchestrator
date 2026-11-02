@@ -15,6 +15,7 @@ function Evidence({ evidence, failsAsOnBase }: { evidence: PipelineEvidence; fai
     {evidence.outputTail && <details><summary>Output (end)</summary><pre className="pipeline-output">{evidence.outputTail}</pre></details>}
     {evidence.onBase && <> · <span className="pipeline-baseline">Base record · ran on base {evidence.ranOn?.slice(0, 10) ?? "unknown"}</span></>}
     {!evidence.onBase && evidence.kind === "check" && evidence.exitCode !== 0 && <> · <span className="pipeline-baseline">{failsAsOnBase ? `fails as on base · exit ${evidence.exitCode}` : `failed · exit ${evidence.exitCode}`}</span></>}
+    {evidence.carriedFrom && <> · <span className="pipeline-carried" title={`Carried by the office over a re-base: the change is identical (patch ${evidence.carriedFrom.patch.slice(0, 12)}). Original record ${evidence.carriedFrom.evidenceId}.`}>Carried from {evidence.carriedFrom.round !== undefined ? `round ${evidence.carriedFrom.round}` : "an earlier round"} · {evidence.carriedFrom.head.slice(0, 10)} · same change</span></>}
     {" "}<small className="pipeline-evidence-by muted">Recorded by {evidence.byAgentId} · round {evidence.round} · {evidence.binding ?? "candidate"}-bound</small>
   </li>;
 }
@@ -39,7 +40,7 @@ export function RunView({ runs, selectedId, onSelect, refresh, busy }: {
       {run.archived && <p>Archived: {archivedText(run.archived)} · {run.archived.at}. Kept as recorded; it can never be edited or delivered.</p>}
       <code>Base {run.candidate.base}<br />Candidate {run.candidate.head}<br />Round {run.round} · ledger revision {run.revision}<br />First mate {run.leadId ?? "not assigned"}</code>
       {!!run.rebases?.length && <details><summary>Re-base history ({run.rebases.length})</summary><ul>{run.rebases.map((r, i) => <li key={i}>
-        <code>{r.oldBase} → {r.newBase}</code> · {r.notes}<br /><small>Recorded by {r.byAgentId} · {r.at}</small>
+        <code>{r.oldBase} → {r.newBase}</code> · {r.notes}{r.approval && <><br />{r.approval.text}</>}{r.evidence && <><br />{r.evidence.text}</>}<br /><small>Recorded by {r.byAgentId} · {r.at}</small>
       </li>)}</ul></details>}
       <p>{run.rationale || "No branch rationale recorded."}</p>
       <p className="pipeline-help">{Object.entries(run.selections).map(([field, value]) => `${run.graph.fields.find((f) => f.id === field)?.label ?? field}: ${String(value)}`).join(" · ")}</p>

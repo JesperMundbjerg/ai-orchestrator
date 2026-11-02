@@ -126,8 +126,10 @@ export async function pipelineCommand(args: string[], flags: Flags, session: Ses
         ...(flags.check ? [{ kind: "check", summary, command: flags.check, exitCode: flags["exit-code"] === undefined ? undefined : Number(flags["exit-code"]), ...(flags["on-base"] ? { onBase: true } : {}) }] : [])];
     }
   }
-  const result = await call<PipelineRun>(`/api/agent/pipeline/${operation}`, body);
+  const result = await call<PipelineRun & { note?: string }>(`/api/agent/pipeline/${operation}`, body);
   console.log(JSON.stringify(result, null, 2));
+  // A start the office matched to the open run it already made for this checkout, base and candidate says so.
+  if (result.note) console.error(`pipeline: ${result.note}`);
   if (checkFailed) throw new Error(`check failed: ${checkFailed}. Recorded, but it does not count; fix it and run ${inboxCommand(`pipeline check ${runId} ${node}`)} again.`);
 }
 export async function deliveryBinding(session: SessionInput, runId: string | undefined, delivery: "handoff" | "review", options: { candidate?: string; round?: string; node?: string } = {}): Promise<PipelineGateInput | undefined> {

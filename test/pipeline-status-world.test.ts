@@ -28,7 +28,8 @@ function office(t: { after(fn: () => void): void }, runs: number) {
   db.prepare("INSERT INTO team_pipelines (team_id, repo_root, graph) VALUES ('team', ?, ?)").run(root, JSON.stringify(graph));
   let computed = 0;
   const p = new Pipelines(db, () => { computed++; return state; }, { evidenceDir: join(dir, "evidence") });
-  for (let i = 0; i < runs; i++) p.start(lead, { clientId: `run-${i}` });
+  // Each run its own candidate: a start for the same candidate as an open run returns that run.
+  for (let i = 0; i < runs; i++) { writeFileSync(join(root, "sample.txt"), `synthetic candidate ${i}\n`); git("commit", "-qam", `candidate ${i}`); p.start(lead, { clientId: `run-${i}` }); }
   return { p, lead, computed: () => computed, reset: () => void (computed = 0) };
 }
 

@@ -2,7 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { randomUUID, createHash } from "node:crypto";
 import { copyFileSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import type { PipelineAbandonInput, PipelineArchive, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateReason, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineProvenance, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStatus, PipelineTeamView, PipelineTelemetryReport } from "../../shared/pipeline.ts";
+import type { PipelineAbandonInput, PipelineArchive, PipelineAssignInput, PipelineBranchInput, PipelineDoneInput, PipelineEvidence, PipelineEvidenceInput, PipelineGateInput, PipelineGateReason, PipelineGateResult, PipelineGraph, PipelineLayoutInput, PipelineOverrideInput, PipelineNode, PipelinePalette, PipelineProvenance, PipelineRebase, PipelineReportInput, PipelineRun, PipelineStartInput, PipelineStartResult, PipelineStatus, PipelineStep, PipelineTeamView, PipelineTelemetryReport } from "../../shared/pipeline.ts";
 import { archivedText, CHECK_OUTPUT_TAIL_MAX, nodeBinding, requiredCommands } from "../../shared/pipeline.ts";
 import { inboxCommand } from "../../shared/pipeline-cli.ts";
 import type { Team, WorldAgent, WorldState } from "../../shared/types.ts";
@@ -24,14 +24,14 @@ const thrownCode = (err: unknown): string => err instanceof InboxError ? err.cod
 const repin = (runId: string) => inboxCommand(`pipeline branch ${runId} --candidate HEAD --notes "why"`);
 const quoted = (commands: string[]) => commands.map(c => `\`${c}\``).join(", ");
 /**
- * Rebase first: a founder acceptance carried to a re-based candidate whose change is identical (`patchIdentity`).
- * The copy is the office's, made inside the re-base edit from an acceptance that counted at that moment; it names
- * the commit, base and acceptance it came from. Stored in the run snapshot beside the shared shapes.
+ * Rebase first: a founder acceptance carried to a re-based candidate whose change is identical (`patchIdentity`)
+ * names the candidate it came from in its provenance entry. Stored in the run snapshot beside the shared shape.
  */
-type Carried = { head: string; base: string; patch: string; evidenceId: string };
-type CarriedEvidence = PipelineEvidence & { carriedFrom?: Carried };
 type CarriedProvenance = PipelineProvenance & { carriedFrom?: string };
-type Rebase = NonNullable<PipelineRun["rebases"]>[number] & { approval?: { carried: boolean; from: string; onto: string; items: { itemId: string; revision: number }[]; text: string } };
+type Rebase = PipelineRebase;
+/** A step's evidence as it stood before a re-base, and what of it may carry over an identical patch. */
+type Accepted = { was: PipelineStep; node: PipelineNode; approvals: PipelineEvidence[] };
+type Reported = { was: PipelineStep; node: PipelineNode; reports: PipelineEvidence[]; done: boolean };
 /** Added to what a view shows while some of its Git facts are still being read (gitcache.ts). */
 const READING = "Some Git facts are still being read (the machine is busy): until they are, a step may show as stale or the repository as unavailable. Ask again in a few seconds.";
 type Config = { team_id: string; repo_root: string | null; graph: string | null; layout: string; revision: number; layout_revision: number; protected: number; observed_hash: string | null };
@@ -270,8 +270,8 @@ export class Pipelines {
       return result;
     });
   }
-  start(actor: WorldAgent, input: PipelineStartInput): PipelineRun {
-    return this.decide(["start", actor.id, input], () => this.replay(actor, "start", input, () => {
+  start(actor: WorldAgent, input: PipelineStartInput): PipelineStartResult {
+    return this.decide(["start", actor.id, input], () => this.replay(actor, "start", input, (): PipelineStartResult => {
       if (!actor.teamId) throw new InboxError(409, "join a team before starting a pipeline");
       this.lead(actor, actor.teamId); const view = this.teamView(actor.teamId);
       if (!view.graph || !view.repoRoot) throw new InboxError(409, "no usable pipeline; configure the team graph and repository first");
@@ -288,11 +288,29 @@ export class Pipelines {
       for (const node of view.graph.nodes) if (node.source && !Object.hasOwn(definitions, node.source)) {
         throw new InboxError(409, `source ${node.source} is unavailable; repair the workflow before starting a run`, "pipeline_source_unavailable");
       }
+      // A retried start (a new clientId, a lost response) finds the run it already made: same team, checkout, base,
+      // candidate commit and intended bytes, work round and workflow contract, still open and unarchived. Decided
+      // inside this transaction, so concurrent retries make one run between them (BEGIN IMMEDIATE serializes writers).
+      const same = this.sameStart(actor.teamId, candidate, input.workId ?? null, input.workRound ?? null, view.policyHash!, definitions);
+      if (same) return { ...this.get(same), note: `already started: run ${same} is open for this checkout, base ${short(candidate.base)} and candidate ${short(candidate.head)}; continue it (${inboxCommand(`pipeline status ${same}`)}), or abandon it before starting another` };
       const at = this.now().toISOString();
       const run: PipelineRun = { id: randomUUID(), teamId: actor.teamId, leadId: actor.id, graph: view.graph, policyHash: view.policyHash!, definitionHashes: definitions, revision: 0, round: 1, candidate,
         selections: {}, rationale: "", steps: view.graph.nodes.map(n => ({ nodeId: n.id, state: "inactive", assignedTo: null, completedBy: null, evidence: [], notes: "" })), state: "open", workId: input.workId ?? null, workRound: input.workRound ?? null, createdAt: at, updatedAt: at };
       return this.persist(run);
     }));
+  }
+  /**
+   * The open, unarchived run of this team already started for exactly this checkout, base, candidate commit and intended
+   * bytes, work round and workflow contract (policy and source hashes), or null. A changed workflow is a new run, not a retry.
+   */
+  private sameStart(teamId: string, candidate: PipelineRun["candidate"], workId: string | null, workRound: number | null, policy: string, definitions: Record<string, string | null>): string | null {
+    for (const row of this.db.prepare("SELECT snapshot FROM pipeline_runs WHERE team_id = ? ORDER BY created_at DESC").all(teamId)) {
+      const run = JSON.parse(String(row.snapshot)) as PipelineRun;
+      if (run.state === "open" && !run.archived && run.candidate.checkout === candidate.checkout && run.candidate.base === candidate.base
+        && run.candidate.head === candidate.head && run.candidate.fingerprint === candidate.fingerprint && (run.workId ?? null) === workId && (run.workRound ?? null) === workRound
+        && run.policyHash === policy && requestFingerprint(run.definitionHashes) === requestFingerprint(definitions)) return run.id;
+    }
+    return null;
   }
   private editable(actor: WorldAgent, runId: string, expectedRevision: number | undefined, lead = true): PipelineRun {
     // A landed candidate closes its run before any edit could reopen or re-pin it.
@@ -308,7 +326,7 @@ export class Pipelines {
   private edit(actor: WorldAgent, input: PipelineBranchInput): PipelineRun {
     // A former first mate may not retrieve an earlier re-base receipt.
     this.lead(actor, this.unarchived(this.raw(input.runId)).teamId);
-    let changed: { before: PipelineRun; after: PipelineRun } | null = null;
+    let changed: { before: PipelineRun; after: PipelineRun; rebase: Rebase | null } | null = null;
     const result = this.replay(actor, "branch", input, () => {
       if (!input.base && input.expectedRevision === undefined) throw new InboxError(400, "branch edit needs expectedRevision");
       const run = this.editable(actor, input.runId, input.expectedRevision);
@@ -339,37 +357,53 @@ export class Pipelines {
         run.steps.forEach(s => { s.completedBy = null; });
       }
       // A re-base that moved the run to a new round asks the founder again unless the change is identical.
-      if (rebase && !rescoped && run.round !== prior.round && run.candidate.head !== prior.candidate.head) this.carryApprovals(prior, run, rebase);
+      if (rebase && !rescoped && run.round !== prior.round && run.candidate.head !== prior.candidate.head) this.carryOver(prior, run, rebase);
       const before = this.raw(run.id);
       run.selections = choices; run.rationale = input.rationale;
-      const after = this.persist(run); changed = { before, after }; return after;
+      const after = this.persist(run); changed = { before, after, rebase }; return after;
     });
     // Noted once the edit committed; a replayed request changed nothing and notes nothing.
     if (changed) this.integration(actor, changed);
     return result;
   }
   /**
-   * Rebase first: a founder acceptance that counted for the run's previous candidate carries to the re-based one
-   * only when the change is identical (`patchIdentity` of old base..old candidate and new base..new candidate).
-   * Checks and every other candidate-bound step stay stale as the new round made them. A carried acceptance is a
-   * new evidence record and provenance entry naming where it came from; the founder's decision on that item
-   * revision is still read live, so a later Needs changes or withdrawal still revokes it. Any difference, or a
-   * comparison Git cannot make, carries nothing: the founder is asked again. Either way the re-base records it.
+   * Rebase first: what counted for the run's previous candidate carries to the re-based one only when the change is
+   * identical (`patchIdentity` of old base..old candidate and new base..new candidate, computed once for both):
+   * the founder's acceptances (carryApprovals) and the reports of steps that declare `carry: "same-patch"`
+   * (carryReports). Checks, artifacts and every other candidate-bound step stay stale as the new round made them.
    */
-  private carryApprovals(prior: PipelineRun, run: PipelineRun, rebase: Rebase): void {
-    const accepted = prior.steps.map(was => {
+  private carryOver(prior: PipelineRun, run: PipelineRun, rebase: Rebase): void {
+    const accepted: Accepted[] = []; const reported: Reported[] = [];
+    for (const was of prior.steps) {
       const node = prior.graph.nodes.find(n => n.id === was.nodeId)!;
-      return { was, node, approvals: was.evidence.filter(e => e.kind === "approval" && e.approval && this.currentEvidence(prior, node, e) && !this.provenanceProblem(prior, e)) };
-    }).filter(a => a.approvals.length);
-    if (!accepted.length) return;
+      const approvals = was.evidence.filter(e => e.kind === "approval" && e.approval && this.currentEvidence(prior, node, e) && !this.provenanceProblem(prior, e));
+      if (approvals.length) accepted.push({ was, node, approvals });
+      if (node.carry !== "same-patch" || node.kind !== "step") continue;
+      // Only reports that counted for the old candidate, by the one evaluator Runs, done and the gate use.
+      const counted = was.evidence.filter(e => !this.evidenceProblem(prior, node, e, true));
+      const reports = counted.filter(e => e.kind === "report");
+      if (reports.length) reported.push({ was, node, reports, done: Boolean(was.completedBy) && reports.length === was.evidence.length });
+    }
+    if (!accepted.length && !reported.length) return;
+    const before = patchIdentity(prior.candidate.checkout, prior.candidate.base, prior.candidate.head);
+    const after = patchIdentity(run.candidate.checkout, run.candidate.base, run.candidate.head);
+    const same = before !== null && before === after;
+    if (accepted.length) this.carryApprovals(prior, run, rebase, accepted, { before, after, same });
+    if (reported.length) this.carryReports(prior, run, rebase, reported, { before, after, same });
+  }
+  /**
+   * A founder acceptance that counted for the run's previous candidate carries to the re-based one only when the
+   * change is identical. A carried acceptance is a new evidence record and provenance entry naming where it came
+   * from; the founder's decision on that item revision is still read live, so a later Needs changes or withdrawal
+   * still revokes it. Any difference, or a comparison Git cannot make, carries nothing: the founder is asked again.
+   * Either way the re-base records it.
+   */
+  private carryApprovals(prior: PipelineRun, run: PipelineRun, rebase: Rebase, accepted: Accepted[], { before, after, same: carried }: { before: string | null; after: string | null; same: boolean }): void {
     const from = prior.candidate.head, onto = run.candidate.base, at = this.now().toISOString();
     const items = [...new Map(accepted.flatMap(a => a.approvals).map(e => [`${e.approval!.itemId}@${e.approval!.revision}`, { itemId: e.approval!.itemId, revision: e.approval!.revision }])).values()];
-    const before = patchIdentity(prior.candidate.checkout, prior.candidate.base, from);
-    const after = patchIdentity(run.candidate.checkout, onto, run.candidate.head);
-    const carried = before !== null && before === after;
     const text = carried ? `approval carried over from ${short(from)}: same change, rebased onto ${short(onto)}`
       : `approval asked again: the change differs from what the founder accepted at ${short(from)}${before && after ? "" : " (the two changes could not be compared)"}; present the rebased candidate ${short(run.candidate.head)}`;
-    rebase.approval = { carried, from, onto, items, text };
+    rebase.approval = { carried, from, onto, fromRound: prior.round, items, text };
     this.db.prepare("INSERT INTO events (at, actor, task_id, item_id, kind, detail) VALUES (?, 'office', NULL, NULL, ?, ?)")
       .run(at, carried ? "pipeline.approval.carried" : "pipeline.approval.reasked", JSON.stringify({ runId: run.id, round: run.round, from, to: run.candidate.head, oldBase: prior.candidate.base, base: onto, patch: { before, after }, items }));
     if (!carried) return;
@@ -379,20 +413,59 @@ export class Pipelines {
     }
     for (const { was, approvals } of accepted) {
       const step = run.steps.find(s => s.nodeId === was.nodeId)!;
-      const copies = approvals.map((e): CarriedEvidence => ({ ...e, id: randomUUID(), summary: `${text} (${e.summary})`, fingerprint: run.candidate.fingerprint, round: run.round, createdAt: at,
-        carriedFrom: { head: from, base: prior.candidate.base, patch: before!, evidenceId: e.id } }));
+      const copies = approvals.map((e): PipelineEvidence => ({ ...e, id: randomUUID(), summary: `${text} (${e.summary})`, fingerprint: run.candidate.fingerprint, round: run.round, createdAt: at,
+        carriedFrom: { head: from, base: prior.candidate.base, patch: before!, evidenceId: e.id, round: prior.round } }));
       // A step the founder's acceptance alone completed stays complete; anything else it held must be done again.
       if (was.completedBy && was.evidence.every(e => approvals.includes(e))) { step.evidence = copies; step.completedBy = was.completedBy; }
       else step.evidence.push(...copies);
     }
   }
-  private integration(actor: WorldAgent, { before, after }: { before: PipelineRun; after: PipelineRun }): void {
+  /**
+   * The reports of a step that declares `carry: "same-patch"` (a judgment of the diff alone, such as a code or design
+   * review) carry to the re-based candidate only when the change is identical. Each is a new evidence record written
+   * by the office, naming the candidate, base, round and record it came from; its attachment is the same stored,
+   * hash-checked file. A step those reports alone completed stays complete. Nothing else carries: checks (bound to
+   * the candidate commit), artifacts and builds describe the merged tree, which differs even when the patch does not.
+   */
+  private carryReports(prior: PipelineRun, run: PipelineRun, rebase: Rebase, reported: Reported[], { before, after, same: carried }: { before: string | null; after: string | null; same: boolean }): void {
+    const from = prior.candidate.head, onto = run.candidate.base, at = this.now().toISOString();
+    const names = reported.map(r => r.node.label).join(", ");
+    const text = carried ? `reports carried over from round ${prior.round} (${short(from)}): same change, rebased onto ${short(onto)} (${names})`
+      : `reports asked again: the change differs from what was reviewed at ${short(from)}${before && after ? "" : " (the two changes could not be compared)"} (${names})`;
+    const steps: NonNullable<Rebase["evidence"]>["steps"] = [];
+    if (carried) for (const { was, node, reports, done } of reported) {
+      const step = run.steps.find(s => s.nodeId === was.nodeId)!;
+      const copies = reports.map((e): PipelineEvidence => {
+        const id = randomUUID();
+        const copy: PipelineEvidence = { ...e, id, fingerprint: this.evidenceFingerprint(run, node), round: run.round, createdAt: at,
+          carriedFrom: { head: from, base: prior.candidate.base, patch: before!, evidenceId: e.id, round: prior.round } };
+        // The same stored file under the copy's id: evidenceFile still re-checks its hash on every read.
+        if (e.storedPath && e.sha256) {
+          this.db.prepare("INSERT INTO pipeline_files (id, run_id, file, sha256) VALUES (?, ?, ?, ?)").run(id, run.id, e.storedPath, e.sha256);
+          copy.fileUrl = `/api/pipeline/evidence/${id}`;
+        }
+        return copy;
+      });
+      if (done) { step.evidence = copies; step.completedBy = was.completedBy; }
+      else step.evidence.push(...copies);
+      steps.push({ nodeId: node.id, evidenceIds: copies.map((c, i) => ({ from: reports[i]!.id, to: c.id })), done });
+    }
+    rebase.evidence = { carried, from, onto, fromRound: prior.round, steps, text };
+    this.db.prepare("INSERT INTO events (at, actor, task_id, item_id, kind, detail) VALUES (?, 'office', NULL, NULL, ?, ?)")
+      .run(at, carried ? "pipeline.evidence.carried" : "pipeline.evidence.reasked", JSON.stringify({ runId: run.id, round: run.round, fromRound: prior.round, from, to: run.candidate.head, oldBase: prior.candidate.base, base: onto, patch: { before, after },
+        steps: carried ? steps : reported.map(r => ({ nodeId: r.node.id, evidenceIds: r.reports.map(e => ({ from: e.id })), done: false })) }));
+  }
+  private integration(actor: WorldAgent, { before, after, rebase }: { before: PipelineRun; after: PipelineRun; rebase: Rebase | null }): void {
     try {
       const changes = [...(after.candidate.base !== before.candidate.base ? ["rebase"] : []), ...(after.candidate.head !== before.candidate.head || after.candidate.fingerprint !== before.candidate.fingerprint ? ["repin"] : []),
         ...((after.scopeRevision ?? 0) !== (before.scopeRevision ?? 0) ? ["rebranch"] : [])];
       this.telemetry.note("integration", after.id, after.teamId, { agentId: actor.id, changes: changes.length ? changes : ["unchanged"], round: after.round, roundBumped: after.round !== before.round,
         scopeRevision: after.scopeRevision ?? 0, oldBase: before.candidate.base, newBase: after.candidate.base, oldHead: before.candidate.head, newHead: after.candidate.head,
-        fields: Object.keys(after.selections).filter(k => after.selections[k] !== before.selections[k]) });
+        fields: Object.keys(after.selections).filter(k => after.selections[k] !== before.selections[k]),
+        // What an identical patch carried over this re-base (or asked again), as the run's history records it.
+        ...(rebase?.approval || rebase?.evidence ? { carried: {
+          ...(rebase.approval ? { approval: { carried: rebase.approval.carried, fromRound: rebase.approval.fromRound, items: rebase.approval.items.length } } : {}),
+          ...(rebase.evidence ? { evidence: { carried: rebase.evidence.carried, fromRound: rebase.evidence.fromRound, steps: rebase.evidence.steps.map(s => ({ nodeId: s.nodeId, records: s.evidenceIds.length, done: s.done })) } } : {}) } } : {}) });
       if (after.candidate.head !== before.candidate.head) this.telemetry.note("publication", after.id, after.teamId, { how: "superseded", candidate: before.candidate.head });
     } catch { /* telemetry never fails an edit */ }
   }
@@ -787,7 +860,7 @@ export class Pipelines {
     const run = given === undefined ? view.runs.find(r => r.state === "open" && !r.archived) ?? null : given;
     const role = actorId === undefined || this.context(teamId).lead?.id === actorId ? "You own this pipeline: select branches, assign/start crew, collect evidence and mark steps done. Only you may deliver." : `Do your assigned step and use ${inboxCommand("pipeline report RUN NODE --report FILE --notes \"result\"")}; only your first mate may complete steps or deliver.`;
     return [`Pipeline: ${view.graph?.label ?? "unavailable"} (${view.source}, policy ${view.policyHash?.slice(0, 12) ?? "missing"}). ${role}`,
-      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.landed ? `: on ${run.landed.ref.replace(/^refs\/(remotes|heads)\//, "")} at ${short(run.landed.tip)}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map((r: Rebase) => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).${r.approval ? ` ${r.approval.text[0]!.toUpperCase()}${r.approval.text.slice(1)}.` : ""}`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}${s.state === "done" ? this.named(run, s.nodeId) : this.needs(run, s.nodeId, s.state)}${s.baselineFailures?.length ? `; fails as on base, not a pass: ${s.baselineFailures.join("; ")}` : ""}`)] : [`Start a bounded wave: ${inboxCommand("pipeline start --base BASE --candidate HEAD")}`]),
+      ...view.problems, ...(run ? [`Run ${run.id} (${run.state}${run.abandonment ? `: ${run.abandonment.notes}` : ""}${run.landed ? `: on ${run.landed.ref.replace(/^refs\/(remotes|heads)\//, "")} at ${short(run.landed.tip)}` : ""}${run.archived ? `; archived: ${archivedText(run.archived)}, never delivered from here` : ""}), revision ${run.revision}, round ${run.round}, base ${run.candidate.base}, candidate ${run.candidate.head}. Branches: ${JSON.stringify(run.selections)}.`, ...(run.rebases ?? []).map((r: Rebase) => `Re-base ${r.oldBase} → ${r.newBase}: ${r.notes} (by ${r.byAgentId}, ${r.at}).${r.approval ? ` ${r.approval.text[0]!.toUpperCase()}${r.approval.text.slice(1)}.` : ""}${r.evidence ? ` ${r.evidence.text[0]!.toUpperCase()}${r.evidence.text.slice(1)}.` : ""}`), ...run.steps.filter(s => s.state !== "inactive").map(s => `${s.nodeId}: ${s.state} [${nodeBinding(run.graph.nodes.find(n => n.id === s.nodeId)!)}-bound]${s.assignedTo ? ` (${s.assignedTo})` : ""}; evidence: ${run.graph.nodes.find(n => n.id === s.nodeId)?.evidence?.join(", ") ?? "branch/boundary"}${s.state === "done" ? this.named(run, s.nodeId) : this.needs(run, s.nodeId, s.state)}${s.baselineFailures?.length ? `; fails as on base, not a pass: ${s.baselineFailures.join("; ")}` : ""}`)] : [`Start a bounded wave: ${inboxCommand("pipeline start --base BASE --candidate HEAD")}`]),
       `Commands: ${inboxCommand("pipeline start|branch|abandon|assign|done|report|check|status|gate")}. No model is called; a gate allow is preflight, never a publication receipt.`].join("\n");
   }
   /** What a step that names its command still needs, for refusals and the briefing; empty for any other step. */

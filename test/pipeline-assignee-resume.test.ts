@@ -77,6 +77,8 @@ test("an online assignee is not called offline; a gone assignee is named from it
   o.state.agents.splice(o.state.agents.indexOf(o.old), 1);
   err = o.refusal(() => o.report(run, o.resumed));
   assert.ok(err.message.includes("Gal (08513cf0bb7b), who is offline"), err.message);
+  // A fresh run for the same candidate: the first is closed, since a start for an open run's candidate returns that run.
+  o.p.abandon(o.lead, { runId: run.id, clientId: "drop-first", notes: "restarted unassigned" });
   run = o.start();
   err = o.refusal(() => o.report(o.p.get(run.id), o.resumed));
   assert.equal(err.code, "pipeline_not_assignee");

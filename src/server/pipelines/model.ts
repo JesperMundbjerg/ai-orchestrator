@@ -91,6 +91,9 @@ export function validateGraph(input: unknown, options: { allowUnreferencedFields
     if (n.binding !== undefined && n.binding !== "run" && n.binding !== "candidate") bad("binding must be run or candidate");
     if (n.binding === "run" && (kind === "approval" || kind === "delivery" || evidence.some(e => ["check", "review", "approval"].includes(e)))) bad("checks, reviews, approvals and delivery must remain candidate-bound");
     if (n.by !== undefined && (n.by !== "crew" || kind !== "step")) bad('"by" is "crew" and belongs to a step');
+    // Only what cannot change when the base moves under an identical patch: a judgment of the diff, in reports.
+    if (n.carry !== undefined && (n.carry !== "same-patch" || kind !== "step" || !evidence.length || evidence.some(e => e !== "report") || n.command !== undefined))
+      bad('"carry" is "same-patch" and belongs to a step whose evidence is reports only: checks, artifacts, reviews and approvals depend on the merged tree or have their own rule');
     if (kind === "condition" && !fieldMap.has(n.field as string)) bad("condition needs a declared field");
     if (kind === "delivery" ? !["handoff", "review", "dev"].includes(n.delivery as string) : n.delivery !== undefined) bad("only delivery nodes may name a delivery boundary");
     if ((kind === "step" || kind === "approval") && (typeof n.source !== "string" || !n.source.trim())) bad("step/approval needs a palette source");
@@ -101,6 +104,7 @@ export function validateGraph(input: unknown, options: { allowUnreferencedFields
       ...(n.source !== undefined ? { source: text(n.source) } : {}), ...(n.field !== undefined ? { field: id(n.field) } : {}),
       ...(kind === "delivery" ? { delivery: n.delivery as "handoff" | "review" | "dev" } : {}), ...(n.instructions !== undefined ? { instructions: text(n.instructions) } : {}),
       ...(n.by !== undefined ? { by: "crew" as const } : {}),
+      ...(n.carry !== undefined ? { carry: "same-patch" as const } : {}),
       ...(n.command !== undefined ? { command: commandField(n.command, evidence) } : {}) };
   });
   const nodeMap = new Map(nodes.map(n => [n.id, n]));

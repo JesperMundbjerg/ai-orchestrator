@@ -49,6 +49,14 @@ export interface PipelineNode {
    * Absent: anyone on the team, as before. Steps only.
    */
   by?: "crew";
+  /**
+   * `"same-patch"`: this step judges only the change itself (a code or design review of the diff), so its
+   * counted reports carry to a re-based candidate whose patch is identical (`git patch-id --verbatim` of the
+   * whole base..candidate diff, with the same paths, statuses and modes). Only a step whose evidence is reports
+   * alone may set it: checks, artifacts (captures, builds), cross-team reviews and approvals depend on the
+   * merged tree or have their own rule. Absent: nothing carries, as before. Steps only.
+   */
+  carry?: "same-patch";
 }
 /** The commands a node requires, trimmed; empty when the node does not name one. */
 export function requiredCommands(node: Pick<PipelineNode, "command">): string[] {
@@ -214,6 +222,26 @@ export interface PipelineEvidence extends PipelineEvidenceInput {
   storedPath?: string;
   /** For an onBase check: the base commit it was recorded against. */
   ranOn?: string;
+  /**
+   * Written by the office, never by an agent: this record is a copy, carried over a re-base because the change
+   * is identical. It names the candidate, base, round and evidence record it came from and the patch identity.
+   */
+  carriedFrom?: PipelineCarriedFrom;
+}
+export interface PipelineCarriedFrom { head: string; base: string; patch: string; evidenceId: string; round?: number }
+/** What a re-base carried over, or asked again, for the run's approvals or its `carry: "same-patch"` steps. */
+export interface PipelineRebaseCarry {
+  carried: boolean;
+  from: string;
+  onto: string;
+  /** The round the carried evidence was recorded in. */
+  fromRound?: number;
+  text: string;
+}
+export interface PipelineRebase {
+  oldBase: string; newBase: string; notes: string; byAgentId: string; at: string;
+  approval?: PipelineRebaseCarry & { items: { itemId: string; revision: number }[] };
+  evidence?: PipelineRebaseCarry & { steps: { nodeId: string; evidenceIds: { from: string; to: string }[]; done: boolean }[] };
 }
 export interface PipelineStep {
   nodeId: string;
@@ -255,7 +283,7 @@ export interface PipelineRun {
   /** Terminal closure, without deleting the candidate, graph or evidence. */
   abandonment?: { notes: string; byAgentId: string; at: string };
   /** Append-only re-base history, retained with evidence even after closure. */
-  rebases?: { oldBase: string; newBase: string; notes: string; byAgentId: string; at: string }[];
+  rebases?: PipelineRebase[];
   /** What this run put in front of the founder, and work it handed over, at which round and
    * selection scope. An approval or review verdict authorizes only that run, round, scope and
    * intended bytes. Runs recorded before this field rely on the binding's run and bytes alone. */
@@ -349,6 +377,11 @@ export interface PipelineDoneInput extends PipelineReportInput {
   /** Existing crew reports to endorse; supplied evidence is added atomically. */
   evidenceIds?: string[];
 }
+/**
+ * POST /api/agent/pipeline/start: the run. A start for the same team, checkout, base, candidate head and work
+ * round as an open, unarchived run returns that run with `note` (never stored) instead of a second run.
+ */
+export type PipelineStartResult = PipelineRun & { note?: string };
 /** POST /api/agent/pipeline/:start|branch|abandon|assign|done|report|status|gate */
 export type PipelineAgentRequest<T> = T & { session: SessionInput };
 export interface PipelineStatusInput { runId?: string }
