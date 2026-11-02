@@ -71,6 +71,14 @@ export type CommentVerdict = (typeof COMMENT_VERDICTS)[number];
 
 /** Nothing moves a comment out of these. */
 export const CLOSED_COMMENT_STATUSES: readonly PageCommentStatus[] = ["fixed", "declined", "withdrawn"];
+
+/**
+ * Nobody has anything left to do on it: withdrawn, declined, or fixed and checked by the founder (either verdict:
+ * "still wrong" opens a follow-up comment that carries on). A fixed comment still waiting for the check is not done.
+ */
+export function isDoneComment(c: { status: PageCommentStatus; verification: CommentVerdict | null }): boolean {
+  return c.status === "withdrawn" || c.status === "declined" || (c.status === "fixed" && c.verification !== null);
+}
 export const KIND_MAX = 40;
 /** The suggestions the widget offers; any short word is accepted. */
 export const SUGGESTED_KINDS: readonly string[] = ["bug", "copy", "idea", "unsure"];
