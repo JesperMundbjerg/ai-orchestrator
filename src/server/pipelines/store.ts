@@ -15,6 +15,7 @@ import { capture, committedFingerprint, inRequest, inScope, isAncestor, laneChec
 import { isGitPending, outsidePass, rethrowPending, speculating } from "../gitcache.ts";
 import { founderDecision, presentedBy } from "./approval.ts";
 import { PipelineTelemetry } from "./telemetry.ts";
+import { notAssignee, type Named } from "./assignee.ts";
 
 const short = (sha = "") => sha.slice(0, 10);
 /** A refusal thrown rather than returned, as a telemetry reason code. */
@@ -435,7 +436,7 @@ export class Pipelines {
       const { edges } = activation(run.graph, run.selections);
       const blocked = run.graph.edges.some(e => e.to === node.id && edges.has(e.id) && live.steps.find(s => s.nodeId === e.from)?.state !== "done");
       if (!["ready", "reported", "stale"].includes(status.state) || blocked || (nodeBinding(node) === "candidate" && !sameCandidate(run.candidate))) throw new InboxError(409, "step is inactive, blocked or candidate is stale", "pipeline_step_blocked");
-      if (!done && actor.id !== live.leadId && step.assignedTo !== actor.id) throw new InboxError(403, "report only your assigned step");
+      if (!done && actor.id !== live.leadId && step.assignedTo !== actor.id) throw notAssignee(run.id, node, actor, step.assignedTo ? this.whoIs(step.assignedTo) : null, live.leadId ? this.whoIs(live.leadId) : null);
       if (!input.notes?.trim()) throw new InboxError(400, "record the result or lead disposition");
       if (node.by === "crew" && actor.id === live.leadId && (input.evidence ?? []).length) throw new InboxError(403, `${node.label} (${node.id}) is crew work: the first mate delegates and does not build or repair, so evidence you submit for it is refused. Hand it to a crew member (${inboxCommand(`pipeline assign ${run.id} ${node.id} AGENT`)}); they report with ${inboxCommand(`pipeline report ${run.id} ${node.id} --report FILE --notes "result"`)}, and you then complete it with done, endorsing their report.`, "pipeline_crew_work");
       const additions = (input.evidence ?? []).map(e => this.evidence(actor, run, e, created, node));
@@ -455,6 +456,13 @@ export class Pipelines {
       } else step.evidence.push(...additions);
       step.notes = input.notes; return this.persist(run);
     }); if (speculating()) discard(); return recorded; } catch (err) { for (const file of created) try { unlinkSync(file); } catch { /* transaction rolled back; cleanup only our copied files */ } throw err; }
+  }
+  /** An agent id as a refusal names it: from the office now, else its record (offline), else unknown. */
+  private whoIs(id: string): Named {
+    const now = this.world().agents.find(a => a.id === id);
+    if (now) return { id, name: now.name, offline: now.status === "offline", known: true };
+    const row = this.db.prepare("SELECT name FROM world_agents WHERE id = ?").get(id) as { name: string } | undefined;
+    return { id, name: row?.name ?? id, offline: true, known: Boolean(row) };
   }
   private siblings(run: PipelineRun, node: PipelineNode): PipelineEvidence[] {
     return run.steps.find(s => s.nodeId === node.id)?.evidence ?? [];
