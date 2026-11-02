@@ -15,7 +15,6 @@ import type {
   ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, SwitchesView, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
 import { serviceUrl } from "../shared/agent-client.ts";
-import { FRAMED_STORY, STORY_MAX_CHARS, STORY_PROMPT, framedStory, storyIntro, storyLine } from "../shared/story.ts";
 import { Activity } from "./activity.ts";
 import { ReviewFallback } from "./review-fallback.ts";
 import { DEFAULT_LEAD, type CrewChoice } from "../shared/crewtree.ts";
@@ -328,8 +327,6 @@ export class World {
         ...a,
         id: str(row.id),
         name: str(row.name),
-        story: row.story ? str(row.story) : null,
-        storyAsk: !row.story || (Number(row.story_prompt ?? 1) < STORY_PROMPT && Number(row.story_asked ?? 1) < STORY_PROMPT),
         project: (a.cwd ? this.checkout(a.cwd)?.repoName : null) ?? projectOfTask.get(a.taskIds[0] ?? "") ?? null,
         branch: (a.cwd ? this.checkout(a.cwd)?.branch : null) ?? null,
         teamId: row.team_id ? str(row.team_id) : null,
@@ -706,19 +703,6 @@ export class World {
     return found;
   }
 
-  /** An agent writes only its own office note; never interpreted as HTML or Markdown. */
-  setStory(session: SessionInput, text: unknown): { story: string } {
-    if (typeof text !== "string") throw new InboxError(400, "story must be plain text");
-    const story = Array.from(text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim()).slice(0, STORY_MAX_CHARS).join("");
-    if (!story) throw new InboxError(400, "story must not be empty");
-    if (framedStory(story)) throw new InboxError(400, FRAMED_STORY);
-    if (!session || typeof session !== "object") throw new InboxError(400, "story needs the agent's session");
-    const me = this.resolve(session);
-    this.db.prepare("UPDATE world_agents SET story = ?, story_prompt = ? WHERE id = ?").run(story, STORY_PROMPT, me.id);
-    this.onChange("world");
-    return { story };
-  }
-
   /**
    * The office telling a project's lead something it saw, such as a headless browser left running.
    * False when the project has no lead to tell.
@@ -749,8 +733,6 @@ export class World {
       return `${a.name}${a.role === "lead" ? " (lead)" : ""}: ${a.status}${a.doing ? `, ${a.doing}` : ""}${standing}`;
     };
     const lines = [`You are ${me.name} (${me.harness}${me.cwd ? `, ${me.cwd}` : ""}).`];
-    if (me.story) lines.push(storyLine(me.story));
-    if (me.storyAsk) lines.push(storyIntro(me.id, Boolean(me.story)));
     for (const stall of this.leadWatch.all().filter((st) => st.blockingAgentIds.includes(me.id))) {
       lines.push(`${stall.teamName} has no lead online${stall.leadName ? ` (${stall.leadName} is offline)` : ""}: what you are waiting on from it has waited ${Math.floor((this.now().getTime() - Date.parse(stall.since)) / 60_000)} min. The founder has been asked to make someone there lead.`);
     }
@@ -947,7 +929,6 @@ export class World {
       `You run the project "${name}", working in this worktree (branch ${place.branch}, from ${base ?? "the main checkout"}).`,
       purpose ? `The project: ${purpose}` : "",
       firstMate(this.leadStart(team)),
-      storyIntro(),
       this.pipelines.brief(team.id),
       withInboxPath('`inbox team` shows your office name, your crew and what waits for you; `inbox say NAME "text"` reaches anyone in the office.'),
       next ? withInboxPath(`When the work is done, hand it to ${next} for review: inbox handoff "title" --summary "what was done, where, how to check it".`) : "",

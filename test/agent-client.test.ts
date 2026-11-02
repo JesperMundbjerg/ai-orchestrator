@@ -182,7 +182,7 @@ test("named office reporting operations send their typed payloads and decode res
     bodies.push({ path, body: JSON.parse(init.body as string) });
     const responses: Record<string, unknown> = {
       "/api/agent/team": { agentId: "agent", text: "Your crew" }, "/api/agent/crew": { text: "Crew guide" },
-      "/api/agent/pane": { recorded: true }, "/api/agent/story": { story: "A made-up note" },
+      "/api/agent/pane": { recorded: true },
       "/api/agent/events": { ok: true }, "/api/agent/usage": { changed: true }, "/api/agent/effort": { request: null },
     };
     return json(responses[path]);
@@ -190,12 +190,11 @@ test("named office reporting operations send their typed payloads and decode res
   assert.equal((await client.team()).agentId, "agent");
   assert.equal((await client.crew()).text, "Crew guide");
   assert.equal((await client.pane({ paneId: "pane" })).recorded, true);
-  assert.equal((await client.story({ text: "A made-up note" })).story, "A made-up note");
   assert.equal((await client.events({ events: [{ kind: "idle" }] })).ok, true);
   assert.equal((await client.usage({ provider: "codex", limits: [{ usedPercent: 10, resetsAt: "1700000000" }] })).changed, true);
   assert.equal((await client.effort({ report: { current: "high", levels: ["low", "high"] } })).request, null);
   assert.deepEqual(bodies[2], { path: "/api/agent/pane", body: { session, paneId: "pane" } });
-  assert.deepEqual(bodies[4], { path: "/api/agent/events", body: { session, events: [{ kind: "idle" }] } });
+  assert.deepEqual(bodies[3], { path: "/api/agent/events", body: { session, events: [{ kind: "idle" }] } });
 });
 
 test("legacy exports retain decoded results and typed errors", async (t) => {

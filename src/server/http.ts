@@ -117,7 +117,6 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/uploads$/, validation.uploadSchema, (_r, b) => inbox.uploads.save(b)),
     // The office world
     route("GET", /^\/api\/world$/, emptySchema, () => needWorld().state()),
-    route("POST", /^\/api\/agent\/story$/, protocol.story.request, (_r, b) => needWorld().setStory(b.session, b.text)),
     route("GET", /^\/api\/p\/([a-z][a-z0-9-]*)\/queue$/, emptySchema, (_r, _b, [project]) => projectQueue(needWorld().state(), project!, opts.standing?.registered)),
     // Standing lanes whose project declares an attach command: checked when read, recovered only when asked.
     route("GET", /^\/api\/lanes$/, emptySchema, () => needStanding().list()),

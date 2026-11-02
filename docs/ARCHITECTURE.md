@@ -33,7 +33,7 @@ Pi extension ──────────┘                        │
 | `src/server/crewtree.ts`, `crewtree.default.json`; `src/shared/crewtree.ts` | Authoritative crew-choice JSON, seed, validation and selection rules |
 | `src/server/usage.ts`, `codexaccount.ts`; `src/shared/usage.ts` | Local transcript/cache parsing, token attribution, persisted latest meter readings/pause notices, optional authenticated account read; no model inference |
 | `src/server/herdr.ts`, `machine.ts` | Concrete terminal presence/prompt/focus/pane/worktree adapter; optional local process watcher and verified headless-main-process signalling |
-| `src/shared/types.ts`, pure shared rule modules | Public/domain DTOs and cross-client decisions, panes, page/story/review/slug/waiting rules. The shared directory is **not uniformly browser-safe** |
+| `src/shared/types.ts`, pure shared rule modules | Public/domain DTOs and cross-client decisions, panes, page/review/slug/waiting rules. The shared directory is **not uniformly browser-safe** |
 | `src/shared/agent-client.ts` | Node/environment-aware injectable typed HTTP client, structured transport errors, cancellation; no automatic mutating retries |
 | `src/cli/`, `bin/inbox` | Agent commands, hook/statusline plumbing and direct herdr pane creation (`pane.ts`); provider command handling is not entirely centralized in the server |
 | `integrations/pi/` | Session registration, reports, actual receipt-correlated reply delivery/acknowledgement and effort control |
@@ -53,7 +53,7 @@ The service classes mix rules, SQL and effects; `createInboxServer()` currently 
 | **Standing team** | A `Team` without an owned primary checkout; members may work anywhere, and it can own additional worktrees |
 | **Project key** | Adapter `project` slug in `/api/p/:project`; not either UUID/id above |
 | **Session task** | `Task`, addressed by `(harness, sessionId)`; memory/review context, not a schedulable unit |
-| **Office agent** | Durable `world_agents` record derived from harness/checkout/provider name, preserved across identity takeover. Its id anchors messages, story and placement |
+| **Office agent** | Durable `world_agents` record derived from harness/checkout/provider name, preserved across identity takeover. Its id anchors messages and placement |
 | **Office name** | Unique human-readable display name from the pool or a rename; not the herdr agent name or Pi session `/name` label |
 | **Review item** | Versioned Decide/Try/Milestone request owned by a session task; founder answers it |
 | **Review work** | `Work` handed between teams, with reviewing team, verdict and rounds; agents review it, not the founder inbox |
@@ -70,7 +70,7 @@ Commands/receipts need different treatment from observations/caches. The table r
 | State | Authority/lifetime | Restart/recovery |
 |---|---|---|
 | Repositories, session tasks, items/revisions, replies, history/evidence metadata | Durable SQLite | Reopen preserves ids/revisions and stale checks; files are separate evidence assets |
-| Agent identity, office names/stories, placements, teams/worktree ownership, pane-team records | Durable SQLite | Reconciled against new observations; missing checkouts can release records, but never pipeline runs, which are archived with their team. Pane-team association expires after consumption or one day |
+| Agent identity, office names, placements, teams/worktree ownership, pane-team records | Durable SQLite | Reconciled against new observations; missing checkouts can release records, but never pipeline runs, which are archived with their team. Pane-team association expires after consumption or one day |
 | Messages, fixed recipients, work rounds/verdicts and replay receipts/results | Durable SQLite; atomic use-case commits | Recipients do not change on retry. Work mutation and actionable message roll back together; exact replay returns original work-round result |
 | Reply claim transport/owner | Durable before dispatch | Interrupted pane/legacy claims become failed/may-have-arrived, never automatically handed to an integration. Integration claims remain re-pollable with deliveryId deduplication |
 | Message `sending` claim | Durable conditional claim | Marked failed/may-have-arrived at Messages construction; explicit Retry can duplicate receipt. Definite pre-submission inactive-agent refusal alone gets bounded startup requeue |
@@ -98,7 +98,7 @@ herdr is the only concrete terminal provider shipped. Narrow behavior interfaces
 | Submit/revise, evidence, founder answers, inbox/board | Works with explicit session identity | Same |
 | Live integration / boundary hook / manual pull replies | Works, exact-session polling/ack | Same, preferred over terminal fallback |
 | Tool/helper/model/session-name reports, session-only effort | Works when integration reports capabilities | Same |
-| Office identities from submitted tasks, names/stories/team records | Available, with unknown/offline presence | Adds agents that never submitted and observed status |
+| Office identities from submitted tasks, names/team records | Available, with unknown/offline presence | Adds agents that never submitted and observed status |
 | Presence, Open conversation, stale-screen observation | Unknown/unavailable | Needs continuous discovery opt-in and usable socket/CLI |
 | Office messages / handoffs / review messages | Stored; terminal deliveries wait | Guarded prompt to idle/done recipient with uptake confirmation |
 | Idle-session fallback founder replies | Wait for integration/hook/pull | May be durably claimed and prompted, with uptake confirmation |
@@ -118,6 +118,6 @@ The three startup settings default to **off**: `INBOX_PRESENCE_DISCOVERY`, `INBO
 - Switch intent/result gaps and held brief: `test/switch-boundaries.test.ts`, `switch.test.ts`.
 - Recipient/placement/lead/lane rules: `test/world.test.ts`, `pane-team.test.ts`, `queue.test.ts`, `all-leads.test.ts`.
 - Advisory latches and machine controls: `test/loops.test.ts`, `undelivered.test.ts`, `unpresented.test.ts`, `machine.test.ts`, `startup-privacy.test.ts`.
-- Observation/controls/display safety: `test/effort.test.ts`, `usage.test.ts`, `story.test.ts`, `names.test.ts`, `review-fallback.test.ts`, `pi-delivery.test.ts`.
+- Observation/controls/display safety: `test/effort.test.ts`, `usage.test.ts`, `names.test.ts`, `review-fallback.test.ts`, `pi-delivery.test.ts`.
 
 Run `npm run typecheck`, `npm test`, `npm run build` for the source-checkout baseline. Standalone browser scripts are separate checks, not included in `npm test`; use free ports, temporary HOME/data, and disabled herdr/account/process integrations. Mocked and browser tests are not evidence that arbitrary versions of real harnesses or herdr support the required operations.

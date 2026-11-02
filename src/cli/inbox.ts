@@ -16,7 +16,6 @@ import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
 import { projectRoot } from "../shared/project.ts";
 import { AGENT_COMMENT_STATUSES, type PageComment } from "../shared/pagecomments.ts";
-import { storyIntro } from "../shared/story.ts";
 import { changedFiles, parseWrites, strayFiles } from "../shared/surface.ts";
 import type { AgentSwitch, StandingLane, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, Team, TeamBrief, UnlandedAnswer, UnlandedWork, Work } from "../shared/types.ts";
 
@@ -100,8 +99,6 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
   inbox unlanded release [--path DIR]
                                   end the hold: the reminders go on, their clocks starting again now
                                   (your own worktree, or any worktree of the team you lead)
-  inbox story "…"                 save your own short personal story (plain text, capped at 800 characters)
-  ${storyIntro()}
   inbox crew                      the active crew preset and guide: which harness and model to start, under the founder's switch
   inbox say NAME "text"           message an agent, project, team or a project's lane by name; it arrives when they are free
   inbox say founder "text"        answer the founder in a sentence or two; shown beside you in the office
@@ -510,11 +507,6 @@ async function main(argv: string[]): Promise<void> {
     }
     case "unlanded":
       return unlandedCommand(arg, parsed.positionals[2]);
-    case "story": {
-      if (!arg) throw new Error('inbox story needs your story: inbox story "…"');
-      const saved = await call<{ story: string }>("/api/agent/story", { session: session(), text: arg });
-      return console.log(`Office story saved: ${saved.story}`);
-    }
     case "pipeline":
       return pipelineCommand(parsed.positionals.slice(1), flags, session());
     case "team":

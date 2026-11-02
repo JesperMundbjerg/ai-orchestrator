@@ -131,7 +131,6 @@ export const repliesSchema = object({ session: sessionSchema, mode: optional(one
 export const ackSchema = object({ session: sessionSchema, deliveryId: nonempty, error: maybeText });
 export const closeItemSchema = object({ session: sessionSchema, item: nonempty });
 export const paneSchema = object({ session: sessionSchema, paneId: nonempty });
-export const storySchema = object({ session: sessionSchema, text: nonempty });
 export const saySchema = object({ session: sessionSchema, to: nonempty, text: nonempty, clientId: optional(nonempty) });
 export const handoffSchema = object({ session: sessionSchema, title: maybeText, summary: nonempty, to: maybeText, work: maybeText, clientId: optional(nonempty) });
 export const reviewSchema = object({ session: sessionSchema, work: nonempty, verdict: oneOf(["accept", "changes"]), notes: maybeText,
@@ -222,7 +221,6 @@ export const agentOperations = {
   team: post("/api/agent/team", sessionRequestSchema, object({ agentId: text, text }) satisfies Schema<TeamBrief>),
   pane: post("/api/agent/pane", paneSchema, object({ recorded: boolean })),
   crew: post("/api/agent/crew", emptySchema, object({ text })),
-  story: post("/api/agent/story", storySchema, object({ story: text })),
   say: post("/api/agent/say", saySchema, messageResponse),
   events: post("/api/agent/events", eventsSchema, okResponse),
   usage: post("/api/agent/usage", usageSchema, object({ changed: boolean })),
