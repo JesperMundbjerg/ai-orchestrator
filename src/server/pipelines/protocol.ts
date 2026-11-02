@@ -57,7 +57,7 @@ export function telemetryQuery(params: URLSearchParams): PipelineTelemetryQuery 
   return query;
 }
 
-const TELEMETRY_KINDS = ["gate", "integration", "publication", "lease", "attempt"];
+const TELEMETRY_KINDS = ["gate", "integration", "publication", "lease", "attempt", "assignee"];
 const token = refine(nonempty, (v, p) => { if (!/^[\w.:@/-]{1,128}$/.test(v)) fail(p, "must be 1–128 letters, digits or _ . : @ / -"); });
 const bounded = (max: number) => refine(nonempty, (v, p) => { if (v.length > max) fail(p, `must be at most ${max} characters`); });
 const reasonCode = refine(nonempty, (v, p) => { if (!/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(v)) fail(p, "must be a lowercase code of at most 64 characters (a-z 0-9 _ . -)"); });

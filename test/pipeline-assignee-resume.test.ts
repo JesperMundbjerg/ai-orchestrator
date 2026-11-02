@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { openDatabase, sessionKey } from "../src/server/db.ts";
 import { InboxError } from "../src/server/inbox.ts";
 import { Pipelines } from "../src/server/pipelines/store.ts";
+import { telemetryQuery } from "../src/server/pipelines/protocol.ts";
 import { INBOX_BIN } from "../src/shared/pipeline-cli.ts";
 import { Inbox, type PresenceSource } from "../src/server/inbox.ts";
 import { World, type AgentSource, type LiveAgent } from "../src/server/world.ts";
@@ -108,6 +109,13 @@ test("a resumed session under a new agent id reports its step only on an exact h
   const events = o.carried(); assert.equal(events.length, 1);
   assert.deepEqual(events[0]!.detail, { how: "same-session", nodeId: "plan", from: o.old.id, to: o.resumed.id, recordedAt: "assignment" });
   assert.equal(events[0]!.runId, run.id);
+  // `inbox pipeline telemetry --kind assignee` asks the office with kind=assignee: accepted, and only those events come back.
+  const query = telemetryQuery(new URLSearchParams("kind=assignee"));
+  assert.equal(query.kind, "assignee");
+  assert.deepEqual(o.p.telemetry.read(query).events.map(e => e.kind), ["assignee"]);
+  o.p.telemetry.note("integration", run.id, run.teamId, { changes: ["unchanged"] }); o.p.telemetry.flush();
+  assert.deepEqual(o.p.telemetry.read(query).events.map(e => e.kind), ["assignee"]);
+  assert.ok(o.p.telemetry.read(telemetryQuery(new URLSearchParams("kind=integration"))).events.every(e => e.kind === "integration"));
   // The old id no longer holds it: back under its old name in a new session, it is someone else.
   o.old.status = "idle"; o.old.paneId = "p-old"; o.ran(o.old.id, "claude", "sess-9");
   assert.equal(o.refusal(() => o.report(run, o.old)).code, "pipeline_not_assignee");
