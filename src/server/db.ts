@@ -404,12 +404,29 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
 }, migratePageComments, migrateLeaseCapacity, (db) => {
   // A milestone says in one or two sentences what was fixed, apart from its short context. Empty for every existing item.
   addColumn(db, "items", "fixed", "TEXT NOT NULL DEFAULT ''");
+}, (db) => {
+  // 21: the harness session an agent id last ran, as herdr reported it for its live pane (a sessionKey, never the raw id).
+  // The only proof that a new agent id is the same session as an old one: pipeline steps follow it (pipelines/assignee.ts).
+  db.exec(`CREATE TABLE IF NOT EXISTS world_agent_sessions (
+    agent_id TEXT PRIMARY KEY,
+    session_key TEXT NOT NULL,
+    seen_at TEXT NOT NULL
+  )`);
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
   if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
   }
+}
+
+/**
+ * One harness session, as the office may store and show it: a hash of harness plus session id. The raw
+ * session id routes an owner's replies (DESIGN "Only the owner reads its replies"), so it is never stored
+ * beside an agent id or put in a run; equal keys mean the same harness and the same session id.
+ */
+export function sessionKey(harness: string, sessionId: string): string {
+  return createHash("sha256").update(`${harness}\0${sessionId}`).digest("hex");
 }
 
 /** Canonical request identity: object key order is irrelevant, array order is significant. */

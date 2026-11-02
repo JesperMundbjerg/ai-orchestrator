@@ -22,6 +22,7 @@ import { DEFAULT_LEAD, type CrewChoice } from "../shared/crewtree.ts";
 import { startFlags, type CrewTreeStore } from "./crewtree.ts";
 import { Adapters } from "./adapter.ts";
 import { InboxError } from "./inbox.ts";
+import { sessionKey } from "./db.ts";
 import { FOUNDER, Messages } from "./messages.ts";
 import { Pipelines } from "./pipelines/store.ts";
 import { Waivers } from "./pipelines/waiver.ts";
@@ -322,6 +323,7 @@ export class World {
     const world = agents.map(({ sessionId, ...a }): WorldAgent => {
       const row = rows.get(a.identity)!;
       sessions.set(str(row.id), sessionId);
+      if (a.paneId && sessionId) this.recordSession(str(row.id), sessionKey(a.harness, sessionId));
       return {
         ...a,
         id: str(row.id),
@@ -435,6 +437,20 @@ export class World {
     for (const r of rows?.values() ?? []) if (r.team_id === teamId) r.role = "member";
     this.db.prepare("UPDATE world_agents SET name = ?, team_id = ?, role = 'lead' WHERE id = ?").run(str(row.name), teamId, str(row.id));
     Object.assign(row, { team_id: teamId, role: "lead" });
+  }
+
+  /** Agent id → the session key last written for it, so a snapshot writes only what changed. */
+  private sessionKeys = new Map<string, string>();
+  /**
+   * The harness session a running agent's pane has, as herdr reports it (its agent_session), kept per agent id.
+   * Only a live pane's session counts: a task's binding names a session nobody may be running.
+   */
+  private recordSession(agentId: string, key: string): void {
+    if (this.sessionKeys.get(agentId) === key) return;
+    this.db.prepare(`INSERT INTO world_agent_sessions (agent_id, session_key, seen_at) VALUES (?, ?, ?)
+      ON CONFLICT (agent_id) DO UPDATE SET session_key = excluded.session_key, seen_at = excluded.seen_at`).run(agentId, key, this.now().toISOString());
+    // Inside someone's transaction (a pipeline decision looks at the world) the write may be rolled back: write it again next time.
+    if (!this.db.isTransaction) this.sessionKeys.set(agentId, key);
   }
 
   private tx(fn: () => void): void {

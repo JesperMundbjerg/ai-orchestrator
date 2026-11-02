@@ -124,7 +124,7 @@ test("migration 20 adds fixed to a copy of an existing database and keeps every 
   const copy = join(dir, "copy.sqlite");
   copyFileSync(join(dir, "inbox.sqlite"), copy);
   const migrated = openDatabase(copy);
-  assert.equal(migrated.prepare("PRAGMA user_version").get()!.user_version, 20);
+  assert.ok(Number(migrated.prepare("PRAGMA user_version").get()!.user_version) >= 20);
   assert.deepEqual(migrated.prepare("SELECT id, key, type, revision, title, context, state FROM items ORDER BY key").all(), before);
   assert.deepEqual(migrated.prepare("SELECT DISTINCT fixed FROM items").all().map((r) => r.fixed), [""]);
   assert.equal(migrated.prepare("SELECT count(*) AS n FROM item_revisions").get()!.n, revisionsBefore);

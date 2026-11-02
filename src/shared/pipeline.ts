@@ -219,6 +219,11 @@ export interface PipelineStep {
   nodeId: string;
   state: "inactive" | "blocked" | "ready" | "reported" | "done" | "stale";
   assignedTo: string | null;
+  /**
+   * The harness session the assignee ran when assigned, as a sessionKey (a hash, never the session id).
+   * A resumed session under a new agent id reports the step only when its live session has exactly this key.
+   */
+  assignedSession?: string | null;
   completedBy: string | null;
   evidence: PipelineEvidence[];
   notes: string;
@@ -360,7 +365,7 @@ export interface PipelineGateReason { code: string; node?: string }
 export interface PipelineTelemetryEvent {
   id: number;
   at: string;
-  kind: "gate" | "integration" | "publication" | "lease" | "attempt";
+  kind: "gate" | "integration" | "publication" | "lease" | "attempt" | "assignee";
   runId: string | null;
   teamId: string | null;
   detail: Record<string, unknown>;

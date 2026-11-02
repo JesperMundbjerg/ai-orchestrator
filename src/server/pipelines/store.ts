@@ -15,7 +15,7 @@ import { capture, committedFingerprint, inRequest, inScope, isAncestor, laneChec
 import { isGitPending, outsidePass, rethrowPending, speculating } from "../gitcache.ts";
 import { founderDecision, presentedBy } from "./approval.ts";
 import { PipelineTelemetry } from "./telemetry.ts";
-import { notAssignee, type Named } from "./assignee.ts";
+import { notAssignee, sameSession, type Named } from "./assignee.ts";
 
 const short = (sha = "") => sha.slice(0, 10);
 /** A refusal thrown rather than returned, as a telemetry reason code. */
@@ -418,13 +418,15 @@ export class Pipelines {
       const run = this.editable(actor, input.runId, input.expectedRevision); const step = run.steps.find(s => s.nodeId === input.nodeId);
       if (!step) throw new InboxError(404, "no such pipeline step");
       if (!this.context(run.teamId).state.agents.some(a => a.id === input.agentId && a.teamId === run.teamId)) throw new InboxError(403, "assign a member of this team");
-      step.assignedTo = input.agentId; return this.persist(run);
+      step.assignedTo = input.agentId; step.assignedSession = this.sessionOf(input.agentId); return this.persist(run);
     }));
   }
   report(actor: WorldAgent, input: PipelineReportInput): PipelineRun { return this.decide(["report", actor.id, input], () => this.record(actor, input, false)); }
   done(actor: WorldAgent, input: PipelineDoneInput): PipelineRun { return this.decide(["done", actor.id, input], () => this.record(actor, input, true)); }
   private record(actor: WorldAgent, input: PipelineDoneInput, done: boolean): PipelineRun {
     const created: string[] = [];
+    type Carry = { nodeId: string; from: string; to: string; recordedAt: "assignment" | "agent" };
+    let carried = null as Carry | null;
     // A background rerun (gitcache.ts) keeps nothing: not its rows, which roll back, nor the files it copied.
     const discard = () => { for (const file of created) try { unlinkSync(file); } catch { /* already gone */ } };
     try { const recorded = this.replay(actor, done ? "done" : "report", input, () => {
@@ -436,7 +438,14 @@ export class Pipelines {
       const { edges } = activation(run.graph, run.selections);
       const blocked = run.graph.edges.some(e => e.to === node.id && edges.has(e.id) && live.steps.find(s => s.nodeId === e.from)?.state !== "done");
       if (!["ready", "reported", "stale"].includes(status.state) || blocked || (nodeBinding(node) === "candidate" && !sameCandidate(run.candidate))) throw new InboxError(409, "step is inactive, blocked or candidate is stale", "pipeline_step_blocked");
-      if (!done && actor.id !== live.leadId && step.assignedTo !== actor.id) throw notAssignee(run.id, node, actor, step.assignedTo ? this.whoIs(step.assignedTo) : null, live.leadId ? this.whoIs(live.leadId) : null);
+      if (!done && actor.id !== live.leadId && step.assignedTo !== actor.id) {
+        // The same harness session under a new agent id (a resumed session, a new herdr name) is still the assignee:
+        // only on an exact harness + session id match, never on name or checkout. The step moves to the new id.
+        const held = step.assignedSession ?? (step.assignedTo ? this.sessionOf(step.assignedTo) : null);
+        if (!step.assignedTo || !sameSession(held, this.liveSessionOf(actor))) throw notAssignee(run.id, node, actor, step.assignedTo ? this.whoIs(step.assignedTo) : null, live.leadId ? this.whoIs(live.leadId) : null);
+        carried = { nodeId: node.id, from: step.assignedTo, to: actor.id, recordedAt: step.assignedSession ? "assignment" : "agent" };
+        step.assignedTo = actor.id; step.assignedSession = held;
+      }
       if (!input.notes?.trim()) throw new InboxError(400, "record the result or lead disposition");
       if (node.by === "crew" && actor.id === live.leadId && (input.evidence ?? []).length) throw new InboxError(403, `${node.label} (${node.id}) is crew work: the first mate delegates and does not build or repair, so evidence you submit for it is refused. Hand it to a crew member (${inboxCommand(`pipeline assign ${run.id} ${node.id} AGENT`)}); they report with ${inboxCommand(`pipeline report ${run.id} ${node.id} --report FILE --notes "result"`)}, and you then complete it with done, endorsing their report.`, "pipeline_crew_work");
       const additions = (input.evidence ?? []).map(e => this.evidence(actor, run, e, created, node));
@@ -455,7 +464,19 @@ export class Pipelines {
         step.evidence = endorsed; step.completedBy = actor.id;
       } else step.evidence.push(...additions);
       step.notes = input.notes; return this.persist(run);
-    }); if (speculating()) discard(); return recorded; } catch (err) { for (const file of created) try { unlinkSync(file); } catch { /* transaction rolled back; cleanup only our copied files */ } throw err; }
+    }); if (speculating()) discard();
+    if (carried) this.telemetry.note("assignee", recorded.id, recorded.teamId, { how: "same-session", ...carried });
+    return recorded; } catch (err) { for (const file of created) try { unlinkSync(file); } catch { /* transaction rolled back; cleanup only our copied files */ } throw err; }
+  }
+  /** The harness session key the office last saw an agent id run in a live pane (world_agent_sessions), or null. */
+  private sessionOf(agentId: string): string | null {
+    const row = this.db.prepare("SELECT session_key FROM world_agent_sessions WHERE agent_id = ?").get(agentId) as { session_key: string } | undefined;
+    return row?.session_key ?? null;
+  }
+  /** The session an agent runs now: only a running agent has one, read after the world is looked at afresh. */
+  private liveSessionOf(actor: WorldAgent): string | null {
+    const now = this.world().agents.find(a => a.id === actor.id);
+    return now?.paneId ? this.sessionOf(actor.id) : null;
   }
   /** An agent id as a refusal names it: from the office now, else its record (offline), else unknown. */
   private whoIs(id: string): Named {
