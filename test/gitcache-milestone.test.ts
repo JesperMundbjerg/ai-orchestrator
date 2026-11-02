@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { execFile, execFileSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +10,7 @@ import { openDatabase } from "../src/server/db.ts";
 import { Inbox } from "../src/server/inbox.ts";
 import { createInboxServer } from "../src/server/http.ts";
 import { Pipelines } from "../src/server/pipelines/store.ts";
-import { configureGit, isGitPending, resetGitCache, type GitRunner } from "../src/server/gitcache.ts";
+import { configureGit, defaultRunner, isGitPending, resetGitCache, type GitRunner } from "../src/server/gitcache.ts";
 import type { World } from "../src/server/world.ts";
 import type { PipelineGraph } from "../src/shared/pipeline.ts";
 import type { WorldAgent, WorldState } from "../src/shared/types.ts";
@@ -30,8 +30,7 @@ function slowGit(t: TestContext, options: { pendingLimitMs?: number } = {}) {
   const runner: GitRunner = (call) => new Promise((resolve, reject) => {
     if (slow.hang(call.args)) return;
     setTimeout(() => {
-      const child = execFile("git", call.args, { cwd: call.cwd, encoding: "utf8", maxBuffer: call.maxBuffer ?? 16 * 1024 * 1024 }, (err, stdout) => err ? reject(Object.assign(err, { stdout })) : resolve(String(stdout)));
-      child.stdin?.end(call.input ?? "");
+      defaultRunner(call).then(resolve, reject);
     }, slow.ms);
   });
   configureGit({ nonblocking: true, runner, waitMs: 150, ...options });

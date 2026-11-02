@@ -53,11 +53,14 @@ let pendingLimitMs = 60_000;
 let concurrency = 4;
 let nonblocking = false;
 let changed: (() => void) | null = null;
-const defaultRunner: GitRunner = (call) => new Promise((resolve, reject) => {
+export const defaultRunner: GitRunner = (call) => new Promise((resolve, reject) => {
   const child = execFile("git", call.args, { cwd: call.cwd, encoding: "utf8", timeout: Math.max(call.timeout ?? 0, 30_000), maxBuffer: call.maxBuffer ?? 16 * 1024 * 1024 }, (err, stdout) => {
     if (err) reject(Object.assign(new GitFailed(err.message, String(stdout ?? "")), { code: (err as { code?: unknown }).code }));
     else resolve(String(stdout));
   });
+  // A git that exits without reading its input (most reads take none) closes the pipe: the write then fails
+  // with EPIPE as an unhandled 'error' event. How git ended is the callback's to say, so the pipe error is not.
+  child.stdin?.on("error", () => {});
   if (call.input !== undefined) child.stdin?.end(call.input);
   else child.stdin?.end();
 });
