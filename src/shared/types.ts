@@ -496,7 +496,7 @@ export interface Lane {
   agentName: string | null;
   harness: Harness | null;
   model: string | null;
-  state: "idle" | "working" | "blocked" | "held" | "conflict" | "offline";
+  state: "idle" | "working" | "blocked" | "held" | "offline";
   doing: string | null;
   branch: string | null;
   /** Ids of the comments it holds (filled once comments live here). */
