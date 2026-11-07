@@ -17,7 +17,7 @@ import { object, optional, list, text, nonempty, record, oneOf, refine, fail, se
 import {
   AGENT_COMMENT_STATUSES, CLOSED_COMMENT_STATUSES, COMMENT_VERDICTS, COMMENT_ID, DEFAULT_PAGE_ORIGINS, GROUP_ID, GROUP_MAX, KIND_MAX, META_MAX_BYTES,
   cleanKind, cleanMeta, cleanPageContext, commentEvent, normalizeOriginPattern, pageCommentText, pageContextLines,
-  type AgentCommentStatus, type PageComment, type CommentVerdict, type PageCommentEdit, type PageCommentEvent, type PageCommentInput, type PageCommentStatus, type PageTeam,
+  type AgentCommentStatus, type CommentVerificationFilter, type PageComment, type CommentVerdict, type PageCommentEdit, type PageCommentEvent, type PageCommentInput, type PageCommentStatus, type PageTeam,
 } from "../shared/pagecomments.ts";
 import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { Message, SessionInput, WorldAgent, WorldState } from "../shared/types.ts";
@@ -320,11 +320,16 @@ export class PageComments {
   }
 
   /** Newest first; filtered by team, page origin, ids, status or (for fixed ones) whether the founder verified them. */
-  list(filter: { team?: string; origin?: string; ids?: string[]; status?: string; verified?: boolean; limit?: number } = {}): { comments: PageComment[] } {
+  list(filter: { team?: string; origin?: string; ids?: string[]; status?: string; verified?: boolean; verification?: CommentVerificationFilter[]; limit?: number } = {}): { comments: PageComment[] } {
     const where: string[] = [];
     const args: string[] = [];
     // verified=true: fixed and verified; verified=false: fixed and not (yet) verified.
     if (filter.verified !== undefined) where.push(filter.verified ? "status = 'fixed' AND verification = 'verified'" : "status = 'fixed' AND (verification IS NULL OR verification != 'verified')");
+    // verification: fixed comments whose check is one of the listed states (none = not judged yet).
+    if (filter.verification) {
+      const states = filter.verification.map((v) => (v === "none" ? "verification IS NULL" : `verification = '${v}'`));
+      where.push(`status = 'fixed' AND (${states.join(" OR ") || "0"})`);
+    }
     if (filter.team) { where.push("team_id = ?"); args.push(filter.team); }
     if (filter.origin) { where.push("origin = ?"); args.push(filter.origin.toLowerCase()); }
     if (filter.status) { where.push("status = ?"); args.push(filter.status); }

@@ -68,6 +68,17 @@ export type AgentCommentStatus = (typeof AGENT_COMMENT_STATUSES)[number];
 /** The founder's check of a fixed comment: verified, or still wrong (which opens a follow-up comment). */
 export const COMMENT_VERDICTS = ["verified", "still-wrong"] as const;
 export type CommentVerdict = (typeof COMMENT_VERDICTS)[number];
+/** What a list can select a fixed comment by: `none` is fixed and not judged yet, the rest are the founder's verdicts. */
+export const COMMENT_VERIFICATION_FILTERS = ["none", ...COMMENT_VERDICTS] as const;
+export type CommentVerificationFilter = (typeof COMMENT_VERIFICATION_FILTERS)[number];
+
+/** Parses `verification=none,still-wrong`; returns an error message for an unknown or empty value, else the distinct values. */
+export function parseVerificationFilter(raw: string): CommentVerificationFilter[] | string {
+  const parts = raw.split(",").map((s) => s.trim());
+  const bad = parts.find((p) => !(COMMENT_VERIFICATION_FILTERS as readonly string[]).includes(p));
+  if (bad !== undefined) return `unknown verification "${bad}": use ${COMMENT_VERIFICATION_FILTERS.join(", ")} (comma-separated)`;
+  return [...new Set(parts as CommentVerificationFilter[])];
+}
 
 /** Nothing moves a comment out of these. */
 export const CLOSED_COMMENT_STATUSES: readonly PageCommentStatus[] = ["fixed", "declined", "withdrawn"];

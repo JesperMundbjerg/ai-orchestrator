@@ -28,7 +28,7 @@ import { leaseSchemas } from "./leases-protocol.ts";
 import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
 import { commentAnswerSchema, commentAskSchema, commentEditSchema, commentStatusSchema, commentVerifySchema, commentWithdrawSchema, pageCommentGroupSchema, pageCommentSchema, pageOriginsSchema, type PageComments } from "./pagecomments.ts";
-import { COMMENT_ID, commentEvent } from "../shared/pagecomments.ts";
+import { COMMENT_ID, commentEvent, parseVerificationFilter, type CommentVerificationFilter } from "../shared/pagecomments.ts";
 import { pipelineSchemas, waiverSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema, telemetryQuery, telemetryReportSchema } from "./pipelines/protocol.ts";
 
 const TYPES: Record<string, string> = {
@@ -322,7 +322,8 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
         const matches = (c: { id: string; teamId: string; origin: string | null; status: string; verification: string | null }) =>
           (!filter.team || c.teamId === filter.team) && (!filter.origin || c.origin === filter.origin.toLowerCase()) && (!filter.ids?.length || filter.ids.includes(c.id))
           && (!filter.status || c.status === filter.status)
-          && (filter.verified === undefined || (c.status === "fixed" && (c.verification === "verified") === filter.verified));
+          && (filter.verified === undefined || (c.status === "fixed" && (c.verification === "verified") === filter.verified))
+          && (!filter.verification || (c.status === "fixed" && filter.verification.includes((c.verification ?? "none") as CommentVerificationFilter)));
         res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
         res.write("retry: 2000\n\n");
         for (const c of comments.list({ ...filter, limit: Math.min(filter.limit ?? 50, 200) }).comments.reverse()) res.write(`event: comment\ndata: ${JSON.stringify(commentEvent(c))}\n\n`);
@@ -387,17 +388,21 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
   });
 }
 
-/** `?team=ID&origin=ORIGIN&ids=a,b&status=S&verified=true|false&limit=N` for the page-comment list and stream. */
-function commentFilter(req: IncomingMessage): { team?: string; origin?: string; ids?: string[]; status?: string; verified?: boolean; limit?: number } {
+/** `?team=ID&origin=ORIGIN&ids=a,b&status=S&verified=true|false&verification=none,verified,still-wrong&limit=N` for the page-comment list and stream. */
+function commentFilter(req: IncomingMessage): { team?: string; origin?: string; ids?: string[]; status?: string; verified?: boolean; verification?: CommentVerificationFilter[]; limit?: number } {
   const q = new URL(req.url ?? "/", "http://localhost").searchParams;
   const ids = q.get("ids")?.split(",").map((s) => s.trim()).filter((s) => COMMENT_ID.test(s));
   const limit = Number(q.get("limit"));
+  const verification = q.has("verification") ? parseVerificationFilter(q.get("verification")!) : undefined;
+  if (typeof verification === "string") throw new InboxError(400, verification);
+  if (verification && q.has("verified")) throw new InboxError(400, "give either verified=true|false or verification=none|verified|still-wrong, not both");
   return {
     ...(q.get("team") ? { team: q.get("team")! } : {}),
     ...(q.get("origin") ? { origin: q.get("origin")! } : {}),
     ...(ids?.length ? { ids: ids.slice(0, 200) } : {}),
     ...(q.get("status") ? { status: q.get("status")! } : {}),
     ...(q.get("verified") === "true" || q.get("verified") === "false" ? { verified: q.get("verified") === "true" } : {}),
+    ...(verification ? { verification } : {}),
     ...(Number.isInteger(limit) && limit > 0 ? { limit } : {}),
   };
 }
