@@ -131,6 +131,7 @@ export const repliesSchema = object({ session: sessionSchema, mode: optional(one
 export const ackSchema = object({ session: sessionSchema, deliveryId: nonempty, error: maybeText });
 export const closeItemSchema = object({ session: sessionSchema, item: nonempty });
 export const paneSchema = object({ session: sessionSchema, paneId: nonempty });
+export const worktreePaneSchema = object({ session: sessionSchema, slug: nonempty });
 export const saySchema = object({ session: sessionSchema, to: nonempty, text: nonempty, clientId: optional(nonempty) });
 export const handoffSchema = object({ session: sessionSchema, title: maybeText, summary: nonempty, to: maybeText, work: maybeText, clientId: optional(nonempty) });
 export const reviewSchema = object({ session: sessionSchema, work: nonempty, verdict: oneOf(["accept", "changes"]), notes: maybeText,
@@ -220,6 +221,7 @@ export const agentOperations = {
   acknowledge: post("/api/agent/ack", ackSchema, replyResponse),
   team: post("/api/agent/team", sessionRequestSchema, object({ agentId: text, text }) satisfies Schema<TeamBrief>),
   pane: post("/api/agent/pane", paneSchema, object({ recorded: boolean })),
+  worktree: post("/api/agent/worktree", worktreePaneSchema, object({ paneId: text, path: text, branch: text, base: nullText })),
   crew: post("/api/agent/crew", emptySchema, object({ text })),
   say: post("/api/agent/say", saySchema, messageResponse),
   events: post("/api/agent/events", eventsSchema, okResponse),

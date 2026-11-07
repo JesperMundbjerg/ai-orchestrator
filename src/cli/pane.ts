@@ -4,6 +4,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { nextSplit, type PaneRect } from "../shared/panes.ts";
+import { paneEnvArgs } from "../shared/shellpath.ts";
 
 const run = promisify(execFile);
 
@@ -31,12 +32,12 @@ async function herdr<T>(args: string[]): Promise<T> {
   }
 }
 
-/** Splits the pane `nextSplit` picks in the caller's tab, without taking focus, and returns the new pane's id. */
+/** Splits the pane `nextSplit` picks in the caller's tab, without taking focus, and returns the new pane's id; the pane gets a working PATH (shellpath.ts). */
 export async function openPane(cwd: string): Promise<string> {
   if (!process.env.HERDR_PANE_ID) throw new Error("inbox pane must run inside a herdr pane");
   const { layout } = await herdr<{ layout: Layout }>(["pane", "layout", "--pane", process.env.HERDR_PANE_ID]);
   const panes: PaneRect[] = layout.panes.map((p) => ({ id: p.pane_id, ...p.rect }));
   const { pane, direction } = nextSplit(panes);
-  const { pane: created } = await herdr<{ pane: { pane_id: string } }>(["pane", "split", pane, "--direction", direction, "--ratio", "0.5", "--cwd", cwd, "--no-focus"]);
+  const { pane: created } = await herdr<{ pane: { pane_id: string } }>(["pane", "split", pane, "--direction", direction, "--ratio", "0.5", "--cwd", cwd, ...paneEnvArgs(), "--no-focus"]);
   return created.pane_id;
 }

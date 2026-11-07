@@ -203,6 +203,7 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     // Agent protocol: the office
     route("POST", /^\/api\/agent\/team$/, protocol.team.request, (_r, b) => needWorld().brief(b.session)),
     route("POST", /^\/api\/agent\/pane$/, protocol.pane.request, (_r, b) => needWorld().paneOpened(b.session, b.paneId)),
+    route("POST", /^\/api\/agent\/worktree$/, protocol.worktree.request, (_r, b) => needWorld().openWorktree(b.session, b.slug)),
     route("POST", /^\/api\/agent\/crew$/, protocol.crew.request, () => ({ text: needWorld().crewTree().text() })),
     route("POST", /^\/api\/agent\/say$/, protocol.say.request, (_r, b) => needWorld().messages.say(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/events$/, protocol.events.request, (_r, b) => needWorld().report(b.session, b.events ?? [])),

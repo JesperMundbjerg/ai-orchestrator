@@ -290,9 +290,19 @@ export class Messages {
     if (team) return told(this.store("message", from.id, team.id, body, null, recipients(state, team, from.id), replay));
     // A project's lane by the name its own tools use: `inbox say einstein`.
     const lane = laneRecipient(state, from, name, this.laneRegistration);
-    if (!lane) throw new InboxError(404, `nobody called ${input.to} in the office: see who is there with \`inbox team\``);
-    if (lane.id === from.id) throw new InboxError(400, "that is you");
-    return told(this.store("message", from.id, null, body, null, [lane.id], replay));
+    // Last, a running agent by the name herdr started it with (`herdr agent start kepler …`), when only one has it.
+    const herdr = lane ? null : this.byHerdrName(state, name);
+    const to = lane ?? herdr;
+    if (!to) throw new InboxError(404, `nobody called ${input.to} in the office: see who is there with \`inbox team\``);
+    if (to.id === from.id) throw new InboxError(400, "that is you");
+    return told(this.store("message", from.id, null, body, null, [to.id], replay));
+  }
+
+  /** The office agent running in the one pane herdr names `name`; null when none or several have it. */
+  private byHerdrName(state: WorldState, name: string): WorldAgent | null {
+    const panes = (this.source?.live() ?? []).filter((l) => l.name?.trim().toLowerCase() === name).map((l) => l.paneId);
+    const agents = state.agents.filter((a) => a.paneId && panes.includes(a.paneId));
+    return panes.length === 1 && agents.length === 1 ? agents[0]! : null;
   }
 
   /**
@@ -416,10 +426,10 @@ export class Messages {
       if (busy.has(agentId)) continue;
       busy.add(agentId);
       const agent = agents.get(agentId);
-      // A new project's lead can have a desk before herdr has registered its session.
+      // A new project's (or standing team's) lead can have a desk before herdr has registered its session.
       // Do not apply a startup deadline to established offline leads: they still wait to return.
       const starting = this.db.prepare(`SELECT t.lead_pane FROM teams t JOIN world_agents a ON a.team_id = t.id
-        WHERE a.id = ? AND a.role = 'lead' AND a.ran_at IS NULL AND t.lead_pane IS NOT NULL AND t.standing = 0`).get(agentId) as Row | undefined;
+        WHERE a.id = ? AND a.role = 'lead' AND a.ran_at IS NULL AND t.lead_pane IS NOT NULL`).get(agentId) as Row | undefined;
       if (starting && !state.agents.some((a) => a.paneId === starting.lead_pane)) {
         const fail = this.db.prepare("UPDATE message_deliveries SET state = 'failed', error = ?, updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'queued'");
         let failed = false;

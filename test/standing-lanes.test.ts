@@ -394,7 +394,7 @@ test("the agent holding a standing lane is marked where crews are listed, and cl
   o.world.messages.say(mo, { to: jens.name, text: "one for you" });
   // Mo's own briefing lists Jens as the standing session with what waits for them.
   const brief = o.world.brief({ harness: "claude", sessionId: "s-mo", cwd: o.root }).text;
-  assert.match(brief, new RegExp(`${jens.name} \\(lead\\): idle, the standing lantern/mission-control session: do not close it; 1 message waits for it`));
+  assert.match(brief, new RegExp(`${jens.name}(?: \\(herdr [^)]+\\))? \\(lead\\): idle, the standing lantern/mission-control session: do not close it; 1 message waits for it`));
   const guard = o.world.standingGuard(jens)!;
   assert.match(guard, /is the standing lantern\/mission-control session and 1 message waits for it; recover the lane onto its replacement first/);
   assert.throws(() => o.world.removeAgent(jens.id), (e: Error & { status?: number }) => e.status === 409 && /standing lantern\/mission-control/.test(e.message));

@@ -153,6 +153,9 @@ ${LEASE_HELP}
                                   in the repository: the files changed from base to commit (default HEAD) outside a crew
                                   member's write surface; exits 1 when there are any. ** spans folders, * stays in one
   inbox pane [--cwd DIR]          open a pane in your herdr tab (a grid: 2x2 first, then it grows) and print its id: P=$(inbox pane)
+  inbox pane --worktree SLUG      make a new worktree for a crew member through herdr (folder <repository>-SLUG beside the main
+                                  checkout, branch worktree-SLUG from your checkout's branch), add it to your team, and print
+                                  the id of its pane: P=$(inbox pane --worktree cosmo-intro)
 
 The session comes from CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or HERDR_PANE_ID, or --harness/--session.
   --session must be the id the harness registered its session under, or the reply goes to a session nobody listens to:
@@ -193,6 +196,7 @@ const OPTIONS = {
   to: { type: "string" },
   work: { type: "string" },
   cwd: { type: "string" },
+  worktree: { type: "string" },
   path: { type: "string" },
   notes: { type: "string" },
   note: { type: "string" },
@@ -545,6 +549,12 @@ async function main(argv: string[]): Promise<void> {
     case "surface-check":
       return surfaceCheck();
     case "pane": {
+      if (flags.worktree !== undefined) {
+        // A crew member's own worktree, made by the office through herdr; the pane id alone goes to stdout for P=$(…).
+        const made = await call<{ paneId: string; path: string; branch: string; base: string | null }>("/api/agent/worktree", { session: session(), slug: flags.worktree }, 40_000);
+        console.error(`inbox: worktree ${made.path} on branch ${made.branch}${made.base ? ` from ${made.base}` : ""}, one of your team's; its pane:`);
+        return console.log(made.paneId);
+      }
       const paneId = await openPane(resolve(flags.cwd ?? process.cwd()));
       // The agent that starts there joins the caller's team even outside its worktree. Opening the pane has worked, so this only warns.
       await call("/api/agent/pane", { session: session(), paneId }).catch((err: Error) => console.error(`inbox: the pane is open, but the office was not told whose crew it is for: ${err.message}`));

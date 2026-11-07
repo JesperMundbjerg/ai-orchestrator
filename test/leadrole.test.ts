@@ -9,7 +9,7 @@ import { Inbox, type PresenceSource } from "../src/server/inbox.ts";
 import { World, type LiveAgent } from "../src/server/world.ts";
 import { CrewTreeStore } from "../src/server/crewtree.ts";
 import { Switches, type SwitchSource } from "../src/server/switch.ts";
-import { DELEGATION_RULE, ROLE_FILE_MAX_BYTES } from "../src/server/leadrole.ts";
+import { DELEGATION_RULE, ROLE_FILE_MAX_BYTES, STANDING_LEAD_ROLE } from "../src/server/leadrole.ts";
 import { InboxError } from "../src/server/inbox.ts";
 import { withInboxPath } from "../src/server/inboxtext.ts";
 import { inboxCommand } from "../src/shared/pipeline-cli.ts";
@@ -121,7 +121,9 @@ test("a team without a role still gives its lead the delegation rule, on takeove
   const o = await office(t);
   const brief = await takeOver(o);
   assert.ok(brief.includes(DELEGATION_RULE));
-  assert.ok(!brief.includes("lead role"), "no role is invented");
+  // A standing team without a role of its own (this one) gets the default standing lead role, and nothing else.
+  assert.ok(brief.includes(`Mission Control's lead role, the office's default for a standing team until the founder sets one: ${STANDING_LEAD_ROLE.slice(0, 60)}`));
+  assert.ok(!brief.includes("lead role file"), "no role file is invented");
   const lead = o.world.agent(o.lead.id);
   const team = o.world.brief({ harness: "claude", sessionId: "session-new1", cwd: o.repo });
   assert.equal(lead.role, "lead");

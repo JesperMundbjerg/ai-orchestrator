@@ -32,7 +32,7 @@ export const leadTitle = (team: Team) => (team.standing ? "Lead" : "First mate")
 /**
  * Start a project or change one: its name, what it is for and who reviews its work. A new
  * project gets its own worktree in the repository you pick, with a first mate started there;
- * an always-on team (like Mission Control) is only named.
+ * an always-on team (like Mission Control) gets a read-only lead started in that repository's main checkout.
  */
 export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra, manage }: {
   initial?: Team;
@@ -57,11 +57,11 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
   const others = teams.filter((t) => t.id !== initial?.id);
   const repo = repositories.find((r) => r.root === repository);
   const slug = projectSlug(name);
-  const canSubmit = Boolean(name.trim()) && (Boolean(initial) || standing || Boolean(repo));
+  const canSubmit = Boolean(name.trim()) && (Boolean(initial) || Boolean(repo));
   const save = () => {
     if (!canSubmit) return;
     const fields = { name: name.trim(), purpose: purpose.trim(), handsTo: handsTo || null };
-    onSubmit(initial ? { ...fields, leadRole: leadRole.trim(), leadRolePath: leadRolePath.trim(), mergeInstruction: mergeInstruction.trim(), mergeInstructionPath: mergeInstructionPath.trim() } : { ...fields, standing, repository: standing ? undefined : repository });
+    onSubmit(initial ? { ...fields, leadRole: leadRole.trim(), leadRolePath: leadRolePath.trim(), mergeInstruction: mergeInstruction.trim(), mergeInstructionPath: mergeInstructionPath.trim() } : { ...fields, standing, repository });
   };
   return (
     <form
@@ -82,19 +82,20 @@ export function TeamForm({ initial, teams, repositories, submit, onSubmit, extra
             <input type="radio" name="kind" checked={standing} onChange={() => setStanding(true)} />
             Always on, like Mission Control: its agents keep their own checkouts
           </label>
-          {!standing ? (
+          {
             repositories.length ? (
               <label className="field">
                 <span>Repository</span>
                 <select value={repository} onChange={(e) => setRepository(e.target.value)}>
                   {repositories.map((r) => <option key={r.root} value={r.root}>{r.name}</option>)}
                 </select>
-                {repo && slug ? <span className="muted small-note">Worktree {repo.name}-{slug} on branch worktree-{slug}, from {repo.base ?? "the main checkout"}.</span> : null}
+                {repo && standing ? <span className="muted small-note">Its lead starts in {repo.name}'s main checkout, which it only reads, and gives each worker a worktree of its own.</span>
+                  : repo && slug ? <span className="muted small-note">Worktree {repo.name}-{slug} on branch worktree-{slug}, from {repo.base ?? "the main checkout"}.</span> : null}
               </label>
             ) : (
-              <p className="warn small-note">No repository yet: a project's worktree is made in a repository an agent works in, or one beside it.</p>
+              <p className="warn small-note">No repository yet: a team's lead starts in a repository an agent works in, or one beside it.</p>
             )
-          ) : null}
+          }
         </>
       )}
       <textarea rows={2} placeholder={standing || initial?.standing ? "What the team is for; every member is told" : "What the project is for; the first mate starts on it right away"} value={purpose} onChange={(e) => setPurpose(e.target.value)} onKeyDown={sendOnEnter(save)} />

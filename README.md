@@ -164,7 +164,7 @@ Submit via the CLI, then collect with `inbox replies --ack`. Do not assume Codex
 - **Projects** (`/#/teams`) shows projects/standing teams, members, leads, branch and status without the 3D view. A project team follows a worktree; a standing team persists across checkouts. A lead is called its **first mate**. The crew guide selects harness/model choices; do not assume a subscription or model is available just because it is configured.
 - In the 3D view, click an agent or project to see activity and conversation, send an instruction, or follow its review card. Lamps show working, waiting, turn finished, idle or offline. Activity hooks add tool/helper details. Agents waiting for your review gather in the clearing; blocked teams surface their lead.
 - Move with WASD/arrows, Shift to run, drag to turn, and scroll/pinch/+ or − to zoom. The office is another view of the same state, not a second task system.
-- **New project** creates a sibling worktree (for example `lantern-search`, branch `worktree-search`) and starts its lead via herdr. **Finish project** refuses uncommitted work or busy agents, closes its agents and removes the worktree; it deletes a branch only once merged. Treat these as real checkout operations.
+- **New project** creates a sibling worktree (for example `lantern-search`, branch `worktree-search`) and starts its lead via herdr. Marked **always on** (standing), it instead starts a read-only lead in the chosen repository's main checkout (a new pane in that checkout's herdr workspace) that investigates briefly and hands each task to a worker in a worktree of its own, like Mission Control; it inherits the merge instruction of another standing team in the same repository. **Finish project** refuses uncommitted work or busy agents, closes its agents and removes the worktree; it deletes a branch only once merged. Treat these as real checkout operations.
 - Messages are queued until the recipient can take a prompt. **Tell all leads** broadcasts to selected project/standing-team leads; offline recipients stay queued. Paste/drop images into text boxes to attach them (PNG/JPEG/GIF/WebP up to 10 MB); uploads live in the data directory.
 - The optional browser watcher finds headless/automation browsers, attributes them where possible, and closes forgotten ones only under its idle/orphan rules. It is not a general-purpose process sandbox; see [DESIGN](docs/DESIGN.md) and keep cleanup off for ordinary experiments. Agents should close their own browser in `finally` regardless.
 
@@ -176,6 +176,8 @@ inbox handoff "Search layout" --summary "Done in src/search; check the narrow vi
 inbox review WORK_ID changes --notes "The narrow view still clips the title"
 inbox handoff --work WORK_ID --summary "Title wrapping fixed"
 P=$(inbox pane)                 # new crew pane in the calling herdr tab
+P=$(inbox pane --worktree intro) # a crew member's own new worktree (lantern-intro, branch worktree-intro), made through herdr
+inbox say kepler "Start"        # also reaches an agent by its herdr name, when only one has it
 ```
 
 Handoffs go to the named team or the sender's configured downstream team. Only the receiving team can review; a changes verdict needs notes. Project adapters and the limits of the implemented orchestration are documented in [ORCHESTRATION](docs/ORCHESTRATION.md).

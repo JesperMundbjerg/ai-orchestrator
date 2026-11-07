@@ -36,7 +36,8 @@ import { Unpresented } from "./unpresented.ts";
 import { LEAD_WATCH_SESSION, LeadWatch } from "./leadwatch.ts";
 import { INBOX_BIN } from "../shared/pipeline-cli.ts";
 import { withInboxPath } from "./inboxtext.ts";
-import { LeadRoles, ROLE_PATH_MAX_CHARS, ROLE_TEXT_MAX_CHARS, leadBrief, roleFileProblem } from "./leadrole.ts";
+import { LeadRoles, ROLE_PATH_MAX_CHARS, ROLE_TEXT_MAX_CHARS, effectiveRole, leadBrief, roleFileProblem } from "./leadrole.ts";
+import { projectSlug } from "../shared/slug.ts";
 import { MERGE_PATH_MAX_CHARS, MERGE_TEXT_MAX_CHARS, MergeInstructions, mergeBrief, mergeFileProblem, mergeInstructionBody } from "./unlanded-merge.ts";
 import { Unlanded } from "./unlanded.ts";
 import { withOffline } from "../shared/waiting.ts";
@@ -66,6 +67,8 @@ export interface AgentSource {
   notify(title: string, body: string): Promise<void>;
   /** Makes a worktree with a workspace of its own and resolves with the pane a lead can start in. */
   createWorktree(repoRoot: string, place: { path: string; branch: string; base: string | null; label: string }): Promise<{ paneId: string; alsoOpened?: string[] }>;
+  /** A shell pane in `cwd`: beside `beside` in its tab, or in a workspace of its own when null. A standing team's lead starts in one. */
+  openPane?(cwd: string, beside: string | null, label: string): Promise<string>;
   /** Starts an agent in a pane. One stopped at a question while starting still counts: it is there, waiting on you. */
   startAgent(paneId: string, name: string, harness: Harness, args: string[]): Promise<void>;
   /** Reads the agent list again now, rather than waiting for the next change or poll. */
@@ -119,15 +122,28 @@ function briefArgument(text: string): string {
  * Mission Control's lead is different: it dispatches a queue of comments to standing lanes.
  */
 const FIRST_MATE_INTRO = "You are the project's first mate: the founder's one contact for it.";
-const FIRST_MATE_BODY = [
-  "Split the work into tasks, start a crew member for each in herdr, supervise them to completion, check what they deliver, and report plain outcomes.",
+/** How a project's first mate starts crew: beside it, in its own worktree, which they share. */
+const PROJECT_CREW_START = [
   "Start crew in this worktree:",
   `\`P=$(${quote(INBOX_BIN)} pane)\` opens a pane in your tab, laid out with the others as a grid, and prints its id (never split panes yourself);`,
   '`herdr agent start <name> --kind <kind> --pane "$P" -- <model>` starts a crew member in it (a unique lowercase name).',
+].join(" ");
+const PROJECT_CREW_FILES = "Crew share this checkout, so give each one files of its own: put a `Writes: <globs>` line in its task (for example `Writes: src/server/leases*.ts, test/lease*`), and before you land its work run `inbox surface-check --writes \"<the same globs>\" --base <sha it started from> [--commit <sha>]` in the repository, which names every file changed outside them (exit 1); send each stray file back or to its owner.";
+/** How a standing team's lead starts crew: each in a new worktree of its own, never in the main checkout it reads. */
+const STANDING_CREW_START = [
+  "Start every crew member in a worktree of its own:",
+  `\`P=$(${quote(INBOX_BIN)} pane --worktree <slug>)\` makes a new worktree beside the main checkout (folder <repository>-<slug>, branch worktree-<slug>, from your checkout's branch) through herdr, adds it to your team, opens a pane there and prints its id;`,
+  '`herdr agent start <name> --kind <kind> --pane "$P" -- <model>` starts a crew member in it (a unique lowercase name; `inbox say` reaches it by that name or its office name).',
+  "Never make a worktree with `git worktree add` or a harness's own worktree flag: the repository's hooks may refuse it, and the office would not know it is your team's.",
+].join(" ");
+const STANDING_CREW_FILES = "Each worker has its own worktree, but their work still merges into one branch: give each one files of its own, with a `Writes: <globs>` line in its task, and before you have its work landed run `inbox surface-check --writes \"<the same globs>\" --base <sha it started from> --commit <its sha>` in the repository, which names every file changed outside them (exit 1); send each stray file back or to its owner.";
+const crewBody = (start: string, files: string) => [
+  "Split the work into tasks, start a crew member for each in herdr, supervise them to completion, check what they deliver, and report plain outcomes.",
+  start,
   "Choose each member's harness, model and effort by the founder's crew guide, a decision tree they edit: `inbox crew` prints it with the exact start command for each choice, and `inbox team` prints it too. Read it before you start each member, not once, since it changes while you work: take the first rule whose \"when\" fits the task.",
   "Never any other kind or model: crew run only as Claude Code or Pi, which have the permissions set up. The crew guide also carries the founder's switch, which can turn one of the two off for a while (its subscription is running out): `inbox crew` says so, and shows only the commands that run on the other; never start the harness it says is switched off.",
   '`herdr agent prompt <name> "<task>"` gives it its task.',
-  "Crew share this checkout, so give each one files of its own: put a `Writes: <globs>` line in its task (for example `Writes: src/server/leases*.ts, test/lease*`), and before you land its work run `inbox surface-check --writes \"<the same globs>\" --base <sha it started from> [--commit <sha>]` in the repository, which names every file changed outside them (exit 1); send each stray file back or to its owner.",
+  files,
   'Tell each crew member to report to you with `inbox say <your office name> "…"` when done or stuck, and not to ask the founder; their reports arrive in your terminal.',
   "Ask for each report in six parts, so reports compare at a glance: Changed (files) / Why / Verified (commands with their result) / Left undone / Needs outside my surface / Questions.",
   "Do not answer acknowledgments or thanks, and tell your crew not to either; continue the work instead.",
@@ -140,8 +156,12 @@ const FIRST_MATE_BODY = [
   "After you submit a decision, try or milestone, keep your team working on whatever does not depend on the answer, and for a decision with a recommendation have that path prepared without anything irreversible, since only the founder's answer is approval; check `inbox replies` when you next stop.",
   "Ask a decision the way an engineer asks a colleague: the title is the question, the request says what you need and what happens if nobody answers, options read \"Label: consequence\", and the recommendation gives your pick and why; `inbox --help` has an example.",
 ].join(" ");
+const FIRST_MATE_BODY = crewBody(PROJECT_CREW_START, PROJECT_CREW_FILES);
+const STANDING_LEAD_BODY = crewBody(STANDING_CREW_START, STANDING_CREW_FILES);
 /** A project's first mate brief: who it is, the founder's rule and its team's role (`lead`, from leadrole.ts), then how it runs a crew. */
 const firstMate = (lead: string) => withInboxPath(`${FIRST_MATE_INTRO} ${lead}\n${FIRST_MATE_BODY}`);
+/** A standing team's lead started by the office: the same, with each worker in a worktree of its own. */
+const standingLead = (lead: string) => withInboxPath(`You are the team's lead: the founder's one contact for it. ${lead}\n${STANDING_LEAD_BODY}`);
 
 /**
  * Claude Code settings, for this session only, that run the inbox hook in a lead the office
@@ -396,13 +416,13 @@ export class World {
   }
 
   /**
-   * The agent running in the pane a project's first mate was started in is its lead, whatever
+   * The agent running in the pane a project's first mate (or a standing team's lead) was started in is its lead, whatever
    * herdr calls it. herdr can lose the name it started the agent with, which makes it a new
    * record; the lead record left offline is folded into it, keeping its name and what was said
    * to it. A lead who is running, such as one you picked, is left alone.
    */
   private seatLeads(agents: Joined[], rows: Map<string, Row>, seen: Set<string>): void {
-    const panes = this.db.prepare("SELECT id, lead_pane FROM teams WHERE lead_pane IS NOT NULL AND standing = 0").all() as Row[];
+    const panes = this.db.prepare("SELECT id, lead_pane FROM teams WHERE lead_pane IS NOT NULL").all() as Row[];
     for (const t of panes) {
       const teamId = str(t.id);
       const running = agents.find((a) => a.paneId === str(t.lead_pane) && a.status !== "offline");
@@ -529,7 +549,8 @@ export class World {
    * sent to someone made lead all take it from here.
    */
   leadStart(team: Team, members: ReadonlyArray<Pick<WorldAgent, "cwd" | "role">> = []): string {
-    return [leadBrief(team.name, { text: team.leadRole ?? "", path: team.leadRolePath ?? "" }, this.roleRoots(team, members)), this.mergeStart(team, members, true)].filter(Boolean).join("\n");
+    const role = effectiveRole(team.standing, { text: team.leadRole ?? "", path: team.leadRolePath ?? "" });
+    return [leadBrief(team.name, role, this.roleRoots(team, members)), this.mergeStart(team, members, true)].filter(Boolean).join("\n");
   }
 
   /**
@@ -726,11 +747,15 @@ export class World {
     const agents = new Map(state.agents.map((a) => [a.id, a]));
     const teams = new Map(state.teams.map((t) => [t.id, t]));
     const team = me.teamId ? teams.get(me.teamId) ?? null : null;
+    // The name herdr knows each running agent by, which `herdr agent prompt` and `inbox say` also take.
+    const herdrNames = new Map((this.source?.live() ?? []).flatMap((l) => (l.name ? [[l.paneId, l.name] as const] : [])));
     const status = (a: WorldAgent) => {
       const holds = this.standingHolds(a);
       const waiting = holds.length ? this.messages.waitingFor(a.id) : 0;
       const standing = holds.length ? `, the standing ${holds.join(" and ")} session: do not close it${waiting ? `; ${waiting} ${waiting === 1 ? "message waits" : "messages wait"} for it` : ""}` : "";
-      return `${a.name}${a.role === "lead" ? " (lead)" : ""}: ${a.status}${a.doing ? `, ${a.doing}` : ""}${standing}`;
+      const herdr = a.paneId ? herdrNames.get(a.paneId) : undefined;
+      const known = herdr && herdr.toLowerCase() !== a.name.toLowerCase() ? ` (herdr ${herdr})` : "";
+      return `${a.name}${known}${a.role === "lead" ? " (lead)" : ""}: ${a.status}${a.doing ? `, ${a.doing}` : ""}${standing}`;
     };
     const lines = [`You are ${me.name} (${me.harness}${me.cwd ? `, ${me.cwd}` : ""}).`];
     for (const stall of this.leadWatch.all().filter((st) => st.blockingAgentIds.includes(me.id))) {
@@ -742,7 +767,7 @@ export class World {
       const lead = state.agents.find((a) => a.teamId === team.id && a.role === "lead");
       lines.push(team.standing ? `Team: ${team.name}, a standing team.` : `Project: ${team.name}, in the worktree ${team.path} (branch ${team.branch ?? "unknown"}).`);
       const part = team.standing
-        ? me.role === "lead" ? `${this.leadStart(team, state.agents.filter((a) => a.teamId === team.id))}\nDivide the work among your crew and keep them moving, and while the founder has not answered, continue with what does not depend on it and only prepare a recommendation, since only their answer is approval.` : `${lead ? lead.name : "Its lead"} leads it and divides the work; take yours from them.`
+        ? me.role === "lead" ? `${this.leadStart(team, state.agents.filter((a) => a.teamId === team.id))}\n${STANDING_CREW_START} Choose each member's harness and model by the founder's crew guide: \`inbox crew\`.\nDivide the work among your crew and keep them moving, and while the founder has not answered, continue with what does not depend on it and only prepare a recommendation, since only their answer is approval.` : `${lead ? lead.name : "Its lead"} leads it and divides the work; take yours from them.`
         : me.role === "lead" ? `Your office name is ${me.name}. ${firstMate(this.leadStart(team, state.agents.filter((a) => a.teamId === team.id)))}` : `${lead ? lead.name : "Its first mate"} is its first mate: take your work from them and report back with \`inbox say ${lead?.name ?? "NAME"} "…"\`, not to the founder.`;
       lines.push(withInboxPath(part));
       lines.push(this.pipelines.brief(team.id, me.id));
@@ -894,12 +919,14 @@ export class World {
   /**
    * A new project: its own worktree beside the repository's main checkout, on a new branch from
    * the branch the main checkout is on, with a first mate started there who runs the crew. A standing
-   * team is only named.
+   * team given a repository gets a lead started in that repository's main checkout (`startStanding`);
+   * one without is only named.
    */
   async createTeam(input: { name?: string; purpose?: string; handsTo?: string | null; repository?: string; standing?: boolean }): Promise<Team> {
     const name = this.teamName(input.name, null);
     const purpose = input.purpose?.trim() ?? "";
     const handsTo = input.handsTo ? this.team(input.handsTo).id : null;
+    if (input.standing && input.repository) return this.startStanding(name, purpose, handsTo, input.repository);
     if (input.standing) {
       const team = this.insertTeam({ name, purpose, handsTo, path: null, branch: null, standing: true });
       this.onChange("world");
@@ -964,6 +991,109 @@ export class World {
       if (!lead) throw new InboxError(502, `${team.name}'s first mate is starting but could not be given its first task (herdr: ${(err as Error).message}). Tell it in the office.`);
       this.messages.tell(lead.id, { text });
     }
+  }
+
+  /**
+   * A standing team with a lead started the way a project's is (the crew tree's lead choice, the
+   * inbox hook, its brief as appended system prompt, its purpose as first task), but in the
+   * repository's main checkout, which it only reads: a new pane in that checkout's herdr workspace
+   * when one is open, else a workspace of its own. It inherits the merge instruction of another
+   * standing team in the same repository. Nothing is kept when herdr cannot open the pane or the
+   * lead does not start: no team, and the pane it opened is closed.
+   */
+  private async startStanding(name: string, purpose: string, handsTo: string | null, root: string): Promise<Team> {
+    const repository = this.state().repositories.find((r) => r.root === root) ?? this.mainCheckout(root);
+    if (!repository) throw new InboxError(400, "pick the repository the team's lead works in: a repository's main checkout");
+    if (!this.source?.available()) throw new InboxError(409, "a standing team's lead starts through herdr, and herdr is not running");
+    if (!this.source.openPane) throw new InboxError(409, "this herdr cannot open a pane for the team's lead");
+    const base = checkoutOf(repository.root)?.branch ?? null;
+    let paneId: string;
+    try {
+      paneId = await this.paneInCheckout(repository.root, `${name} lead`);
+    } catch (err) {
+      throw new InboxError(502, `herdr could not open a pane for the team's lead: ${(err as Error).message}`);
+    }
+    const merge = this.repositoryMerge(repository.root);
+    const team = this.insertTeam({ name, purpose, handsTo, path: null, branch: null, standing: true });
+    this.db.prepare("UPDATE teams SET lead_pane = ? WHERE id = ?").run(paneId, team.id);
+    if (merge) this.mergeInstructions.set(team.id, merge);
+    const started = this.team(team.id);
+    this.onChange("world");
+    const next = handsTo ? this.team(handsTo).name : null;
+    const brief = [
+      `You lead the standing team "${name}" from the repository's main checkout ${repository.root} (branch ${base ?? "unknown"}), which you only read.`,
+      purpose ? `The team: ${purpose}` : "",
+      standingLead(this.leadStart(started, [{ cwd: repository.root, role: "lead" }])),
+      this.pipelines.brief(team.id),
+      withInboxPath('`inbox team` shows your office name, your crew and what waits for you; `inbox say NAME "text"` reaches anyone in the office.'),
+      next ? withInboxPath(`When the work is done, hand it to ${next} for review: inbox handoff "title" --summary "what was done, where, how to check it".`) : "",
+    ].filter(Boolean).join(" ");
+    const lead = this.crew?.lead() ?? FIRST_MATE_CHOICE;
+    const harness = lead.harness as Harness;
+    try {
+      await this.source.startAgent(paneId, `lead-${projectSlug(name) || "team"}`.slice(0, 32).replace(/-+$/, ""), harness, [...startFlags(lead), ...(harness === "claude" ? hookSettings(repository.root) : []), "--append-system-prompt", briefArgument(brief)]);
+    } catch (err) {
+      await this.source.refresh?.().catch(() => {});
+      if (!this.source.live().some((a) => a.paneId === paneId && a.harness === harness)) {
+        this.forget(started, { reason: "deleted" });
+        await this.source.closePane(paneId).catch(() => {});
+        throw new InboxError(502, `${name} was not made: no lead started in ${repository.root} (herdr: ${(err as Error).message}).`);
+      }
+    }
+    if (purpose) await this.kickoff(started, paneId, `Start on the team's work: ${purpose}`);
+    return this.team(team.id);
+  }
+
+  /** A new pane in the herdr workspace of a main checkout, beside one of its panes; a workspace of its own when none is open. */
+  private async paneInCheckout(root: string, label: string): Promise<string> {
+    const source = this.source!;
+    const workspace = (await source.workspaces?.().catch(() => null))?.find((w) => !w.linked && w.checkoutPath === root);
+    const beside = workspace ? (await source.panes?.().catch(() => null))?.find((p) => p.workspaceId === workspace.workspaceId)?.paneId ?? null : null;
+    return source.openPane!(root, beside, label);
+  }
+
+  /** The merge instruction another standing team in the repository has, for a new one there to inherit. */
+  private repositoryMerge(root: string): { text: string; path: string } | null {
+    const agents = this.state().agents;
+    for (const t of this.teams()) {
+      if (!t.standing || (!t.mergeInstruction && !t.mergeInstructionPath)) continue;
+      const cwds = [t.path, ...t.worktrees, ...agents.filter((a) => a.teamId === t.id).map((a) => a.cwd)];
+      if (cwds.some((c) => c && this.checkout(c)?.repoRoot === root)) return { text: t.mergeInstruction ?? "", path: t.mergeInstructionPath ?? "" };
+    }
+    return null;
+  }
+
+  /**
+   * `inbox pane --worktree SLUG`: a crew member's own worktree, made through herdr (as a project's is,
+   * so a repository hook that refuses `git worktree add` by hand does not stop it) beside the
+   * repository's main checkout, on a new branch from the branch of the caller's checkout. It becomes
+   * one of the caller's team's worktrees, so whoever runs there is on the team, and its pane is returned.
+   */
+  async openWorktree(session: SessionInput, slug: unknown): Promise<{ paneId: string; path: string; branch: string; base: string | null }> {
+    if (typeof slug !== "string" || !slug.trim()) throw new InboxError(400, "name the worktree: inbox pane --worktree <slug>");
+    const me = this.resolve(session);
+    if (!me.teamId) throw new InboxError(409, "you are on no team, so a worktree would be nobody's: ask the founder to put you on one");
+    const checkout = me.cwd ? this.checkout(me.cwd) : null;
+    if (!checkout) throw new InboxError(400, `${me.cwd ?? "your folder"} is not a git checkout`);
+    const place = placeFor(checkout.repoRoot, slug);
+    if (!place) throw new InboxError(400, "start the worktree's name with a letter");
+    if (existsSync(place.path)) throw new InboxError(409, `${place.path} already exists: pick another name`);
+    if (!this.source?.available()) throw new InboxError(409, "a worktree is made through herdr, and herdr is not running");
+    const base = checkout.branch;
+    let created: { paneId: string; alsoOpened?: string[] };
+    try {
+      created = await this.source.createWorktree(checkout.repoRoot, { path: place.path, branch: place.branch, base, label: place.slug });
+    } catch (err) {
+      throw new InboxError(502, `herdr could not make the worktree: ${(err as Error).message}`);
+    }
+    const path = checkoutOf(place.path)?.top ?? place.path;
+    for (const workspace of created.alsoOpened ?? []) this.recordWorkspace(workspace, me.teamId, checkout.repoRoot);
+    try {
+      this.addWorktree(me.teamId, path);
+    } catch (err) {
+      throw new InboxError(409, `the worktree ${path} and its pane ${created.paneId} are made, but it is not your team's: ${(err as Error).message}`);
+    }
+    return { paneId: created.paneId, path, branch: place.branch, base };
   }
 
   private insertTeam(t: Omit<Team, "id" | "createdAt" | "worktrees" | "leadRole" | "leadRolePath" | "leadRoleProblem" | "mergeInstruction" | "mergeInstructionPath" | "mergeInstructionProblem">): Team {

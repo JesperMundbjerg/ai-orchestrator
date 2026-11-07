@@ -17,6 +17,7 @@ import type { AgentSource, LiveAgent } from "./world.ts";
 import { StaleWorking } from "./stale.ts";
 import { AgentStartingError, agentIsStarting } from "./agent-starting.ts";
 import { nextSplit, type PaneRect } from "../shared/panes.ts";
+import { paneEnvArgs } from "../shared/shellpath.ts";
 import type { PaneInfo, WorkspaceInfo } from "./finish-cleanup.ts";
 
 const run = promisify(execFile);
@@ -315,15 +316,16 @@ export class Herdr implements PresenceSource, AgentSource {
   /**
    * A shell pane in `cwd`, without taking focus: beside `pane` in its tab, where `nextSplit` puts
    * it so the tab stays a grid, or in a workspace of its own when there is no pane to go beside.
+   * It gets the office's PATH with what the login shell adds (shellpath.ts), so `claude` and `pi` are found.
    */
   async openPane(cwd: string, beside: string | null, label: string): Promise<string> {
     if (!beside) {
-      const created = await this.call<{ root_pane: { pane_id: string } }>(["workspace", "create", "--cwd", cwd, "--label", label, "--no-focus"]);
+      const created = await this.call<{ root_pane: { pane_id: string } }>(["workspace", "create", "--cwd", cwd, "--label", label, ...paneEnvArgs(), "--no-focus"]);
       return created.root_pane.pane_id;
     }
     const { layout } = await this.call<{ layout: { panes: Array<{ pane_id: string; rect: Omit<PaneRect, "id"> }> } }>(["pane", "layout", "--pane", beside]);
     const { pane, direction } = nextSplit(layout.panes.map((p) => ({ id: p.pane_id, ...p.rect })));
-    const created = await this.call<{ pane: { pane_id: string } }>(["pane", "split", pane, "--direction", direction, "--ratio", "0.5", "--cwd", cwd, "--no-focus"]);
+    const created = await this.call<{ pane: { pane_id: string } }>(["pane", "split", pane, "--direction", direction, "--ratio", "0.5", "--cwd", cwd, ...paneEnvArgs(), "--no-focus"]);
     return created.pane.pane_id;
   }
 

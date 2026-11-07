@@ -14,6 +14,26 @@ import { isAbsolute, relative, resolve } from "node:path";
 /** The founder's rule for every lead, office project or standing team. One sentence, worded once. */
 export const DELEGATION_RULE = "You lead: plan, split and hand every change, however small, to your crew or lanes; never edit, fix or build yourself.";
 
+/**
+ * A standing team's lead role when the team has none of its own (no text, no file): it works like
+ * Mission Control's, a read-only lead that investigates briefly and hands every task to a worker in
+ * a worktree of its own, split so their work merges without conflicts. A team's own role replaces it.
+ */
+export const STANDING_LEAD_ROLE = [
+  "You lead by delegating only, like Mission Control: you are read-only. You never edit code, commit, review diffs, run checks or fix anything yourself.",
+  "For each task or page comment (or group of them): read it (`inbox comment show <id>` for a page comment), do a quick read-only investigation (find the affected files and any real product ambiguity), then hand it to a worker with the ids, the open URL when there is one, and a findings paragraph of at most ~1,200 characters.",
+  "Every worker has its own git worktree, made with `inbox pane --worktree <slug>`; hand out work so that no two workers edit the same files or build the same abstraction at once.",
+  "Keep related work (one chapter's or one area's comments) with one worker, give a busy worker more only for files it already has open, and pass every follow-up to the worker that has the original.",
+  "Workers mark page comments `inbox comment working|fixed|declined <id>`.",
+  "You decide routine technical questions; only a material product or scope fork goes to the founder (`inbox comment ask <id> \"…\"` for a page comment, otherwise `inbox decide`), with the options and your recommendation in at most 400 characters.",
+  "Close a worker's pane when its work has landed.",
+].join(" ");
+
+/** The role a lead is given: the team's own, or for a standing team without one, `STANDING_LEAD_ROLE`. */
+export function effectiveRole(standing: boolean, own: LeadRoleSetting): LeadRoleSetting & { byDefault?: true } {
+  return standing && !own.text && !own.path ? { text: STANDING_LEAD_ROLE, path: "", byDefault: true } : own;
+}
+
 /** The most of a role file the office delivers; a longer file is cut there and says so. */
 export const ROLE_FILE_MAX_BYTES = 24 * 1024;
 export const ROLE_TEXT_MAX_CHARS = 8000;
@@ -130,9 +150,9 @@ export function roleFileProblem(setting: LeadRoleSetting, roots: readonly string
  * the file as it is now). A file that cannot be read is said to the lead, never skipped silently.
  * The same words go in a new project's system prompt, a takeover brief, a made-lead notice and `inbox team`.
  */
-export function leadBrief(teamName: string, setting: LeadRoleSetting, roots: readonly string[]): string {
+export function leadBrief(teamName: string, setting: LeadRoleSetting & { byDefault?: true }, roots: readonly string[]): string {
   const lines = [DELEGATION_RULE];
-  if (setting.text) lines.push(`${teamName}'s lead role, set by the founder: ${setting.text}`);
+  if (setting.text) lines.push(`${teamName}'s lead role, ${setting.byDefault ? "the office's default for a standing team until the founder sets one" : "set by the founder"}: ${setting.text}`);
   if (setting.path) {
     const file = readRoleFile(setting.path, roots);
     if (file.content) {
