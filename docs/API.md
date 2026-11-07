@@ -304,6 +304,17 @@ Submission `evidence.path` explicitly copies a local file into the data director
 
 Pasted images use `POST /api/uploads`; bytes must really be PNG, JPEG, GIF or WebP and at most 10 MiB. Up to eight image ids can be attached to a message/answer. `GET /uploads/:id` serves the stored image with sandbox CSP and immutable private caching (no HEAD/range API). Agents receive absolute image paths, not image bytes in terminal text. There is no automatic retention/deletion API: back up SQLite, files and uploads together.
 
+### Debug
+
+An opt-in input recorder for diagnosing dictation (e.g. a dictation app's synthetic Cmd+V). Open the office with `?inputlog=1` (remembered for that tab; `?inputlog=0` stops it); a red "recording input" badge shows while it runs, and without it the UI adds no listeners. It records keydown/keyup, beforeinput/input, paste (clipboard types, text length, file count/types), composition, focus/blur, visibility, the focused box's value length and caret, `defaultPrevented` after dispatch, and `longtask`, `long-animation-frame` and event-timing entries, with `performance.now()` (`t`, per tab) and wall-clock (`wall`) times. It never records the text itself: printable keys are `char`, everything else is lengths and types.
+
+| Method/path | Purpose / request |
+|---|---|
+| `POST /api/debug/inputlog` | `{events: [{kind, t, …}]}`, at most 2500 per batch; refused 403 without an `Origin` of this office. Flat values only (nested values dropped, strings cut to 120 characters). Kept in memory, newest 5000, never on disk; lost on restart. → `{accepted, total}` |
+| `GET /api/debug/inputlog` | `{capacity, total, dropped, events}`, oldest first, each with `seq` and `receivedAt` |
+
+`node scripts/inputlog-summary.mjs [--url http://127.0.0.1:4870] [--window 2000] [--json]` reads it (GET only) and prints the events 2 s around each Cmd/Ctrl+V keydown and paste, with the long tasks overlapping.
+
 ## Page comments
 
 A stable, vendor-neutral surface for commenting from any web page to any team, owned end to end by the office. A page lists teams and names one **by id**, never by name. It makes **one call to queue a comment** (or a group of them); from then on the office owns it: it stores the comment in its own queue (`page_comments`), gives it to the team's lead as an ordinary founder instruction (`Messages.instruct`: queued while the lead is busy or away, batched with what else waits, never typed twice), tracks it, carries questions, answers, edits and withdrawals between page and lead, and tells the page every change. A page only calls the API and listens to events: it keeps no queue, daemon or poll of its own. The lead closes the loop with `inbox comment fixed|declined`, or asks the page with `inbox comment ask`. Types and pure helpers: [`src/shared/pagecomments.ts`](../src/shared/pagecomments.ts); behavior: [`src/server/pagecomments.ts`](../src/server/pagecomments.ts); tests: `test/pagecomments.test.ts`, `test/pagecomments.browser.mjs`.

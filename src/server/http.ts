@@ -27,6 +27,7 @@ import type { Leases } from "./leases.ts";
 import { leaseSchemas } from "./leases-protocol.ts";
 import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
+import { InputLog, inputLogBatchSchema } from "./inputlog.ts";
 import { commentAnswerSchema, commentAskSchema, commentEditSchema, commentStatusSchema, commentVerifySchema, commentWithdrawSchema, pageCommentGroupSchema, pageCommentSchema, pageOriginsSchema, type PageComments } from "./pagecomments.ts";
 import { COMMENT_ID, commentEvent, parseVerificationFilter, type CommentVerificationFilter } from "../shared/pagecomments.ts";
 import { pipelineSchemas, waiverSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema, telemetryQuery, telemetryReportSchema } from "./pipelines/protocol.ts";
@@ -44,7 +45,8 @@ function route<T>(method: string, pattern: RegExp, schema: Schema<T>, handler: (
   return [method, pattern, (req, body, params) => handler(req, schema.parse(body), params)];
 }
 
-export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; stalls?: StallWatch; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove; standing?: StandingLanes; leases?: Leases; pageComments?: PageComments }): Server {
+export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { port: number; staticDir: string | null; world?: World; machine?: Machine; stalls?: StallWatch; switches?: Switches; usage?: Usage; autoApprove?: AutoApprove; standing?: StandingLanes; leases?: Leases; pageComments?: PageComments; inputLog?: InputLog }): Server {
+  const inputLog = opts.inputLog ?? new InputLog();
   const clients = new Set<ServerResponse>();
   const broadcast = (reason: string) => {
     for (const res of clients) res.write(`event: changed\ndata: ${JSON.stringify({ reason })}\n\n`);
@@ -227,6 +229,12 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/agent\/review$/, deliveryReviewSchema, (_r, b) => needWorld().messages.review(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/ack$/, protocol.acknowledge.request, (_r, b) => inbox.acknowledge(b.session, b.deliveryId, b.error)),
     route("POST", /^\/api\/agent\/withdraw$/, protocol.withdraw.request, (_r, b) => inbox.closeItem(b.session, b.item, "withdrawn")),
+    // Debug: the UI's opt-in input recorder (?inputlog=1); memory only, and only from the office's own page.
+    route("GET", /^\/api\/debug\/inputlog$/, emptySchema, () => inputLog.read()),
+    route("POST", /^\/api\/debug\/inputlog$/, inputLogBatchSchema, (r, b) => {
+      if (!allowedHosts.has(String(r.headers.origin ?? "").replace(/^https?:\/\//, ""))) throw new InboxError(403, "the input log takes batches only from the office's own page");
+      return inputLog.add(b.events);
+    }),
     route("POST", /^\/api\/agent\/resolve$/, protocol.resolve.request, (_r, b) => inbox.closeItem(b.session, b.item, "resolved")),
   ];
 
