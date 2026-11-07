@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { AllLeadsResult, WorldState } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { SEND_HINT, sendOnEnter } from "../sendKey.ts";
+import { useWritingBox } from "../writingBox.ts";
 import { AttachedImages, useAttachments } from "./Attach.tsx";
 import "./TellAllLeads.css";
 
@@ -23,11 +24,13 @@ function Composer({ world, onClose }: { world: WorldState; onClose: () => void }
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AllLeadsResult | null>(null);
+  const box = useWritingBox(text, setText);
   const attachments = useAttachments();
   const dialog = useRef<HTMLDialogElement>(null);
   const inFlight = useRef(false);
   const attempt = useRef<{ signature: string; clientId: string } | null>(null);
-  useEffect(() => { dialog.current?.showModal(); }, []);
+  // showModal focuses the dialog's first control (Close); put you in the message box, ready to type or dictate.
+  useEffect(() => { dialog.current?.showModal(); box.ref.current?.focus(); }, []);
   const canSend = selected.length > 0 && Boolean(text.trim() || attachments.ids.length) && !attachments.uploading && !sending;
   const send = () => {
     if (!canSend || inFlight.current) return;
@@ -67,7 +70,7 @@ function Composer({ world, onClose }: { world: WorldState; onClose: () => void }
         {!leads.length ? <p className="muted">No leads yet.</p> : null}
       </fieldset>
       {noLead.length ? <p className="muted small-note">No lead; skipped: {noLead.map((t) => t.name).join(", ")}.</p> : null}
-      <textarea autoFocus aria-label="Message to all leads" rows={4} placeholder="What should the leads know or do?" value={text} disabled={sending} onChange={(e) => setText(e.target.value)} onPaste={attachments.onPaste} onKeyDown={sendOnEnter(send)} />
+      <textarea autoFocus aria-label="Message to all leads" rows={4} placeholder="What should the leads know or do?" {...box} disabled={sending} onPaste={attachments.onPaste} onKeyDown={sendOnEnter(send)} />
       <AttachedImages attachments={attachments} />
       <div className="row">
         <button type="submit" className="primary small" disabled={!canSend}>{sending ? "Sending…" : `Send to ${selected.length} ${selected.length === 1 ? "lead" : "leads"}`}</button>

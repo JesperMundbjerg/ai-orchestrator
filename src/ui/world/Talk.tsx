@@ -8,6 +8,7 @@ import { leftBeforeArrival } from "../../shared/delivery.ts";
 import { ago } from "../format.ts";
 import { AttachedImages, Images, useAttachments } from "../components/Attach.tsx";
 import { sendOnEnter } from "../sendKey.ts";
+import { useWritingBox } from "../writingBox.ts";
 import { WaitingMessage } from "../components/WaitingMessage.tsx";
 
 const DELIVERY_LABEL = { queued: "waiting until free", sending: "typing…", delivered: "took it up", failed: "not delivered" } as const;
@@ -182,6 +183,7 @@ export function TellTeam({ team, members, autoFocus = false }: { team: WorldTeam
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lead = members.find((m) => m.role === "lead") ?? null;
+  const box = useWritingBox(text, setText);
   const attachments = useAttachments();
   const ready = Boolean((text.trim() || attachments.ids.length) && !attachments.uploading);
   const canSend = ready && !sending && Boolean(lead);
@@ -204,11 +206,10 @@ export function TellTeam({ team, members, autoFocus = false }: { team: WorldTeam
     >
       <div className="section-label">Tell {team.name}</div>
       <textarea
-        value={text}
+        {...box}
         rows={3}
         autoFocus={autoFocus}
         placeholder={`Write to ${team.name}…`}
-        onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
         onKeyDown={(e) => {
           sendOnEnter(send)(e);
@@ -295,6 +296,7 @@ export function TellAgent({ agent }: { agent: WorldAgent }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const box = useWritingBox(text, setText);
   const attachments = useAttachments();
   const ready = Boolean((text.trim() || attachments.ids.length) && !attachments.uploading);
   const canSend = ready && !sending;
@@ -316,12 +318,11 @@ export function TellAgent({ agent }: { agent: WorldAgent }) {
       }}
     >
       <textarea
-        value={text}
+        {...box}
         rows={3}
         autoFocus
         aria-label={`Message ${agent.name}`}
         placeholder={`Write to ${agent.name}…`}
-        onChange={(e) => setText(e.target.value)}
         onPaste={attachments.onPaste}
         onKeyDown={(e) => {
           sendOnEnter(send)(e);

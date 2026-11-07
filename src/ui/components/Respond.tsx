@@ -3,6 +3,7 @@ import type { ItemDetail, ReplyAction } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { deliveryLabel, snoozeChoices } from "../format.ts";
 import { enterPlan, SEND_HINT, sendOnEnter } from "../sendKey.ts";
+import { useWritingBox } from "../writingBox.ts";
 import { AttachedImages, useAttachments, type Attachments } from "./Attach.tsx";
 import { recommendedOption } from "./decision.ts";
 
@@ -20,6 +21,7 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
   const [showLater, setShowLater] = useState(false);
   const [showNote, setShowNote] = useState(false);
   const recommended = recommendedOption(item.options, item.recommendation);
+  const box = useWritingBox(text, setText);
   const attachments = useAttachments();
   const last = replies.at(-1);
   // Something to say: words, or images you pasted or dropped. Nothing is sent while an image is still uploading.
@@ -96,8 +98,7 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
         className="note"
         aria-label={open ? "Your answer" : "Optional note"}
         placeholder={open ? "Write your answer. Paste or drop images to show it." : item.type === "decide" ? "Add a note (optional). Paste or drop images to show it." : "Add a note (optional to approve, required if it needs changes). Paste or drop images to show it."}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
+        {...box}
         onPaste={attachments.onPaste}
         onKeyDown={sendOnEnter(() => submit?.())}
         rows={open ? 4 : 2}
@@ -185,14 +186,14 @@ export function Respond({ detail, onNext, onDone, onOpenPreview, onAnswered, oth
 function Discuss({ text, setText, attachments, busy, said, onSend, onCancel, placeholder = "Write to the agent that owns this work… Paste or drop images to show it.", sendLabel = "Send to the agent" }: {
   text: string; setText: (t: string) => void; attachments: Attachments; busy: boolean; said: boolean; onSend: () => void; onCancel: () => void; placeholder?: string; sendLabel?: string;
 }) {
+  const box = useWritingBox(text, setText);
   return (
     <div className="discuss">
       <textarea
         autoFocus
         className="note"
         placeholder={placeholder}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
+        {...box}
         onPaste={attachments.onPaste}
         onKeyDown={sendOnEnter(() => !busy && said && onSend())}
         rows={4}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { isDoneComment, type PageComment } from "../../shared/pagecomments.ts";
 import { ago } from "../format.ts";
+import { useWritingBox } from "../writingBox.ts";
 
 const LABEL: Record<PageComment["status"], string> = {
   held: "held in a group", queued: "queued", delivered: "delivered", working: "working", asked: "asked",
@@ -59,6 +60,7 @@ function AnswerQuestion({ comment }: { comment: PageComment }) {
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const box = useWritingBox(text, setText);
   const send = async () => {
     if (!text.trim()) return;
     setBusy(true); setError(null);
@@ -70,7 +72,7 @@ function AnswerQuestion({ comment }: { comment: PageComment }) {
   return (
     <div className="order-question" style={{ display: "flex", flexDirection: "column", gap: 6, margin: "6px 0" }}>
       <div><strong>{comment.by ?? "The lead"} asks:</strong> {comment.question}</div>
-      <textarea aria-label={`Answer the question on ${comment.id}`} value={text} onChange={(e) => setText(e.target.value)} placeholder="Answer for the page" rows={2} style={{ width: "100%", font: "inherit" }} />
+      <textarea aria-label={`Answer the question on ${comment.id}`} {...box} placeholder="Answer for the page" rows={2} style={{ width: "100%", font: "inherit" }} />
       <div className="order-meta">
         <button type="button" className="primary" disabled={busy || !text.trim()} onClick={() => void send()}>Answer</button>
         {error ? <span className="delivery failed"> {error}</span> : null}
