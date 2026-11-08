@@ -78,15 +78,15 @@ test("a fix already on origin/dev is fixed at once", () => {
   const { checkout, comments, id } = setup();
   const sha = commit(checkout, "fix.txt");
   git(checkout, "push", "-q", "origin", "dev");
-  const marked = comments.setStatus(id, { status: "fixed", commit: sha });
+  const marked = comments.setStatus(id, { status: "fixed", commit: sha, note: "Relabelled" });
   assert.equal(marked.status, "fixed");
   assert.equal(marked.landing, null);
 });
 
 test("fixed without a commit is refused for a team with an integration branch, naming --commit; working and declined are not", () => {
   const { comments, id } = setup();
-  assert.throws(() => comments.setStatus(id, { status: "fixed" }), (err: InboxError) => err.status === 400 && /--commit/.test(err.message) && /dev/.test(err.message));
-  assert.throws(() => comments.setStatus(id, { status: "fixed", commit: "deadbeef" }), (err: InboxError) => err.status === 400 && /no commit deadbeef/.test(err.message));
+  assert.throws(() => comments.setStatus(id, { status: "fixed", note: "Relabelled" }), (err: InboxError) => err.status === 400 && /--commit/.test(err.message) && /dev/.test(err.message));
+  assert.throws(() => comments.setStatus(id, { status: "fixed", commit: "deadbeef", note: "Relabelled" }), (err: InboxError) => err.status === 400 && /no commit deadbeef/.test(err.message));
   assert.equal(comments.get(id).status, "delivered", "a refused fixed changes nothing");
   assert.equal(comments.setStatus(id, { status: "working" }).status, "working");
   assert.equal(comments.setStatus(id, { status: "declined", note: "Not a bug" }).status, "declined");
@@ -94,12 +94,12 @@ test("fixed without a commit is refused for a team with an integration branch, n
 
 test("a team with no integration branch is fixed as before, with or without a commit", () => {
   const { comments, id } = setup({ repo: false });
-  const out = comments.setStatus(id, { status: "fixed", commit: "ABC1234" });
+  const out = comments.setStatus(id, { status: "fixed", commit: "ABC1234", note: "Relabelled" });
   assert.equal(out.status, "fixed");
   assert.equal(out.commit, "abc1234");
   assert.equal(out.landing, null);
   const other = setup({ repo: false });
-  assert.equal(other.comments.setStatus(other.id, { status: "fixed" }).status, "fixed");
+  assert.equal(other.comments.setStatus(other.id, { status: "fixed", note: "Relabelled" }).status, "fixed");
 });
 
 test("with the office's non-blocking git, the landing is read in the background and turns fixed on a later look", async () => {
@@ -111,7 +111,7 @@ test("with the office's non-blocking git, the landing is read in the background 
     // The call-time check is a decision: it answers git_pending until it has read Git since it was asked.
     let marked;
     for (let i = 0; ; i++) {
-      try { marked = comments.setStatus(id, { status: "fixed", commit: sha }); break; }
+      try { marked = comments.setStatus(id, { status: "fixed", commit: sha, note: "Relabelled" }); break; }
       catch (err) { if (!isGitPending(err) || i > 200) throw err; await err.settled; }
     }
     assert.equal(marked.status, "working");

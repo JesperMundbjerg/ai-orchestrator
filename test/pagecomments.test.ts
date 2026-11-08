@@ -304,6 +304,13 @@ test("`inbox comment fixed` closes a comment as the agent running it, with its u
     const declined = await run("comment", "declined", sent.id, "--harness", "pi", "--session", "s1");
     assert.notEqual(declined.code, 0);
     assert.match(declined.out, /say why/);
+    const noNote = await run("comment", "fixed", sent.id, "--commit", "0123abc", "--harness", "pi", "--session", "s1");
+    assert.notEqual(noNote.code, 0);
+    assert.match(noNote.out, /--note/);
+    const tooLong = await run("comment", "fixed", sent.id, "--commit", "0123abc", "--note", "x".repeat(121), "--harness", "pi", "--session", "s1");
+    assert.notEqual(tooLong.code, 0);
+    assert.match(tooLong.out, /120/);
+    assert.equal(comments.get(sent.id).status, "delivered", "refused closes change nothing");
     const fixed = await run("comment", "fixed", sent.id, "--url", "http://localhost:3000/a?step=3", "--note", "Moved the label", "--commit", "0123abc", "--harness", "pi", "--session", "s1");
     assert.equal(fixed.code, 0, fixed.out);
     assert.match(fixed.out, new RegExp(`Comment ${sent.id} to Dispatch: fixed \\(Moved the label\\)`));

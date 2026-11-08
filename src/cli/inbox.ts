@@ -144,8 +144,10 @@ ${LEASE_HELP}
                                   attach the lane to NAME's running session through the project's own attach command; it never
                                   renames anyone or changes a lead, and says exactly what a fresh check confirmed or why it was refused
   inbox comment working ID        a page comment the office gave you: say you started on it
-  inbox comment fixed ID [--url URL] [--note "…"] [--commit SHA]
-                                  it is fixed; --url is where to see the fix when not the page's own open URL
+  inbox comment fixed ID --note "how it was fixed" [--commit SHA] [--url URL]
+                                  it is fixed; --note is required: one plain line of at most 120 characters on what changed
+                                  (one id per call, so each comment gets its own note); --url is where to see the fix when
+                                  not the page's own open URL
   inbox comment declined ID --note "why"
   inbox comment ask ID "question" ask the page about it: it says "asked" until the page answers, and the answer reaches you
   inbox comment show ID           its status, kind, group, question and open URL
@@ -602,6 +604,7 @@ async function commentCommand(sub: string | undefined, id: string | undefined, q
   }
   if (!(AGENT_COMMENT_STATUSES as readonly string[]).includes(sub)) throw new Error(`unknown comment status "${sub}": use working, fixed, declined or ask`);
   if (sub === "declined" && !flags.note?.trim()) throw new Error('say why: inbox comment declined ID --note "why"');
+  if (sub === "fixed" && !flags.note?.trim()) throw new Error('say how it was fixed, in a few words: inbox comment fixed ID --commit SHA --note "Packets now fly inside a faint cone toward Earth."');
   const url = flags.url?.at(-1);
   const out = await call<PageComment>(`/api/page-comments/${encodeURIComponent(id)}/status`, { status: sub, note: flags.note, url, commit: flags.commit, ...(s ? { session: s } : {}) });
   if (sub === "fixed" && out.landing) {

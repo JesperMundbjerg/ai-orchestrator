@@ -63,7 +63,7 @@ async function seed(world: World, comments: PageComments, base: string) {
   const team = await world.createTeam({ name: "Dispatch", standing: true });
   const lead = world.state().agents.find((a) => a.cwd === "/lead")!;
   world.updateAgent(lead.id, { teamId: team.id, role: "lead" });
-  const fixed = (text: string) => comments.setStatus(comments.enqueue(team.id, { text }).id, { status: "fixed" });
+  const fixed = (text: string) => comments.setStatus(comments.enqueue(team.id, { text }).id, { status: "fixed", note: "Fixed it" });
   const none = fixed("none"), verified = fixed("verified"), wrong = fixed("wrong");
   const open = comments.enqueue(team.id, { text: "open" });
   const declined = comments.setStatus(comments.enqueue(team.id, { text: "declined" }).id, { status: "declined", note: "no" });

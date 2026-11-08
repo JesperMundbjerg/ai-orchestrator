@@ -68,6 +68,9 @@ export const commentStatusSchema = refine(object({
   if (b.commit !== undefined && !/^[0-9a-f]{7,64}$/i.test(b.commit)) fail(`${p ? `${p}.` : ""}commit`, "must be a commit SHA");
 });
 
+/** The longest "how it was fixed" note a fixed comment may carry: the page shows it as the fix text. */
+export const FIX_NOTE_MAX = 120;
+
 /** A delivery that failed because its lead left is given to the team again, at most this many times in all. */
 export const MAX_ATTEMPTS = 3;
 const FINAL: ReadonlySet<PageCommentStatus> = new Set(CLOSED_COMMENT_STATUSES);
@@ -287,7 +290,7 @@ export class PageComments {
       if (current.answer === answer) return current;
       throw Object.assign(new InboxError(409, `comment ${id} has no open question`), { code: "no_question" });
     }
-    this.followUp(current, `[Page comment ${id} answered]\nYou asked: ${current.question}\nThe answer: ${answer}\n\nIt is back to working. Close it as before: \`inbox comment fixed ${id} --commit SHA\` once the fix is pushed, or \`inbox comment declined ${id} --note "why"\`.`, `answer:${current.updatedAt}`, input.images);
+    this.followUp(current, `[Page comment ${id} answered]\nYou asked: ${current.question}\nThe answer: ${answer}\n\nIt is back to working. Close it as before: \`inbox comment fixed ${id} --commit SHA --note "how it was fixed, in a few words"\` once the fix is pushed, or \`inbox comment declined ${id} --note "why"\`.`, `answer:${current.updatedAt}`, input.images);
     this.update(id, { status: "working", answer }, false);
     this.emit(id);
     return this.get(id);
@@ -354,7 +357,8 @@ export class PageComments {
   }
 
   /**
-   * The fixer closes the loop: working, fixed (with an optional url that overrides openUrl) or declined (with a note).
+   * The fixer closes the loop: working, fixed (with a note of at most FIX_NOTE_MAX characters saying how, and an
+   * optional url that overrides openUrl) or declined (with a note).
    * For a team with an integration branch, fixed needs the commit, and is fixed only once that commit is on the
    * branch: until then the comment stays working, with `landing` naming the commit and branch it waits for
    * (DESIGN "A page comment is fixed only once its commit is on the team's integration branch").
@@ -362,7 +366,9 @@ export class PageComments {
   setStatus(id: string, input: { status: AgentCommentStatus; note?: string; url?: string; commit?: string; session?: SessionInput }): PageComment {
     const current = this.get(id);
     const by = input.session && this.office.resolve ? this.office.resolve(input.session).name : null;
-    const note = input.note?.trim() ? input.note.trim().slice(0, 2000) : null;
+    // A fixed note is one line (whitespace collapsed); other notes keep their lines.
+    const trimmed = input.status === "fixed" ? input.note?.replace(/\s+/g, " ").trim() : input.note?.trim();
+    const note = trimmed ? trimmed.slice(0, 2000) : null;
     if (FINAL.has(current.status)) {
       const commitSame = input.commit === undefined || [current.commit, current.commit?.slice(0, input.commit.length)].includes(input.commit.toLowerCase());
       const same = current.status === input.status && (note ?? current.note) === current.note && (input.url ?? current.openUrl) === current.openUrl && commitSame;
@@ -371,6 +377,10 @@ export class PageComments {
     }
     if (current.editable) throw Object.assign(new InboxError(409, `comment ${id} has not reached the team yet`), { code: "comment_not_delivered" });
     if (input.status === "working" && current.status === "working" && !note) return current;
+    if (input.status === "fixed") {
+      if (!note) throw Object.assign(new InboxError(400, `say how it was fixed, in a few words the founder understands: inbox comment fixed ${id} --commit SHA --note "Packets now fly inside a faint cone toward Earth."`), { code: "note_required" });
+      if (note.length > FIX_NOTE_MAX) throw Object.assign(new InboxError(400, `--note is ${note.length} characters; keep it to ${FIX_NOTE_MAX} or fewer (one short line on what changed)`), { code: "note_too_long" });
+    }
     let status: AgentCommentStatus = input.status;
     let commit = input.commit?.toLowerCase() ?? null;
     // Waiting for a landing: [commit, branch, repo]; declined drops it; working keeps the one there.
@@ -569,7 +579,7 @@ export class PageComments {
   /** What the lead reads: the page context, the comment, where to open it, and how to close the loop. */
   private leadText(c: PageComment): string {
     const open = c.openUrl ? `\n\nOpen to check: ${c.openUrl}` : "";
-    return `${pageCommentText(c.text, c.page, c.kind)}${open}${this.followsUpText(c)}\n\nPage comment ${c.id}. Say \`inbox comment working ${c.id}\` when you start; when it is fixed, push the fix to the team's integration branch (such as origin/dev) first, then \`inbox comment fixed ${c.id} --commit SHA [--url URL] [--note "…"]\` (it stays working until that commit is on the branch, then turns fixed; --url when the fix is best seen somewhere more specific); if it will not be fixed, \`inbox comment declined ${c.id} --note "why"\`; to ask the page, \`inbox comment ask ${c.id} "question"\`. ${PageComments.CLOSE}`;
+    return `${pageCommentText(c.text, c.page, c.kind)}${open}${this.followsUpText(c)}\n\nPage comment ${c.id}. Say \`inbox comment working ${c.id}\` when you start; when it is fixed, push the fix to the team's integration branch (such as origin/dev) first, then \`inbox comment fixed ${c.id} --commit SHA --note "how it was fixed, in a few words" [--url URL]\` (it stays working until that commit is on the branch, then turns fixed; --url when the fix is best seen somewhere more specific); if it will not be fixed, \`inbox comment declined ${c.id} --note "why"\`; to ask the page, \`inbox comment ask ${c.id} "question"\`. ${PageComments.CLOSE}`;
   }
 
   /** What the lead needs of the comment this one follows up: its status, note, commit and where it was fixed. */
@@ -588,7 +598,7 @@ export class PageComments {
       const open = c.openUrl ? `\nOpen to check: ${c.openUrl}` : "";
       return [head, ...pageContextLines(c.page), "", c.text].join("\n") + open + this.followsUpText(c).replace(/^\n\n/, "\n");
     });
-    return `[Page comments: ${comments.length} in group ${comments[0]!.groupId}]\n\n${parts.join("\n\n")}\n\nEach keeps its own id and status: \`inbox comment working ID\`, \`inbox comment fixed ID --commit SHA [--url URL] [--note "…"]\` once the fix is pushed to the integration branch (such as origin/dev; each turns fixed when its commit is there), \`inbox comment declined ID --note "why"\`, or \`inbox comment ask ID "question"\`. ${PageComments.CLOSE.replace("sent it", "sent them").replace("edit or withdraw it", "edit or withdraw each")}`;
+    return `[Page comments: ${comments.length} in group ${comments[0]!.groupId}]\n\n${parts.join("\n\n")}\n\nEach keeps its own id and status: \`inbox comment working ID\`, \`inbox comment fixed ID --commit SHA --note "how it was fixed, in a few words" [--url URL]\` once the fix is pushed to the integration branch (such as origin/dev; each turns fixed when its commit is there), \`inbox comment declined ID --note "why"\`, or \`inbox comment ask ID "question"\`. ${PageComments.CLOSE.replace("sent it", "sent them").replace("edit or withdraw it", "edit or withdraw each")}`;
   }
 
   /** The page origins allowed to host the widget; local dev servers until the founder sets them. */
