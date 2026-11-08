@@ -96,8 +96,9 @@ function renderComment(c: PageComment) {
       {c.status !== "asked" && c.answer ? <div className="order-text muted">Asked: {c.question} · Answered: {c.answer}</div> : null}
       <div className="order-meta">
         <span className={`delivery ${DELIVERY_CLASS[c.status]}`} title={c.note ?? undefined}>
-          {LABEL[c.status]}{c.by ? ` by ${c.by}` : ""}{c.note ? `: ${c.note}` : ""}
+          {c.landing ? `fixing — waiting for ${c.landing.branch}` : LABEL[c.status]}{c.by ? ` by ${c.by}` : ""}{c.note ? `: ${c.note}` : ""}
         </span>
+        {c.landing ? <span className="muted" title={`Fixed in ${c.landing.commit}; it turns fixed once that commit is on origin/${c.landing.branch}`}> · {c.landing.commit.slice(0, 10)} not on {c.landing.branch} yet</span> : null}
         {c.verification ? <span className={`delivery ${c.verification === "verified" ? "delivered" : "failed"}`}>{c.verification === "verified" ? "verified" : "still wrong"}</span> : null}
         {c.openUrl ? <a className="muted" href={c.openUrl} target="_blank" rel="noreferrer"> open</a> : null}
         <span className="muted"> {c.id}{c.groupId ? ` · group ${c.groupId}` : ""}{c.revision ? ` · edited ${c.revision}×` : ""}{c.followsUp ? ` · follows up ${c.followsUp}` : ""}{c.followUps.length ? ` · followed up by ${c.followUps.join(", ")}` : ""}</span>

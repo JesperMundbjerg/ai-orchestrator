@@ -143,6 +143,9 @@ export interface PageComment {
   messageId: string | null;
   /** How many times the office has given it to the team. */
   attempts: number;
+  /** Marked fixed with a commit its team's integration branch does not have yet: it stays working until the
+   * commit is on that branch (`origin/<branch>`), then turns fixed. Null otherwise. */
+  landing: { commit: string; branch: string } | null;
   createdAt: string;
   updatedAt: string;
 }

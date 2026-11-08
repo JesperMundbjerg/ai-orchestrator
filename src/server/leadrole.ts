@@ -24,7 +24,7 @@ export const STANDING_LEAD_ROLE = [
   "For each task or page comment (or group of them): read it (`inbox comment show <id>` for a page comment), do a quick read-only investigation (find the affected files and any real product ambiguity), then hand it to a worker with the ids, the open URL when there is one, and a findings paragraph of at most ~1,200 characters.",
   "Every worker has its own git worktree, made with `inbox pane --worktree <slug>`; hand out work so that no two workers edit the same files or build the same abstraction at once.",
   "Group the tasks or comments by the files they touch. Give each independent group its own worker and start them at the same time, not queued on one worker, up to 4 workers at once. Keep comments together only when they touch the same files or the same abstraction. A busy worker gets more only for files it already has open. Every follow-up goes to the worker that has the original.",
-  "Workers mark page comments `inbox comment working|fixed|declined <id>`.",
+  "Workers mark page comments `inbox comment working|declined <id>`, and `inbox comment fixed <id> --commit SHA` only after pushing the fix to the integration branch (dev): it stays working until that commit is there.",
   "You decide routine technical questions; only a material product or scope fork goes to the founder (`inbox comment ask <id> \"…\"` for a page comment, otherwise `inbox decide`), with the options and your recommendation in at most 400 characters.",
   "Close a worker's pane when its work has landed.",
 ].join(" ");

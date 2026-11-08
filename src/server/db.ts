@@ -412,6 +412,12 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
     session_key TEXT NOT NULL,
     seen_at TEXT NOT NULL
   )`);
+}, (db) => {
+  // 22: a page comment marked fixed with a commit not yet on its team's integration branch waits here (status
+  // stays working) until that commit is reachable from the branch; then it turns fixed (pagecomments.ts).
+  addColumn(db, "page_comments", "landing_commit", "TEXT");
+  addColumn(db, "page_comments", "landing_branch", "TEXT");
+  addColumn(db, "page_comments", "landing_repo", "TEXT");
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {

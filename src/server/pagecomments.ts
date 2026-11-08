@@ -12,7 +12,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { object, optional, list, text, nonempty, record, oneOf, refine, fail, sessionSchema, boolean, type Schema } from "../shared/agent-protocol.ts";
 import {
   AGENT_COMMENT_STATUSES, CLOSED_COMMENT_STATUSES, COMMENT_VERDICTS, COMMENT_ID, DEFAULT_PAGE_ORIGINS, GROUP_ID, GROUP_MAX, KIND_MAX, META_MAX_BYTES,
@@ -24,6 +24,9 @@ import type { Message, SessionInput, WorldAgent, WorldState } from "../shared/ty
 import { requestFingerprint } from "./db.ts";
 import { InboxError } from "./inbox.ts";
 import { ensurePageCommentColumns } from "./pagecomments-schema.ts";
+import { Adapters } from "./adapter.ts";
+import { gitNonblocking, rethrowPending, runPass, settle } from "./gitcache.ts";
+import { git, inRequest, isAncestor, publishedBranch, repository } from "./pipelines/candidate.ts";
 
 const httpUrl = (max: number): Schema<string> => refine(nonempty, (s, p) => {
   if (s.length > max || !/^https?:\/\//i.test(s)) fail(p, `must be an http(s) URL under ${max} characters`);
@@ -69,6 +72,11 @@ export const commentStatusSchema = refine(object({
 export const MAX_ATTEMPTS = 3;
 const FINAL: ReadonlySet<PageCommentStatus> = new Set(CLOSED_COMMENT_STATUSES);
 const TEXT_MAX = 6000;
+/** How often a comment waiting for its fix to reach the integration branch is looked at (gitcache answers it, never a fetch). */
+export const LANDING_POLL_MS = 3_000;
+
+/** Where a team's fixes must land before a comment is fixed: its repository and integration branch, as its pipeline reads them. */
+type Integration = { repo: string; branch: string };
 
 interface Office {
   state(): WorldState;
@@ -91,14 +99,19 @@ export class PageComments {
   private settingsPath: string;
   private now: () => Date;
   private syncing = false;
+  private adapters = new Adapters();
+  private landingPollMs: number;
+  private landingTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(db: DatabaseSync, office: Office, settingsPath: string, now: () => Date = () => new Date()) {
+  constructor(db: DatabaseSync, office: Office, settingsPath: string, now: () => Date = () => new Date(), options: { landingPollMs?: number } = {}) {
     this.db = db;
     this.office = office;
     this.settingsPath = settingsPath;
     this.now = now;
+    this.landingPollMs = options.landingPollMs ?? LANDING_POLL_MS;
     // Migration 18 made the table; columns added since then are added here when missing.
     ensurePageCommentColumns(db);
+    this.watchLandings();
   }
 
   /** Every team, ordered by name, with only what a page needs to pick one. */
@@ -274,7 +287,7 @@ export class PageComments {
       if (current.answer === answer) return current;
       throw Object.assign(new InboxError(409, `comment ${id} has no open question`), { code: "no_question" });
     }
-    this.followUp(current, `[Page comment ${id} answered]\nYou asked: ${current.question}\nThe answer: ${answer}\n\nIt is back to working. Close it as before: \`inbox comment fixed ${id}\` or \`inbox comment declined ${id} --note "why"\`.`, `answer:${current.updatedAt}`, input.images);
+    this.followUp(current, `[Page comment ${id} answered]\nYou asked: ${current.question}\nThe answer: ${answer}\n\nIt is back to working. Close it as before: \`inbox comment fixed ${id} --commit SHA\` once the fix is pushed, or \`inbox comment declined ${id} --note "why"\`.`, `answer:${current.updatedAt}`, input.images);
     this.update(id, { status: "working", answer }, false);
     this.emit(id);
     return this.get(id);
@@ -340,23 +353,139 @@ export class PageComments {
     return { comments: rows.map((r) => this.toComment(r, names)) };
   }
 
-  /** The fixer closes the loop: working, fixed (with an optional url that overrides openUrl) or declined (with a note). */
+  /**
+   * The fixer closes the loop: working, fixed (with an optional url that overrides openUrl) or declined (with a note).
+   * For a team with an integration branch, fixed needs the commit, and is fixed only once that commit is on the
+   * branch: until then the comment stays working, with `landing` naming the commit and branch it waits for
+   * (DESIGN "A page comment is fixed only once its commit is on the team's integration branch").
+   */
   setStatus(id: string, input: { status: AgentCommentStatus; note?: string; url?: string; commit?: string; session?: SessionInput }): PageComment {
     const current = this.get(id);
     const by = input.session && this.office.resolve ? this.office.resolve(input.session).name : null;
     const note = input.note?.trim() ? input.note.trim().slice(0, 2000) : null;
     if (FINAL.has(current.status)) {
-      const same = current.status === input.status && (note ?? current.note) === current.note && (input.url ?? current.openUrl) === current.openUrl && (input.commit ?? current.commit) === current.commit;
+      const commitSame = input.commit === undefined || [current.commit, current.commit?.slice(0, input.commit.length)].includes(input.commit.toLowerCase());
+      const same = current.status === input.status && (note ?? current.note) === current.note && (input.url ?? current.openUrl) === current.openUrl && commitSame;
       if (same) return current;
       throw Object.assign(new InboxError(409, `comment ${id} is already ${current.status}`), { code: "comment_closed" });
     }
     if (current.editable) throw Object.assign(new InboxError(409, `comment ${id} has not reached the team yet`), { code: "comment_not_delivered" });
     if (input.status === "working" && current.status === "working" && !note) return current;
+    let status: AgentCommentStatus = input.status;
+    let commit = input.commit?.toLowerCase() ?? null;
+    // Waiting for a landing: [commit, branch, repo]; declined drops it; working keeps the one there.
+    let landing: [string, string, string] | null | undefined = input.status === "declined" ? null : undefined;
+    if (input.status === "fixed") {
+      const found = this.fixedOn(current.teamId, commit);
+      if (found) {
+        commit = found.commit;
+        if (!found.landed) { status = "working"; landing = [found.commit, found.branch, found.repo]; }
+        else landing = null;
+      }
+    }
     const at = this.now().toISOString();
-    this.db.prepare("UPDATE page_comments SET status = ?, note = COALESCE(?, note), fixed_url = COALESCE(?, fixed_url), commit_sha = COALESCE(?, commit_sha), by_name = ?, updated_at = ? WHERE id = ?")
-      .run(input.status, note, input.url ?? null, input.commit?.toLowerCase() ?? null, by, at, id);
+    this.db.prepare(`UPDATE page_comments SET status = ?, note = COALESCE(?, note), fixed_url = COALESCE(?, fixed_url), commit_sha = COALESCE(?, commit_sha), by_name = ?, updated_at = ?
+      ${landing === undefined ? "" : ", landing_commit = ?, landing_branch = ?, landing_repo = ?"} WHERE id = ?`)
+      .run(status, note, input.url ?? null, commit, by, at, ...(landing === undefined ? [] : landing ?? [null, null, null]), id);
     this.emit(id);
+    if (landing) this.watchLandings();
     return this.get(id);
+  }
+
+  /**
+   * For a fixed call: null when the team has no integration branch (fixed as before); otherwise the full commit, the
+   * branch and whether the commit is already on it. Refuses (400) without a commit, or with one the repository lacks.
+   * A decision (gitcache.ts): it uses only Git facts read since it was asked, and answers git_pending while they are read.
+   */
+  private fixedOn(teamId: string, commit: string | null): (Integration & { commit: string; landed: boolean }) | null {
+    const state = this.office.state();
+    return inRequest(() => {
+      const target = this.integration(teamId, state);
+      if (!target) return null;
+      if (!commit) throw Object.assign(new InboxError(400, `this team's fixes land on ${target.branch}: push the fix to origin/${target.branch} first, then mark it with --commit SHA (inbox comment fixed ID --commit SHA)`), { code: "commit_required" });
+      let full: string;
+      try { full = git(target.repo, ["rev-parse", "--verify", "--quiet", `${commit}^{commit}`]); }
+      catch (err) { rethrowPending(err); throw Object.assign(new InboxError(400, `no commit ${commit} in ${basename(target.repo)}: pass the SHA of the fix you pushed to ${target.branch}`), { code: "commit_unknown" }); }
+      return { ...target, commit: full, landed: this.onBranch(target, full) };
+    }, { decide: requestFingerprint(["page-comment-fixed", teamId, commit]) });
+  }
+
+  /**
+   * The team's integration branch, read as its pipeline reads it: the repository its pipeline is bound to, else the one
+   * every checkout of the team is in; its orchestrator.json `integrationBranch` (dev when unnamed, never main or
+   * master), published as `origin/<branch>` (the local branch only in a repository with no remotes). Null without one.
+   */
+  private integration(teamId: string, state: WorldState): Integration | null {
+    const team = state.teams.find((t) => t.id === teamId);
+    if (!team) return null;
+    let bound: string | null = null;
+    try { bound = opt((this.db.prepare("SELECT repo_root FROM team_pipelines WHERE team_id = ?").get(teamId) as Row | undefined)?.repo_root); } catch { /* no pipeline table: no binding */ }
+    const lead = state.agents.find((a) => a.teamId === teamId && a.role === "lead");
+    const paths = bound ? [bound] : team.path ? [team.path] : [...team.worktrees, ...(lead?.cwd ? [lead.cwd] : []), ...state.agents.filter((a) => a.teamId === teamId && a.cwd).map((a) => a.cwd!)];
+    const roots = new Set<string>();
+    for (const path of paths) { try { roots.add(repository(path).root); } catch (err) { rethrowPending(err); /* not a checkout */ } }
+    if (roots.size !== 1) return null;
+    const repo = [...roots][0]!;
+    const branch = this.adapters.read(repo, basename(repo)).adapter?.integrationBranch ?? "dev";
+    if (["main", "master"].includes(branch)) return null;
+    return publishedBranch(repo, branch, repo) ? { repo, branch } : null;
+  }
+
+  private onBranch(target: Integration, commit: string): boolean {
+    const published = publishedBranch(target.repo, target.branch, target.repo);
+    return !!published && isAncestor(target.repo, commit, published.tip);
+  }
+
+  /** While a comment waits for its fix to land, looks every few seconds; stops when none waits. */
+  private watchLandings(): void {
+    if (this.landingTimer || this.landingPollMs <= 0 || !this.waitingLandings().length) return;
+    this.landingTimer = setInterval(() => {
+      try { if (!this.checkLandings()) this.stopWatchingLandings(); }
+      catch (err) { console.error(`page comments: ${(err as Error).message}`); this.stopWatchingLandings(); }
+    }, this.landingPollMs);
+    this.landingTimer.unref?.();
+  }
+  stopWatchingLandings(): void {
+    if (this.landingTimer) clearInterval(this.landingTimer);
+    this.landingTimer = null;
+  }
+  private waitingLandings(): Row[] {
+    return this.db.prepare("SELECT id, landing_commit, landing_branch, landing_repo FROM page_comments WHERE status = 'working' AND landing_commit IS NOT NULL").all() as Row[];
+  }
+
+  /**
+   * Turns fixed each waiting comment whose commit is now on its integration branch, with the same effects as fixed
+   * (updatedAt, the page told, the office redrawn). Reads Git through gitcache.ts without blocking: the last facts
+   * read, refreshed in the background (no `git fetch`: origin/<branch> moves when a checkout of the repository pushes
+   * or fetches). Facts not read yet are read in the background, and the comment is looked at again as soon as they
+   * are. Returns how many still wait.
+   */
+  checkLandings(): number {
+    const rows = this.waitingLandings();
+    let waiting = rows.length;
+    for (const row of rows) {
+      const target = { repo: str(row.landing_repo), branch: str(row.landing_branch) };
+      const read = () => this.onBranch(target, str(row.landing_commit));
+      let landed: boolean;
+      if (gitNonblocking()) {
+        const look = () => runPass(read, { horizon: null, decide: false });
+        const pass = look();
+        if (pass.waits.length) {
+          void settle(`page-comment-landing:${str(row.id)}`, pass.waits, () => look().waits, () => { try { this.checkLandings(); } catch { /* the next poll looks again */ } });
+          continue;
+        }
+        if ("error" in pass) continue;
+        landed = pass.value!;
+      } else {
+        try { landed = read(); } catch { continue; }
+      }
+      if (!landed) continue;
+      this.db.prepare("UPDATE page_comments SET status = 'fixed', landing_commit = NULL, landing_branch = NULL, landing_repo = NULL, updated_at = ? WHERE id = ? AND status = 'working' AND landing_commit = ?")
+        .run(this.now().toISOString(), str(row.id), str(row.landing_commit));
+      waiting--;
+      this.emit(str(row.id));
+    }
+    return waiting;
   }
 
   /**
@@ -440,7 +569,7 @@ export class PageComments {
   /** What the lead reads: the page context, the comment, where to open it, and how to close the loop. */
   private leadText(c: PageComment): string {
     const open = c.openUrl ? `\n\nOpen to check: ${c.openUrl}` : "";
-    return `${pageCommentText(c.text, c.page, c.kind)}${open}${this.followsUpText(c)}\n\nPage comment ${c.id}. Say \`inbox comment working ${c.id}\` when you start; when it is fixed, \`inbox comment fixed ${c.id} [--url URL] [--note "…"] [--commit SHA]\` (--url when the fix is best seen somewhere more specific); if it will not be fixed, \`inbox comment declined ${c.id} --note "why"\`; to ask the page, \`inbox comment ask ${c.id} "question"\`. ${PageComments.CLOSE}`;
+    return `${pageCommentText(c.text, c.page, c.kind)}${open}${this.followsUpText(c)}\n\nPage comment ${c.id}. Say \`inbox comment working ${c.id}\` when you start; when it is fixed, push the fix to the team's integration branch (such as origin/dev) first, then \`inbox comment fixed ${c.id} --commit SHA [--url URL] [--note "…"]\` (it stays working until that commit is on the branch, then turns fixed; --url when the fix is best seen somewhere more specific); if it will not be fixed, \`inbox comment declined ${c.id} --note "why"\`; to ask the page, \`inbox comment ask ${c.id} "question"\`. ${PageComments.CLOSE}`;
   }
 
   /** What the lead needs of the comment this one follows up: its status, note, commit and where it was fixed. */
@@ -459,7 +588,7 @@ export class PageComments {
       const open = c.openUrl ? `\nOpen to check: ${c.openUrl}` : "";
       return [head, ...pageContextLines(c.page), "", c.text].join("\n") + open + this.followsUpText(c).replace(/^\n\n/, "\n");
     });
-    return `[Page comments: ${comments.length} in group ${comments[0]!.groupId}]\n\n${parts.join("\n\n")}\n\nEach keeps its own id and status: \`inbox comment working ID\`, \`inbox comment fixed ID [--url URL] [--note "…"] [--commit SHA]\`, \`inbox comment declined ID --note "why"\`, or \`inbox comment ask ID "question"\`. ${PageComments.CLOSE.replace("sent it", "sent them").replace("edit or withdraw it", "edit or withdraw each")}`;
+    return `[Page comments: ${comments.length} in group ${comments[0]!.groupId}]\n\n${parts.join("\n\n")}\n\nEach keeps its own id and status: \`inbox comment working ID\`, \`inbox comment fixed ID --commit SHA [--url URL] [--note "…"]\` once the fix is pushed to the integration branch (such as origin/dev; each turns fixed when its commit is there), \`inbox comment declined ID --note "why"\`, or \`inbox comment ask ID "question"\`. ${PageComments.CLOSE.replace("sent it", "sent them").replace("edit or withdraw it", "edit or withdraw each")}`;
   }
 
   /** The page origins allowed to host the widget; local dev servers until the founder sets them. */
@@ -539,7 +668,9 @@ export class PageComments {
       followUps: (this.db.prepare("SELECT id FROM page_comments WHERE follows_up = ? ORDER BY created_at, rowid").all(str(r.id)) as Row[]).map((x) => str(x.id)),
       verification: opt(r.verification) as CommentVerdict | null, verifiedAt: opt(r.verified_at),
       editable: str(r.status) === "held" || (str(r.status) === "queued" && !r.message_id),
-      messageId: opt(r.message_id), attempts: Number(r.attempts), createdAt: str(r.created_at), updatedAt: str(r.updated_at),
+      messageId: opt(r.message_id), attempts: Number(r.attempts),
+      landing: str(r.status) === "working" && r.landing_commit ? { commit: str(r.landing_commit), branch: str(r.landing_branch) } : null,
+      createdAt: str(r.created_at), updatedAt: str(r.updated_at),
     };
   }
 }

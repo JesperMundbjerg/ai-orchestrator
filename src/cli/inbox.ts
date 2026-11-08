@@ -604,6 +604,11 @@ async function commentCommand(sub: string | undefined, id: string | undefined, q
   if (sub === "declined" && !flags.note?.trim()) throw new Error('say why: inbox comment declined ID --note "why"');
   const url = flags.url?.at(-1);
   const out = await call<PageComment>(`/api/page-comments/${encodeURIComponent(id)}/status`, { status: sub, note: flags.note, url, commit: flags.commit, ...(s ? { session: s } : {}) });
+  if (sub === "fixed" && out.landing) {
+    const short = out.landing.commit.slice(0, 10);
+    return console.log(`${commentLine(out)}\nWaiting for ${out.landing.branch}: commit ${short} is not on origin/${out.landing.branch} yet, so the comment stays working. It turns fixed by itself within seconds of the commit reaching the branch; push it there if you have not.`);
+  }
+  if (sub === "fixed" && out.status === "fixed" && out.commit) return console.log(`${commentLine(out)}\nFixed: commit ${out.commit.slice(0, 10)} is on the team's integration branch (or the team has none). The page that sent it is told.`);
   console.log(`${commentLine(out)}\nThe page that sent it is told.`);
 }
 
