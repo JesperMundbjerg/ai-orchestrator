@@ -10,6 +10,7 @@ import { createInboxServer } from "../src/server/http.ts";
 import { Inbox } from "../src/server/inbox.ts";
 import { LEAD_WATCH_SESSION } from "../src/server/leadwatch.ts";
 import { World, type AgentSource, type LiveAgent } from "../src/server/world.ts";
+import { stallDetail } from "../src/ui/stallText.ts";
 
 // A Claude Code desktop session (no herdr pane) says hello, makes a project it leads itself, and is never replaced as
 // its lead while it is idle between turns.
@@ -180,4 +181,41 @@ test("the HTTP routes answer hello and team create, with {error, code} for a tak
   const taken = await post("/api/agent/team/create", { session: desktop(root), name: "Atlas" });
   assert.equal(taken.status, 409);
   assert.equal((await taken.json() as { code: string }).code, "name_taken");
+});
+
+test("a desktop session in a herdr lead's folder is its own agent: never merged with it or with another desktop session there", (t) => {
+  const { root } = repository(t);
+  const o = office(t);
+  // Samir: Mission Control's herdr lead (Claude Code, unnamed in herdr) in the main checkout.
+  o.live.push({ paneId: "p-samir", harness: "claude", sessionId: "samir", cwd: root, status: "idle", title: null, name: null });
+  const samir = o.world.state().agents.find((a) => a.paneId === "p-samir")!;
+
+  const freja = o.world.hello(desktop(root, "freja"));
+  const other = o.world.hello(desktop(root, "other-desk"));
+  assert.notEqual(freja.agentId, samir.id, "Freja is not Samir");
+  assert.notEqual(other.agentId, freja.agentId, "two desktop sessions in one folder are two agents");
+  assert.deepEqual(o.world.hello(desktop(root, "freja")), freja, "hello stays idempotent");
+
+  const state = o.world.state();
+  assert.equal(state.agents.length, 3);
+  const frejaAgent = state.agents.find((a) => a.id === freja.agentId)!;
+  assert.deepEqual([frejaAgent.paneId, frejaAgent.cwd], [null, root]);
+  assert.equal(state.agents.find((a) => a.id === samir.id)?.paneId, "p-samir", "Samir keeps his pane");
+  assert.equal(o.world.resolve({ harness: "claude", sessionId: "samir", cwd: root }).id, samir.id);
+  assert.equal(o.world.resolve(desktop(root, "freja")).id, freja.agentId);
+
+  // A task Freja posts is hers, and a message to her is hers, never typed into Samir's pane.
+  o.inbox.submit({ session: desktop(root, "freja"), project: { name: "Shuttle" }, task: { title: "Freja's work" }, item: { type: "milestone", title: "Step", fixed: "Done." } });
+  assert.equal(o.world.state().agents.find((a) => a.id === freja.agentId)!.taskIds.length, 1);
+  assert.equal(o.world.state().agents.find((a) => a.id === samir.id)!.taskIds.length, 0);
+  const said = o.world.messages.say(o.world.state().agents.find((a) => a.id === samir.id)!, { to: freja.name, text: "Over to you." });
+  assert.deepEqual(said.deliveries.map((d) => d.agentId), [freja.agentId]);
+});
+
+test("the board's stall detail names a desktop lead's last word and offers no one to make lead", () => {
+  const now = Date.parse("2026-11-09T10:00:00Z");
+  const stall = { teamId: "a", teamName: "Atlas", leadId: "l", leadName: "Freja", since: "2026-11-09T09:40:00Z", waiting: 1, blocking: ["you"], blockingAgentIds: [], candidates: [] };
+  assert.equal(stallDetail({ ...stall, leadLastSpokeAt: "2026-11-09T09:48:00Z" }, now), "Led from a desktop session, last spoke 12 min ago · 1 waiting, the oldest from 20 min ago");
+  assert.doesNotMatch(stallDetail({ ...stall, leadLastSpokeAt: "2026-11-09T09:48:00Z" }, now), /make lead|Needs you/);
+  assert.match(stallDetail(stall, now), /Freja is offline .* Nobody else is on it to make lead/);
 });

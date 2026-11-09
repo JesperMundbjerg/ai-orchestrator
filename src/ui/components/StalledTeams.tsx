@@ -1,16 +1,7 @@
-import type { TeamStall, WorldTeam } from "../../shared/types.ts";
-import { ago } from "../format.ts";
+import type { WorldTeam } from "../../shared/types.ts";
+import { stallDetail, stallLine } from "../stallText.ts";
 
-/** "Mission Control has no lead online; blocking: Cosmology, ECG." */
-export function stallLine(stall: TeamStall): string {
-  return `${stall.teamName} has no lead online; blocking: ${stall.blocking.join(", ")}`;
-}
-
-function stallDetail(stall: TeamStall): string {
-  const who = stall.leadName ? `${stall.leadName} is offline` : "Nobody leads it";
-  const ask = stall.candidates.length ? "Your decision is in Needs you." : "Nobody else is on it to make lead.";
-  return `${who} · ${stall.waiting} waiting, the oldest from ${ago(stall.since)} · ${ask}`;
-}
+export { stallLine };
 
 /** Teams nobody can move, at the top of the board: the founder sees them without walking the office. */
 export function StalledTeams({ teams }: { teams: WorldTeam[] }) {

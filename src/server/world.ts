@@ -745,7 +745,7 @@ export class World {
     if (holder) throw new InboxError(409, `pane ${pane} is held by ${holder.name ?? holder.harness} but is not seated in the office right now: try again in a moment`);
     const desktop = !seated ? this.desktopSession(session) : null;
     const found = seated
-      ?? (desktop ? state.agents.find((a) => a.identity === identityOf(desktop.harness, desktop.cwd, desktop.sessionId)) : undefined)
+      ?? (desktop ? state.agents.find((a) => a.identity === desktopIdentity(desktop.harness, desktop.cwd, desktop.sessionId)) : undefined)
       ?? (session.harness && session.cwd ? state.agents.find((a) => a.identity === identityOf(session.harness!, session.cwd!, "")) : undefined)
       ?? (task ? state.agents.find((a) => a.taskIds.includes(task.id)) : undefined);
     if (!found) throw new InboxError(404, "the office does not know this session: run inside herdr, or post to the inbox first (a session outside herdr: inbox hello)", "unknown_session");
@@ -777,14 +777,15 @@ export class World {
    */
   desktopSpoke(agent: Pick<WorldAgent, "identity" | "paneId">): string | null {
     if (agent.paneId) return null;
-    return this.desktopSessions().find((d) => identityOf(d.harness, d.cwd, d.sessionId) === agent.identity)?.lastSpokeAt ?? null;
+    return this.desktopSessions().find((d) => desktopIdentity(d.harness, d.cwd, d.sessionId) === agent.identity)?.lastSpokeAt ?? null;
   }
 
   /**
    * `POST /api/agent/hello`: makes a session outside herdr (a Claude Code desktop session) known to the office
    * without an inbox task. It is placed by the usual rules: one in a linked worktree joins or adopts that worktree's
-   * project. A session the office already knows keeps its place; one without a herdr pane is remembered as a desktop
-   * session, so it stays known (and is never replaced as a lead) once its tasks are gone.
+   * project. A session herdr runs is left as it is. Any other is a desktop session: an agent of its own keyed by its
+   * session id (never merged with a herdr agent or another desktop session in the same folder; its tasks are its own),
+   * which stays known, and is never replaced as a lead, once its tasks are gone.
    */
   hello(session: SessionInput): { agentId: string; name: string; team: { id: string; name: string; path: string | null; branch: string | null } | null } {
     const me = this.helloAgent(session);
@@ -796,23 +797,20 @@ export class World {
     if (!session.harness || !session.sessionId || !session.cwd || !isAbsolute(session.cwd)) {
       throw new InboxError(400, "hello needs the session's harness, session id and full working folder", "invalid_request");
     }
-    let known: WorldAgent | null = null;
-    try {
-      known = this.resolve(session);
-    } catch (err) {
-      if (!(err instanceof InboxError) || err.status !== 404) throw err;
-    }
-    if (known?.paneId) return known;
     if (!this.desktopSession(session)) {
+      // A session herdr runs is already known by its pane; hello leaves it as it is.
+      const live = this.source?.live() ?? [];
+      if (session.paneId || live.some((a) => a.harness === session.harness && a.sessionId === session.sessionId)) return this.resolve(session);
+      // Anyone else is a desktop session: an agent of its own, keyed by its session id, never one found by its folder,
+      // which may be a herdr agent's or another desktop session's.
       const at = this.now().toISOString();
-      const cwd = known?.cwd ?? session.cwd;
       this.db.prepare("INSERT INTO desktop_sessions (harness, session_id, cwd, registered_at, last_spoke_at) VALUES (?, ?, ?, ?, ?)")
-        .run(session.harness, session.sessionId, cwd, at, at);
+        .run(session.harness, session.sessionId, session.cwd, at, at);
       // Saying hello is running again: someone you removed comes back, as one that runs in herdr does.
-      if (!known) this.db.prepare("UPDATE world_agents SET removed = 0 WHERE identity = ?").run(identityOf(session.harness, cwd, session.sessionId));
+      this.db.prepare("UPDATE world_agents SET removed = 0 WHERE identity = ?").run(desktopIdentity(session.harness, session.cwd, session.sessionId));
       this.onChange("world");
     }
-    return known ?? this.resolve(session);
+    return this.resolve(session);
   }
 
   /**
@@ -980,18 +978,21 @@ export class World {
       for (let n = 2; out.has(identity); n++) identity = `${base}#${n}`;
       out.set(identity, { identity, harness: a.harness, cwd: a.cwd, status: a.status, title: a.title, paneId: a.paneId, taskIds: [], sessionId: a.sessionId });
     }
+    const desktops = this.desktopSessions();
+    const desktopOf = new Map(desktops.map((d) => [`${d.harness}\0${d.sessionId}`, desktopIdentity(d.harness, d.cwd, d.sessionId)]));
     for (const task of tasks) {
       // The office's own decisions (a stalled team's lead) are asked by nobody in the office.
       if (task.parked || (task.binding.harness === LEAD_WATCH_SESSION.harness && task.binding.sessionId === LEAD_WATCH_SESSION.sessionId)) continue;
       const byPane = task.presence ? [...out.values()].find((a) => a.paneId === task.presence!.paneId) : undefined;
-      const identity = byPane?.identity ?? identityOf(task.binding.harness, task.binding.cwd, task.binding.sessionId);
+      // A desktop session's task is its own agent's, never that of a herdr agent in the same folder.
+      const identity = byPane?.identity ?? desktopOf.get(`${task.binding.harness}\0${task.binding.sessionId}`) ?? identityOf(task.binding.harness, task.binding.cwd, task.binding.sessionId);
       const agent = out.get(identity);
       if (agent) agent.taskIds.push(task.id);
       else out.set(identity, { identity, harness: task.binding.harness, cwd: task.binding.cwd, status: "offline", title: null, paneId: null, taskIds: [task.id], sessionId: task.binding.sessionId });
     }
     // A desktop session is known by its hello, the way a task's session is by its task; herdr never sees it running.
-    for (const d of this.desktopSessions()) {
-      const identity = identityOf(d.harness, d.cwd, d.sessionId);
+    for (const d of desktops) {
+      const identity = desktopIdentity(d.harness, d.cwd, d.sessionId);
       if (!out.has(identity)) out.set(identity, { identity, harness: d.harness, cwd: d.cwd, status: "offline", title: null, paneId: null, taskIds: [], sessionId: d.sessionId });
     }
     return [...out.values()];
@@ -1682,6 +1683,14 @@ export function teamStatus(members: WorldAgent[]): { status: TeamStatus; blocked
 /** Who a running agent is. A lead's crew shares its checkout, so an agent herdr knows by name is that name in the checkout. */
 export function liveIdentity(a: Pick<LiveAgent, "harness" | "cwd" | "sessionId" | "paneId" | "name">): string {
   return `${identityOf(a.harness, a.cwd, a.sessionId ?? a.paneId)}${a.name ? `@${a.name}` : ""}`;
+}
+
+/**
+ * A desktop session's identity: its checkout, as anyone's, plus a tag from its session id, so it is never the agent herdr
+ * runs in that folder or another desktop session there. The tag reads as a herdr name to `splitIdentity`, which keeps the cwd.
+ */
+function desktopIdentity(harness: Harness, cwd: string, sessionId: string): string {
+  return `${identityOf(harness, cwd, sessionId)}@desktop-${agentId(`${harness}:${sessionId}`)}`;
 }
 
 function identityOf(harness: Harness, cwd: string | null, fallback: string): string {
