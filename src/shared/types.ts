@@ -449,8 +449,13 @@ export interface TeamStall {
   /** Who is held up, as the founder reads it: other teams by name, agents by name, and "you" for your own messages. */
   blocking: string[];
   blockingAgentIds: string[];
-  /** Its other members, running first: who the founder can make lead. */
+  /** Its other members, running first: who the founder can make lead. Empty when a desktop session leads it. */
   candidates: Array<{ id: string; name: string; running: boolean }>;
+  /**
+   * Set only when its lead is a session outside herdr (a Claude Code desktop session): when that session last spoke to
+   * the office (ISO). Such a lead is idle between turns, not gone, and the office never offers to replace it.
+   */
+  leadLastSpokeAt?: string;
 }
 
 /** A repository agents work in, where a new project's worktree can be made. */

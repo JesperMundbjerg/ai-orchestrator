@@ -29,8 +29,12 @@ export interface Waiter {
 type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? "" : String(v));
 
-/** Pure: which teams have no lead online while something has waited on them past the threshold. */
-export function stalls(state: Pick<WorldState, "agents" | "teams">, waiters: Waiter[], now: number, threshold = STALL_MS): Map<string, TeamStall> {
+/**
+ * Pure: which teams have no lead online while something has waited on them past the threshold. `desktopLead` says when a
+ * lead that is a session outside herdr (a Claude Code desktop session) last spoke to the office, and null for anyone else:
+ * such a lead is idle between turns rather than gone, so its stall names nobody to replace it.
+ */
+export function stalls(state: Pick<WorldState, "agents" | "teams">, waiters: Waiter[], now: number, threshold = STALL_MS, desktopLead: (lead: WorldAgent) => string | null = () => null): Map<string, TeamStall> {
   const out = new Map<string, TeamStall>();
   const agents = new Map(state.agents.map((a) => [a.id, a]));
   for (const team of state.teams) {
@@ -51,7 +55,8 @@ export function stalls(state: Pick<WorldState, "agents" | "teams">, waiters: Wai
       const theirs = from.teamId && from.teamId !== team.id ? state.teams.find((t) => t.id === from.teamId) : undefined;
       blocking.add(theirs ? theirs.name : from.name);
     }
-    const candidates = members.filter((a) => a.id !== lead?.id)
+    const spoke = lead ? desktopLead(lead) : null;
+    const candidates = spoke ? [] : members.filter((a) => a.id !== lead?.id)
       .sort((a, b) => Number(a.status === "offline") - Number(b.status === "offline") || a.name.localeCompare(b.name))
       .map((a) => ({ id: a.id, name: a.name, running: a.status !== "offline" }));
     out.set(team.id, {
@@ -59,6 +64,7 @@ export function stalls(state: Pick<WorldState, "agents" | "teams">, waiters: Wai
       since: new Date(since).toISOString(), waiting: waiting.length,
       blocking: [...blocking].sort((a, b) => Number(a === "you") - Number(b === "you") || a.localeCompare(b)),
       blockingAgentIds: [...blockingAgentIds].sort(), candidates,
+      ...(spoke ? { leadLastSpokeAt: spoke } : {}),
     });
   }
   return out;
@@ -95,6 +101,8 @@ export interface LeadWatchEffects {
   handOver(teamId: string, fromAgentId: string, toAgentId: string): number;
   /** The team's open pipeline runs. */
   openRuns(teamId: string): PipelineRun[];
+  /** When a lead that is a desktop session last spoke to the office; null for a lead herdr runs. */
+  desktopLead?(lead: WorldAgent): string | null;
 }
 
 export class LeadWatch {
@@ -150,7 +158,7 @@ export class LeadWatch {
    * lead runs again) and apply the founder's answers. Returns whether anything visible changed.
    */
   tick(state: WorldState): boolean {
-    const found = stalls(state, this.waiters(state), this.now().getTime());
+    const found = stalls(state, this.waiters(state), this.now().getTime(), STALL_MS, (lead) => this.effects.desktopLead?.(lead) ?? null);
     const led = this.inbox ? this.apply(state) : null;
     // A team just given a lead is judged afresh on the next tick, from the new state.
     for (const teamId of led?.teams ?? []) found.delete(teamId);
@@ -159,7 +167,8 @@ export class LeadWatch {
     if (!this.inbox) return changed;
     const items = this.items();
     for (const stall of found.values()) {
-      if (!stall.candidates.length) continue; // Nobody to offer: the board still says so.
+      // Nobody to offer, or a desktop session leads (never replaced): the board still says so, and nobody is asked.
+      if (!stall.candidates.length) continue;
       const active = items.find((i) => i.key.startsWith(`${KEY}${stall.teamId}-`) && !CLOSED.has(i.state));
       // An answered decision ("wait") holds for this episode; only an unanswered one is revised.
       if (active && !OPEN.has(active.state)) continue;

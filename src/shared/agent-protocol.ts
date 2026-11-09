@@ -132,6 +132,7 @@ export const ackSchema = object({ session: sessionSchema, deliveryId: nonempty, 
 export const closeItemSchema = object({ session: sessionSchema, item: nonempty });
 export const paneSchema = object({ session: sessionSchema, paneId: nonempty });
 export const worktreePaneSchema = object({ session: sessionSchema, slug: nonempty });
+export const desktopTeamSchema = object({ session: sessionSchema, name: nonempty, purpose: optional(text) });
 export const saySchema = object({ session: sessionSchema, to: nonempty, text: nonempty, clientId: optional(nonempty) });
 export const handoffSchema = object({ session: sessionSchema, title: maybeText, summary: nonempty, to: maybeText, work: maybeText, clientId: optional(nonempty) });
 export const reviewSchema = object({ session: sessionSchema, work: nonempty, verdict: oneOf(["accept", "changes"]), notes: maybeText,
@@ -222,6 +223,8 @@ export const agentOperations = {
   team: post("/api/agent/team", sessionRequestSchema, object({ agentId: text, text }) satisfies Schema<TeamBrief>),
   pane: post("/api/agent/pane", paneSchema, object({ recorded: boolean })),
   worktree: post("/api/agent/worktree", worktreePaneSchema, object({ paneId: text, path: text, branch: text, base: nullText })),
+  hello: post("/api/agent/hello", sessionRequestSchema, object({ agentId: text, name: text, team: nullable(object({ id: text, name: text, path: nullText, branch: nullText })) })),
+  createTeam: post("/api/agent/team/create", desktopTeamSchema, object({ team: object({ id: text, name: text, path: text, branch: text }) })),
   crew: post("/api/agent/crew", emptySchema, object({ text })),
   say: post("/api/agent/say", saySchema, messageResponse),
   events: post("/api/agent/events", eventsSchema, okResponse),

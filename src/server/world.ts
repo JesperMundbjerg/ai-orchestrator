@@ -8,6 +8,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -42,7 +43,7 @@ import { MERGE_PATH_MAX_CHARS, MERGE_TEXT_MAX_CHARS, MergeInstructions, mergeBri
 import { Unlanded } from "./unlanded.ts";
 import { withOffline } from "../shared/waiting.ts";
 import { ensureWorkspaceRecords, FinishCleanup, type FinishScope, type PaneInfo, type WorkspaceInfo } from "./finish-cleanup.ts";
-import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, isProjectsFolder, landingRef, linkedWorktrees, nameFor, notLanded, placeFor, processesIn, stopProcesses, uncommitted, type Checkout } from "./worktrees.ts";
+import { checkoutOf, checkoutsIn, currentBranch, deleteMergedBranch, git, isProjectsFolder, landingRef, linkedWorktrees, nameFor, notLanded, placeFor, processesIn, stopProcesses, uncommitted, type Checkout } from "./worktrees.ts";
 
 /** An agent a terminal multiplexer reports as running. */
 export interface LiveAgent {
@@ -92,6 +93,21 @@ type Row = Record<string, unknown>;
 const str = (v: unknown): string => (v == null ? "" : String(v));
 
 const NONE: ReadonlySet<string> = new Set();
+
+/** How often a desktop session's "last spoke" time is written while it keeps calling: hooks call several times a second. */
+const SPOKE_WRITE_MS = 10_000;
+
+/**
+ * `git worktree add -b BRANCH PATH [BASE]` without blocking the event loop: a desktop team's worktree when herdr
+ * is not running to make it.
+ */
+function gitWorktreeAdd(repoRoot: string, path: string, branch: string, base: string | null): Promise<void> {
+  return new Promise((done, fail) => {
+    execFile("git", ["worktree", "add", "-b", branch, path, ...(base ? [base] : [])], { cwd: repoRoot, encoding: "utf8", timeout: 60_000 }, (err, _out, stderr) => {
+      if (err) fail(new Error(String(stderr ?? "").trim() || err.message)); else done();
+    });
+  });
+}
 
 /** How long a pane opened for a team keeps its record while nothing runs there. */
 const PANE_RECORD_LIFE_MS = 24 * 60 * 60 * 1000;
@@ -235,6 +251,15 @@ export class World {
   constructor(db: DatabaseSync, source: AgentSource | null, inbox: Inbox, now: () => Date = () => new Date(), files = new SessionFiles()) {
     this.db = db;
     ensureWorkspaceRecords(db);
+    // Sessions outside herdr (a Claude Code desktop session) that said hello: known like a task's session, without a task.
+    db.exec(`CREATE TABLE IF NOT EXISTS desktop_sessions (
+      harness TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      cwd TEXT NOT NULL,
+      registered_at TEXT NOT NULL,
+      last_spoke_at TEXT NOT NULL,
+      PRIMARY KEY (harness, session_id)
+    )`);
     this.unpresented = new Unpresented(db);
     this.leadRoles = new LeadRoles(db);
     this.mergeInstructions = new MergeInstructions(db);
@@ -261,6 +286,7 @@ export class World {
     });
     this.leadWatch = new LeadWatch(db, now, {
       makeLead: (id) => { this.updateAgent(id, { role: "lead" }); },
+      desktopLead: (agent) => this.desktopSpoke(agent),
       handOver: (teamId, from, to) => this.messages.handOverQueued(teamId, from, to),
       openRuns: (teamId) => (this.db.prepare("SELECT id, snapshot FROM pipeline_runs WHERE team_id = ?").all(teamId) as Row[])
         .filter((r) => (JSON.parse(str(r.snapshot)) as { state?: string }).state === "open").map((r) => this.pipelines.get(str(r.id))),
@@ -717,11 +743,121 @@ export class World {
     // the checkout's unnamed agent, or a task's, would make the caller someone else.
     const holder = !seated && pane ? live.find((a) => a.paneId === pane) : undefined;
     if (holder) throw new InboxError(409, `pane ${pane} is held by ${holder.name ?? holder.harness} but is not seated in the office right now: try again in a moment`);
+    const desktop = !seated ? this.desktopSession(session) : null;
     const found = seated
+      ?? (desktop ? state.agents.find((a) => a.identity === identityOf(desktop.harness, desktop.cwd, desktop.sessionId)) : undefined)
       ?? (session.harness && session.cwd ? state.agents.find((a) => a.identity === identityOf(session.harness!, session.cwd!, "")) : undefined)
       ?? (task ? state.agents.find((a) => a.taskIds.includes(task.id)) : undefined);
-    if (!found) throw new InboxError(404, "the office does not know this session: run inside herdr, or post to the inbox first");
+    if (!found) throw new InboxError(404, "the office does not know this session: run inside herdr, or post to the inbox first (a session outside herdr: inbox hello)", "unknown_session");
+    if (desktop) this.spoke(desktop);
     return found;
+  }
+
+  /** Every session outside herdr that said hello. */
+  private desktopSessions(): Array<{ harness: Harness; sessionId: string; cwd: string; lastSpokeAt: string }> {
+    return (this.db.prepare("SELECT harness, session_id, cwd, last_spoke_at FROM desktop_sessions ORDER BY registered_at").all() as Row[])
+      .map((r) => ({ harness: str(r.harness) as Harness, sessionId: str(r.session_id), cwd: str(r.cwd), lastSpokeAt: str(r.last_spoke_at) }));
+  }
+
+  private desktopSession(session: SessionInput): { harness: Harness; sessionId: string; cwd: string; lastSpokeAt: string } | null {
+    if (!session.harness || !session.sessionId) return null;
+    return this.desktopSessions().find((d) => d.harness === session.harness && d.sessionId === session.sessionId) ?? null;
+  }
+
+  /** Notes that a desktop session called the office now (at most every few seconds: hooks call often). */
+  private spoke(d: { harness: Harness; sessionId: string; lastSpokeAt: string }): void {
+    const now = this.now();
+    if (now.getTime() - Date.parse(d.lastSpokeAt) < SPOKE_WRITE_MS) return;
+    this.db.prepare("UPDATE desktop_sessions SET last_spoke_at = ? WHERE harness = ? AND session_id = ?").run(now.toISOString(), d.harness, d.sessionId);
+  }
+
+  /**
+   * When an agent that is a desktop session (said hello, no herdr pane) last called the office; null for anyone else.
+   * The office never starts, replaces or offers to replace such a session as a team's lead: it is idle between turns, not gone.
+   */
+  desktopSpoke(agent: Pick<WorldAgent, "identity" | "paneId">): string | null {
+    if (agent.paneId) return null;
+    return this.desktopSessions().find((d) => identityOf(d.harness, d.cwd, d.sessionId) === agent.identity)?.lastSpokeAt ?? null;
+  }
+
+  /**
+   * `POST /api/agent/hello`: makes a session outside herdr (a Claude Code desktop session) known to the office
+   * without an inbox task. It is placed by the usual rules: one in a linked worktree joins or adopts that worktree's
+   * project. A session the office already knows keeps its place; one without a herdr pane is remembered as a desktop
+   * session, so it stays known (and is never replaced as a lead) once its tasks are gone.
+   */
+  hello(session: SessionInput): { agentId: string; name: string; team: { id: string; name: string; path: string | null; branch: string | null } | null } {
+    const me = this.helloAgent(session);
+    const team = me.teamId ? this.state().teams.find((t) => t.id === me.teamId) : undefined;
+    return { agentId: me.id, name: me.name, team: team ? { id: team.id, name: team.name, path: team.path, branch: team.branch } : null };
+  }
+
+  private helloAgent(session: SessionInput): WorldAgent {
+    if (!session.harness || !session.sessionId || !session.cwd || !isAbsolute(session.cwd)) {
+      throw new InboxError(400, "hello needs the session's harness, session id and full working folder", "invalid_request");
+    }
+    let known: WorldAgent | null = null;
+    try {
+      known = this.resolve(session);
+    } catch (err) {
+      if (!(err instanceof InboxError) || err.status !== 404) throw err;
+    }
+    if (known?.paneId) return known;
+    if (!this.desktopSession(session)) {
+      const at = this.now().toISOString();
+      const cwd = known?.cwd ?? session.cwd;
+      this.db.prepare("INSERT INTO desktop_sessions (harness, session_id, cwd, registered_at, last_spoke_at) VALUES (?, ?, ?, ?, ?)")
+        .run(session.harness, session.sessionId, cwd, at, at);
+      // Saying hello is running again: someone you removed comes back, as one that runs in herdr does.
+      if (!known) this.db.prepare("UPDATE world_agents SET removed = 0 WHERE identity = ?").run(identityOf(session.harness, cwd, session.sessionId));
+      this.onChange("world");
+    }
+    return known ?? this.resolve(session);
+  }
+
+  /**
+   * `POST /api/agent/team/create`: a project made by a session outside herdr, which leads it itself. The worktree and
+   * branch are made as `createTeam` makes them (beside the main checkout of the caller's repository, a new branch from
+   * the main checkout's branch, the same name rules); through herdr when it runs (a workspace opens there, with no
+   * agent in it), else with git directly. The caller is registered as hello does and seated as lead. No lead is started,
+   * and the office never replaces this one (leadwatch.ts).
+   */
+  async createDesktopTeam(session: SessionInput, input: { name: string; purpose?: string }): Promise<{ team: { id: string; name: string; path: string; branch: string } }> {
+    const cwd = session.cwd;
+    const checkout = cwd && isAbsolute(cwd) ? checkoutOf(cwd) : null;
+    if (!checkout) throw new InboxError(400, `${cwd ?? "the session's folder"} is not in a git repository`, "not_a_repository");
+    const name = this.teamName(input.name, null);
+    const purpose = input.purpose?.trim() ?? "";
+    const place = placeFor(checkout.repoRoot, name);
+    if (!place) throw new InboxError(400, "start the project's name with a letter", "invalid_name");
+    if (existsSync(place.path)) throw new InboxError(409, `${place.path} already exists`, "folder_exists");
+    let branchTaken = false;
+    try { git(checkout.repoRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/${place.branch}`]); branchTaken = true; } catch { /* no such branch */ }
+    if (branchTaken) throw new InboxError(409, `the branch ${place.branch} already exists in ${checkout.repoRoot}`, "branch_exists");
+    const me = this.helloAgent(session);
+    const base = checkoutOf(checkout.repoRoot)?.branch ?? null;
+    let alsoOpened: string[] = [];
+    if (this.source?.available()) {
+      try {
+        ({ alsoOpened = [] } = await this.source.createWorktree(checkout.repoRoot, { path: place.path, branch: place.branch, base, label: name }));
+      } catch (err) {
+        throw new InboxError(502, `herdr could not make the worktree: ${(err as Error).message}`);
+      }
+    } else {
+      try {
+        await gitWorktreeAdd(checkout.repoRoot, place.path, place.branch, base);
+      } catch (err) {
+        throw new InboxError(502, `git could not make the worktree: ${(err as Error).message}`);
+      }
+    }
+    const team = this.insertTeam({ name, purpose, handsTo: null, path: checkoutOf(place.path)?.top ?? place.path, branch: place.branch, standing: false });
+    for (const workspace of alsoOpened) this.recordWorkspace(workspace, team.id, checkout.repoRoot);
+    this.tx(() => {
+      this.db.prepare("UPDATE world_agents SET role = 'member' WHERE team_id = ? AND id != ?").run(team.id, me.id);
+      this.db.prepare("UPDATE world_agents SET team_id = ?, role = 'lead' WHERE id = ?").run(team.id, me.id);
+    });
+    this.onChange("world");
+    return { team: { id: team.id, name: team.name, path: team.path!, branch: place.branch } };
   }
 
   /**
@@ -759,6 +895,11 @@ export class World {
     };
     const lines = [`You are ${me.name} (${me.harness}${me.cwd ? `, ${me.cwd}` : ""}).`];
     for (const stall of this.leadWatch.all().filter((st) => st.blockingAgentIds.includes(me.id))) {
+      const minutes = (iso: string) => Math.floor((this.now().getTime() - Date.parse(iso)) / 60_000);
+      if (stall.leadLastSpokeAt) {
+        lines.push(`${stall.teamName}'s lead ${stall.leadName ?? ""} works outside herdr (a desktop session) and last spoke to the office ${minutes(stall.leadLastSpokeAt)} min ago: what you are waiting on from it has waited ${minutes(stall.since)} min. It is not replaced; it answers when it next takes a turn.`);
+        continue;
+      }
       lines.push(`${stall.teamName} has no lead online${stall.leadName ? ` (${stall.leadName} is offline)` : ""}: what you are waiting on from it has waited ${Math.floor((this.now().getTime() - Date.parse(stall.since)) / 60_000)} min. The founder has been asked to make someone there lead.`);
     }
     if (!team) {
@@ -847,6 +988,11 @@ export class World {
       const agent = out.get(identity);
       if (agent) agent.taskIds.push(task.id);
       else out.set(identity, { identity, harness: task.binding.harness, cwd: task.binding.cwd, status: "offline", title: null, paneId: null, taskIds: [task.id], sessionId: task.binding.sessionId });
+    }
+    // A desktop session is known by its hello, the way a task's session is by its task; herdr never sees it running.
+    for (const d of this.desktopSessions()) {
+      const identity = identityOf(d.harness, d.cwd, d.sessionId);
+      if (!out.has(identity)) out.set(identity, { identity, harness: d.harness, cwd: d.cwd, status: "offline", title: null, paneId: null, taskIds: [], sessionId: d.sessionId });
     }
     return [...out.values()];
   }
@@ -1247,7 +1393,7 @@ export class World {
   private teamName(value: string | undefined, id: string | null): string {
     const name = value?.trim();
     if (!name) throw new InboxError(400, "a project needs a name");
-    if (this.teams().some((t) => t.id !== id && t.name.toLowerCase() === name.toLowerCase())) throw new InboxError(409, `there is already a project or team called ${name}`);
+    if (this.teams().some((t) => t.id !== id && t.name.toLowerCase() === name.toLowerCase())) throw new InboxError(409, `there is already a project or team called ${name}`, "name_taken");
     return name;
   }
 

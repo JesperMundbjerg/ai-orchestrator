@@ -85,6 +85,10 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
 
   The office (a project per worktree, run by its first mate; standing teams like Mission Control):
   inbox team                      who you are, your project, your part in it, what waits for you
+  inbox hello                     outside herdr (a Claude Code desktop session): make this session known to the office, no task needed
+  inbox team create NAME [--purpose "…"]
+                                  outside herdr: a new project you lead yourself, in a worktree beside the main checkout of this
+                                  repository on a new branch from its branch; no lead is started for it. Prints the worktree's path
   inbox team role TEAM [--role "text"] [--role-file PATH]
                                   a team's lead role: shown, or set (an empty value clears it). The office gives it, with the rule that
                                   a lead only delegates, to its lead on every start; the file (in the team's repository) is read afresh each time
@@ -169,6 +173,7 @@ The service is INBOX_URL (default http://127.0.0.1:4870).`;
 
 const OPTIONS = {
   option: { type: "string", multiple: true },
+  purpose: { type: "string" },
   recommend: { type: "string" },
   request: { type: "string" },
   context: { type: "string" },
@@ -515,7 +520,18 @@ async function main(argv: string[]): Promise<void> {
       return unlandedCommand(arg, parsed.positionals[2]);
     case "pipeline":
       return pipelineCommand(parsed.positionals.slice(1), flags, session());
+    case "hello": {
+      const me = await call<{ agentId: string; name: string; team: { name: string; path: string | null } | null }>("/api/agent/hello", { session: session() });
+      return console.log(`You are ${me.name} in the office${me.team ? `, on ${me.team.name}${me.team.path ? ` (${me.team.path})` : ""}` : ""}.`);
+    }
     case "team":
+      if (arg === "create") {
+        const name = parsed.positionals[2];
+        if (!name) throw new Error('inbox team create needs the project\'s name: inbox team create NAME [--purpose "…"]');
+        const { team } = await call<{ team: { name: string; path: string; branch: string } }>("/api/agent/team/create", { session: session(), name, purpose: flags.purpose }, 60_000);
+        console.error(`inbox: ${team.name}, on branch ${team.branch}, led by you; its worktree:`);
+        return console.log(team.path);
+      }
       if (arg === "role") return teamRoleCommand(parsed.positionals[2]);
       if (arg === "merge") return teamMergeCommand(parsed.positionals[2]);
       return console.log((await call<TeamBrief>("/api/agent/team", { session: session() })).text);
@@ -527,7 +543,7 @@ async function main(argv: string[]): Promise<void> {
       const message = await call<Message>("/api/agent/say", { session: session(), to, text, clientId: randomUUID() });
       if (message.toFounder) return console.log("Said to the founder: it shows in your panel in the office.");
       const offline = [...new Set(message.deliveries.flatMap((d) => d.offline ?? []))];
-      if (offline.length) return console.log(`Queued for ${to}, but ${offline.join(" and ")} ${offline.length === 1 ? "is" : "are"} offline: it waits until they are back. If it holds you up for long, the founder is asked to make someone else lead.`);
+      if (offline.length) return console.log(`Queued for ${to}, but ${offline.join(" and ")} ${offline.length === 1 ? "is" : "are"} offline: it waits until they are back. If it holds you up for long, the founder is asked to make someone else lead, unless the lead works from a desktop session, which is never replaced.`);
       return console.log(`Sent to ${to}: it is typed into their terminal once they are free (${message.deliveries.length} ${message.deliveries.length === 1 ? "agent" : "agents"}).`);
     }
     case "handoff": {
