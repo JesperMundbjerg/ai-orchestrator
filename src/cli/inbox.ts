@@ -658,7 +658,8 @@ async function commentCommand(sub: string | undefined, id: string | undefined, q
   console.log(`${commentLine(out)}\nThe page that sent it is told.`);
 }
 
-function commentLine(c: PageComment): string {
+/** What `inbox comment show` (and each status call) prints of a comment, earlier attempts and a release included. */
+export function commentLine(c: PageComment): string {
   const where = c.page.title ?? c.page.url ?? "a page";
   return [
     `Comment ${c.id} to ${c.teamName || c.teamId}: ${c.status}${c.note ? ` (${c.note})` : ""}`,
@@ -672,6 +673,8 @@ function commentLine(c: PageComment): string {
     c.verification ? `  founder: ${c.verification === "verified" ? "verified" : "still wrong"}` : null,
     c.openUrl ? `  open: ${c.openUrl}` : null,
     c.commit ? `  commit: ${c.commit}` : null,
+    ...c.history.map((h, i) => `  attempt ${i + 1}: sent back ${h.judgedAt}${h.commit ? `, commit ${h.commit.slice(0, 10)}` : ""}: still wrong${h.verdictNote ? ` (${h.verdictNote})` : ""}`),
+    c.releasedWithout ? `  released without: ${c.releasedWithout.at}${c.releasedWithout.note ? ` (${c.releasedWithout.note})` : ""}` : null,
   ].filter(Boolean).join("\n");
 }
 

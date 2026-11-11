@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "../src/server/db.ts";
 import { PageComments } from "../src/server/pagecomments.ts";
+import { commentLine } from "../src/cli/inbox.ts";
 import type { Message, WorldState } from "../src/shared/types.ts";
 
 /** A team without an integration branch (fixed is immediate), a lead who hears everything, and a clock the test moves. */
@@ -117,4 +118,15 @@ test("old follow-up chains still read as before, and judging them makes no new f
   assert.equal(reopened.followUp, null, "the follow-up reopens itself; the chain grows no further");
   assert.deepEqual(reopened.comment.followUps, []);
   assert.equal(comments.list({}).comments.length, 2);
+});
+
+test("`inbox comment show` prints each earlier attempt and a release without it", () => {
+  const { comments, id, now } = setup();
+  comments.setStatus(id, { status: "fixed", note: "Try", commit: "abc1234def" });
+  comments.verify(id, { verdict: "still-wrong", note: "overlaps" });
+  const sentBack = now();
+  comments.releaseWithout(id, { note: "ship it" });
+  const out = commentLine(comments.get(id));
+  assert.match(out, new RegExp(`\\n  attempt 1: sent back ${sentBack}, commit abc1234def: still wrong \\(overlaps\\)`));
+  assert.match(out, new RegExp(`\\n  released without: ${now()} \\(ship it\\)`));
 });
