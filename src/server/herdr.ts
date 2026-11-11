@@ -29,6 +29,8 @@ const LIST_TIMEOUT_MS = 8000;
 const BLIND_AFTER_FAILURES = 2;
 /** While it does not answer, the last good list stays this long; after that nobody can be said to be there. */
 const BLIND_GRACE_MS = 120_000;
+/** herdr's own prompt wait is 15 s; past this the client itself is stuck and is stopped. */
+const PROMPT_KILL_MS = 20_000;
 
 interface HerdrAgent {
   agent?: string;
@@ -58,10 +60,12 @@ export class Herdr implements PresenceSource, AgentSource {
   private refreshing: Promise<void> | null = null;
   private promptChecks = new Map<string, Promise<boolean>>();
   private now: () => number;
+  private promptKillMs: number;
 
   /** The socket is the session the CLI talks to: `HERDR_SOCKET_PATH` inside herdr, else the default session. */
-  constructor(bin = process.env.HERDR_BIN_PATH ?? "herdr", socketPath = process.env.HERDR_SOCKET_PATH ?? join(homedir(), ".config/herdr/herdr.sock"), now = Date.now) {
+  constructor(bin = process.env.HERDR_BIN_PATH ?? "herdr", socketPath = process.env.HERDR_SOCKET_PATH ?? join(homedir(), ".config/herdr/herdr.sock"), now = Date.now, promptKillMs = PROMPT_KILL_MS) {
     this.now = now;
+    this.promptKillMs = promptKillMs;
     this.bin = bin;
     this.socketPath = socketPath;
   }
@@ -250,9 +254,10 @@ export class Herdr implements PresenceSource, AgentSource {
   async prompt(paneId: string, text: string): Promise<void> {
     // The previous quiet screen says nothing about this new turn. Reserve it before typing.
     this.stale.reset(paneId);
+    // Our own refusal of a body is not a herdr failure; it fails before herdr runs, with its own message.
+    const input = this.agents.find((a) => a.pane_id === paneId)?.agent === "claude" ? claudeOfficeInput(text) : text;
     try {
-      const input = this.agents.find((a) => a.pane_id === paneId)?.agent === "claude" ? claudeOfficeInput(text) : text;
-      await run(this.bin, ["agent", "prompt", paneId, input, "--wait", "--until", "working", "--until", "blocked", "--timeout", "15000"], { timeout: 20_000 });
+      await run(this.bin, ["agent", "prompt", paneId, input, "--wait", "--until", "working", "--until", "blocked", "--timeout", "15000"], { timeout: this.promptKillMs });
       // Uptake matched working OR blocked. Never keep an old free snapshot while
       // awaiting the next provider observation; without knowing which matched, unknown
       // is truthful and cannot release another prompt or trigger a free-agent notice.
@@ -262,7 +267,7 @@ export class Herdr implements PresenceSource, AgentSource {
         this.onChange();
       }
     } catch (err) {
-      const message = herdrError(err);
+      const message = herdrError(err, "agent prompt", this.promptKillMs);
       throw agentIsStarting(message) ? new AgentStartingError(message) : new Error(message);
     }
   }
@@ -355,7 +360,7 @@ export class Herdr implements PresenceSource, AgentSource {
       const { stdout } = await run(this.bin, args, { timeout, maxBuffer: 2_000_000 });
       return (JSON.parse(stdout) as { result: T }).result;
     } catch (err) {
-      throw new Error(herdrError(err));
+      throw new Error(herdrError(err, args.slice(0, 2).join(" "), timeout));
     }
   }
 
@@ -378,24 +383,37 @@ function claudeOfficeInput(text: string): string {
 }
 
 /** herdr answers errors as JSON on stdout or stderr; the message is what a person can act on. */
+
 /** One readable line, never a dump of herdr's output or a stack trace. */
 function firstLine(text: string | undefined): string {
   const line = (text ?? "").split("\n").map((l) => l.trim()).find(Boolean) ?? "";
   return line.replace(/^(fatal|error):\s*/i, "").slice(0, 200);
 }
 
-function herdrError(err: unknown): string {
-  const e = err as { stdout?: string; stderr?: string; message?: string };
+/**
+ * What went wrong, as herdr said it or else as the process ended: exit code, signal, or our own
+ * deadline. Never the command line, which carries the prompt text and hides the actual cause.
+ */
+export function herdrError(err: unknown, command: string, timeoutMs: number): string {
+  const e = err as { stdout?: string; stderr?: string; code?: number | string | null; signal?: string | null; killed?: boolean };
   for (const out of [e.stdout, e.stderr]) {
     try {
       const message = (JSON.parse(out ?? "") as { error?: { message?: string } }).error?.message;
       if (message) return message;
     } catch {
-      const line = firstLine(out);
-      if (line) return line;
+      // Not JSON: a plain line from herdr, kept below with how the process ended.
     }
   }
-  return firstLine(e.message) || "herdr did not answer";
+  const said = firstLine(e.stderr) || firstLine(e.stdout);
+  let ended: string;
+  if (e.killed && e.signal) ended = `herdr ${command} gave no answer within ${timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} s` : `${timeoutMs} ms`} and was stopped`;
+  else if (e.signal) ended = `herdr ${command} was ended by ${e.signal}`;
+  else if (typeof e.code === "number") ended = `herdr ${command} exited with code ${e.code}`;
+  else if (e.code === "ENOENT") ended = `herdr ${command} could not start: herdr is not installed at the configured path`;
+  else if (err instanceof SyntaxError) ended = `herdr ${command} gave an answer that is not JSON`;
+  else if (typeof e.code === "string") ended = `herdr ${command} could not run (${e.code})`;
+  else ended = `herdr ${command} did not answer`;
+  return said ? `${ended}: ${said}` : `${ended} without saying why`;
 }
 
 function fingerprint(a: HerdrAgent): string {
