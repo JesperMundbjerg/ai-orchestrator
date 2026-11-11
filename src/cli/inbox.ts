@@ -11,13 +11,13 @@ import { openPane } from "./pane.ts";
 import { pipelineCommand, deliveryBinding, telemetryLogCommand } from "./pipeline.ts";
 import { installHooksCommand } from "./pipeline-hooks.ts";
 import { LEASE_HELP, leaseArgs, leaseCommand } from "./lease.ts";
-import { acknowledge, call, fetchReplies, formatReply, get, serviceUrl } from "../shared/agent-client.ts";
+import { acknowledge, call, createAgentClient, fetchReplies, formatReply, get, serviceUrl } from "../shared/agent-client.ts";
 import { lengthHints, SOFT_CAPS } from "../shared/decision.ts";
 import { parsePage } from "../shared/pages.ts";
 import { projectRoot } from "../shared/project.ts";
 import { AGENT_COMMENT_STATUSES, type PageComment } from "../shared/pagecomments.ts";
 import { changedFiles, parseWrites, strayFiles } from "../shared/surface.ts";
-import type { AgentSwitch, StandingLane, EvidenceInput, Item, ItemType, Message, Page, SessionInput, SubmitInput, SubmitResult, Team, TeamBrief, UnlandedAnswer, UnlandedWork, Work } from "../shared/types.ts";
+import type { AgentSwitch, StandingLane, EvidenceInput, Item, ItemType, Message, Page, PendingReply, SessionInput, SubmitInput, SubmitResult, Team, TeamBrief, UnlandedAnswer, UnlandedWork, Work } from "../shared/types.ts";
 
 const HELP = `inbox — send review items to the Review Inbox and collect the answers
 
@@ -78,9 +78,10 @@ const HELP = `inbox — send review items to the Review Inbox and collect the an
 
   inbox activity "what you are doing now" [--next "next milestone"]
   inbox replies [--ack]          print answers waiting for this session
-  inbox ack DELIVERY_ID           confirm you have received an answer
+  inbox ack DELIVERY_ID           confirm you have received an answer (or an office message, by its delivery or message id)
+  inbox messages [--ack]          outside herdr: print office messages waiting for this session (a herdr pane has them typed in)
   inbox withdraw KEY | inbox resolve KEY
-  inbox hook claude               Claude Code hook (Stop / UserPromptSubmit / SessionStart)
+  inbox hook claude               Claude Code hook (Stop / UserPromptSubmit / SessionStart): answers, and outside herdr office messages
   inbox statusline                Claude Code statusline: tells the office the plan's 5-hour and weekly use, prints them
 
   The office (a project per worktree, run by its first mate; standing teams like Mission Control):
@@ -297,6 +298,19 @@ export function pagesFrom(given: Array<{ name: string; value: string | undefined
   return pages;
 }
 
+/** `inbox messages`: what the office holds for a session outside herdr, as a pane would have had it typed. */
+async function messages(): Promise<void> {
+  const client = createAgentClient({ session: session() });
+  const pending = await client.messages({ mode: "pull" });
+  if (!pending.length) return console.log("No messages waiting.");
+  for (const m of pending) {
+    console.log(m.prompt);
+    if (flags.ack) await client.acknowledgeMessage({ deliveryId: m.deliveryId });
+    else console.log(`(Confirm receipt: inbox ack ${m.deliveryId})`);
+    console.log("");
+  }
+}
+
 async function replies(): Promise<void> {
   const s = session();
   const pending = await fetchReplies(s, "pull");
@@ -444,20 +458,25 @@ async function claudeHook(): Promise<void> {
   const s: SessionInput = { harness: "claude", sessionId: input.session_id, cwd: input.cwd };
   // A starting session says which model it runs; the office hears it as it hears the HTTP hooks.
   if (input.hook_event_name === "SessionStart") await call("/api/hooks/claude", input, 1500).catch(() => {});
-  let pending;
+  let pending: PendingReply[];
   try {
     pending = await fetchReplies(s, "boundary");
   } catch {
-    return; // the inbox is not running or does not know this session: stay out of the way
+    pending = []; // the inbox is not running or has no task for this session: stay out of the way
   }
-  if (!pending.length) return;
-  const text = pending.map(formatReply).join("\n\n---\n\n");
+  // Outside herdr nobody types the office's messages in: they come here too. A herdr pane has them typed, never both
+  // (the office hands a herdr agent nothing here either).
+  const client = createAgentClient({ session: s });
+  const said = process.env.HERDR_PANE_ID ? [] : await client.messages({ mode: "boundary" }).catch(() => []);
+  if (!pending.length && !said.length) return;
+  const text = [...pending.map(formatReply), ...said.map((m) => m.prompt)].join("\n\n---\n\n");
   const event = input.hook_event_name;
   if (event === "Stop") process.stdout.write(JSON.stringify({ decision: "block", reason: text }));
   else if (event === "UserPromptSubmit" || event === "SessionStart") {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: text } }));
   } else return;
   for (const r of pending) await acknowledge(s, r.deliveryId).catch(() => {});
+  for (const m of said) await client.acknowledgeMessage({ deliveryId: m.deliveryId }).catch(() => {});
 }
 
 /**
@@ -506,10 +525,18 @@ async function main(argv: string[]): Promise<void> {
     }
     case "replies":
       return replies();
-    case "ack":
+    case "messages":
+      return messages();
+    case "ack": {
       if (!arg) throw new Error("inbox ack needs a delivery id");
-      await acknowledge(session(), arg);
+      const s = session();
+      // A message's delivery id is `<messageId>:<agentId>`; anything else is a reply's first, then a message id.
+      if (arg.includes(":")) await createAgentClient({ session: s }).acknowledgeMessage({ deliveryId: arg });
+      else await acknowledge(s, arg).catch(async (err: unknown) => {
+        await createAgentClient({ session: s }).acknowledgeMessage({ deliveryId: arg }).catch(() => { throw err; });
+      });
       return console.log("Acknowledged.");
+    }
     case "withdraw":
     case "resolve": {
       if (!arg) throw new Error(`inbox ${command} needs an item key or id`);

@@ -6,7 +6,7 @@ import {
   DELIVERY_STATES, WORK_STATES,
   type SessionInput, type SubmitInput, type ActivityInput, type ActivityEvent,
   type EffortReport, type SubmitResult, type PendingReply, type Task, type Item,
-  type Reply, type Message, type Work, type TeamBrief, type AgentSwitch,
+  type Reply, type Message, type Work, type TeamBrief, type AgentSwitch, type PendingMessage, type MessageAck,
 } from "./types.ts";
 import type { LimitReading } from "./usage.ts";
 import { parsePage } from "./pages.ts";
@@ -129,6 +129,9 @@ export const activitySchema: Schema<ActivityInput> = object({ session: sessionSc
 export const sessionRequestSchema = object({ session: sessionSchema });
 export const repliesSchema = object({ session: sessionSchema, mode: optional(oneOf(["live", "boundary", "pull"])) });
 export const ackSchema = object({ session: sessionSchema, deliveryId: nonempty, error: maybeText });
+/** A session outside herdr collects its office messages; `deliveryId` may also be the message id. */
+export const messagesSchema = repliesSchema;
+export const messageAckSchema = ackSchema;
 export const closeItemSchema = object({ session: sessionSchema, item: nonempty });
 export const paneSchema = object({ session: sessionSchema, paneId: nonempty });
 export const worktreePaneSchema = object({ session: sessionSchema, slug: nonempty });
@@ -201,6 +204,11 @@ export const messageResponse: Schema<Message> = object({
   workId: nullText, createdAt: text, deliveries: list(object({ agentId: text, state: oneOf(DELIVERY_STATES), error: nullText, updatedAt: text })),
   toFounder: boolean, fromOffice: optional(boolean), aboutAgentIds: optional(strings), allLeads: optional(boolean),
 });
+const pendingMessageResponse: Schema<PendingMessage> = object({
+  deliveryId: text, messageId: text, kind: oneOf(MESSAGE_KINDS), fromAgentId: nullText, fromName: text, teamId: nullText,
+  text, images: strings, createdAt: text, prompt: text,
+});
+const messageAckResponse: Schema<MessageAck> = object({ deliveryId: text, messageId: text, state: oneOf(DELIVERY_STATES), error: nullText });
 const workResponse: Schema<Work> = object({
   id: text, title: text, summary: text, fromAgentId: text, fromTeamId: nullText, toTeamId: text, state: oneOf(WORK_STATES),
   round: positiveInteger, reviewerId: nullText, notes: text, createdAt: text, updatedAt: text,
@@ -220,6 +228,8 @@ export const agentOperations = {
   activity: post("/api/agent/activity", activitySchema, taskResponse),
   replies: post("/api/agent/replies", repliesSchema, list(pendingReplyResponse)),
   acknowledge: post("/api/agent/ack", ackSchema, replyResponse),
+  messages: post("/api/agent/messages", messagesSchema, list(pendingMessageResponse)),
+  acknowledgeMessage: post("/api/agent/messages/ack", messageAckSchema, messageAckResponse),
   team: post("/api/agent/team", sessionRequestSchema, object({ agentId: text, text }) satisfies Schema<TeamBrief>),
   pane: post("/api/agent/pane", paneSchema, object({ recorded: boolean })),
   worktree: post("/api/agent/worktree", worktreePaneSchema, object({ paneId: text, path: text, branch: text, base: nullText })),

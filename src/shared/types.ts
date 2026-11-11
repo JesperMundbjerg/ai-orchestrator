@@ -287,6 +287,36 @@ export interface PendingReply {
   createdAt: string;
 }
 
+/**
+ * An office message waiting for a session outside herdr (`POST /api/agent/messages`): one delivery to the
+ * caller's agent, handed out until the session acknowledges it.
+ */
+export interface PendingMessage {
+  /** Stable per message and recipient: `<messageId>:<agentId>`. Dedupe and acknowledge by it. */
+  deliveryId: string;
+  messageId: string;
+  kind: MessageKind;
+  /** null when it is from the founder or the office. */
+  fromAgentId: string | null;
+  /** The sender's office name, "founder" or "office". */
+  fromName: string;
+  teamId: string | null;
+  text: string;
+  /** Absolute paths of attached images, for the agent to read. */
+  images: string[];
+  createdAt: string;
+  /** The message as a herdr pane would have it typed: sender's standing, the text, and how to answer. */
+  prompt: string;
+}
+
+/** The session settled a pending message (`POST /api/agent/messages/ack`). */
+export interface MessageAck {
+  deliveryId: string;
+  messageId: string;
+  state: DeliveryState;
+  error: string | null;
+}
+
 // ── The office world ─────────────────────────────────────────────────────────────────────
 
 /**

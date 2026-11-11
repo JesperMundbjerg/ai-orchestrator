@@ -4,14 +4,15 @@
 // only once herdr reports the agent free, one prompt at a time per agent: what queued up while it
 // was busy goes in that one prompt, oldest first, each with its sender and age. The
 // founder's answer to a review item goes the same way to a session nothing else would hand it to
-// while it is idle (no live integration): typed in the words the hook uses.
+// while it is idle (no live integration): typed in the words the hook uses. A session outside herdr (a desktop
+// session) has no pane to type into: it collects its deliveries over HTTP and acknowledges each (`pending`, `acknowledge`).
 
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { AllLeadsResult, Delivery, DeliveryState, Message, MessageKind, PendingReply, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
+import type { AllLeadsResult, Delivery, DeliveryState, Message, MessageAck, MessageKind, PendingMessage, PendingReply, Team, Work, WorkState, WorldAgent, WorldState } from "../shared/types.ts";
 import { formatReply, imageLines } from "../shared/agent-client.ts";
-import { imageIds, InboxError, type Inbox } from "./inbox.ts";
+import { ACK_GRACE_MS, imageIds, InboxError, type Inbox } from "./inbox.ts";
 import type { Uploads } from "./uploads.ts";
 import { laneRecipient, type LaneRegistration } from "./queue.ts";
 import { WaitingMessages } from "./waiting.ts";
@@ -227,7 +228,7 @@ export class Messages {
     }
     return {
       message,
-      queuedOffline: message.deliveries.filter((d) => d.state === "queued" && !state.agents.find((a) => a.id === d.agentId)?.paneId).map((d) => d.agentId),
+      queuedOffline: message.deliveries.filter((d) => d.state === "queued" && (state.agents.find((a) => a.id === d.agentId)?.status ?? "offline") === "offline").map((d) => d.agentId),
       skippedTeams: state.teams.filter((t) => !leads.some((a) => a.teamId === t.id)).map((t) => t.id),
     };
   }
@@ -249,7 +250,7 @@ export class Messages {
    * by name stay theirs. A message the new lead already has is left where it is.
    */
   handOverQueued(teamId: string, fromAgentId: string, toAgentId: string): number {
-    const moved = this.db.prepare(`UPDATE OR IGNORE message_deliveries SET agent_id = ? WHERE agent_id = ? AND state = 'queued'
+    const moved = this.db.prepare(`UPDATE OR IGNORE message_deliveries SET agent_id = ? WHERE agent_id = ? AND state = 'queued' AND claim_transport IS NULL
       AND message_id IN (SELECT id FROM messages WHERE team_id = ?)`).run(toAgentId, fromAgentId, teamId).changes;
     if (moved) this.changed();
     return Number(moved);
@@ -391,11 +392,59 @@ export class Messages {
     const agent = this.world().agents.find((a) => a.id === agentId);
     if (!agent?.paneId || (delivery && leftBeforeArrival(delivery, agent))) throw new InboxError(409, "the agent left before it arrived; this delivery cannot be retried");
     const done = this.db
-      .prepare("UPDATE message_deliveries SET state = 'queued', error = NULL, updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'failed'")
+      .prepare("UPDATE message_deliveries SET state = 'queued', error = NULL, claim_transport = NULL, claimed_at = NULL, updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'failed'")
       .run(this.now().toISOString(), messageId, agentId);
     if (!done.changes) throw new InboxError(409, "only a failed delivery can be retried");
     this.changed();
     return this.message(messageId);
+  }
+
+  /**
+   * `POST /api/agent/messages`: what waits for a session outside herdr, oldest first, claimed for it. A claimed
+   * delivery stays queued and is handed out again on every poll until the session acknowledges it (dedupe by
+   * deliveryId); the typist never types it. An agent herdr runs gets nothing here: its pane is typed into, never both.
+   */
+  pending(agent: WorldAgent, state: WorldState): PendingMessage[] {
+    if (agent.paneId || this.held().has(agent.id)) return [];
+    const rows = this.db.prepare(`SELECT d.agent_id, m.* FROM message_deliveries d JOIN messages m ON m.id = d.message_id
+      WHERE d.agent_id = ? AND d.state = 'queued' AND (d.claim_transport IS NULL OR d.claim_transport = 'integration') ORDER BY m.rowid`).all(agent.id) as Row[];
+    if (!rows.length) return [];
+    const at = this.now().toISOString();
+    const claim = this.db.prepare(`UPDATE message_deliveries SET claim_transport = 'integration', claimed_at = coalesce(claimed_at, ?)
+      WHERE message_id = ? AND agent_id = ? AND state = 'queued' AND (claim_transport IS NULL OR claim_transport = 'integration')`);
+    const claimed = this.atomic(() => rows.filter((r) => claim.run(at, str(r.id), agent.id).changes > 0));
+    return claimed.map((r) => {
+      const message = toMessage(r, []);
+      const images = message.images.map((id) => join(this.uploads?.dir ?? "", id));
+      const work = message.workId ? this.workById(message.workId) : null;
+      const fromName = message.fromAgentId ? state.agents.find((a) => a.id === message.fromAgentId)?.name ?? "someone" : message.fromOffice ? "office" : FOUNDER;
+      return {
+        deliveryId: `${message.id}:${agent.id}`, messageId: message.id, kind: message.kind, fromAgentId: message.fromAgentId, fromName,
+        teamId: message.teamId, text: message.text, images, createdAt: message.createdAt, prompt: prompt(message, agent, state, work, images),
+      };
+    });
+  }
+
+  /**
+   * `POST /api/agent/messages/ack`: the session took up a delivery it collected (or could not: `error` fails it, and its
+   * sender sees why). `ref` is the deliveryId, or the message id. Acknowledging a delivered one again is a no-op.
+   */
+  acknowledge(agent: WorldAgent, ref: string, error?: string): MessageAck {
+    const messageId = ref.endsWith(`:${agent.id}`) ? ref.slice(0, -agent.id.length - 1) : ref;
+    const row = this.db.prepare("SELECT * FROM message_deliveries WHERE message_id = ? AND agent_id = ?").get(messageId, agent.id) as Row | undefined;
+    if (!row) throw new InboxError(404, `no message ${ref} for this session`);
+    const out = (): MessageAck => {
+      const d = this.db.prepare("SELECT state, error FROM message_deliveries WHERE message_id = ? AND agent_id = ?").get(messageId, agent.id) as Row;
+      return { deliveryId: `${messageId}:${agent.id}`, messageId, state: str(d.state) as DeliveryState, error: opt(d.error) };
+    };
+    if (str(row.state) === "delivered") return out();
+    if (str(row.state) !== "queued") throw new InboxError(409, `message ${messageId} is ${str(row.state)}, not queued`);
+    if (row.claim_transport !== "integration") throw new InboxError(409, "this message was not handed to this session: collect it first (inbox messages)");
+    const failure = error?.trim();
+    this.atomic(() => this.db.prepare("UPDATE message_deliveries SET state = ?, error = ?, updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'queued'")
+      .run(failure ? "failed" : "delivered", failure || null, this.now().toISOString(), messageId, agent.id));
+    this.undelivered.drained();
+    return out();
   }
 
   /**
@@ -406,13 +455,15 @@ export class Messages {
   async deliver(state: WorldState): Promise<void> {
     const agents = new Map(state.agents.map((a) => [a.id, a]));
     const pending = this.db
-      .prepare("SELECT d.agent_id, d.state, d.updated_at AS queued_at, m.* FROM message_deliveries d JOIN messages m ON m.id = d.message_id WHERE d.state IN ('queued', 'sending') ORDER BY m.rowid")
+      .prepare("SELECT d.agent_id, d.state, d.claim_transport, d.updated_at AS queued_at, m.* FROM message_deliveries d JOIN messages m ON m.id = d.message_id WHERE d.state IN ('queued', 'sending') ORDER BY m.rowid")
       .all() as Row[];
     const busy = new Set<string>([...this.typingTo, ...this.held()]);
     const queued = new Map<string, Row[]>();
     for (const row of pending) {
       const agentId = str(row.agent_id);
       if (row.state === "sending") busy.add(agentId);
+      // Handed to a session's integration: it is that session's to acknowledge, never typed as well.
+      else if (row.claim_transport === "integration") continue;
       else queued.set(agentId, [...(queued.get(agentId) ?? []), row]);
     }
     const sends: Array<Promise<void>> = [];
@@ -478,7 +529,7 @@ export class Messages {
   private async send(rows: Row[], agent: WorldAgent, state: WorldState): Promise<void> {
     if (!this.source) return;
     // Claimed before typing, so two deliveries running at once never type the same message twice.
-    const claim = this.db.prepare("UPDATE message_deliveries SET state = 'sending', updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'queued'");
+    const claim = this.db.prepare("UPDATE message_deliveries SET state = 'sending', updated_at = ? WHERE message_id = ? AND agent_id = ? AND state = 'queued' AND claim_transport IS NULL");
     const claimed = rows.filter((row) => claim.run(this.now().toISOString(), str(row.id), agent.id).changes > 0);
     const messages = claimed.map((row) => toMessage(row, []));
     if (!messages.length) return;
@@ -630,7 +681,8 @@ export class Messages {
       .prepare(`SELECT * FROM message_deliveries WHERE message_id IN (${ids.map(() => "?").join(",")})`)
       .all(...ids) as Row[];
     const notices = new Map((this.db.prepare(`SELECT message_id, agent_ids FROM office_notices WHERE message_id IN (${ids.map(() => "?").join(",")})`).all(...ids) as Array<{ message_id: string; agent_ids: string }>).map((n) => [n.message_id, JSON.parse(n.agent_ids) as string[]]));
-    return rows.map((r) => ({ ...toMessage(r, deliveries.filter((d) => d.message_id === r.id).map(toDelivery)),
+    const now = this.now().getTime();
+    return rows.map((r) => ({ ...toMessage(r, deliveries.filter((d) => d.message_id === r.id).map((d) => toDelivery(d, now))),
       ...(notices.has(str(r.id)) ? { aboutAgentIds: notices.get(str(r.id)) } : {}) }));
   }
 }
@@ -752,8 +804,11 @@ function toMessage(r: Row, deliveries: Delivery[]): Message {
   };
 }
 
-function toDelivery(d: Row): Delivery {
-  return { agentId: str(d.agent_id), state: str(d.state) as DeliveryState, error: opt(d.error), updatedAt: str(d.updated_at) };
+/** A delivery a session collected but has not acknowledged within the grace shows as uncertain, as a reply does. */
+function toDelivery(d: Row, now: number): Delivery {
+  const claimed = opt(d.claimed_at);
+  const uncertain = str(d.state) === "queued" && d.claim_transport === "integration" && claimed !== null && now - Date.parse(claimed) > ACK_GRACE_MS;
+  return { agentId: str(d.agent_id), state: str(d.state) as DeliveryState, error: uncertain ? "picked up by the session but not confirmed" : opt(d.error), updatedAt: str(d.updated_at) };
 }
 
 function toWork(r: Row): Work {

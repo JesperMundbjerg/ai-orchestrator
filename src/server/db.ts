@@ -418,6 +418,12 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
   addColumn(db, "page_comments", "landing_commit", "TEXT");
   addColumn(db, "page_comments", "landing_branch", "TEXT");
   addColumn(db, "page_comments", "landing_repo", "TEXT");
+}, (db) => {
+  // 23: a session outside herdr collects its messages over HTTP (messages.ts `pending`). A queued delivery it was handed
+  // stays queued but is the integration's from then on: the herdr typist never types it, and it is handed out again until
+  // acknowledged. A pane attempt is the 'sending' state, never handed out. NULL for every existing delivery.
+  addColumn(db, "message_deliveries", "claim_transport", "TEXT CHECK (claim_transport IN ('integration'))");
+  addColumn(db, "message_deliveries", "claimed_at", "TEXT");
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {

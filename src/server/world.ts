@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import type {
-  ActivityEvent, AgentModel, AgentRole, Harness, InboxState, Presence, Repository, SessionInput, SwitchesView, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
+  ActivityEvent, AgentModel, AgentRole, Harness, InboxState, MessageAck, PendingMessage, Presence, Repository, SessionInput, SwitchesView, Team, TeamBrief, TeamStatus, WorldAgent, WorldState,
 } from "../shared/types.ts";
 import { serviceUrl } from "../shared/agent-client.ts";
 import { Activity } from "./activity.ts";
@@ -96,6 +96,8 @@ const NONE: ReadonlySet<string> = new Set();
 
 /** How often a desktop session's "last spoke" time is written while it keeps calling: hooks call several times a second. */
 const SPOKE_WRITE_MS = 10_000;
+/** A desktop session that collected its messages live within this window counts as running (as a task's live reply listener, inbox.ts). */
+const DESKTOP_LISTENER_FRESH_MS = 15_000;
 
 /**
  * `git worktree add -b BRANCH PATH [BASE]` without blocking the event loop: a desktop team's worktree when herdr
@@ -220,6 +222,8 @@ export class World {
   readonly unlanded: Unlanded;
   /** Agents the office made lead while computing state; told what a lead is told once the state is settled (react). */
   private newLeads = new Set<string>();
+  /** Desktop sessions listening live at the last look, so the board redraws when one starts or stops. */
+  private liveDesktops = "";
   readonly messages: Messages;
   readonly pipelines: Pipelines;
   /** Founder-only exact-SHA repair waivers; the service wires in the inbox. */
@@ -260,6 +264,10 @@ export class World {
       last_spoke_at TEXT NOT NULL,
       PRIMARY KEY (harness, session_id)
     )`);
+    // When the session last collected its messages live (`POST /api/agent/messages` mode live): while fresh it is running.
+    if (!db.prepare("PRAGMA table_info(desktop_sessions)").all().some((c) => c.name === "listener_seen_at")) {
+      db.exec("ALTER TABLE desktop_sessions ADD COLUMN listener_seen_at TEXT");
+    }
     this.unpresented = new Unpresented(db);
     this.leadRoles = new LeadRoles(db);
     this.mergeInstructions = new MergeInstructions(db);
@@ -754,12 +762,36 @@ export class World {
   }
 
   /** Every session outside herdr that said hello. */
-  private desktopSessions(): Array<{ harness: Harness; sessionId: string; cwd: string; lastSpokeAt: string }> {
-    return (this.db.prepare("SELECT harness, session_id, cwd, last_spoke_at FROM desktop_sessions ORDER BY registered_at").all() as Row[])
-      .map((r) => ({ harness: str(r.harness) as Harness, sessionId: str(r.session_id), cwd: str(r.cwd), lastSpokeAt: str(r.last_spoke_at) }));
+  private desktopSessions(): Array<{ harness: Harness; sessionId: string; cwd: string; lastSpokeAt: string; listening: boolean }> {
+    const now = this.now().getTime();
+    return (this.db.prepare("SELECT harness, session_id, cwd, last_spoke_at, listener_seen_at FROM desktop_sessions ORDER BY registered_at").all() as Row[])
+      .map((r) => ({ harness: str(r.harness) as Harness, sessionId: str(r.session_id), cwd: str(r.cwd), lastSpokeAt: str(r.last_spoke_at),
+        listening: r.listener_seen_at != null && now - Date.parse(str(r.listener_seen_at)) < DESKTOP_LISTENER_FRESH_MS }));
   }
 
-  private desktopSession(session: SessionInput): { harness: Harness; sessionId: string; cwd: string; lastSpokeAt: string } | null {
+  /**
+   * `POST /api/agent/messages`: the office messages waiting for a calling session outside herdr, claimed for it
+   * (messages.ts `pending`). Collecting them live keeps a desktop session running in the office; a session herdr runs
+   * gets nothing here, as its messages are typed into its pane.
+   */
+  collectMessages(session: SessionInput, mode: "live" | "boundary" | "pull"): PendingMessage[] {
+    const agent = this.resolve(session);
+    if (agent.paneId) return [];
+    const desktop = mode === "live" ? this.desktopSession(session) : null;
+    if (desktop) {
+      this.db.prepare("UPDATE desktop_sessions SET listener_seen_at = ? WHERE harness = ? AND session_id = ?").run(this.now().toISOString(), desktop.harness, desktop.sessionId);
+      if (!desktop.listening) this.onChange("world");
+    }
+    const state = this.state();
+    return this.messages.pending(state.agents.find((a) => a.id === agent.id) ?? agent, state);
+  }
+
+  /** `POST /api/agent/messages/ack`: the calling session settles a message it collected. */
+  acknowledgeMessage(session: SessionInput, ref: string, error?: string): MessageAck {
+    return this.messages.acknowledge(this.resolve(session), ref, error);
+  }
+
+  private desktopSession(session: SessionInput): { harness: Harness; sessionId: string; cwd: string; lastSpokeAt: string; listening: boolean } | null {
     if (!session.harness || !session.sessionId) return null;
     return this.desktopSessions().find((d) => d.harness === session.harness && d.sessionId === session.sessionId) ?? null;
   }
@@ -947,9 +979,13 @@ export class World {
     this.paneNames.sync(state);
     const changed = this.unpresented.tick(state, this.now().getTime(), (lead, text) => { this.messages.notice(lead, text); });
     const stalled = this.leadWatch.tick(state);
+    // A desktop session that stopped collecting live goes offline without any call: redraw when that set changes.
+    const liveDesktops = this.desktopSessions().filter((d) => d.listening).map((d) => `${d.harness}\0${d.sessionId}`).join("\n");
+    const presence = liveDesktops !== this.liveDesktops;
+    this.liveDesktops = liveDesktops;
     let unlanded = false;
     try { unlanded = this.unlanded.tick(state, this.now().getTime()); } catch (err) { console.error(`unlanded work: ${(err as Error).message}`); }
-    if (changed || stalled || unlanded) this.onChange("activity"); // redraw only; do not recursively react
+    if (changed || stalled || unlanded || presence) this.onChange("activity"); // redraw only; do not recursively react
     const first = this.announced === null;
     const before = this.announced ?? new Map<string, TeamStatus>();
     this.announced = new Map(state.teams.map((t) => [t.id, t.status]));
@@ -993,7 +1029,11 @@ export class World {
     // A desktop session is known by its hello, the way a task's session is by its task; herdr never sees it running.
     for (const d of desktops) {
       const identity = desktopIdentity(d.harness, d.cwd, d.sessionId);
-      if (!out.has(identity)) out.set(identity, { identity, harness: d.harness, cwd: d.cwd, status: "offline", title: null, paneId: null, taskIds: [], sessionId: d.sessionId });
+      // Collecting its messages live, it is running (free between turns); otherwise it is offline until it next does.
+      const status = d.listening ? "idle" : "offline";
+      const known = out.get(identity);
+      if (known) known.status = status;
+      else out.set(identity, { identity, harness: d.harness, cwd: d.cwd, status, title: null, paneId: null, taskIds: [], sessionId: d.sessionId });
     }
     return [...out.values()];
   }

@@ -231,6 +231,8 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/agent\/handoff$/, deliveryHandoffSchema, (_r, b) => needWorld().messages.handoff(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/review$/, deliveryReviewSchema, (_r, b) => needWorld().messages.review(needWorld().resolve(b.session), b)),
     route("POST", /^\/api\/agent\/ack$/, protocol.acknowledge.request, (_r, b) => inbox.acknowledge(b.session, b.deliveryId, b.error)),
+    route("POST", /^\/api\/agent\/messages$/, protocol.messages.request, (_r, b) => needWorld().collectMessages(b.session, b.mode ?? "pull")),
+    route("POST", /^\/api\/agent\/messages\/ack$/, protocol.acknowledgeMessage.request, (_r, b) => needWorld().acknowledgeMessage(b.session, b.deliveryId, b.error)),
     route("POST", /^\/api\/agent\/withdraw$/, protocol.withdraw.request, (_r, b) => inbox.closeItem(b.session, b.item, "withdrawn")),
     // Debug: the UI's opt-in input recorder (?inputlog=1); memory only, and only from the office's own page.
     route("GET", /^\/api\/debug\/inputlog$/, emptySchema, () => inputLog.read()),
