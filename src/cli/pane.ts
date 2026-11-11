@@ -5,8 +5,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { nextSplit, type PaneRect } from "../shared/panes.ts";
 import { paneEnvArgs } from "../shared/shellpath.ts";
+import { herdrError } from "../shared/herdr-error.ts";
 
 const run = promisify(execFile);
+const HERDR_TIMEOUT_MS = 20_000;
 
 interface Layout {
   panes: Array<{ pane_id: string; rect: { x: number; y: number; width: number; height: number } }>;
@@ -15,20 +17,12 @@ interface Layout {
 /** herdr's answer, or an error carrying herdr's own message. */
 async function herdr<T>(args: string[]): Promise<T> {
   try {
-    const { stdout } = await run(process.env.HERDR_BIN_PATH ?? "herdr", args, { timeout: 20_000 });
+    const { stdout } = await run(process.env.HERDR_BIN_PATH ?? "herdr", args, { timeout: HERDR_TIMEOUT_MS });
     return (JSON.parse(stdout) as { result: T }).result;
   } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; message?: string };
-    for (const out of [e.stdout, e.stderr]) {
-      let message: string | undefined;
-      try {
-        message = (JSON.parse(out ?? "") as { error?: { message?: string } }).error?.message;
-      } catch {
-        // not JSON: try the next stream
-      }
-      if (message) throw new Error(`herdr: ${message}`);
-    }
-    throw new Error(`herdr did not answer: ${(e.message ?? "").split("\n")[0]}`);
+    // Never the command line: it holds paths and text, and hides how herdr actually ended.
+    const message = herdrError(err, args.slice(0, 2).join(" "), HERDR_TIMEOUT_MS);
+    throw new Error(message.startsWith("herdr ") ? message : `herdr: ${message}`);
   }
 }
 
