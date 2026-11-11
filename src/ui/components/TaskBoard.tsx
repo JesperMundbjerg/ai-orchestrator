@@ -1,13 +1,13 @@
 import type { InboxState, Task } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import { ago, deliveryLabel, TYPE_LABEL } from "../format.ts";
-import { openItemsOf } from "../queue.ts";
+import { isParked, openItemsOf } from "../queue.ts";
 import { Brief } from "./ItemDetail.tsx";
 import { Owner } from "./Owner.tsx";
 
 /** Working and Parked: the tasks themselves, rather than what needs the user. */
 export function TaskBoard({ state, parked, projectId, onOpenItem }: { state: InboxState; parked: boolean; projectId: string | null; onOpenItem: (itemId: string) => void }) {
-  const tasks = state.tasks.filter((t) => t.parked === parked && (!projectId || t.projectId === projectId));
+  const tasks = state.tasks.filter((t) => isParked(state, t) === parked && (!projectId || t.projectId === projectId));
   const projects = state.projects.filter((p) => tasks.some((t) => t.projectId === p.id));
   return (
     <main className="board">

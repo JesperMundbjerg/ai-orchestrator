@@ -79,7 +79,7 @@ Every row is checked by `test/api-reference.test.ts` against `agentOperations`. 
 | `effort` | `POST` | `/api/agent/effort` | `session`, `report` | `{request: {id, level} \| null}` |
 | `handoff` | `POST` | `/api/agent/handoff` | `session`, `summary`, `title?`, `to?`, `work?`, `clientId?` | `{work: Work, message: Message}` |
 | `review` | `POST` | `/api/agent/review` | `session`, `work`, `verdict: accept \| changes`, `notes?`, `clientId?`, `round?` | `{work: Work, message: Message}` |
-| `withdraw` | `POST` | `/api/agent/withdraw` | `session`, `item` (id or key owned by session) | `Item` |
+| `withdraw` | `POST` | `/api/agent/withdraw` | `session`, `item` (id or key owned by session, or the `waiver-<id>` key / item id of a waiver the caller requested) | `Item` |
 | `resolve` | `POST` | `/api/agent/resolve` | `session`, `item` (id or key owned by session) | `Item` |
 | `switchAgent` | `POST` | `/api/world/switches` | `agent` (id/name), `to?: claude \| pi`, `model?`, `effort?`, `handoff?: boolean` (no session) | `AgentSwitch` |
 | `switchAll` | `POST` | `/api/world/switches/all-from` | `from: claude \| pi`, `to?`, `model?`, `effort?`, `handoff?` (no session) | `{batchId, switches, skipped: [{name, why}]}` |
@@ -192,7 +192,7 @@ Pipeline routes use domain decoders in `src/server/pipelines/protocol.ts` and DT
 | `POST /api/agent/pipeline/branch` | `{session, runId, clientId, selections, rationale, expectedRevision?, base?, candidate?}` → `PipelineRun` |
 | `POST /api/agent/pipeline/abandon` | `{session, runId, clientId, notes}` → `PipelineRun` |
 | `POST /api/agent/pipeline/gate` | `{session, runId, delivery, round, candidate, ...}` → `{allowed, runId, round, candidate, reasons}`; a `dev` gate with `operation` `land`, `publish` or `push` refuses a candidate behind the published integration branch (rebase first) |
-| `POST /api/agent/pipeline/waiver` | `{session, clientId, repo, ref, candidate, reason}` → `PipelineWaiver` (`src/shared/waiver.ts`); the lead, or anyone while the team has no lead online; one founder inbox decision per waiting commit/branch/base |
+| `POST /api/agent/pipeline/waiver` | `{session, clientId, repo, ref, candidate, reason}` → `PipelineWaiver` (`src/shared/waiver.ts`); the lead, or anyone while the team has no lead online; one founder inbox decision per waiting commit/branch/base; the same requester's older open waivers for that repository and ref are withdrawn ("superseded by waiver-<new>"). Withdraw one with `POST /api/agent/withdraw` |
 | `POST /api/agent/pipeline/waiver/gate` | `{session, repo, ref, candidate, operation?}` → `{allowed, waiverId, candidate, reasons}`; a delivery that names no run, allowed only by a founder-granted waiver |
 | `GET /api/world/teams/:id/pipeline/waivers` | the team repository's `PipelineWaiver[]`, newest first |
 | `GET /api/pipeline/telemetry?run=&team=&kind=&since=&limit=` | `PipelineTelemetryView`: `{coverageStartedAt, coverageSchemaVersion, schemaVersion, events, decisionWaits, dropped}`; read-only, no session (see below) |

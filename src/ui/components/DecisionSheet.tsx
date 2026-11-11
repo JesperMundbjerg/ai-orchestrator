@@ -20,7 +20,7 @@ export function DecisionSheet({ state, tick, projectId, selectedId, onOpen }: {
   const visible = ids.filter((id) => {
     const item = state.items.find((item) => item.id === id);
     const task = state.tasks.find((task) => task.id === item?.taskId);
-    return item && task && !task.parked && ["needs_attention", "answer_queued", "delivered"].includes(item.state);
+    return item && task && ["needs_attention", "answer_queued", "delivered"].includes(item.state);
   });
   // What you sent to the back sinks below the rest, in the order you sent it; everything else keeps its place.
   const backedAt = (id: string) => { const item = state.items.find((item) => item.id === id); return item?.state === "needs_attention" ? item.backedAt : null; };

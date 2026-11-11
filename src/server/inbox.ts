@@ -253,6 +253,11 @@ export class Inbox {
           .run(a.id, itemId, revision, a.kind, a.file, a.url, a.sha256, a.caption, a.sourceRevision, now);
       }
       this.db.prepare("UPDATE tasks SET updated_at = ? WHERE id = ?").run(now, taskId);
+      // Parking never hides something the founder must answer: a new or revised item brings its task back.
+      if (str((this.db.prepare("SELECT parked FROM tasks WHERE id = ?").get(taskId) as Row).parked) === "1") {
+        this.db.prepare("UPDATE tasks SET parked = 0 WHERE id = ?").run(taskId);
+        this.log("system", "task.unparked", { taskId, itemId }, { reason: "new item" });
+      }
       return { itemId, taskId, revision, changed: true };
     };
     const result = this.tx(() => {
@@ -418,14 +423,14 @@ export class Inbox {
   }
 
   /** The agent withdraws a request that no longer applies, or resolves one it has acted on. */
-  closeItem(session: SessionInput, itemRef: string, outcome: "withdrawn" | "resolved"): Item {
+  closeItem(session: SessionInput, itemRef: string, outcome: "withdrawn" | "resolved", note?: string): Item {
     const binding = this.resolveSession(session);
     const task = this.taskRow(binding);
     const row = task
       ? (this.db.prepare("SELECT id FROM items WHERE task_id = ? AND (id = ? OR key = ?)").get(str(task.id), itemRef, itemRef) as Row | undefined)
       : undefined;
     if (!row) throw new InboxError(404, `no item "${itemRef}" for this session`);
-    return this.setItemState(str(row.id), outcome, "agent");
+    return this.setItemState(str(row.id), outcome, "agent", note ? { note } : {});
   }
 
   // ── User actions ──────────────────────────────────────────────────────────────────────
@@ -531,14 +536,14 @@ export class Inbox {
     return this.setItemState(itemId, "resolved", "user");
   }
 
-  private setItemState(itemId: string, state: "resolved" | "withdrawn" | "needs_attention", actor: HistoryEvent["actor"]): Item {
+  private setItemState(itemId: string, state: "resolved" | "withdrawn" | "needs_attention", actor: HistoryEvent["actor"], detail: Record<string, unknown> = {}): Item {
     const item = this.item(itemId);
     this.tx(() => {
       this.db.prepare("UPDATE items SET state = ?, snoozed_until = NULL, backed_at = NULL, updated_at = ? WHERE id = ?").run(state, this.iso(), itemId);
       if (state !== "needs_attention") {
         this.db.prepare("UPDATE replies SET state = 'stale' WHERE item_id = ? AND state IN ('queued', 'failed')").run(itemId);
       }
-      this.log(actor, `item.${state === "needs_attention" ? "woke" : state}`, { taskId: item.taskId, itemId });
+      this.log(actor, `item.${state === "needs_attention" ? "woke" : state}`, { taskId: item.taskId, itemId }, detail);
     });
     this.onChange("item");
     return this.item(itemId);

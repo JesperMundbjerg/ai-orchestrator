@@ -233,7 +233,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/agent\/ack$/, protocol.acknowledge.request, (_r, b) => inbox.acknowledge(b.session, b.deliveryId, b.error)),
     route("POST", /^\/api\/agent\/messages$/, protocol.messages.request, (_r, b) => needWorld().collectMessages(b.session, b.mode ?? "pull")),
     route("POST", /^\/api\/agent\/messages\/ack$/, protocol.acknowledgeMessage.request, (_r, b) => needWorld().acknowledgeMessage(b.session, b.deliveryId, b.error)),
-    route("POST", /^\/api\/agent\/withdraw$/, protocol.withdraw.request, (_r, b) => inbox.closeItem(b.session, b.item, "withdrawn")),
+    route("POST", /^\/api\/agent\/withdraw$/, protocol.withdraw.request, (_r, b) => {
+      // A waiver request lives on the office's own task, not the asker's: its asker withdraws it by `waiver-<id>` or item id.
+      const waiver = world?.waivers.names(b.item) ? world.waivers.withdraw(world.resolve(b.session), b.item) : null;
+      return waiver?.itemId ? inbox.item(waiver.itemId) : inbox.closeItem(b.session, b.item, "withdrawn");
+    }),
     // Debug: the UI's opt-in input recorder (?inputlog=1); memory only, and only from the office's own page.
     route("GET", /^\/api\/debug\/inputlog$/, emptySchema, () => inputLog.read()),
     route("POST", /^\/api\/debug\/inputlog$/, inputLogBatchSchema, (r, b) => {

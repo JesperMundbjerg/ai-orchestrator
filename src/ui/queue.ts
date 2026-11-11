@@ -16,7 +16,7 @@ export const SORT_EXPLANATION = "Pinned projects first, then items an agent is w
 
 export function needsYou(state: InboxState, filter: Filter, projectId: string | null): Entry[] {
   return entries(state)
-    .filter(({ item, task }) => item.state === "needs_attention" && !task.parked)
+    .filter(({ item }) => item.state === "needs_attention")
     .filter(({ item, project }) => (filter === "all" || item.type === filter) && (!projectId || project.id === projectId))
     .sort((a, b) =>
       Number(a.item.backedAt !== null) - Number(b.item.backedAt !== null) ||
@@ -24,6 +24,14 @@ export function needsYou(state: InboxState, filter: Filter, projectId: string | 
       Number(b.project.pinned) - Number(a.project.pinned) ||
       Number(b.item.blocking) - Number(a.item.blocking) ||
       a.item.updatedAt.localeCompare(b.item.updatedAt));
+}
+
+/**
+ * Whether a task is out of the way. Parking hides a task's quiet items, never one the founder must answer:
+ * a parked task that still has something waiting counts as working until that is answered.
+ */
+export function isParked(state: InboxState, task: Task): boolean {
+  return task.parked && !state.items.some((i) => i.taskId === task.id && i.state === "needs_attention");
 }
 
 /** Counts per filter chip, over what needs the user. */

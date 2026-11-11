@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { InboxState } from "../../shared/types.ts";
 import { api } from "../api.ts";
 import type { Route, View } from "../hooks.ts";
-import { needsYou } from "../queue.ts";
+import { isParked, needsYou } from "../queue.ts";
 
 const VIEWS: Array<{ view: Exclude<View, "world" | "teams" | "crew">; label: string }> = [
   { view: "needs", label: "Needs you" },
@@ -14,8 +14,8 @@ export function Sidebar({ state, route, navigate }: { state: InboxState; route: 
   const [menuOpen, setMenuOpen] = useState(false);
   const counts: Record<Exclude<View, "world" | "teams" | "crew">, number> = {
     needs: needsYou(state, "all", route.projectId).length,
-    working: state.tasks.filter((t) => !t.parked && (!route.projectId || t.projectId === route.projectId)).length,
-    parked: state.tasks.filter((t) => t.parked && (!route.projectId || t.projectId === route.projectId)).length,
+    working: state.tasks.filter((t) => !isParked(state, t) && (!route.projectId || t.projectId === route.projectId)).length,
+    parked: state.tasks.filter((t) => isParked(state, t) && (!route.projectId || t.projectId === route.projectId)).length,
   };
   const waiting = (projectId: string) => needsYou(state, "all", projectId).length;
 

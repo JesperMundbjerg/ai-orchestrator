@@ -167,8 +167,43 @@ export class Waivers {
       waiver = this.row(id);
       this.event("agent", "requested", waiver, { agentId: actor.id, role, reason, clientId: input.clientId });
     });
+    // One open question per requester and ref: a newer request replaces their older unanswered ones.
+    const created = waiver as unknown as PipelineWaiver;
+    const older = this.db.prepare("SELECT * FROM pipeline_waivers WHERE requested_by = ? AND repo_common = ? AND ref = ? AND state = 'requested' AND id != ?")
+      .all(actor.id, repo.common, ref, created.id) as Row[];
+    for (const r of older) this.retire(toWaiver(r), actor, `superseded by waiver-${created.id}`);
     this.changed();
-    return waiver!;
+    return created;
+  }
+
+  /** Whether `ref` (a waiver id, `waiver-<id>` or an item id) names a waiver request. */
+  names(ref: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM pipeline_waivers WHERE id = ? OR item_id = ?").get(ref.replace(/^waiver-/, ""), ref));
+  }
+
+  /**
+   * The agent who asked withdraws a waiver the founder has not answered yet. `ref` is the waiver's id,
+   * its item key (`waiver-<id>`) or its inbox item id. Returns null when `ref` names no waiver, so the
+   * caller can treat it as an ordinary inbox item.
+   */
+  withdraw(actor: WorldAgent, ref: string): PipelineWaiver | null {
+    this.sync();
+    const id = ref.replace(/^waiver-/, "");
+    const r = (this.db.prepare("SELECT * FROM pipeline_waivers WHERE id = ? OR item_id = ?").get(id, ref)) as Row | undefined;
+    if (!r) return null;
+    const waiver = toWaiver(r);
+    if (waiver.requestedBy !== actor.id) throw new InboxError(403, `waiver ${waiver.id} was asked for by another agent; only they withdraw it`, "pipeline_waiver_requester");
+    if (waiver.state !== "requested") throw new InboxError(409, `waiver ${waiver.id} is ${waiver.state}; only one the founder has not answered can be withdrawn`, "pipeline_waiver_decided");
+    this.retire(waiver, actor, "withdrawn by the requester");
+    this.changed();
+    return this.row(waiver.id);
+  }
+
+  /** An unanswered request leaves the founder's queue: no longer a question, and never allows anything. */
+  private retire(waiver: PipelineWaiver, actor: WorldAgent, note: string): void {
+    this.db.prepare("UPDATE pipeline_waivers SET state = 'expired' WHERE id = ? AND state = 'requested'").run(waiver.id);
+    this.event("agent", "withdrawn", waiver, { agentId: actor.id, note });
+    this.close(waiver, "withdrawn", note);
   }
 
   /** Where the founder saw the branch: the remote-tracking ref when there is one, else the local branch. */
@@ -196,6 +231,12 @@ export class Waivers {
         changed = true; continue;
       }
       if (this.decide(waiver)) { changed = true; continue; }
+      // The founder cleared the item without choosing (Resolve): nothing was allowed, and the request is no longer open.
+      if (waiver.itemId && this.inbox && ["resolved", "withdrawn"].includes(this.inbox.item(waiver.itemId).state)) {
+        this.db.prepare("UPDATE pipeline_waivers SET state = 'expired' WHERE id = ? AND state = 'requested'").run(waiver.id);
+        this.event("user", "withdrawn", waiver, { note: "item cleared without a decision" });
+        changed = true; continue;
+      }
       if (Date.parse(waiver.expiresAt) <= now.getTime()) {
         this.db.prepare("UPDATE pipeline_waivers SET state = 'expired' WHERE id = ? AND state = 'requested'").run(waiver.id);
         this.event("system", "expired", waiver, { unanswered: true });
@@ -247,9 +288,9 @@ export class Waivers {
     });
   }
 
-  private close(waiver: PipelineWaiver, outcome: "withdrawn" | "resolved"): void {
+  private close(waiver: PipelineWaiver, outcome: "withdrawn" | "resolved", note?: string): void {
     if (!waiver.itemId || !this.inbox) return;
-    try { this.inbox.closeItem(waiverSession(waiver.repoCommon), waiver.itemId, outcome); } catch { /* already closed */ }
+    try { this.inbox.closeItem(waiverSession(waiver.repoCommon), waiver.itemId, outcome, note); } catch { /* already closed */ }
   }
 
   /**
