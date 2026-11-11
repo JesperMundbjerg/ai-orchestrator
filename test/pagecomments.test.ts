@@ -251,7 +251,7 @@ test("a comment goes queued → delivered → working → fixed; the fixer's url
         id: sent.id, teamId: team.id, teamName: "Dispatch", groupId: null, status: "fixed", text: "Step 2 explains the focus wrongly.", kind: null,
         openUrl: "http://localhost:3000/lessons/orbits?step=2#focus", note: "Reworded", commit: "abc1234", question: null, answer: null, by: null,
         revision: 0, editable: false, followsUp: null, followUps: [], verification: null, verifiedAt: null,
-        meta: { lesson: "orbits", step: 2 }, updatedAt: last.updatedAt,
+        meta: { lesson: "orbits", step: 2 }, fixedAt: last.updatedAt, updatedAt: last.updatedAt,
       }, "the event carries everything a page shows");
       assert.equal((await (await fetch(`${base}/api/page-comments/${sent.id}`)).json()).status, "fixed");
       assert.equal((await (await fetch(`${base}/api/page-comments?team=${team.id}`)).json()).comments.length, 1);

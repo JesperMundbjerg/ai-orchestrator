@@ -146,6 +146,9 @@ export interface PageComment {
   /** Marked fixed with a commit its team's integration branch does not have yet: it stays working until the
    * commit is on that branch (`origin/<branch>`), then turns fixed. Null otherwise. */
   landing: { commit: string; branch: string } | null;
+  /** When it turned fixed (a direct fix, or its waiting landing reaching the branch); null while it is not fixed.
+   * Unlike updatedAt, verification and other edits never move it. */
+  fixedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -172,6 +175,8 @@ export interface PageCommentEvent {
   verification: CommentVerdict | null;
   verifiedAt: string | null;
   meta: Record<string, unknown> | null;
+  /** When it turned fixed (see PageComment.fixedAt); null while it is not fixed. */
+  fixedAt: string | null;
   updatedAt: string;
 }
 
@@ -179,7 +184,7 @@ export const commentEvent = (c: PageComment): PageCommentEvent => ({
   id: c.id, teamId: c.teamId, teamName: c.teamName, groupId: c.groupId, status: c.status, text: c.text, kind: c.kind,
   openUrl: c.openUrl, note: c.note, commit: c.commit, question: c.question, answer: c.answer, by: c.by,
   revision: c.revision, editable: c.editable, followsUp: c.followsUp, followUps: c.followUps,
-  verification: c.verification, verifiedAt: c.verifiedAt, meta: c.meta, updatedAt: c.updatedAt,
+  verification: c.verification, verifiedAt: c.verifiedAt, meta: c.meta, fixedAt: c.fixedAt, updatedAt: c.updatedAt,
 });
 
 export const META_MAX_BYTES = 2048;

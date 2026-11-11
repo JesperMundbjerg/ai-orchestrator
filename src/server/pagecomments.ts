@@ -394,9 +394,9 @@ export class PageComments {
       }
     }
     const at = this.now().toISOString();
-    this.db.prepare(`UPDATE page_comments SET status = ?, note = COALESCE(?, note), fixed_url = COALESCE(?, fixed_url), commit_sha = COALESCE(?, commit_sha), by_name = ?, updated_at = ?
+    this.db.prepare(`UPDATE page_comments SET status = ?, note = COALESCE(?, note), fixed_url = COALESCE(?, fixed_url), commit_sha = COALESCE(?, commit_sha), by_name = ?, updated_at = ?, fixed_at = ?
       ${landing === undefined ? "" : ", landing_commit = ?, landing_branch = ?, landing_repo = ?"} WHERE id = ?`)
-      .run(status, note, input.url ?? null, commit, by, at, ...(landing === undefined ? [] : landing ?? [null, null, null]), id);
+      .run(status, note, input.url ?? null, commit, by, at, status === "fixed" ? at : null, ...(landing === undefined ? [] : landing ?? [null, null, null]), id);
     this.emit(id);
     if (landing) this.watchLandings();
     return this.get(id);
@@ -490,8 +490,9 @@ export class PageComments {
         try { landed = read(); } catch { continue; }
       }
       if (!landed) continue;
-      this.db.prepare("UPDATE page_comments SET status = 'fixed', landing_commit = NULL, landing_branch = NULL, landing_repo = NULL, updated_at = ? WHERE id = ? AND status = 'working' AND landing_commit = ?")
-        .run(this.now().toISOString(), str(row.id), str(row.landing_commit));
+      const flippedAt = this.now().toISOString();
+      this.db.prepare("UPDATE page_comments SET status = 'fixed', landing_commit = NULL, landing_branch = NULL, landing_repo = NULL, updated_at = ?, fixed_at = ? WHERE id = ? AND status = 'working' AND landing_commit = ?")
+        .run(flippedAt, flippedAt, str(row.id), str(row.landing_commit));
       waiting--;
       this.emit(str(row.id));
     }
@@ -648,7 +649,9 @@ export class PageComments {
     const before = this.row(id);
     const keys = Object.keys(fields);
     if (keys.every((k) => (before[k] ?? null) === fields[k])) return;
-    this.db.prepare(`UPDATE page_comments SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...keys.map((k) => fields[k]!), this.now().toISOString(), id);
+    // Leaving fixed (a status other than fixed) forgets when it turned fixed.
+    const leavesFixed = "status" in fields && fields.status !== "fixed" && before.status === "fixed";
+    this.db.prepare(`UPDATE page_comments SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ?${leavesFixed ? ", fixed_at = NULL" : ""} WHERE id = ?`).run(...keys.map((k) => fields[k]!), this.now().toISOString(), id);
     if (announce && "status" in fields && fields.status !== before.status) this.emit(id);
     else this.onChange();
   }
@@ -680,6 +683,7 @@ export class PageComments {
       editable: str(r.status) === "held" || (str(r.status) === "queued" && !r.message_id),
       messageId: opt(r.message_id), attempts: Number(r.attempts),
       landing: str(r.status) === "working" && r.landing_commit ? { commit: str(r.landing_commit), branch: str(r.landing_branch) } : null,
+      fixedAt: str(r.status) === "fixed" ? opt(r.fixed_at) : null,
       createdAt: str(r.created_at), updatedAt: str(r.updated_at),
     };
   }

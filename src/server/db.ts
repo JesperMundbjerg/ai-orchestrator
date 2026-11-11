@@ -424,6 +424,12 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
   // acknowledged. A pane attempt is the 'sending' state, never handed out. NULL for every existing delivery.
   addColumn(db, "message_deliveries", "claim_transport", "TEXT CHECK (claim_transport IN ('integration'))");
   addColumn(db, "message_deliveries", "claimed_at", "TEXT");
+}, (db) => {
+  // 24: when a page comment turned fixed (pagecomments.ts): set as it becomes fixed, directly or when its waiting landing
+  // flips it, cleared if it leaves fixed. updated_at is not that time (verification and edits move it). BACKFILL: a comment
+  // that is already fixed gets its updated_at, the best time the old rows hold (an upper bound, never earlier than the truth).
+  addColumn(db, "page_comments", "fixed_at", "TEXT");
+  db.exec("UPDATE page_comments SET fixed_at = updated_at WHERE status = 'fixed' AND fixed_at IS NULL");
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {
