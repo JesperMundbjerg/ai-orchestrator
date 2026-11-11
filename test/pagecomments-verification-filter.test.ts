@@ -58,7 +58,7 @@ const live: LiveAgent[] = [
 
 const json = (body: unknown) => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-/** Three fixed comments (one per check state), one still open, one declined, and the follow-up a still-wrong check opens. */
+/** Three fixed comments (one per check state; still-wrong as stored before it reopened comments), one still open, one declined, and that legacy follow-up. */
 async function seed(world: World, comments: PageComments, base: string) {
   const team = await world.createTeam({ name: "Dispatch", standing: true });
   const lead = world.state().agents.find((a) => a.cwd === "/lead")!;
@@ -68,7 +68,10 @@ async function seed(world: World, comments: PageComments, base: string) {
   const open = comments.enqueue(team.id, { text: "open" });
   const declined = comments.setStatus(comments.enqueue(team.id, { text: "declined" }).id, { status: "declined", note: "no" });
   await fetch(`${base}/api/page-comments/${verified.id}/verify`, json({ verdict: "verified" }));
-  await fetch(`${base}/api/page-comments/${wrong.id}/verify`, json({ verdict: "still-wrong", note: "still off" }));
+  // Still wrong reopens a comment now; a fixed comment with that verdict is one judged before that (with its follow-up).
+  comments.enqueue(team.id, { text: "still off", followsUp: wrong.id, clientId: `still-wrong:${wrong.id}` });
+  (comments as unknown as { db: { prepare(sql: string): { run(...a: string[]): void } } }).db
+    .prepare("UPDATE page_comments SET verification = 'still-wrong', verified_at = ? WHERE id = ?").run(new Date().toISOString(), wrong.id);
   const ids = async (q: string) => {
     const res = await fetch(`${base}/api/page-comments?team=${team.id}&${q}`);
     return { status: res.status, ids: res.ok ? ((await res.json()).comments as Array<{ id: string }>).map((c) => c.id).sort() : [], body: res.ok ? null : await res.json() };

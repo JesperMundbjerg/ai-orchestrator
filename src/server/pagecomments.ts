@@ -5,7 +5,9 @@
 // batched, deduped); the lead closes it with `inbox comment fixed|declined`, or asks the page with
 // `inbox comment ask`. Pages may group comments (one message to the lead, each its own id), edit or
 // withdraw them (in place before the office hands them over, as a follow-up message after), and
-// answer questions. Pages hear every change from an SSE stream, or through the widget's postMessage relay.
+// answer questions. The founder judges a fix: verified, or still wrong, which reopens the same comment with his note as
+// the new instruction (the attempt is kept as history); what he must act on is one list (shared/awaiting.ts).
+// Pages hear every change from an SSE stream, or through the widget's postMessage relay.
 // Which page origins may host the widget is the founder's setting, kept in the data directory; it
 // governs postMessage and framing only, never the service's Origin guard.
 
@@ -17,8 +19,9 @@ import { object, optional, list, text, nonempty, record, oneOf, refine, fail, se
 import {
   AGENT_COMMENT_STATUSES, CLOSED_COMMENT_STATUSES, COMMENT_VERDICTS, COMMENT_ID, DEFAULT_PAGE_ORIGINS, GROUP_ID, GROUP_MAX, KIND_MAX, META_MAX_BYTES,
   cleanKind, cleanMeta, cleanPageContext, commentEvent, normalizeOriginPattern, pageCommentText, pageContextLines,
-  type AgentCommentStatus, type CommentVerificationFilter, type PageComment, type CommentVerdict, type PageCommentEdit, type PageCommentEvent, type PageCommentInput, type PageCommentStatus, type PageTeam,
+  type AgentCommentStatus, type CommentVerificationFilter, type PageComment, type PageCommentAttempt, type CommentVerdict, type PageCommentEdit, type PageCommentEvent, type PageCommentInput, type PageCommentStatus, type PageTeam,
 } from "../shared/pagecomments.ts";
+import { awaitingEntry, awaitingFounder, type AwaitingEntry } from "../shared/awaiting.ts";
 import { leftBeforeArrival } from "../shared/delivery.ts";
 import type { Message, SessionInput, WorldAgent, WorldState } from "../shared/types.ts";
 import { requestFingerprint } from "./db.ts";
@@ -60,6 +63,7 @@ export const commentWithdrawSchema = object({ note: optional(text) });
 export const commentAskSchema = object({ question: nonempty, session: optional(sessionSchema) });
 export const commentAnswerSchema = object({ text: nonempty, images: optional(list(nonempty)) });
 export const commentVerifySchema = object({ verdict: oneOf(COMMENT_VERDICTS), note: optional(text), clientId: optional(nonempty) });
+export const commentReleaseSchema = object({ note: optional(text) });
 export const pageOriginsSchema = object({ origins: list(text) });
 export const commentStatusSchema = refine(object({
   status: oneOf(AGENT_COMMENT_STATUSES), note: optional(text), url: optional(httpUrl(1000)), commit: optional(nonempty), session: optional(sessionSchema),
@@ -297,30 +301,107 @@ export class PageComments {
   }
 
   /**
-   * The founder checks a fixed comment. Verified marks it so (a release gate reads that); still wrong
-   * opens a follow-up comment to the same team, on the same page, that names the fix it follows up.
-   * Asking again gives the same answer: the same follow-up, never a second one.
+   * The founder checks a fixed comment. Verified marks it so (a release gate reads that). Still wrong REOPENS the same
+   * comment: the attempt (commit, note, url, fixedAt, by, the verdict and its note) is kept as history, the comment is
+   * working again with its fix and verdict cleared, and the founder's note reaches the lead as the new instruction on the
+   * same id (DESIGN "Still wrong reopens the same comment"). The same verdict again answers the same, changing nothing.
+   * A comment found still wrong before reopening existed keeps its follow-up comment (`followUp`); none is made now.
    */
   verify(id: string, input: { verdict: CommentVerdict; note?: string }): { comment: PageComment; followUp: PageComment | null } {
     const current = this.get(id);
-    if (current.status !== "fixed") throw Object.assign(new InboxError(409, `comment ${id} is ${current.status}, not fixed`), { code: "comment_not_fixed" });
-    const reopened = () => {
-      const row = this.db.prepare("SELECT id FROM page_comments WHERE follows_up = ? AND client_id = ?").get(id, `still-wrong:${id}`) as Row | undefined;
-      return row ? this.get(str(row.id)) : null;
-    };
-    if (current.verification === input.verdict) return { comment: current, followUp: input.verdict === "still-wrong" ? reopened() : null };
-    if (current.verification === "still-wrong") throw Object.assign(new InboxError(409, `comment ${id} was found still wrong; verify its follow-up instead`), { code: "comment_reopened" });
+    const note = input.note?.trim() ? input.note.trim().slice(0, TEXT_MAX) : null;
+    if (current.status !== "fixed") {
+      // Sent back already and not fixed since: the same still-wrong again is the same answer.
+      const last = current.history.at(-1);
+      if (input.verdict === "still-wrong" && last && last.verdictNote === note && !FINAL.has(current.status)) return { comment: current, followUp: null };
+      throw Object.assign(new InboxError(409, `comment ${id} is ${current.status}, not fixed`), { code: "comment_not_fixed" });
+    }
+    if (current.verification === "still-wrong") {
+      // Legacy: found still wrong when that opened a follow-up comment, which carries on.
+      if (input.verdict === "still-wrong") {
+        const row = this.db.prepare("SELECT id FROM page_comments WHERE follows_up = ? AND client_id = ?").get(id, `still-wrong:${id}`) as Row | undefined;
+        return { comment: current, followUp: row ? this.get(str(row.id)) : null };
+      }
+      throw Object.assign(new InboxError(409, `comment ${id} was found still wrong; verify its follow-up instead`), { code: "comment_reopened" });
+    }
+    if (current.verification === input.verdict) return { comment: current, followUp: null };
     const at = this.now().toISOString();
-    this.update(id, { verification: input.verdict, verified_at: at }, false);
-    let followUp: PageComment | null = null;
-    if (input.verdict === "still-wrong") {
-      const row = this.row(id);
-      followUp = this.enqueue(current.teamId, {
-        text: input.note?.trim() || "Still wrong after the fix.", page: current.page, followsUp: id, clientId: `still-wrong:${id}`,
-        ...(opt(row.open_url) ? { openUrl: opt(row.open_url)! } : {}), ...(current.meta ? { meta: current.meta } : {}), ...(current.kind ? { kind: current.kind } : {}),
-      });
-    } else this.emit(id);
-    return { comment: this.get(id), followUp };
+    if (input.verdict === "verified") {
+      this.update(id, { verification: "verified", verified_at: at }, false);
+      this.emit(id);
+      return { comment: this.get(id), followUp: null };
+    }
+    const row = this.row(id);
+    const n = current.history.length + 1;
+    const said = note ?? "Still wrong after the fix.";
+    const fix = [current.commit ? `commit ${current.commit.slice(0, 12)}` : null, current.note ? `“${current.note}”` : null].filter(Boolean).join(", ");
+    // Told first, like an answer: when nobody can be told, nothing changes and the founder hears why.
+    this.followUp(current, `[Page comment ${id} still wrong]\nThe founder checked the fix${fix ? ` (${fix})` : ""} and it is still wrong:\n\n${said}\n\nThat is the new instruction on the same comment, which is back to working. The comment was:\n\n${pageCommentText(current.text, current.page, current.kind)}${opt(row.open_url) ? `\n\nOpen to check: ${opt(row.open_url)}` : ""}\n\nClose it as before: push the fix to the team's integration branch, then \`inbox comment fixed ${id} --commit SHA --note "how it was fixed, in a few words"\`, or \`inbox comment declined ${id} --note "why"\`; to ask the page, \`inbox comment ask ${id} "question"\`.`, `still-wrong:${n}`);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(`INSERT INTO page_comment_attempts (comment_id, n, commit_sha, note, url, fixed_at, by_name, verdict, verdict_note, judged_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'still-wrong', ?, ?)`).run(id, n, current.commit, current.note, opt(row.fixed_url), current.fixedAt, current.by, note, at);
+      this.db.prepare(`UPDATE page_comments SET status = 'working', verification = NULL, verified_at = NULL, note = NULL, commit_sha = NULL, fixed_url = NULL,
+        fixed_at = NULL, by_name = NULL, question = NULL, answer = NULL, landing_commit = NULL, landing_branch = NULL, landing_repo = NULL,
+        released_at = NULL, release_note = NULL, updated_at = ? WHERE id = ?`).run(at, id);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+    this.emit(id);
+    return { comment: this.get(id), followUp: null };
+  }
+
+  /**
+   * Everything the founder must act on, oldest first (shared/awaiting.ts): fixed comments to judge, sent-back ones to answer, and sent-back ones he
+   * waits on or may release without. Never truncated; a release gate blocks on exactly this list.
+   */
+  awaiting(filter: { team?: string; origin?: string } = {}): { awaiting: AwaitingEntry[] } {
+    const where = [`((status = 'fixed' AND (verification IS NULL OR verification = 'still-wrong'))
+      OR (status NOT IN ('fixed', 'declined', 'withdrawn') AND EXISTS (SELECT 1 FROM page_comment_attempts a WHERE a.comment_id = page_comments.id)))`];
+    const args: string[] = [];
+    if (filter.team) { where.push("team_id = ?"); args.push(filter.team); }
+    if (filter.origin) { where.push("origin = ?"); args.push(filter.origin.toLowerCase()); }
+    const rows = this.db.prepare(`SELECT * FROM page_comments WHERE ${where.join(" AND ")} ORDER BY created_at, rowid`).all(...args) as Row[];
+    const names = this.teamNames();
+    const candidates = rows.map((r) => this.toComment(r, names));
+    return { awaiting: awaitingFounder([...candidates, ...this.legacyChains(candidates)], filter).filter((e) => candidates.includes(e.comment)) };
+  }
+
+  /** The comments legacy still-wrong chains lead to (follow-ups of follow-ups), so the rule can see where each ends. */
+  private legacyChains(comments: PageComment[]): PageComment[] {
+    const known = new Set(comments.map((c) => c.id));
+    const found: PageComment[] = [];
+    let next = comments.filter((c) => c.verification === "still-wrong").flatMap((c) => c.followUps).filter((id) => !known.has(id));
+    while (next.length) {
+      const batch = [...new Set(next)];
+      batch.forEach((id) => known.add(id));
+      const rows = this.db.prepare(`SELECT * FROM page_comments WHERE id IN (${batch.map(() => "?").join(", ")})`).all(...batch) as Row[];
+      const names = this.teamNames();
+      const loaded = rows.map((r) => this.toComment(r, names));
+      found.push(...loaded);
+      next = loaded.filter((c) => c.verification === "still-wrong").flatMap((c) => c.followUps).filter((id) => !known.has(id));
+    }
+    return found;
+  }
+
+  /**
+   * The founder releases without a comment he waits on: recorded on it (time and note), and it leaves the awaiting list
+   * until it turns fixed again. Only a waiting one (a comment to judge is judged instead); the same call again changes nothing.
+   */
+  releaseWithout(id: string, input: { note?: string } = {}): PageComment {
+    const current = this.get(id);
+    const note = input.note?.trim() ? input.note.trim().slice(0, 2000) : null;
+    if (current.releasedWithout && !(current.fixedAt && current.fixedAt > current.releasedWithout.at)) return current;
+    const entry = awaitingEntry(current, new Map([current, ...this.legacyChains([current])].map((c) => [c.id, c])));
+    if (!entry?.releaseWithout) {
+      const why = !entry ? "is not awaiting the founder" : "is fixed and waits to be judged; verify it or send it back";
+      throw Object.assign(new InboxError(409, `comment ${id} ${why}`), { code: "not_releasable" });
+    }
+    this.update(id, { released_at: this.now().toISOString(), release_note: note }, false);
+    this.emit(id);
+    return this.get(id);
   }
 
   /** A message to the team's lead about a comment it already has. Throws when the office cannot give it to anyone. */
@@ -665,6 +746,13 @@ export class PageComments {
     this.onChange();
   }
 
+  private history(id: string): PageCommentAttempt[] {
+    return (this.db.prepare("SELECT * FROM page_comment_attempts WHERE comment_id = ? ORDER BY n").all(id) as Row[]).map((a) => ({
+      commit: opt(a.commit_sha), note: opt(a.note), url: opt(a.url), fixedAt: opt(a.fixed_at), by: opt(a.by_name),
+      verdict: "still-wrong", verdictNote: opt(a.verdict_note), judgedAt: str(a.judged_at),
+    }));
+  }
+
   private teamNames(): Map<string, string> {
     return new Map(this.office.state().teams.map((t) => [t.id, t.name]));
   }
@@ -680,6 +768,8 @@ export class PageComments {
       followsUp: opt(r.follows_up),
       followUps: (this.db.prepare("SELECT id FROM page_comments WHERE follows_up = ? ORDER BY created_at, rowid").all(str(r.id)) as Row[]).map((x) => str(x.id)),
       verification: opt(r.verification) as CommentVerdict | null, verifiedAt: opt(r.verified_at),
+      history: this.history(str(r.id)),
+      releasedWithout: r.released_at ? { at: str(r.released_at), note: opt(r.release_note) } : null,
       editable: str(r.status) === "held" || (str(r.status) === "queued" && !r.message_id),
       messageId: opt(r.message_id), attempts: Number(r.attempts),
       landing: str(r.status) === "working" && r.landing_commit ? { commit: str(r.landing_commit), branch: str(r.landing_branch) } : null,

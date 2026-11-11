@@ -93,14 +93,17 @@ test("verification and later checks leave fixedAt alone while updatedAt moves", 
   assert.equal(comments.setStatus(id, { status: "fixed", note: "Relabelled" }).fixedAt, fixed.fixedAt);
 });
 
-test("a still-wrong check keeps the fixed comment fixed, with its fixedAt; the follow-up has none", () => {
-  const { comments, id, tick } = setup({ repo: false });
+test("still wrong reopens the comment: fixedAt is cleared on it and kept on the attempt; fixing again sets a new one", () => {
+  const { comments, id, tick, now } = setup({ repo: false });
   const fixed = comments.setStatus(id, { status: "fixed", note: "Relabelled" });
   tick(10);
   const { comment, followUp } = comments.verify(id, { verdict: "still-wrong" });
-  assert.equal(comment.status, "fixed");
-  assert.equal(comment.fixedAt, fixed.fixedAt);
-  assert.equal(followUp!.fixedAt, null);
+  assert.equal(followUp, null, "no follow-up comment");
+  assert.equal(comment.status, "working");
+  assert.equal(comment.fixedAt, null);
+  assert.equal(comment.history[0]!.fixedAt, fixed.fixedAt);
+  tick(10);
+  assert.equal(comments.setStatus(id, { status: "fixed", note: "Relabelled again" }).fixedAt, now());
 });
 
 test("leaving fixed clears fixedAt, and fixing again sets a new one", () => {

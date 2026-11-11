@@ -430,6 +430,18 @@ const MIGRATIONS: Array<(db: DatabaseSync) => void> = [adoptLegacy, (db) => {
   // that is already fixed gets its updated_at, the best time the old rows hold (an upper bound, never earlier than the truth).
   addColumn(db, "page_comments", "fixed_at", "TEXT");
   db.exec("UPDATE page_comments SET fixed_at = updated_at WHERE status = 'fixed' AND fixed_at IS NULL");
+}, (db) => {
+  // 25: still wrong reopens the same page comment (pagecomments.ts verify): each attempt the founder sent back is kept here,
+  // in order (n from 1), with what the comment said of it then. released_at/release_note: the founder released without
+  // it (it leaves the awaiting list until it turns fixed again). NULL for every existing comment; old follow-up chains stay.
+  db.exec(`CREATE TABLE IF NOT EXISTS page_comment_attempts (
+    comment_id TEXT NOT NULL REFERENCES page_comments(id), n INTEGER NOT NULL,
+    commit_sha TEXT, note TEXT, url TEXT, fixed_at TEXT, by_name TEXT,
+    verdict TEXT NOT NULL CHECK (verdict IN ('still-wrong')), verdict_note TEXT, judged_at TEXT NOT NULL,
+    PRIMARY KEY (comment_id, n)
+  )`);
+  addColumn(db, "page_comments", "released_at", "TEXT");
+  addColumn(db, "page_comments", "release_note", "TEXT");
 }];
 
 function addColumn(db: DatabaseSync, table: string, name: string, definition: string): void {

@@ -28,7 +28,7 @@ import { leaseSchemas } from "./leases-protocol.ts";
 import type { Usage } from "./usage.ts";
 import type { World } from "./world.ts";
 import { InputLog, inputLogBatchSchema } from "./inputlog.ts";
-import { commentAnswerSchema, commentAskSchema, commentEditSchema, commentStatusSchema, commentVerifySchema, commentWithdrawSchema, pageCommentGroupSchema, pageCommentSchema, pageOriginsSchema, type PageComments } from "./pagecomments.ts";
+import { commentAnswerSchema, commentAskSchema, commentEditSchema, commentReleaseSchema, commentStatusSchema, commentVerifySchema, commentWithdrawSchema, pageCommentGroupSchema, pageCommentSchema, pageOriginsSchema, type PageComments } from "./pagecomments.ts";
 import { COMMENT_ID, commentEvent, parseVerificationFilter, type CommentVerificationFilter } from "../shared/pagecomments.ts";
 import { pipelineSchemas, waiverSchemas, overrideSchema, layoutSchema, deliveryHandoffSchema, deliveryReviewSchema, pipelineSubmitSchema, telemetryQuery, telemetryReportSchema } from "./pipelines/protocol.ts";
 
@@ -196,6 +196,8 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
     route("POST", /^\/api\/page-comments\/(pc-[0-9a-f]+)\/ask$/, commentAskSchema, (_r, b, [id]) => needPageComments().ask(id!, b)),
     route("POST", /^\/api\/page-comments\/(pc-[0-9a-f]+)\/answer$/, commentAnswerSchema, (_r, b, [id]) => needPageComments().answer(id!, b)),
     route("POST", /^\/api\/page-comments\/(pc-[0-9a-f]+)\/verify$/, commentVerifySchema, (_r, b, [id]) => needPageComments().verify(id!, b)),
+    route("POST", /^\/api\/page-comments\/(pc-[0-9a-f]+)\/release-without$/, commentReleaseSchema, (_r, b, [id]) => needPageComments().releaseWithout(id!, b)),
+    route("GET", /^\/api\/page-comments\/awaiting$/, emptySchema, (r) => needPageComments().awaiting(awaitingFilter(r))),
     route("GET", /^\/api\/page-comments\/origins$/, emptySchema, () => needPageComments().origins()),
     route("PUT", /^\/api\/page-comments\/origins$/, pageOriginsSchema, (_r, b) => needPageComments().setOrigins(b)),
     // Agent protocol
@@ -407,6 +409,11 @@ export function createInboxServer(inbox: Inbox, herdr: Herdr | null, opts: { por
 }
 
 /** `?team=ID&origin=ORIGIN&ids=a,b&status=S&verified=true|false&verification=none,verified,still-wrong&limit=N` for the page-comment list and stream. */
+function awaitingFilter(req: IncomingMessage): { team?: string; origin?: string } {
+  const q = new URL(req.url ?? "/", "http://localhost").searchParams;
+  return { ...(q.get("team") ? { team: q.get("team")! } : {}), ...(q.get("origin") ? { origin: q.get("origin")! } : {}) };
+}
+
 function commentFilter(req: IncomingMessage): { team?: string; origin?: string; ids?: string[]; status?: string; verified?: boolean; verification?: CommentVerificationFilter[]; limit?: number } {
   const q = new URL(req.url ?? "/", "http://localhost").searchParams;
   const ids = q.get("ids")?.split(",").map((s) => s.trim()).filter((s) => COMMENT_ID.test(s));

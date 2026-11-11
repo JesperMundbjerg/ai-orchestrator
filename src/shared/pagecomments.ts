@@ -65,7 +65,7 @@ export type PageCommentStatus = (typeof PAGE_COMMENT_STATUSES)[number];
 /** What the fixer may set: the rest is the office's own delivery state. */
 export const AGENT_COMMENT_STATUSES = ["working", "fixed", "declined"] as const;
 export type AgentCommentStatus = (typeof AGENT_COMMENT_STATUSES)[number];
-/** The founder's check of a fixed comment: verified, or still wrong (which opens a follow-up comment). */
+/** The founder's check of a fixed comment: verified, or still wrong (which reopens the same comment for another attempt). */
 export const COMMENT_VERDICTS = ["verified", "still-wrong"] as const;
 export type CommentVerdict = (typeof COMMENT_VERDICTS)[number];
 /** What a list can select a fixed comment by: `none` is fixed and not judged yet, the rest are the founder's verdicts. */
@@ -84,8 +84,9 @@ export function parseVerificationFilter(raw: string): CommentVerificationFilter[
 export const CLOSED_COMMENT_STATUSES: readonly PageCommentStatus[] = ["fixed", "declined", "withdrawn"];
 
 /**
- * Nobody has anything left to do on it: withdrawn, declined, or fixed and checked by the founder (either verdict:
- * "still wrong" opens a follow-up comment that carries on). A fixed comment still waiting for the check is not done.
+ * Nobody has anything left to do on it: withdrawn, declined, or fixed and checked by the founder. A still-wrong verdict
+ * reopens the comment (working again), so only an old one — from before reopening, whose follow-up comment carries on —
+ * is fixed with that verdict. A fixed comment still waiting for the check is not done.
  */
 export function isDoneComment(c: { status: PageCommentStatus; verification: CommentVerdict | null }): boolean {
   return c.status === "withdrawn" || c.status === "declined" || (c.status === "fixed" && c.verification !== null);
@@ -99,6 +100,28 @@ export function cleanKind(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const s = value.replace(/\s+/g, " ").trim();
   return s ? s.slice(0, KIND_MAX) : undefined;
+}
+
+/** An earlier attempt at a comment that the founder sent back as still wrong, kept when the comment reopened. */
+export interface PageCommentAttempt {
+  /** The fix commit that attempt named, if any. */
+  commit: string | null;
+  /** The fixer's note on that attempt. */
+  note: string | null;
+  /** The fixer's --url for that attempt, if any. */
+  url: string | null;
+  fixedAt: string | null;
+  by: string | null;
+  verdict: "still-wrong";
+  /** What the founder said was still wrong (it went to the team as the new instruction). */
+  verdictNote: string | null;
+  judgedAt: string;
+}
+
+/** The founder let a release go without this comment: when, and why if he said. */
+export interface PageCommentRelease {
+  at: string;
+  note: string | null;
 }
 
 /** A page comment the office queues, delivers and tracks until it is fixed or declined. */
@@ -130,13 +153,17 @@ export interface PageComment {
   by: string | null;
   /** How many times the page edited it. */
   revision: number;
-  /** The earlier comment this one follows up. */
+  /** The earlier comment this one follows up (comments made before still-wrong reopened the same comment). */
   followsUp: string | null;
   /** Later comments that follow this one up, oldest first. */
   followUps: string[];
   /** The founder's check once it is fixed: null until checked. */
   verification: CommentVerdict | null;
   verifiedAt: string | null;
+  /** Earlier attempts the founder found still wrong, oldest first; the comment reopened after each. */
+  history: PageCommentAttempt[];
+  /** The founder released without it (it left the awaiting list until it turns fixed again); null otherwise. */
+  releasedWithout: PageCommentRelease | null;
   /** The office has not handed it to the lead yet, so an edit or withdraw changes it in place. */
   editable: boolean;
   /** The office message that carried it to the lead (the latest one when it was sent again). */
@@ -174,6 +201,8 @@ export interface PageCommentEvent {
   followUps: string[];
   verification: CommentVerdict | null;
   verifiedAt: string | null;
+  history: PageCommentAttempt[];
+  releasedWithout: PageCommentRelease | null;
   meta: Record<string, unknown> | null;
   /** When it turned fixed (see PageComment.fixedAt); null while it is not fixed. */
   fixedAt: string | null;
@@ -184,7 +213,7 @@ export const commentEvent = (c: PageComment): PageCommentEvent => ({
   id: c.id, teamId: c.teamId, teamName: c.teamName, groupId: c.groupId, status: c.status, text: c.text, kind: c.kind,
   openUrl: c.openUrl, note: c.note, commit: c.commit, question: c.question, answer: c.answer, by: c.by,
   revision: c.revision, editable: c.editable, followsUp: c.followsUp, followUps: c.followUps,
-  verification: c.verification, verifiedAt: c.verifiedAt, meta: c.meta, fixedAt: c.fixedAt, updatedAt: c.updatedAt,
+  verification: c.verification, verifiedAt: c.verifiedAt, history: c.history, releasedWithout: c.releasedWithout, meta: c.meta, fixedAt: c.fixedAt, updatedAt: c.updatedAt,
 });
 
 export const META_MAX_BYTES = 2048;

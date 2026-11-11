@@ -24,7 +24,7 @@ const post = async (path: string, body: unknown) => {
   if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `request failed (${res.status})`);
 };
 
-/** The founder's check of a fix: verified, or still wrong with what is wrong (that opens a follow-up comment). */
+/** The founder's check of a fix: verified, or still wrong with what is wrong (that sends the same comment back to the team). */
 function VerifyFix({ comment }: { comment: PageComment }) {
   const [wrong, setWrong] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +45,7 @@ function VerifyFix({ comment }: { comment: PageComment }) {
         <>
           <textarea aria-label={`What is still wrong with ${comment.id}`} value={wrong} onChange={(e) => setWrong(e.target.value)} placeholder="What is still wrong?" rows={2} style={{ width: "100%", font: "inherit" }} />
           <div className="order-meta">
-            <button type="button" className="primary" disabled={busy} onClick={() => void verify("still-wrong")}>Send back as a follow-up</button>
+            <button type="button" className="primary" disabled={busy} onClick={() => void verify("still-wrong")}>Send back</button>
             <button type="button" disabled={busy} onClick={() => setWrong(null)}>Cancel</button>
           </div>
         </>
@@ -81,6 +81,23 @@ function AnswerQuestion({ comment }: { comment: PageComment }) {
   );
 }
 
+/** Earlier attempts the founder sent back, oldest first. */
+function History({ comment }: { comment: PageComment }) {
+  if (!comment.history.length) return null;
+  return (
+    <details className="muted">
+      <summary>Sent back {comment.history.length}×</summary>
+      <ol>
+        {comment.history.map((a, i) => (
+          <li key={i}>
+            {a.note ?? "Fixed"}{a.commit ? ` (${a.commit.slice(0, 10)})` : ""} · still wrong {ago(a.judgedAt)}{a.verdictNote ? `: ${a.verdictNote}` : ""}
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
 /** One comment as a list row. */
 function renderComment(c: PageComment) {
   return (
@@ -93,6 +110,7 @@ function renderComment(c: PageComment) {
       <div className="order-text">{c.text}</div>
       {c.status === "asked" && c.question ? <AnswerQuestion comment={c} /> : null}
       {c.status === "fixed" && !c.verification ? <VerifyFix comment={c} /> : null}
+      <History comment={c} />
       {c.status !== "asked" && c.answer ? <div className="order-text muted">Asked: {c.question} · Answered: {c.answer}</div> : null}
       <div className="order-meta">
         <span className={`delivery ${DELIVERY_CLASS[c.status]}`} title={c.note ?? undefined}>
@@ -100,6 +118,7 @@ function renderComment(c: PageComment) {
         </span>
         {c.landing ? <span className="muted" title={`Fixed in ${c.landing.commit}; it turns fixed once that commit is on origin/${c.landing.branch}`}> · {c.landing.commit.slice(0, 10)} not on {c.landing.branch} yet</span> : null}
         {c.verification ? <span className={`delivery ${c.verification === "verified" ? "delivered" : "failed"}`}>{c.verification === "verified" ? "verified" : "still wrong"}</span> : null}
+        {c.releasedWithout ? <span className="muted" title={c.releasedWithout.note ?? undefined}> · released without {ago(c.releasedWithout.at)}</span> : null}
         {c.openUrl ? <a className="muted" href={c.openUrl} target="_blank" rel="noreferrer"> open</a> : null}
         <span className="muted"> {c.id}{c.groupId ? ` · group ${c.groupId}` : ""}{c.revision ? ` · edited ${c.revision}×` : ""}{c.followsUp ? ` · follows up ${c.followsUp}` : ""}{c.followUps.length ? ` · followed up by ${c.followUps.join(", ")}` : ""}</span>
       </div>

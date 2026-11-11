@@ -250,7 +250,7 @@ test("a comment goes queued → delivered → working → fixed; the fixer's url
       assert.deepEqual(last, {
         id: sent.id, teamId: team.id, teamName: "Dispatch", groupId: null, status: "fixed", text: "Step 2 explains the focus wrongly.", kind: null,
         openUrl: "http://localhost:3000/lessons/orbits?step=2#focus", note: "Reworded", commit: "abc1234", question: null, answer: null, by: null,
-        revision: 0, editable: false, followsUp: null, followUps: [], verification: null, verifiedAt: null,
+        revision: 0, editable: false, followsUp: null, followUps: [], verification: null, verifiedAt: null, history: [], releasedWithout: null,
         meta: { lesson: "orbits", step: 2 }, fixedAt: last.updatedAt, updatedAt: last.updatedAt,
       }, "the event carries everything a page shows");
       assert.equal((await (await fetch(`${base}/api/page-comments/${sent.id}`)).json()).status, "fixed");
@@ -490,7 +490,7 @@ test("the widget acts on a host's comments only with well-formed requests about 
   assert.equal(pageCommentText("hi", {}, "unsure"), "[Page comment · unsure]\n\nhi");
 });
 
-test("the founder verifies a fix or finds it still wrong, which opens a follow-up that names the fix; lists select verified or not", async () => {
+test("the founder verifies a fix or finds it still wrong, which reopens the same comment with the attempt kept; lists select verified or not", async () => {
   await office(async ({ base, world, typed, comments }) => {
     const { team } = await seat(world);
     const fix = async (text: string) => {
@@ -520,21 +520,20 @@ test("the founder verifies a fix or finds it still wrong, which opens a follow-u
 
     const before = typed.length;
     const wrong = await (await verify(bad.id, { verdict: "still-wrong", note: "The label still overlaps on phones." })).json();
-    assert.equal(wrong.comment.verification, "still-wrong");
-    assert.equal(wrong.comment.status, "fixed", "the fixed comment keeps its history");
-    const follow = wrong.followUp;
-    assert.equal(follow.followsUp, bad.id);
-    assert.deepEqual(wrong.comment.followUps, [follow.id], "listed on both comments");
-    assert.equal(follow.text, "The label still overlaps on phones.");
-    assert.equal(follow.kind, "bug");
-    assert.deepEqual(follow.meta, { step: 1 });
-    assert.equal(follow.openUrl, "http://localhost:3000/v?step=1", "the page's own open URL, not the earlier fix's");
+    assert.equal(wrong.followUp, null, "no follow-up comment: the same one reopens");
+    assert.equal(wrong.comment.id, bad.id);
+    assert.equal(wrong.comment.status, "working");
+    assert.equal(wrong.comment.verification, null);
+    assert.equal(wrong.comment.commit, null);
+    assert.equal(wrong.comment.openUrl, "http://localhost:3000/v?step=1", "back to the page's own open URL, not the earlier fix's");
+    assert.deepEqual(wrong.comment.history.map((a: { commit: string; note: string; url: string; verdictNote: string }) => [a.commit, a.note, a.url, a.verdictNote]),
+      [["abc1234", "fixed bad", "http://localhost:3000/v?step=1#done", "The label still overlaps on phones."]]);
     await until(() => typed.length > before);
-    assert.match(typed.at(-1)!, new RegExp(`Follows up page comment ${bad.id} \\(fixed; note: fixed bad; commit abc1234; open: http://localhost:3000/v\\?step=1#done\\): “bad”`));
-    // The same verdict again gives the same follow-up, never a second one.
-    assert.equal((await (await verify(bad.id, { verdict: "still-wrong", note: "again" })).json()).followUp.id, follow.id);
-    assert.equal((await verify(bad.id, { verdict: "verified" })).status, 409, "verify its follow-up instead");
-    assert.deepEqual(await list("verified=false"), [bad.id], "a still-wrong fix is not verified");
+    assert.match(typed.at(-1)!, new RegExp(`\\[Page comment ${bad.id} still wrong\\][\\s\\S]*commit abc1234, “fixed bad”[\\s\\S]*The label still overlaps on phones\\.`));
+    // The same verdict again changes nothing; another verdict waits for the next fix.
+    assert.equal((await (await verify(bad.id, { verdict: "still-wrong", note: "The label still overlaps on phones." })).json()).comment.history.length, 1);
+    assert.equal((await verify(bad.id, { verdict: "verified" })).status, 409, "judge the next fix");
+    assert.deepEqual(await list("verified=false"), [], "a reopened comment is not fixed");
   }, live);
 });
 
