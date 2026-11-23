@@ -61,7 +61,18 @@ export function linkedWorktrees(repoRoot: string): string[] {
 
 /** Changed and untracked files, which removing the worktree would throw away. */
 export function uncommitted(path: string): number {
-  return git(path, ["status", "--porcelain"]).split("\n").filter(Boolean).length;
+  return dirtyState(path).count;
+}
+
+/** An untracked `.DS_Store`, or an untracked folder whose only files are `.DS_Store`s (git lists such a folder as one entry). */
+function finderMetadataOnly(top: string, token: string): boolean {
+  if (!token.startsWith("?? ")) return false;
+  const path = token.slice(3);
+  if (basename(path) === ".DS_Store") return true;
+  if (!path.endsWith("/")) return false;
+  const args = ["ls-files", "--others", "--exclude-standard", "-z", "--", path];
+  const files = gitOutput({ cwd: top, args, timeout: 5000, maxBuffer: 20_000_000 }, () => execFileSync("git", args, { cwd: top, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, maxBuffer: 20_000_000 })).split("\0").filter(Boolean);
+  return files.length > 0 && files.every((file) => basename(file) === ".DS_Store");
 }
 
 /**
@@ -77,6 +88,8 @@ export function dirtyState(top: string): { count: number; fingerprint: string } 
   const entries: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i]!;
+    // Finder writes a .DS_Store into any folder it shows: untracked, never work to land, and rewritten on every view.
+    if (finderMetadataOnly(top, token)) continue;
     entries.push(token);
     paths.push(token.slice(3));
     // A rename or copy is followed by the path it came from.
